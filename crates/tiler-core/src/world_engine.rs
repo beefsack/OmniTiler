@@ -1402,6 +1402,12 @@ pub struct WorldEngine {
     /// lifetime ledgers; reset on handshake by fresh construction.
     /// Never a row, slot, or wire value.
     pub(crate) retained_focus: Vec<crate::world_focus::RetainedFocusGrant>,
+    /// One retained core-owned positive-close refocus request (see
+    /// [`crate::world_close_focus`]): the frozen pre-close MRU tiled
+    /// survivor plus its frozen source domain, re-emitted until satisfied,
+    /// superseded, ineligible, or refused. Reset on handshake by fresh
+    /// construction; staged clones carry it for atomic adoption.
+    pub(crate) pending_close_focus: Option<crate::world_close_focus::PendingCloseFocus>,
     /// Pending native-free selection grant between the real selection
     /// command and publish only (see [`crate::world_selection`]): the
     /// dispatching command plus the selected/departing homes, issuing
@@ -1910,6 +1916,7 @@ impl WorldEngine {
             admission_focus_spent: BTreeSet::new(),
             automatic_focus_tokens: BTreeMap::new(),
             retained_focus: Vec::new(),
+            pending_close_focus: None,
             pending_selection: None,
             pending_policy_selections: Vec::new(),
             selection_targets: BTreeMap::new(),

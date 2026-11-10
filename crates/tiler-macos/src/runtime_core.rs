@@ -189,6 +189,13 @@ pub(crate) struct RetainedCore {
     /// never by plans. A dispatched (planned) focus that is dropped or never
     /// observed must not advance this; input acts on this subject.
     pub(crate) observed_focus: Option<WindowId>,
+    /// Foreground provenance for the v4 `foregroundKnown` bit: true only on
+    /// proven bound agreement (focused route) or genuine windowless (NoValue
+    /// on both legs with stable frontmost). Unsupported/unreadable/stale/
+    /// foreign/missing-membership stays false (unknown) with empty focus.
+    /// `false` always pairs with empty focus; non-empty focus always pairs
+    /// with true (see the world-runtime producer).
+    pub(crate) observed_focus_known: bool,
     pub(crate) focus_seq: u64,
     /// Native-mode window→domain homing, keyed by runtime window id
     /// (`"<pid>_<wid>"`). Refreshed on every scoped observation (members
@@ -274,6 +281,9 @@ pub(crate) fn resize_repeat_next(
 
 /// Clear observed focus when it points into `pid` (authoritative loss:
 /// terminate, relaunch, or an observation that no longer reports it).
+/// A clearing loss is unknown-empty: the provenance bit clears with it.
+/// A non-clearing call (focus elsewhere or already empty) leaves provenance
+/// untouched so a background unknown never clobbers proven truth.
 pub(crate) fn clear_focus_into(retained: &mut RetainedCore, pid: u32) {
     let inside = retained
         .observed_focus
@@ -282,6 +292,7 @@ pub(crate) fn clear_focus_into(retained: &mut RetainedCore, pid: u32) {
         .is_some_and(|(fpid, _)| fpid == pid);
     if inside {
         retained.observed_focus = None;
+        retained.observed_focus_known = false;
     }
 }
 

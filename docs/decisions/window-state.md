@@ -78,6 +78,7 @@
 
 ### Transient dialogs and float visibility
 - Decision: transient dialogs float rather than tile; Windows owned-dialog exclusion is an intentional divergence. Ordinary floats hide when their workspace is not shown and retain frame across switch. Focusing overlapping float raises it; no project lower verb. Closing focused ordinary float leaves tiles untouched and refocuses MRU survivor.
+- Core freezes the pre-close source-domain tiled MRU survivor before native fallback convergence and uses the retained [positive-close request](focus.md#automatic-focus-guards), not workspace-return float/sticky selection. Existing automatic-focus/fullscreen/game fences and truthful observations remain; no surviving float/sticky/fullscreen eligibility expansion or retry.
 - Why: not recorded.
 - Assumes / revisit if: parent-focus/modal legs remain TBD; KDE automatic fixed floats use above-tiles layer without project focus writes, qualified by game safety. Relative float order remains host-owned; unload restoration and final native acceptance remain open.
 - Status: active, 2026-10-17

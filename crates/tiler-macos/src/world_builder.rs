@@ -277,11 +277,20 @@ pub(crate) struct ReportInput<'a> {
     pub clear_attempts: &'a [ClearAttempt],
     /// Raw mechanical native creation attempts (latest-wins per operation).
     pub creation_attempts: &'a [NativeCreationAttempt],
+    /// Raw close-focus feedback rows (bounded staged row, forwarded once
+    /// with its original stamp verbatim).
+    pub focus_feedback: &'a [tiler_core::world_report::FocusFeedback],
     /// Normalized gesture ingress for one open native move/size gesture
     /// (`None` on observation-only reports).
     pub gesture: Option<GestureIngress>,
     /// Observed global focus id (`""` when none; informational only).
     pub focused_global: &'a str,
+    /// Foreground provenance for the v4 `foregroundKnown` bit: true only on
+    /// proven bound agreement or genuine windowless; false (unknown) requires
+    /// empty focus. The producer sets this from retained
+    /// `observed_focus_known`; `ReportInput::new` defaults to the mechanical
+    /// `!focused_global.is_empty()` for offline callers without provenance.
+    pub foreground_known: bool,
     /// Caller-observed enumeration completeness over live outputs.
     /// False when retained truth missed input (coverage gap) or a display
     /// went unenumerated (skipped); the whole-report inventory fence.
@@ -348,8 +357,10 @@ impl<'a> ReportInput<'a> {
             view_attempts: &[],
             clear_attempts: &[],
             creation_attempts: &[],
+            focus_feedback: &[],
             gesture: None,
             focused_global,
+            foreground_known: !focused_global.is_empty(),
             complete: true,
             coverage_gap,
             incomplete_outputs: &[],
@@ -647,6 +658,7 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReportV4 {
         cursor: None,
         cursor_hit: None,
         focused_global: input.focused_global.to_owned(),
+        foreground_known: input.foreground_known,
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
@@ -662,7 +674,7 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReportV4 {
         creation_attempts: input.creation_attempts.to_vec(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
-        focus_feedback: Vec::new(),
+        focus_feedback: input.focus_feedback.to_vec(),
         presentation: PresentationRowV4::Valid(input.presentation.clone()),
         intent_records: Vec::new(),
         renderer_input: None,
@@ -904,6 +916,71 @@ mod tests {
         assert_eq!(report.screens[1].full_rect, Some(rect(1440, 0, 1440, 900)));
         assert_eq!(report.screens[0].work_area, Some(rect(0, 25, 1440, 875)));
         assert!(report.inventory_complete);
+    }
+
+    #[test]
+    fn builder_forwards_staged_close_focus_feedback_verbatim() {
+        // Session feedback path: one bounded raw row rides the report once
+        // with its original stamp, verbatim — never re-stamped, never
+        // fabricated.
+        use tiler_core::world_report::{FocusFeedback, VisibilityReason, VisibilitySetter};
+        let ctx = two_display_ctx();
+        let (members, closed, unreadable) = empty_maps();
+        let memory = empty_memory();
+        let owned_id = "req-1".to_owned();
+        let mut input = ReportInput::new(
+            INCARNATION,
+            GENERATION,
+            &ctx,
+            1,
+            1,
+            &owned_id,
+            &members,
+            &memory,
+            &closed,
+            &unreadable,
+            &[],
+            "",
+            false,
+        );
+        let row = FocusFeedback {
+            id: "close-focus-3".to_owned(),
+            target: WindowId("1001_2".to_owned()),
+            revision: 3,
+            setter: VisibilitySetter::Accepted,
+            reason: VisibilityReason::Empty,
+            pre: None,
+            post: None,
+            foreground_proven: false,
+            arrival: Vec::new(),
+            attempt_ms: 42,
+        };
+        let rows = vec![row.clone()];
+        input.focus_feedback = &rows;
+        let report = build_report(&mut input);
+        assert_eq!(report.focus_feedback, vec![row]);
+        // Default input carries no feedback (no fabrication).
+        let (members2, closed2, unreadable2) = empty_maps();
+        let memory2 = empty_memory();
+        let owned2 = "req-2".to_owned();
+        let mut bare = ReportInput::new(
+            INCARNATION,
+            GENERATION,
+            &ctx,
+            1,
+            2,
+            &owned2,
+            &members2,
+            &memory2,
+            &closed2,
+            &unreadable2,
+            &[],
+            "",
+            false,
+        );
+        let _ = &mut bare;
+        let report2 = build_report(&mut bare);
+        assert!(report2.focus_feedback.is_empty());
     }
 
     /// Real-producer display UUIDs for end-to-end fixtures below: canonical
@@ -1798,6 +1875,152 @@ mod tests {
             app_id: None,
             activation_policy: None,
         };
+    }
+
+    #[test]
+    fn foreground_known_bound_and_windowless_round_trip_through_codec() {
+        // Producer -> codec: bound agreement (true+focused) and genuine
+        // windowless (true+empty) both validate and preserve the bit through
+        // the genuine v4 codec. Unknown (false+empty) validates too but
+        // carries the opposite bit; false+nonempty refuses.
+        use tiler_protocol::world_protocol::{
+            CreationReceiptWire, CursorHitWire, DecodedReportV4, GestureIngressWire,
+            ReportWireOptionals, decode_report_v4, encode_report_v4,
+        };
+
+        fn wire(report: WorldReportV4) -> DecodedReportV4 {
+            DecodedReportV4 {
+                wire: ReportWireOptionals {
+                    cursor_hit: match &report.cursor_hit {
+                        None => CursorHitWire::Absent,
+                        Some(_) => CursorHitWire::Id,
+                    },
+                    monotonic_ms_present: report.monotonic_ms != 0,
+                    frame_attempts_present: !report.frames.is_empty(),
+                    member_attempts_present: !report.member_attempts.is_empty(),
+                    view_attempts_present: !report.view_attempts.is_empty(),
+                    clear_attempts_present: !report.clear_attempts.is_empty(),
+                    creation_attempts_present: !report.creation_attempts.is_empty(),
+                    gesture_ingress: match &report.gesture {
+                        None => GestureIngressWire::Absent,
+                        Some(_) => GestureIngressWire::Present,
+                    },
+                },
+                creation_receipts: report
+                    .creation_attempts
+                    .iter()
+                    .map(|row| match &row.created_native {
+                        None => CreationReceiptWire::Null,
+                        Some(_) => CreationReceiptWire::Id,
+                    })
+                    .collect(),
+                report,
+            }
+        }
+
+        let ctx = two_display_ctx();
+        let (members, closed, unreadable) = empty_maps();
+        let memory = empty_memory();
+
+        // Bound: focused leg agreement proves foreground.
+        let bound = assemble(
+            &ctx,
+            &members,
+            &memory,
+            &closed,
+            &unreadable,
+            &[],
+            "4242_7",
+            1,
+            1,
+        );
+        assert_eq!(bound.focused_global, "4242_7");
+        assert!(bound.foreground_known, "bound agreement is known");
+        assert!(validate_report_v4_reason(&bound).is_none());
+        let back = decode_report_v4(&encode_report_v4(&wire(bound)).expect("bound encodes"))
+            .expect("bound decodes");
+        assert!(back.report.foreground_known);
+        assert_eq!(back.report.focused_global, "4242_7");
+
+        // Known none: genuine NoValue on both AX legs with stable frontmost
+        // proves no-client (true+empty). The producer sets the bit; the
+        // builder preserves it; the codec round-trips it.
+        let owned_id = "req-2".to_owned();
+        let mut input = ReportInput::new(
+            INCARNATION,
+            GENERATION,
+            &ctx,
+            2,
+            2,
+            &owned_id,
+            &members,
+            &memory,
+            &closed,
+            &unreadable,
+            &[],
+            "",
+            false,
+        );
+        let raw = realistic_raw_for(&members);
+        input.raw = &raw;
+        input.foreground_known = true;
+        let known_none = build_report(&mut input);
+        assert!(known_none.focused_global.is_empty());
+        assert!(known_none.foreground_known);
+        assert!(validate_report_v4_reason(&known_none).is_none());
+        let back = decode_report_v4(&encode_report_v4(&wire(known_none)).expect("none encodes"))
+            .expect("none decodes");
+        assert!(back.report.foreground_known);
+        assert!(back.report.focused_global.is_empty());
+
+        // Unknown: unsupported/unreadable/stale/foreign/missing-membership
+        // (including the main-fallback route, which never proves foreground)
+        // stays false+empty through the same path.
+        let owned_id = "req-3".to_owned();
+        let mut input = ReportInput::new(
+            INCARNATION,
+            GENERATION,
+            &ctx,
+            3,
+            3,
+            &owned_id,
+            &members,
+            &memory,
+            &closed,
+            &unreadable,
+            &[],
+            "",
+            false,
+        );
+        let raw = realistic_raw_for(&members);
+        input.raw = &raw;
+        assert!(!input.foreground_known, "empty defaults to unknown");
+        let unknown = build_report(&mut input);
+        assert!(!unknown.foreground_known);
+        assert!(unknown.focused_global.is_empty());
+        assert!(validate_report_v4_reason(&unknown).is_none());
+        let back = decode_report_v4(&encode_report_v4(&wire(unknown)).expect("unknown encodes"))
+            .expect("unknown decodes");
+        assert!(!back.report.foreground_known);
+
+        // Inconsistent: false+nonempty refuses on both validation and encode.
+        let mut bad = assemble(
+            &ctx,
+            &members,
+            &memory,
+            &closed,
+            &unreadable,
+            &[],
+            "4242_7",
+            4,
+            4,
+        );
+        bad.foreground_known = false;
+        assert_eq!(
+            validate_report_v4_reason(&bad),
+            Some("focused-unknown-mismatch")
+        );
+        assert!(encode_report_v4(&wire(bad)).is_err());
     }
 
     #[test]

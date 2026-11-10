@@ -252,7 +252,8 @@
           "intentRecords": [],
           "stateAttempts": [],
           "focusFeedback": [],
-          "rendererInput": null
+          "rendererInput": null,
+          "foregroundKnown": true
         }
       },
       "expect": {
@@ -418,7 +419,8 @@
           "intentRecords": [],
           "stateAttempts": [],
           "focusFeedback": [],
-          "rendererInput": null
+          "rendererInput": null,
+          "foregroundKnown": true
         }
       },
       "expect": {
@@ -594,7 +596,8 @@
               "out": "out-a",
               "ws": "ws-1"
             }
-          }
+          },
+          "foregroundKnown": true
         }
       },
       "expect": {
@@ -683,7 +686,8 @@
           "intentRecords": [],
           "stateAttempts": [],
           "focusFeedback": [],
-          "rendererInput": null
+          "rendererInput": null,
+          "foregroundKnown": false
         }
       },
       "expect": {
@@ -780,7 +784,8 @@
               "ws": "ws-1",
               "win": "win-a"
             }
-          }
+          },
+          "foregroundKnown": false
         }
       },
       "expect": {

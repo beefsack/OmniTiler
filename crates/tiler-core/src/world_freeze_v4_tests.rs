@@ -75,6 +75,7 @@ fn v4_full(
         cursor,
         cursor_hit: None,
         focused_global: String::new(),
+        foreground_known: false,
         action_foreground: foreground.map(|out| OutputId(out.to_owned())),
         action_cached: cached.map(|out| OutputId(out.to_owned())),
         action_outputs: registry

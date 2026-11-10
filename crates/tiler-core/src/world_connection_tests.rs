@@ -50,6 +50,7 @@ fn report(seq: u64, complete: bool) -> WorldReportV4 {
         cursor: None,
         cursor_hit: None,
         focused_global: String::new(),
+        foreground_known: false,
         action_foreground: None,
         action_cached: None,
         action_outputs: vec![OutputId("out-1".into())],

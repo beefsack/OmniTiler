@@ -2,6 +2,8 @@
 
 ### Automatic focus guards
 - Decision: core withholds automatic focus if newcomer focus would activate over a different focused floating/sticky window; automatic focus never targets fullscreen, sticky, floating or excluded rows except admission focus for ordinary float not fullscreen/maximized/sticky; newcomer focus never goes behind fullscreen/maximized sibling in same domain. Explicit focus and send-follow are exempt. Withheld effect is spent, not retried.
+- Positive close of the observed focused lifetime freezes the pre-close source-domain tiled MRU survivor, excluding the close cohort, before native fallback convergence. Ordinary float close uses the same tiled policy. Existing automatic-focus, visibility, lifetime, fullscreen/game and shown-domain fences remain. Target equality satisfies without a setter; a different eligible same-report fallback or positively known no-client permits one bounded correction. Unknown foreground forbids it. Later observed change from the close-report baseline supersedes, except target equality satisfies first; commands/view changes also supersede. No unrelated host-loss repair, alternate candidate, retry, native clear or view switch.
+- Close refocus is one global retained request, not a one-shot: stable id/target/issuing revision until satisfied, superseded, ineligible or refused. Each bound adapter spends the id before one attempt or safety no-call, even when issuing/intermediate publications are skipped or feedback is lost. Accepted-but-unchanged focus may retain an inert row, never another call. Same-report attribution deliberately permits one close-gap click override and cannot see entirely between-capture A->B->A flips; no input hook or causal guard is added.
 - Why: one cross-platform rule replaces KDE adapter guards; follows D01 and Gaming Compatibility.
 - Rejected: KDE-only adapter guards; moving only D01 fence.
 - Assumes / revisit if: hosts report maximize/fullscreen truthfully; Windows maximize reporting and Windows/macOS current behavior unchecked.
@@ -10,6 +12,7 @@
 
 ### Workspace active-window memory
 - Decision: core remembers lifetime-bound floating, sticky and tiled identities in one workspace slot. Restore eligible remembered target first without float/tile preference, then existing tiled MRU/layout fallback. Accepted focus choices, including admission newcomers, record before native effects; exception observations use tiled-observation safeguards. Sticky focus records only in workspace selected/observed focused, not every view where visible.
+- Positive-close selection freezes tiled MRU before ingesting host fallback; accepted logical selection never fabricates observed/native foreground. Workspace-return float/sticky memory does not expand close candidate eligibility.
 - Why: not recorded.
 - Assumes / revisit if: unattributed foreground changes may replace intended memory even after unfinished arrival; this residual remains with unknown-foreground policy. Windows dispatching sticky away from home requires fresh lifetime/visibility proof and controlled home/shown scopes on same output; native homing/foreground vetoes remain authoritative.
 - Status: active, 2026-10-28

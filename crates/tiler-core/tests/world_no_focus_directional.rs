@@ -105,6 +105,7 @@ fn report(
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
+        foreground_known: !focused.is_empty(),
         action_foreground: action_foreground.map(|output| OutputId(output.to_owned())),
         action_cached: None,
         action_outputs: vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())],

@@ -43,7 +43,7 @@ fn request_json(
           \"closed\":[],\"native\":[],\
          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"out\"],\
-          \"focused\":\"\",\"complete\":true,\"gesture\":false,\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null}},\"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null}}"
+          \"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null}},\"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null}}"
     )
 }
 
@@ -1182,6 +1182,7 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
     ))
     .expect("valid");
     value["focused"] = serde_json::json!("win-a");
+    value["foregroundKnown"] = serde_json::json!(true);
     value["command"] = serde_json::json!({"op": "move-directional", "win": "win-a", "direction": "right", "sameAxis": "group-with-neighbor"});
     value["cmdSeq"] = serde_json::Value::String("13".to_owned());
     let report = decode_request(&value.to_string()).expect("maximized command decodes");
@@ -1559,7 +1560,7 @@ fn golden_bootstrap_reply_bytes_lock_wire_shape() {
         "{\"v\":4,\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\"req\":\"req-1\",\
         \"obs\":\"1\",\"rev\":\"0\",\"ready\":false,\"consumed\":false,\"scopes\":[],\
         \"workspaces\":[],\"outputs\":[],\"windows\":[],\"transfers\":[],\"effects\":[],\
-        \"result\":null,\"gestureSettled\":null,\"operationSettled\":[],\"nativeCreations\":[],\
+        \"closeFocus\":null,\"result\":null,\"gestureSettled\":null,\"operationSettled\":[],\"nativeCreations\":[],\
         \"warpCursor\":null,\"presentation\":{\"foreground\":\"\",\"rev\":\"0\",\
         \"border\":{\"visible\":false,\"reason\":\"\",\"subject\":null,\"outsets\":null,\
         \"width\":null,\"radius\":null,\"witness\":null},\
@@ -2041,6 +2042,7 @@ fn focus_directional_no_focus_decodes_and_crosses_end_to_end() {
         value["actionOutputs"] = serde_json::json!(["out-a", "out-b"]);
         // No `views` lane: v4 refuses it as an unknown field.
         value["focused"] = serde_json::json!("");
+        value["foregroundKnown"] = serde_json::json!(false);
         value["obs"] = serde_json::Value::String(seq.to_owned());
         value["reqSeq"] = serde_json::Value::String(seq.to_owned());
         value["req"] = serde_json::Value::String(req.to_owned());
@@ -2117,6 +2119,7 @@ fn explicit_focus_effect_wire_carries_cause_metadata() {
         value["actionOutputs"] = serde_json::json!(["out-a", "out-b"]);
         // No `views` lane: v4 refuses it as an unknown field.
         value["focused"] = serde_json::json!("");
+        value["foregroundKnown"] = serde_json::json!(false);
         value["obs"] = serde_json::Value::String(seq.to_owned());
         value["reqSeq"] = serde_json::Value::String(seq.to_owned());
         value["req"] = serde_json::Value::String(req.to_owned());
@@ -2197,6 +2200,7 @@ fn toggle_maximize_decodes_and_result_encodes() {
     let mut value: serde_json::Value =
         serde_json::from_str(&with_command(&command, "7")).expect("valid");
     value["focused"] = serde_json::Value::String("win-a".to_owned());
+    value["foregroundKnown"] = serde_json::json!(true);
     let report = decode_request(&value.to_string()).expect("toggle-maximize decodes");
     assert!(
         matches!(report.command, Some(C::ToggleMaximize { ref window }) if window.0 == "win-a")

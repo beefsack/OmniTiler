@@ -183,6 +183,11 @@ impl WorldEngine {
         let mut presentation = self.presentation_for_publish_v4();
         presentation.rev = envelope.issuing_revision;
         self.latest_published_presentation_rev_v4 = envelope.issuing_revision;
+        // Retained close-focus lane: post-convergence eligibility gates run
+        // here so every publication carries the current row, and re-emission
+        // alone never marks it attempted.
+        self.validate_pending_close_focus();
+        let close_focus = self.pending_close_focus_request();
         WorldReplyV4 {
             contract_version: WORLD_CONTRACT_VERSION_V4,
             adapter_incarnation: envelope.adapter_incarnation,
@@ -199,6 +204,7 @@ impl WorldEngine {
             windows,
             transfers,
             effects,
+            close_focus,
             command_result,
             gesture_settled,
             operation_settled,

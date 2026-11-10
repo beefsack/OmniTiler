@@ -170,14 +170,14 @@ fn report_messages() -> Vec<(String, String, String)> {
 
 #[test]
 fn v4_presentation_ingress_fixture_census() {
-    // 207 reports (126 valid + 81 held): 196 strict-valid ingress rows
-    // (186 with a witness object, 10 with null) plus 11 expected row
+    // 209 reports (128 valid + 81 held): 198 strict-valid ingress rows
+    // (187 with a witness object, 11 with null) plus 11 expected row
     // refusals (8 top-level removed keys, 2 pager float/tile rows, 1 witness
     // constant string). Exact row decode plus checked canonical encode must
     // reproduce the carried fragment BYTES.
     let root = fixture_root();
     let messages = report_messages();
-    assert_eq!(messages.len(), 207, "positive + held report census");
+    assert_eq!(messages.len(), 209, "positive + held report census");
     let expected_refusals: BTreeSet<&str> = [
         "invalid-removed-presentation-borderEnabled",
         "invalid-removed-presentation-underlayEnabled",
@@ -215,12 +215,12 @@ fn v4_presentation_ingress_fixture_census() {
             Err(error) => refused.push((id.clone(), error.kind)),
         }
     }
-    assert_eq!(ok, 196, "strict-valid ingress rows");
+    assert_eq!(ok, 198, "strict-valid ingress rows");
     assert_eq!(
-        witness_objects, 186,
+        witness_objects, 187,
         "valid ingress rows carry a witness object"
     );
-    assert_eq!(witness_nulls, 10, "valid ingress rows carry null witness");
+    assert_eq!(witness_nulls, 11, "valid ingress rows carry null witness");
     assert_eq!(refused.len(), 11, "expected row refusals");
     let refused_ids: BTreeSet<&str> = refused.iter().map(|(id, _)| id.as_str()).collect();
     assert_eq!(refused_ids, expected_refusals, "refusal census");
@@ -239,7 +239,7 @@ fn v4_presentation_ingress_fixture_census() {
 
 #[test]
 fn v4_frame_witness_objects_are_shape_valid_even_when_ingress_is_not() {
-    // All 196 standalone witness objects decode as shape only, including the
+    // All 197 standalone witness objects decode as shape only, including the
     // 10 carried inside otherwise-bad presentation rows. Dangling or
     // mismatched ids are accepted here; causal join belongs to a later unit.
     let root = fixture_root();
@@ -269,14 +269,14 @@ fn v4_frame_witness_objects_are_shape_valid_even_when_ingress_is_not() {
             }
         }
     }
-    assert_eq!(objects, 196, "standalone witness objects");
-    assert_eq!(nulls, 10, "null witnesses");
+    assert_eq!(objects, 197, "standalone witness objects");
+    assert_eq!(nulls, 11, "null witnesses");
     assert_eq!(bad, 1, "constant-string witness refusal");
 }
 
 #[test]
 fn v4_pager_frame_rows_fixture_census() {
-    // 197 carried pager rows: 195 valid `{win, live}` rows plus the 2
+    // 198 carried pager rows: 196 valid `{win, live}` rows plus the 2
     // removed float/tile rows, which refuse as unknown-field.
     let root = fixture_root();
     let messages = report_messages();
@@ -300,8 +300,8 @@ fn v4_pager_frame_rows_fixture_census() {
             }
         }
     }
-    assert_eq!(total, 197, "carried pager rows");
-    assert_eq!(ok, 195, "valid pager rows");
+    assert_eq!(total, 198, "carried pager rows");
+    assert_eq!(ok, 196, "valid pager rows");
     assert_eq!(refused.len(), 2, "removed float/tile refusals");
     assert!(
         refused.iter().all(|(_, kind)| *kind == "unknown-field"),

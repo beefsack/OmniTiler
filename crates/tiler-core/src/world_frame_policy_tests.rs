@@ -550,6 +550,7 @@ pub(crate) fn report_with_screens(
         cursor: None,
         cursor_hit: None,
         focused_global: String::new(),
+        foreground_known: false,
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),

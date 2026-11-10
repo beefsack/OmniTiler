@@ -39,11 +39,11 @@ use crate::runtime::{
 };
 use crate::runtime_core::RetainedCore;
 use crate::runtime_thread::{CoherencePending, FocusSlot, FrameSlot, Inbox};
-use crate::runtime_types::TopologyMode;
+use crate::runtime_types::{CloseFocusBinding, TopologyMode};
 use crate::world_runtime::{
     DispatchContext, WorldSession, build_dispatch_report, map_gesture_preview, track_write,
 };
-use crate::world_sequencer::{ReplyVerdict, RequestTicket, command_operation_id};
+use crate::world_sequencer::{CloseEnvelope, ReplyVerdict, RequestTicket, command_operation_id};
 
 /// Static reply token for the ring (`emit` needs `&'static str`): every
 /// production op/outcome pair is enumerated, so no per-reply allocation or
@@ -1739,6 +1739,19 @@ fn consume_world_reply(
         seq,
     );
     settle_select_transfers(session, shared, reply, pid, generation, seq);
+    dispatch_close_focus(
+        session,
+        retained,
+        shared,
+        focus_queue,
+        focus_capacity,
+        reply,
+        &current,
+        ticket_command,
+        pid,
+        generation,
+        seq,
+    );
 }
 
 /// Frame emission from world rows: per-app latest-wins slots, per-app
@@ -2181,6 +2194,7 @@ pub(crate) fn release_selection_focus_after_arrival(
             // can refuse a same-app user focus move the main thread cannot
             // see (frontmost is app-level).
             expect_prior: deferred.prior_focus,
+            close: None,
         };
         if slot.set_latest(cmd).is_some() {
             lock_shared(shared).diagnostics.focus_dispatched += 1;
@@ -2368,6 +2382,7 @@ fn dispatch_focus_effects(
                         // Explicit focus dispatches legacy-unchanged: no
                         // prior check (the user intent IS the focus move).
                         expect_prior: None,
+                        close: None,
                     };
                     if slot.set_latest(cmd).is_some() {
                         focus_dispatched += 1;
@@ -2403,6 +2418,371 @@ fn dispatch_focus_effects(
             "unhandled-without-route",
             unhandled_effects,
         );
+    }
+}
+
+/// Close-focus dispatch on the coherent LATEST reply lane, independent of
+/// the command ticket: observes the nullable close envelope, publishes the
+/// taken-but-unstarted epoch, and either attempts once or spends into a
+/// safety no-call. Never fabricates `Accepted` on queueing: the attempt
+/// stages nothing; the owner result path stages the raw row. Null or a
+/// user/explicit command ticket retires and publishes `None`, cancelling
+/// old taken-unstarted commands. Stale replays and spent re-emissions keep
+/// the current epoch (a spent stable reemit never cancels the in-flight
+/// same id). Admission/hover and the explicit/deferred paths are untouched.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_close_focus(
+    session: &mut WorldSession,
+    retained: &mut RetainedCore,
+    shared: &Arc<Mutex<Shared>>,
+    focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
+    focus_capacity: usize,
+    reply: &WorldReplyV4,
+    current: &BTreeSet<(String, String)>,
+    ticket_command: Option<&WorldCommand>,
+    pid: u32,
+    generation: u64,
+    seq: u64,
+) {
+    use crate::runtime_shared::CloseFocusEpoch;
+    use tiler_core::directional::WorkspaceId;
+    use tiler_core::session::DomainKey;
+    use tiler_core::world_report::{FocusFeedback, VisibilityReason, VisibilitySetter};
+
+    let incarnation = reply.adapter_incarnation.clone();
+    let core_gen = reply.core_generation.clone();
+    // Any command ticket supersedes close intent before the latest apply:
+    // retire the sequencer record and publish null so old taken-unstarted
+    // commands never dispatch.
+    if ticket_command.is_some() {
+        session
+            .sequencer()
+            .observe_close_envelope(None, &incarnation, &core_gen);
+        crate::runtime_shared::publish_close_focus_current(shared, None);
+        emit(shared, pid, generation, seq, "close-focus", "superseded", 1);
+        return;
+    }
+    let envelope = session.sequencer().observe_close_envelope(
+        reply.close_focus.as_ref(),
+        &incarnation,
+        &core_gen,
+    );
+    match envelope {
+        CloseEnvelope::Absent => {
+            crate::runtime_shared::publish_close_focus_current(shared, None);
+            emit(shared, pid, generation, seq, "close-focus", "absent", 0);
+            return;
+        }
+        CloseEnvelope::Stale => {
+            emit(shared, pid, generation, seq, "close-focus", "stale", 0);
+            return;
+        }
+        CloseEnvelope::DuplicateSpent => {
+            emit(shared, pid, generation, seq, "close-focus", "duplicate", 0);
+            return;
+        }
+        CloseEnvelope::Fresh => {}
+    }
+    let req = reply.close_focus.as_ref().expect("Fresh implies Some");
+    // Publish the latest epoch first: older taken commands mismatch and
+    // cancel; the in-flight same id still matches.
+    crate::runtime_shared::publish_close_focus_current(
+        shared,
+        Some(CloseFocusEpoch {
+            id: req.id.clone(),
+            revision: req.issued_revision,
+            adapter_incarnation: incarnation.clone(),
+            core_generation: core_gen.clone(),
+        }),
+    );
+    let target_str = req.target.0.clone();
+    let fallback_pre = retained.observed_focus.clone();
+    let fallback_known = retained.observed_focus_known;
+    // Zero-setter satisfied: focus already names the target.
+    if fallback_pre.as_ref() == Some(&req.target) {
+        session.sequencer().spend_close(&req.id);
+        session.stage_close_feedback(FocusFeedback {
+            id: req.id.clone(),
+            target: req.target.clone(),
+            revision: req.issued_revision,
+            setter: VisibilitySetter::NotCalled,
+            reason: VisibilityReason::Empty,
+            pre: Some(req.target.clone()),
+            post: Some(req.target.clone()),
+            foreground_proven: fallback_known,
+            arrival: Vec::new(),
+            attempt_ms: 0,
+        });
+        emit(shared, pid, generation, seq, "close-focus", "satisfied", 0);
+        return;
+    }
+    // No-call helper: spends once, stages one raw row, counts the drop.
+    let no_call =
+        |session: &mut WorldSession, shared: &Arc<Mutex<Shared>>, reason: VisibilityReason| {
+            session.sequencer().spend_close(&req.id);
+            session.stage_close_feedback(FocusFeedback {
+                id: req.id.clone(),
+                target: req.target.clone(),
+                revision: req.issued_revision,
+                setter: VisibilitySetter::NotCalled,
+                reason,
+                pre: fallback_pre.clone(),
+                post: None,
+                foreground_proven: false,
+                arrival: Vec::new(),
+                attempt_ms: 0,
+            });
+            lock_shared(shared).diagnostics.focus_dropped_full += 1;
+            emit(shared, pid, generation, seq, "close-focus", "no-call", 1);
+        };
+    // Frozen-target fences over retained truth plus the live native plan.
+    let domain = DomainKey {
+        output: req.output.clone(),
+        workspace: WorkspaceId(req.workspace.clone()),
+    };
+    let Some((fpid, fwid)) = parse_window_id(&target_str) else {
+        no_call(session, shared, VisibilityReason::IdentityStale);
+        return;
+    };
+    let (app_generation, focus_slot, native_mode): (Option<u64>, Option<Arc<FocusSlot>>, bool) = {
+        let guard = lock_shared(shared);
+        let row = guard.apps.get(&fpid).filter(|r| !r.terminated);
+        (
+            row.map(|r| r.generation),
+            row.map(|r| Arc::clone(&r.focus)),
+            matches!(
+                guard.config.topology_mode,
+                crate::runtime_types::TopologyMode::Native
+            ),
+        )
+    };
+    let Some(app_generation) = app_generation else {
+        no_call(session, shared, VisibilityReason::IdentityStale);
+        return;
+    };
+    if retained.window_domains.get(&target_str) != Some(&domain) {
+        no_call(session, shared, VisibilityReason::IdentityStale);
+        return;
+    }
+    if !current.contains(&(req.output.0.clone(), req.workspace.clone())) {
+        no_call(session, shared, VisibilityReason::Unreadable);
+        return;
+    }
+    // Shown/current native leg when a live context exists (synthetic
+    // skeletons skip this: `current` above already gates them).
+    {
+        let guard = lock_shared(shared);
+        if let Some(ctx) = guard.native_context.clone() {
+            let topology_revision = guard.topology_revision;
+            let row = ctx
+                .domains
+                .iter()
+                .find(|d| d.output == req.output && d.workspace.0 == req.workspace);
+            match row {
+                Some(d) if d.current && d.readable && ctx.revision == topology_revision => {}
+                Some(_) => {
+                    drop(guard);
+                    no_call(session, shared, VisibilityReason::Unreadable);
+                    return;
+                }
+                None => {
+                    drop(guard);
+                    no_call(session, shared, VisibilityReason::IdentityStale);
+                    return;
+                }
+            }
+        }
+    }
+    if retained.minimized.contains_key(&target_str) {
+        no_call(session, shared, VisibilityReason::ShowBlocked);
+        return;
+    }
+    let roster_row = retained
+        .apps
+        .get(&fpid)
+        .and_then(|app| app.roster.get(&fwid));
+    let Some(entry) = roster_row else {
+        no_call(session, shared, VisibilityReason::IdentityStale);
+        return;
+    };
+    if entry.minimized_meta || entry.hidden_meta {
+        no_call(session, shared, VisibilityReason::ShowBlocked);
+        return;
+    }
+    match entry.excluded {
+        Some(crate::classifier::ExcludeReason::Minimized)
+        | Some(crate::classifier::ExcludeReason::HiddenApp) => {
+            no_call(session, shared, VisibilityReason::ShowBlocked);
+            return;
+        }
+        Some(_) => {
+            no_call(session, shared, VisibilityReason::Unsupported);
+            return;
+        }
+        None => {}
+    }
+    // Fullscreen holds the foreground: the target itself or any same-domain
+    // sibling holding a retained fullscreen window refuses the steal.
+    let sibling_fullscreen = retained.apps.iter().any(|(apid, app)| {
+        app.windows.iter().any(|w| {
+            w.fullscreen
+                && retained
+                    .window_domains
+                    .get(&crate::runtime_types::window_id(*apid, w.wid))
+                    .is_some_and(|home| home == &domain)
+        })
+    });
+    if sibling_fullscreen {
+        no_call(session, shared, VisibilityReason::Fullscreen);
+        return;
+    }
+    // Game/overlay defers to the core pre-publish gate (no adapter-side
+    // game fact exists); unknown foreground never dispatches blind.
+    if retained.observed_focus.is_none() && !retained.observed_focus_known {
+        no_call(session, shared, VisibilityReason::FocusUnproven);
+        return;
+    }
+    // Outbox full and ownership-lost legs spend into no-call, never retry.
+    if lock_focus(focus_queue).len() >= focus_capacity {
+        no_call(session, shared, VisibilityReason::Superseded);
+        return;
+    }
+    let topology_revision = lock_shared(shared).topology_revision;
+    let binding = CloseFocusBinding {
+        close_id: req.id.clone(),
+        target: req.target.clone(),
+        issued_revision: req.issued_revision,
+        adapter_incarnation: incarnation.clone(),
+        core_generation: core_gen.clone(),
+        output: req.output.clone(),
+        workspace: WorkspaceId(req.workspace.clone()),
+        domain,
+        generation: app_generation,
+        topology_revision,
+        fallback_pre,
+        fallback_known,
+    };
+    // Spend before the attempt-or-no-call fork: exactly once per envelope.
+    session.sequencer().spend_close(&req.id);
+    let fallback_for_slot = binding.fallback_pre.clone();
+    let request_id = {
+        retained.focus_seq += 1;
+        retained.focus_seq
+    };
+    let request = FocusRequest {
+        pid: fpid,
+        generation: app_generation,
+        request_id,
+        wid: fwid,
+        window: target_str.clone(),
+        dispatched: true,
+        verified: false,
+        topology_revision,
+    };
+    // Owner actuation path, native mode only (synthetic skeletons never
+    // read the slot). The owner arm precedes the queue record: a refused
+    // command never leaves a queued `dispatched` row for the drain lane
+    // to deliver or report. A stopped/missing slot is ownership lost:
+    // no-call, spent, never retried, and never queued. Never stage
+    // `Accepted` here: the owner result path stages the honest mechanical
+    // row.
+    if native_mode {
+        // Re-check capacity before arming: never arm a worker command the
+        // outbox cannot record. (The pre-dispatch fence above still
+        // bounds the queue; the drain lane only shrinks it.)
+        if lock_focus(focus_queue).len() >= focus_capacity {
+            session.stage_close_feedback(FocusFeedback {
+                id: req.id.clone(),
+                target: req.target.clone(),
+                revision: req.issued_revision,
+                setter: VisibilitySetter::NotCalled,
+                reason: VisibilityReason::Superseded,
+                pre: binding.fallback_pre.clone(),
+                post: None,
+                foreground_proven: false,
+                arrival: Vec::new(),
+                attempt_ms: 0,
+            });
+            lock_shared(shared).diagnostics.focus_dropped_full += 1;
+            emit(shared, pid, generation, seq, "close-focus", "no-call", 1);
+            return;
+        }
+        match focus_slot {
+            Some(slot) => {
+                let cmd = FocusCommand {
+                    pid: fpid,
+                    generation: app_generation,
+                    request_id,
+                    wid: fwid,
+                    window: target_str,
+                    revision: topology_revision,
+                    route: session.focus_route(),
+                    expect_prior: None,
+                    close: Some(binding),
+                };
+                if slot.set_latest(cmd).is_some() {
+                    lock_focus(focus_queue).push(request);
+                    lock_shared(shared).diagnostics.focus_dispatched += 1;
+                    emit(shared, pid, generation, seq, "close-focus", "dispatched", 1);
+                } else {
+                    session.stage_close_feedback(FocusFeedback {
+                        id: req.id.clone(),
+                        target: req.target.clone(),
+                        revision: req.issued_revision,
+                        setter: VisibilitySetter::NotCalled,
+                        reason: VisibilityReason::IdentityStale,
+                        pre: fallback_for_slot.clone(),
+                        post: None,
+                        foreground_proven: false,
+                        arrival: Vec::new(),
+                        attempt_ms: 0,
+                    });
+                    lock_shared(shared).diagnostics.focus_dropped_full += 1;
+                    emit(shared, pid, generation, seq, "close-focus", "no-call", 1);
+                }
+            }
+            None => {
+                session.stage_close_feedback(FocusFeedback {
+                    id: req.id.clone(),
+                    target: req.target.clone(),
+                    revision: req.issued_revision,
+                    setter: VisibilitySetter::NotCalled,
+                    reason: VisibilityReason::IdentityStale,
+                    pre: fallback_for_slot.clone(),
+                    post: None,
+                    foreground_proven: false,
+                    arrival: Vec::new(),
+                    attempt_ms: 0,
+                });
+                lock_shared(shared).diagnostics.focus_dropped_full += 1;
+                emit(shared, pid, generation, seq, "close-focus", "no-call", 1);
+            }
+        }
+    } else {
+        {
+            let mut queue = lock_focus(focus_queue);
+            if queue.len() >= focus_capacity {
+                drop(queue);
+                session.stage_close_feedback(FocusFeedback {
+                    id: req.id.clone(),
+                    target: req.target.clone(),
+                    revision: req.issued_revision,
+                    setter: VisibilitySetter::NotCalled,
+                    reason: VisibilityReason::Superseded,
+                    pre: binding.fallback_pre.clone(),
+                    post: None,
+                    foreground_proven: false,
+                    arrival: Vec::new(),
+                    attempt_ms: 0,
+                });
+                lock_shared(shared).diagnostics.focus_dropped_full += 1;
+                emit(shared, pid, generation, seq, "close-focus", "no-call", 1);
+                return;
+            }
+            queue.push(request);
+        }
+        lock_shared(shared).diagnostics.focus_dispatched += 1;
+        emit(shared, pid, generation, seq, "close-focus", "dispatched", 1);
     }
 }
 
@@ -2543,6 +2923,7 @@ mod tests {
             windows: Vec::new(),
             transfers: Vec::new(),
             effects: Vec::new(),
+            close_focus: None,
             command_result: None,
             gesture_settled: None,
             operation_settled: Vec::new(),
@@ -2854,6 +3235,7 @@ mod tests {
             select_claim_pending: false,
             selection_focus_pending: None,
             selection_focus_floor_seq: 0,
+            close_focus_current: None,
             focus_evidence: None,
             zombies: Vec::new(),
             engine_handle: None,
@@ -3559,6 +3941,7 @@ mod tests {
                 cursor: None,
                 cursor_hit: None,
                 focused_global: "4242_7".to_owned(),
+                foreground_known: true,
                 action_foreground: None,
                 action_cached: None,
                 action_outputs: Vec::new(),
@@ -4261,5 +4644,1744 @@ mod tests {
                 .any(|entry| entry.kind == "input" && entry.outcome == "select-held"),
             "held drop counted on the ring"
         );
+    }
+
+    // -- Close-focus dispatch (production consume/spend/outbox + mock slot) --
+
+    const CLOSE_PID: u32 = 4242;
+    const CLOSE_GEN: u64 = 1;
+
+    fn close_domain() -> tiler_core::session::DomainKey {
+        tiler_core::session::DomainKey {
+            output: output(),
+            workspace: tiler_core::directional::WorkspaceId("ws-a".to_owned()),
+        }
+    }
+
+    fn close_target(wid: u32) -> tiler_core::directional::WindowId {
+        tiler_core::directional::WindowId(format!("{CLOSE_PID}_{wid}"))
+    }
+
+    fn close_roster_entry(wid: u32) -> crate::runtime_core::RosterEntry {
+        crate::runtime_core::RosterEntry {
+            observed: Some(crate::runtime::ObservedWindow {
+                wid,
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 100,
+                floating: false,
+                fullscreen: false,
+                hints: crate::runtime::WindowSizeHints::none(),
+            }),
+            spaces: vec![7],
+            fullscreen_meta: false,
+            minimized_meta: false,
+            hidden_meta: false,
+            excluded: None,
+            role: Some("AXWindow".to_owned()),
+            subrole: Some("AXStandardWindow".to_owned()),
+            modal: Some(false),
+            resizable: Some(true),
+            layer: Some(0),
+            app_id: Some("com.example.app".to_owned()),
+            activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+        }
+    }
+
+    fn close_retained(target_wid: u32, baseline: Option<WindowId>, known: bool) -> RetainedCore {
+        let mut retained = RetainedCore::default();
+        let mut app = crate::runtime_core::RetainedApp {
+            generation: CLOSE_GEN,
+            seq_last: 1,
+            cmd_counter: 0,
+            windows: Vec::new(),
+            focused_wid: None,
+            roster: BTreeMap::new(),
+            roster_incomplete: false,
+            roster_cause: String::new(),
+        };
+        app.roster
+            .insert(target_wid, close_roster_entry(target_wid));
+        retained.apps.insert(CLOSE_PID, app);
+        retained
+            .window_domains
+            .insert(format!("{CLOSE_PID}_{target_wid}"), close_domain());
+        retained.observed_focus = baseline;
+        retained.observed_focus_known = known;
+        retained
+    }
+
+    fn close_reply_for(
+        session: &WorldSession,
+        id: &str,
+        rev: u64,
+        target_wid: u32,
+    ) -> tiler_core::world_report::WorldReplyV4 {
+        let mut reply = empty_reply();
+        reply.adapter_incarnation = session.incarnation().to_owned();
+        reply.core_generation = session.sequencer().bound_generation();
+        reply.outputs = vec![tiler_core::world_report::OutputDesire {
+            output: output(),
+            logical_view: Some("ws-a".to_owned()),
+            tiling_mode: tiler_core::world_report::TilingMode::Tiled,
+            hold: None,
+        }];
+        reply.close_focus = Some(tiler_core::world_report::CloseFocusRequest {
+            id: id.to_owned(),
+            target: close_target(target_wid),
+            issued_revision: rev,
+            cause: tiler_core::world_report::CloseFocusCause::PositiveClose,
+            output: output(),
+            workspace: "ws-a".to_owned(),
+        });
+        reply
+    }
+
+    fn consume_close(
+        session: &mut WorldSession,
+        retained: &mut RetainedCore,
+        shared: &Arc<Mutex<Shared>>,
+        focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
+        reply: &tiler_core::world_report::WorldReplyV4,
+        ticket: Option<&WorldCommand>,
+    ) {
+        consume_world_reply(
+            session,
+            retained,
+            shared,
+            focus_queue,
+            8,
+            reply,
+            &[],
+            ticket,
+            None,
+            "reconcile",
+            "accepted",
+            CLOSE_PID,
+            CLOSE_GEN,
+            1,
+        );
+    }
+
+    #[test]
+    fn close_latest_only_skips_issuing_and_dispatches_once() {
+        // Focus A(7),C(9),B(8) then close B baseline A => target C. The
+        // issuing/intermediate publications are skipped: only the last
+        // snapshot (rev 7) applies, yielding exactly one outbox attempt and
+        // one mock slot command with the observed fallback.
+        let mut session = focus_session();
+        let shared = focus_shared();
+        let slot = live_focus_app(&shared, CLOSE_PID, CLOSE_GEN);
+        let mut retained = close_retained(9, Some(close_target(7)), true);
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let reply = close_reply_for(&session, "close-focus-7", 7, 9);
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &reply,
+            None,
+        );
+        assert_eq!(lock_focus(&focus_queue).len(), 1, "exactly one attempt");
+        assert_eq!(lock_focus(&focus_queue)[0].window, format!("{CLOSE_PID}_9"));
+        let cmd = slot.take().expect("mock owner slot carries the attempt");
+        assert_eq!(cmd.window, format!("{CLOSE_PID}_9"));
+        assert_eq!(
+            cmd.close.as_ref().expect("typed close").close_id,
+            "close-focus-7"
+        );
+        assert_eq!(
+            cmd.close.as_ref().expect("typed close").fallback_pre,
+            Some(close_target(7))
+        );
+        assert!(crate::runtime_shared::close_focus_is_current(
+            &shared,
+            session.incarnation(),
+            &session.sequencer().bound_generation(),
+            "close-focus-7",
+            7
+        ));
+        assert!(
+            session.peek_close_feedback().is_none(),
+            "attempt stages nothing"
+        );
+        assert_eq!(lock_shared(&shared).diagnostics.focus_dispatched, 1);
+    }
+
+    #[test]
+    fn close_duplicate_latest_no_replay() {
+        let mut session = focus_session();
+        let shared = focus_shared();
+        let slot = live_focus_app(&shared, CLOSE_PID, CLOSE_GEN);
+        let mut retained = close_retained(9, Some(close_target(7)), true);
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let reply = close_reply_for(&session, "close-focus-7", 7, 9);
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &reply,
+            None,
+        );
+        assert_eq!(lock_focus(&focus_queue).len(), 1);
+        assert!(slot.take().is_some());
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &reply,
+            None,
+        );
+        assert_eq!(
+            lock_focus(&focus_queue).len(),
+            1,
+            "duplicate replays nothing"
+        );
+        assert!(slot.take().is_none(), "duplicate sets no slot");
+        assert!(session.peek_close_feedback().is_none());
+    }
+
+    #[test]
+    fn close_current_then_null_then_old_cached_rejected() {
+        // Coherent-latest precondition: the current publication (rev 7)
+        // applies first, then a null retires it into the fence. A delayed
+        // older cached request (rev 4) then refuses as Stale: no new
+        // outbox row, no slot command, no staging, epoch stays null.
+        let mut session = focus_session();
+        let shared = focus_shared();
+        let slot = live_focus_app(&shared, CLOSE_PID, CLOSE_GEN);
+        let mut retained = close_retained(9, Some(close_target(7)), true);
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let current = close_reply_for(&session, "close-focus-7", 7, 9);
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &current,
+            None,
+        );
+        assert_eq!(lock_focus(&focus_queue).len(), 1);
+        let armed = slot.take().expect("current arms the owner slot");
+        assert_eq!(
+            armed.close.as_ref().expect("typed close").close_id,
+            "close-focus-7"
+        );
+        let mut null_reply = empty_reply();
+        null_reply.adapter_incarnation = session.incarnation().to_owned();
+        null_reply.core_generation = session.sequencer().bound_generation();
+        null_reply.outputs = vec![tiler_core::world_report::OutputDesire {
+            output: output(),
+            logical_view: Some("ws-a".to_owned()),
+            tiling_mode: tiler_core::world_report::TilingMode::Tiled,
+            hold: None,
+        }];
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &null_reply,
+            None,
+        );
+        assert!(lock_shared(&shared).close_focus_current.is_none());
+        let old = close_reply_for(&session, "close-focus-4", 4, 9);
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &old,
+            None,
+        );
+        assert_eq!(
+            lock_focus(&focus_queue).len(),
+            1,
+            "old cached replays nothing"
+        );
+        assert!(slot.take().is_none(), "old cached arms no slot");
+        assert!(session.peek_close_feedback().is_none());
+        assert!(lock_shared(&shared).close_focus_current.is_none());
+    }
+
+    #[test]
+    fn close_public_gate_null_applied_then_old_cached_refused_before_consume() {
+        // Public-gate regression through `accept_reply`: the first applied
+        // publication is null (the issuing request was skipped/retired),
+        // then a delayed older cached request refuses at the gate as
+        // stale-revision and never reaches consume: zero slot calls, zero
+        // outbox rows, zero staged feedback, epoch stays null.
+        let mut session = focus_session();
+        let shared = focus_shared();
+        let slot = live_focus_app(&shared, CLOSE_PID, CLOSE_GEN);
+        let mut retained = close_retained(9, Some(close_target(7)), true);
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let incarnation = session.incarnation().to_owned();
+        let generation = session.sequencer().bound_generation();
+        // First flight: null publication at a newer revision.
+        let ticket = session
+            .sequencer()
+            .try_begin_request(None)
+            .expect("first flight");
+        let mut null_reply = empty_reply();
+        null_reply.adapter_incarnation = incarnation.clone();
+        null_reply.core_generation = generation.clone();
+        null_reply.request_id = ticket.request_id.clone();
+        null_reply.based_on_observation_seq = ticket.observation_seq;
+        null_reply.state_revision = 7;
+        null_reply.ready = true;
+        null_reply.outputs = vec![tiler_core::world_report::OutputDesire {
+            output: output(),
+            logical_view: Some("ws-a".to_owned()),
+            tiling_mode: tiler_core::world_report::TilingMode::Tiled,
+            hold: None,
+        }];
+        let applied = match session.sequencer().accept_reply(&null_reply) {
+            ReplyVerdict::Applied(applied) => applied,
+            ReplyVerdict::Refused { reason } => panic!("null must apply, got {reason}"),
+        };
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &applied,
+            None,
+        );
+        assert!(lock_focus(&focus_queue).is_empty());
+        assert!(slot.take().is_none());
+        assert!(session.peek_close_feedback().is_none());
+        assert!(lock_shared(&shared).close_focus_current.is_none());
+        // Delayed older cached request on a new flight: older revision.
+        let ticket2 = session
+            .sequencer()
+            .try_begin_request(None)
+            .expect("second flight");
+        let mut old = close_reply_for(&session, "close-focus-4", 4, 9);
+        old.request_id = ticket2.request_id.clone();
+        old.based_on_observation_seq = ticket2.observation_seq;
+        old.state_revision = 4;
+        old.ready = true;
+        match session.sequencer().accept_reply(&old) {
+            ReplyVerdict::Refused { reason } => assert_eq!(reason, "stale-revision"),
+            ReplyVerdict::Applied(_) => panic!("old cached must refuse at the gate"),
+        }
+        // Never consumed: zero slot calls, zero outbox rows, zero staging.
+        assert!(lock_focus(&focus_queue).is_empty());
+        assert!(slot.take().is_none());
+        assert!(session.peek_close_feedback().is_none());
+        assert!(lock_shared(&shared).close_focus_current.is_none());
+    }
+
+    #[test]
+    fn close_safety_refusal_spent_and_silent_reemit() {
+        // Unknown PID target: spends once into NotCalled IdentityStale with
+        // first-wins feedback; a retained re-emit is DuplicateSpent silent.
+        let mut session = focus_session();
+        let shared = focus_shared();
+        live_focus_app(&shared, CLOSE_PID, CLOSE_GEN);
+        let mut retained = close_retained(9, Some(close_target(7)), true);
+        // Unknown target lives outside every fence.
+        let mut reply = close_reply_for(&session, "close-focus-5", 5, 9);
+        reply.close_focus.as_mut().expect("req").target =
+            tiler_core::directional::WindowId("9999_1".to_owned());
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &reply,
+            None,
+        );
+        assert!(lock_focus(&focus_queue).is_empty());
+        let staged = session
+            .peek_close_feedback()
+            .expect("refusal stages one row");
+        assert_eq!(staged.id, "close-focus-5");
+        assert_eq!(
+            staged.setter,
+            tiler_core::world_report::VisibilitySetter::NotCalled
+        );
+        assert_eq!(
+            staged.reason,
+            tiler_core::world_report::VisibilityReason::IdentityStale
+        );
+        assert_eq!(lock_shared(&shared).diagnostics.focus_dropped_full, 1);
+        let dropped_before = lock_shared(&shared).diagnostics.focus_dropped_full;
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &reply,
+            None,
+        );
+        assert!(lock_focus(&focus_queue).is_empty());
+        assert_eq!(
+            lock_shared(&shared).diagnostics.focus_dropped_full,
+            dropped_before,
+            "DuplicateSpent re-emit stays silent"
+        );
+        assert_eq!(
+            session.peek_close_feedback().expect("first wins").id,
+            "close-focus-5"
+        );
+    }
+
+    #[test]
+    fn close_already_target_zero_setter() {
+        // Successful OWN attempt then next observation names C: satisfied
+        // with zero setter, pre=post=target, no outbox or slot write.
+        let mut session = focus_session();
+        let shared = focus_shared();
+        let slot = live_focus_app(&shared, CLOSE_PID, CLOSE_GEN);
+        let mut retained = close_retained(9, Some(close_target(9)), true);
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let reply = close_reply_for(&session, "close-focus-6", 6, 9);
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &reply,
+            None,
+        );
+        assert!(
+            lock_focus(&focus_queue).is_empty(),
+            "satisfied writes no outbox"
+        );
+        assert!(slot.take().is_none(), "satisfied sets no slot");
+        let staged = session.peek_close_feedback().expect("satisfied stages");
+        assert_eq!(
+            staged.setter,
+            tiler_core::world_report::VisibilitySetter::NotCalled
+        );
+        assert_eq!(
+            staged.reason,
+            tiler_core::world_report::VisibilityReason::Empty
+        );
+        assert_eq!(staged.pre, Some(close_target(9)));
+        assert_eq!(staged.post, Some(close_target(9)));
+    }
+
+    #[test]
+    fn close_ticket_and_null_supersede_to_zero() {
+        // A later focus/command/view ticket before apply supersedes: the
+        // dispatch publishes null, stages nothing, queues nothing. A last
+        // null then yields zero setters.
+        let mut session = focus_session();
+        let shared = focus_shared();
+        let slot = live_focus_app(&shared, CLOSE_PID, CLOSE_GEN);
+        let mut retained = close_retained(9, Some(close_target(7)), true);
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let reply = close_reply_for(&session, "close-focus-7", 7, 9);
+        let ticket = WorldCommand::Focus {
+            window: close_target(8),
+            direction: "left".to_owned(),
+        };
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &reply,
+            Some(&ticket),
+        );
+        assert!(lock_focus(&focus_queue).is_empty());
+        assert!(slot.take().is_none());
+        assert!(session.peek_close_feedback().is_none());
+        assert!(lock_shared(&shared).close_focus_current.is_none());
+        // Last null yields zero setters.
+        let mut null_reply = empty_reply();
+        null_reply.adapter_incarnation = session.incarnation().to_owned();
+        null_reply.core_generation = session.sequencer().bound_generation();
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &null_reply,
+            None,
+        );
+        assert!(lock_focus(&focus_queue).is_empty());
+        assert!(slot.take().is_none());
+    }
+
+    #[test]
+    fn close_generation_alias_rejected() {
+        // Same id/revision on a foreign session never adopts: an old cached
+        // generation alias and a foreign incarnation both refuse with no
+        // outbox, no slot, no staging.
+        let mut session = focus_session();
+        let shared = focus_shared();
+        let slot = live_focus_app(&shared, CLOSE_PID, CLOSE_GEN);
+        let mut retained = close_retained(9, Some(close_target(7)), true);
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let mut alias = close_reply_for(&session, "close-focus-7", 7, 9);
+        alias.core_generation = "gen-alias".to_owned();
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &alias,
+            None,
+        );
+        assert!(lock_focus(&focus_queue).is_empty());
+        assert!(slot.take().is_none());
+        assert!(session.peek_close_feedback().is_none());
+        let mut foreign = close_reply_for(&session, "close-focus-7", 7, 9);
+        foreign.adapter_incarnation = "adapter-foreign".to_owned();
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &foreign,
+            None,
+        );
+        assert!(lock_focus(&focus_queue).is_empty());
+        assert!(slot.take().is_none());
+    }
+
+    #[test]
+    fn close_outbox_full_and_slot_stopped_no_call_spent() {
+        // Outbox saturation spends into Superseded no-call; a stopped slot
+        // spends into IdentityStale no-call. Both stage once and never retry.
+        let mut session = focus_session();
+        let shared = focus_shared();
+        live_focus_app(&shared, CLOSE_PID, CLOSE_GEN);
+        let mut retained = close_retained(9, Some(close_target(7)), true);
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        for i in 0..8u32 {
+            lock_focus(&focus_queue).push(FocusRequest {
+                pid: CLOSE_PID,
+                generation: CLOSE_GEN,
+                request_id: u64::from(i),
+                wid: 100 + i,
+                window: format!("{CLOSE_PID}_{}", 100 + i),
+                dispatched: true,
+                verified: false,
+                topology_revision: 9,
+            });
+        }
+        let reply = close_reply_for(&session, "close-focus-9", 9, 9);
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &reply,
+            None,
+        );
+        assert_eq!(
+            lock_focus(&focus_queue).len(),
+            8,
+            "full outbox queues nothing"
+        );
+        let staged = session.peek_close_feedback().expect("saturation stages");
+        assert_eq!(
+            staged.reason,
+            tiler_core::world_report::VisibilityReason::Superseded
+        );
+
+        // Stopped slot: ownership lost spends into IdentityStale no-call.
+        // The owner arm precedes the queue record, so a stopped slot
+        // leaves no queued `dispatched` row for the drain lane to
+        // deliver: only the no-call evidence stages, exactly once, with
+        // no slot command and no dispatch counter.
+        let mut session2 = focus_session();
+        let shared2 = focus_shared();
+        let slot2 = live_focus_app(&shared2, CLOSE_PID, CLOSE_GEN);
+        slot2.stop();
+        let mut retained2 = close_retained(9, Some(close_target(7)), true);
+        let focus_queue2 = Arc::new(Mutex::new(Vec::new()));
+        let reply2 = close_reply_for(&session2, "close-focus-10", 10, 9);
+        consume_close(
+            &mut session2,
+            &mut retained2,
+            &shared2,
+            &focus_queue2,
+            &reply2,
+            None,
+        );
+        assert!(
+            lock_focus(&focus_queue2).is_empty(),
+            "stopped slot queues nothing"
+        );
+        assert!(slot2.take().is_none(), "stopped slot carries no command");
+        let staged2 = session2.peek_close_feedback().expect("slot loss stages");
+        assert_eq!(
+            staged2.reason,
+            tiler_core::world_report::VisibilityReason::IdentityStale
+        );
+        assert_eq!(
+            lock_shared(&shared2).diagnostics.focus_dispatched,
+            0,
+            "no-call moves no dispatch counter"
+        );
+        assert_eq!(
+            lock_shared(&shared2).diagnostics.focus_dropped_full,
+            1,
+            "slot loss counts exactly one no-call"
+        );
+        // A spent re-emit stays silent: no retry, no second row.
+        let dropped_before = lock_shared(&shared2).diagnostics.focus_dropped_full;
+        consume_close(
+            &mut session2,
+            &mut retained2,
+            &shared2,
+            &focus_queue2,
+            &reply2,
+            None,
+        );
+        assert!(lock_focus(&focus_queue2).is_empty());
+        assert!(slot2.take().is_none());
+        assert_eq!(
+            lock_shared(&shared2).diagnostics.focus_dropped_full,
+            dropped_before,
+            "DuplicateSpent re-emit stays silent"
+        );
+        assert_eq!(
+            session2.peek_close_feedback().expect("first wins").id,
+            "close-focus-10"
+        );
+    }
+
+    #[test]
+    fn close_stale_result_first_wins_keeps_first_feedback() {
+        // Pending old result correlation: first-wins staging never lets a
+        // later (even older-id) result overwrite the fresh request's first
+        // feedback row.
+        let mut session = focus_session();
+        let first = tiler_core::world_report::FocusFeedback {
+            id: "close-focus-7".to_owned(),
+            target: close_target(9),
+            revision: 7,
+            setter: tiler_core::world_report::VisibilitySetter::NotCalled,
+            reason: tiler_core::world_report::VisibilityReason::IdentityStale,
+            pre: Some(close_target(7)),
+            post: None,
+            foreground_proven: false,
+            arrival: Vec::new(),
+            attempt_ms: 0,
+        };
+        session.stage_close_feedback(first.clone());
+        session.stage_close_feedback(tiler_core::world_report::FocusFeedback {
+            id: "close-focus-6".to_owned(),
+            target: close_target(9),
+            revision: 6,
+            setter: tiler_core::world_report::VisibilitySetter::NotCalled,
+            reason: tiler_core::world_report::VisibilityReason::Superseded,
+            pre: Some(close_target(7)),
+            post: None,
+            foreground_proven: false,
+            arrival: Vec::new(),
+            attempt_ms: 0,
+        });
+        assert_eq!(session.peek_close_feedback().expect("first wins"), first);
+    }
+
+    #[test]
+    fn close_core_producer_codec_latest_reply_mock_actuator() {
+        // Genuine producer -> codec -> core -> latest-reply -> MOCK actuator:
+        // focus A,C,B then close B baseline A mints target C through the
+        // real engine; the reply round-trips the real v4 byte codec; only
+        // the last snapshot applies to the mock outbox/slot.
+        use tiler_core::directional::{OutputId, WindowId};
+        use tiler_core::geometry::Rect;
+        use tiler_core::size_hints::WindowSizeHints;
+        use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+        use tiler_core::world_report::{
+            CloseFocusCause, NativeWorkspaceFact, PresentationIngressV4, PresentationRowV4,
+            ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldReportV4,
+        };
+        fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
+            Rect { x, y, w, h }
+        }
+        fn screen(output: &str, x: i32) -> ScreenReport {
+            ScreenReport {
+                output: OutputId(output.to_owned()),
+                full_rect: Some(rect(x, 0, 800, 600)),
+                work_area: Some(rect(x, 0, 800, 560)),
+                complete: true,
+                scale: 1.0,
+                identity: tiler_core::world_report::OutputIdentity::unknown(),
+            }
+        }
+        fn fact(window: &str, output: &str, x: i32) -> WindowFact {
+            WindowFact {
+                window: WindowId(window.to_owned()),
+                output: Some(OutputId(output.to_owned())),
+                rect: Some(rect(x, 0, 40, 90)),
+                fullscreen: Some(false),
+                maximized: Some(false),
+                sticky: Some(false),
+                hints: Some(WindowSizeHints::none()),
+                minimized: Some(false),
+                native_workspace: NativeWorkspaceFact::Omitted,
+                host_hidden: Some(false),
+                privileged: Some(false),
+                managed: Some(true),
+                accepts_input: Some(true),
+                activation_inhibited: Some(false),
+                tool_window: Some(false),
+                owned: Some(false),
+                transient: Some(false),
+                modal: Some(false),
+                resizable: Some(true),
+                above: Some(false),
+                below: Some(false),
+                owner: None,
+                parent: None,
+                role: None,
+                app_id: None,
+                executable: Some("synthetic.exe".to_owned()),
+                process_id: Some("foreign-pid".to_owned()),
+                class: Some("Synthetic".to_owned()),
+                title: None,
+                window_type: Some(tiler_core::world_report::WindowType::Normal),
+                activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+                layer: Some(0),
+                fullscreen_owner: None,
+                fullscreen_exitable: None,
+                suppression_available: None,
+                visibility: tiler_core::world_report::VisibilityFact {
+                    visible: Some(true),
+                    suppression_owned: None,
+                },
+                last_write: None,
+            }
+        }
+        fn report(
+            seq: u64,
+            windows: Vec<WindowFact>,
+            closed: Vec<&str>,
+            focused: &str,
+        ) -> WorldReportV4 {
+            WorldReportV4 {
+                contract_version: WORLD_CONTRACT_VERSION_V4,
+                adapter_incarnation: "adapter-1".to_owned(),
+                core_generation: "gen-1".to_owned(),
+                observation_seq: seq,
+                request_seq: seq,
+                request_id: format!("req-{seq}"),
+                command_seq: None,
+                command: None,
+                screens: vec![screen("out-a", 0)],
+                held_screens: Vec::new(),
+                windows,
+                held_windows: Vec::new(),
+                held_native: Vec::new(),
+                native: Vec::new(),
+                closed: closed
+                    .into_iter()
+                    .map(|id| WindowId(id.to_owned()))
+                    .collect(),
+                cursor: None,
+                cursor_hit: None,
+                focused_global: focused.to_owned(),
+                foreground_known: true,
+                action_foreground: None,
+                action_cached: None,
+                action_outputs: Vec::new(),
+                primary_output: None,
+                inventory_complete: true,
+                gesture_barrier: false,
+                gesture: None,
+                monotonic_ms: 0,
+                frames: Vec::new(),
+                member_attempts: Vec::new(),
+                view_attempts: Vec::new(),
+                clear_attempts: Vec::new(),
+                creation_attempts: Vec::new(),
+                held_attempts: Vec::new(),
+                state_attempts: Vec::new(),
+                focus_feedback: Vec::new(),
+                presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
+                intent_records: Vec::new(),
+                renderer_input: None,
+            }
+        }
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+        let accepted =
+            |engine: &mut WorldEngine, report: &WorldReportV4| match engine.handle_report(report) {
+                WorldOutcome::Accepted(reply) => reply,
+                other => panic!("expected accepted, got {other:?}"),
+            };
+        accepted(
+            &mut engine,
+            &report(
+                1,
+                vec![
+                    fact("win-a", "out-a", 0),
+                    fact("win-b", "out-a", 100),
+                    fact("win-c", "out-a", 200),
+                ],
+                vec![],
+                "win-a",
+            ),
+        );
+        accepted(
+            &mut engine,
+            &report(
+                2,
+                vec![
+                    fact("win-a", "out-a", 0),
+                    fact("win-b", "out-a", 100),
+                    fact("win-c", "out-a", 200),
+                ],
+                vec![],
+                "win-c",
+            ),
+        );
+        accepted(
+            &mut engine,
+            &report(
+                5,
+                vec![
+                    fact("win-a", "out-a", 0),
+                    fact("win-b", "out-a", 100),
+                    fact("win-c", "out-a", 200),
+                ],
+                vec![],
+                "win-b",
+            ),
+        );
+        // SKIP issuing/intermediate publications: apply ONLY the last
+        // snapshot (close B baseline A) and prove target C exactly once.
+        let closed = accepted(
+            &mut engine,
+            &report(
+                7,
+                vec![fact("win-a", "out-a", 0), fact("win-c", "out-a", 200)],
+                vec!["win-b"],
+                "win-a",
+            ),
+        );
+        let req = closed.close_focus.clone().expect("close mints");
+        assert_eq!(req.target.0, "win-c");
+        assert_eq!(req.cause, CloseFocusCause::PositiveClose);
+        // Real v4 byte-codec round-trip of the latest reply.
+        let wire = tiler_protocol::world_protocol::encode_reply_v4(
+            &tiler_protocol::world_protocol::DecodedReplyV4 {
+                reply: closed.clone(),
+                wire: tiler_protocol::world_protocol::ReplyWireOptionals {
+                    suspended_output_present: false,
+                },
+            },
+        )
+        .expect("latest reply encodes");
+        let back = tiler_protocol::world_protocol::decode_reply_v4(&wire).expect("latest decodes");
+        assert_eq!(back.reply.close_focus, Some(req.clone()));
+        // Duplicate latest replays no new close spend core-side is covered
+        // by the sequencer tests; here the mock actuator proves one attempt
+        // total for the skipped sequence.
+        let mut session = focus_session();
+        let shared = focus_shared();
+        let slot = live_focus_app(&shared, CLOSE_PID, CLOSE_GEN);
+        let mut retained = close_retained(9, Some(close_target(7)), true);
+        // Map the genuine core target onto the adapter mock target: the
+        // production consume path below is the same mock-actuator leg the
+        // skipped sequence would have driven (one attempt, no replay).
+        let mut mock_reply = close_reply_for(&session, &req.id, req.issued_revision, 9);
+        mock_reply.adapter_incarnation = session.incarnation().to_owned();
+        mock_reply.core_generation = session.sequencer().bound_generation();
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &mock_reply,
+            None,
+        );
+        assert_eq!(lock_focus(&focus_queue).len(), 1);
+        assert!(slot.take().is_some());
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &mock_reply,
+            None,
+        );
+        assert_eq!(
+            lock_focus(&focus_queue).len(),
+            1,
+            "duplicate latest no replay"
+        );
+    }
+    struct FakeCloseBackend {
+        fresh: Option<(u32, Option<u32>)>,
+        post: Option<(u32, Option<u32>)>,
+        reads: usize,
+        dispatches: usize,
+        completion: crate::runtime_types::AxCompletion,
+    }
+
+    impl crate::runtime_backend::AxBackend for FakeCloseBackend {
+        fn apply_frame(
+            &mut self,
+            _cmd: &crate::runtime::FrameCommand,
+        ) -> crate::runtime_types::AxCompletion {
+            crate::runtime_types::AxCompletion::Failed {
+                reason: "fake no frames".to_owned(),
+            }
+        }
+        fn snapshot(&mut self) -> Result<Vec<crate::runtime::ObservedWindow>, String> {
+            Ok(Vec::new())
+        }
+        fn selected_focus_evidence(&mut self) -> Option<(u32, Option<u32>)> {
+            let value = if self.reads == 0 {
+                self.fresh
+            } else {
+                self.post
+            };
+            self.reads += 1;
+            value
+        }
+        fn dispatch_focus(
+            &mut self,
+            _cmd: &crate::runtime_types::FocusCommand,
+        ) -> crate::runtime_types::AxCompletion {
+            self.dispatches += 1;
+            self.completion.clone()
+        }
+    }
+
+    fn close_owner_cmd(
+        session: &mut WorldSession,
+        shared: &std::sync::Arc<std::sync::Mutex<Shared>>,
+        slot: &std::sync::Arc<FocusSlot>,
+        retained: &mut RetainedCore,
+        focus_queue: &std::sync::Arc<std::sync::Mutex<Vec<FocusRequest>>>,
+        reply: &WorldReplyV4,
+    ) -> crate::runtime_types::FocusCommand {
+        consume_close(session, retained, shared, focus_queue, reply, None);
+        slot.take().expect("mock owner slot carries the attempt")
+    }
+
+    #[test]
+    fn close_owner_mock_dispatch_accepted_stages_truthful() {
+        use tiler_core::directional::WindowId as CoreWindowId;
+        use tiler_core::geometry::Rect;
+        use tiler_core::size_hints::WindowSizeHints;
+        use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+        use tiler_core::world_report::{
+            CloseFocusCause, NativeWorkspaceFact, PresentationIngressV4, PresentationRowV4,
+            ScreenReport, WindowFact, WorldReportV4,
+        };
+        fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
+            Rect { x, y, w, h }
+        }
+        fn screen(output: &str, x: i32) -> ScreenReport {
+            ScreenReport {
+                output: tiler_core::directional::OutputId(output.to_owned()),
+                full_rect: Some(rect(x, 0, 800, 600)),
+                work_area: Some(rect(x, 0, 800, 560)),
+                complete: true,
+                scale: 1.0,
+                identity: tiler_core::world_report::OutputIdentity::unknown(),
+            }
+        }
+        fn fact(window: &str, output: &str, x: i32) -> WindowFact {
+            WindowFact {
+                window: CoreWindowId(window.to_owned()),
+                output: Some(tiler_core::directional::OutputId(output.to_owned())),
+                rect: Some(rect(x, 0, 40, 90)),
+                fullscreen: Some(false),
+                maximized: None,
+                sticky: None,
+                hints: Some(WindowSizeHints::none()),
+                minimized: Some(false),
+                // Host-owned Space id, required for view membership.
+                native_workspace: NativeWorkspaceFact::Value("space-11".to_owned()),
+                host_hidden: Some(false),
+                // Null per macOS caps: listed-unavailable facts plus
+                // maximize/sticky (unsupported capabilities grade any
+                // carried value ConflictingFact).
+                privileged: None,
+                managed: None,
+                accepts_input: None,
+                activation_inhibited: None,
+                tool_window: None,
+                owned: None,
+                transient: None,
+                modal: Some(false),
+                resizable: Some(true),
+                above: None,
+                below: None,
+                owner: None,
+                parent: None,
+                role: None,
+                app_id: None,
+                executable: None,
+                process_id: Some("foreign-pid".to_owned()),
+                class: None,
+                title: None,
+                window_type: Some(tiler_core::world_report::WindowType::Normal),
+                activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+                layer: Some(0),
+                fullscreen_owner: None,
+                fullscreen_exitable: None,
+                suppression_available: None,
+                visibility: tiler_core::world_report::VisibilityFact {
+                    visible: Some(true),
+                    suppression_owned: None,
+                },
+                last_write: None,
+            }
+        }
+        fn report(
+            incarnation: &str,
+            generation: &str,
+            seq: u64,
+            windows: Vec<WindowFact>,
+            closed: Vec<&str>,
+            focused: &str,
+        ) -> WorldReportV4 {
+            WorldReportV4 {
+                contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_V4,
+                adapter_incarnation: incarnation.to_owned(),
+                core_generation: generation.to_owned(),
+                observation_seq: seq,
+                request_seq: seq,
+                request_id: format!("req-{seq}"),
+                command_seq: None,
+                command: None,
+                screens: vec![screen("macos-display-1", 0)],
+                held_screens: Vec::new(),
+                windows,
+                held_windows: Vec::new(),
+                held_native: Vec::new(),
+                // Lone display's current Space, mirroring production.
+                native: vec![tiler_core::world_report::NativeObservation {
+                    output: tiler_core::directional::OutputId("macos-display-1".to_owned()),
+                    native_order: vec!["space-11".to_owned()],
+                    current_native: Some("space-11".to_owned()),
+                    occupancy: vec![tiler_core::world_report::NativeOccupancy {
+                        native: "space-11".to_owned(),
+                        count: None,
+                    }],
+                }],
+                closed: closed
+                    .into_iter()
+                    .map(|id| CoreWindowId(id.to_owned()))
+                    .collect(),
+                cursor: None,
+                cursor_hit: None,
+                focused_global: focused.to_owned(),
+                foreground_known: true,
+                action_foreground: None,
+                action_cached: None,
+                action_outputs: Vec::new(),
+                primary_output: None,
+                inventory_complete: true,
+                gesture_barrier: false,
+                gesture: None,
+                monotonic_ms: 0,
+                frames: Vec::new(),
+                member_attempts: Vec::new(),
+                view_attempts: Vec::new(),
+                clear_attempts: Vec::new(),
+                creation_attempts: Vec::new(),
+                held_attempts: Vec::new(),
+                state_attempts: Vec::new(),
+                focus_feedback: Vec::new(),
+                presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
+                intent_records: Vec::new(),
+                renderer_input: None,
+            }
+        }
+        let mut session = focus_session();
+        let incarnation = session.incarnation().to_owned();
+        let generation = session.sequencer().bound_generation();
+        let mut engine = WorldEngine::new_test_bound_with_capabilities(
+            &generation,
+            &incarnation,
+            crate::world_connection::macos_capabilities(),
+        )
+        .expect("producer binds the consumer handshake");
+        let accepted =
+            |engine: &mut WorldEngine, report: &WorldReportV4| match engine.handle_report(report) {
+                WorldOutcome::Accepted(reply) => reply,
+                other => panic!("expected accepted, got {other:?}"),
+            };
+        accepted(
+            &mut engine,
+            &report(
+                &incarnation,
+                &generation,
+                1,
+                vec![
+                    fact("4242_7", "macos-display-1", 0),
+                    fact("4242_8", "macos-display-1", 100),
+                    fact("4242_9", "macos-display-1", 200),
+                ],
+                vec![],
+                "4242_7",
+            ),
+        );
+        accepted(
+            &mut engine,
+            &report(
+                &incarnation,
+                &generation,
+                2,
+                vec![
+                    fact("4242_7", "macos-display-1", 0),
+                    fact("4242_8", "macos-display-1", 100),
+                    fact("4242_9", "macos-display-1", 200),
+                ],
+                vec![],
+                "4242_9",
+            ),
+        );
+        accepted(
+            &mut engine,
+            &report(
+                &incarnation,
+                &generation,
+                5,
+                vec![
+                    fact("4242_7", "macos-display-1", 0),
+                    fact("4242_8", "macos-display-1", 100),
+                    fact("4242_9", "macos-display-1", 200),
+                ],
+                vec![],
+                "4242_8",
+            ),
+        );
+        let closed = accepted(
+            &mut engine,
+            &report(
+                &incarnation,
+                &generation,
+                7,
+                vec![
+                    fact("4242_7", "macos-display-1", 0),
+                    fact("4242_9", "macos-display-1", 200),
+                ],
+                vec!["4242_8"],
+                "4242_7",
+            ),
+        );
+        let req = closed.close_focus.clone().expect("close mints");
+        assert_eq!(req.target.0, "4242_9");
+        assert_eq!(req.cause, CloseFocusCause::PositiveClose);
+        assert_eq!(req.issued_revision, closed.state_revision);
+        // Skipped-issuing proof: two further unchanged baseline reports
+        // (same survivors, same host fallback) re-emit the identical
+        // retained request core-side without ever touching the adapter.
+        // Only the final retained publication encodes and applies below.
+        let survivors = vec![
+            fact("4242_7", "macos-display-1", 0),
+            fact("4242_9", "macos-display-1", 200),
+        ];
+        for seq in [8u64, 9u64] {
+            let retained = accepted(
+                &mut engine,
+                &report(
+                    &incarnation,
+                    &generation,
+                    seq,
+                    survivors.clone(),
+                    vec![],
+                    "4242_7",
+                ),
+            );
+            assert_eq!(
+                retained.close_focus,
+                Some(req.clone()),
+                "unchanged baseline retains the identical request"
+            );
+        }
+        let latest = accepted(
+            &mut engine,
+            &report(&incarnation, &generation, 10, survivors, vec![], "4242_7"),
+        );
+        assert_eq!(
+            latest.close_focus,
+            Some(req.clone()),
+            "final publication still carries the issuing request"
+        );
+        assert!(
+            latest.state_revision > closed.state_revision,
+            "applied publication is newer than the issuing publication"
+        );
+        assert_eq!(latest.based_on_observation_seq, 10);
+        let wire = tiler_protocol::world_protocol::encode_reply_v4(
+            &tiler_protocol::world_protocol::DecodedReplyV4 {
+                reply: latest.clone(),
+                wire: tiler_protocol::world_protocol::ReplyWireOptionals {
+                    suspended_output_present: false,
+                },
+            },
+        )
+        .expect("latest reply encodes");
+        let back = tiler_protocol::world_protocol::decode_reply_v4(&wire).expect("latest decodes");
+        assert_eq!(back.reply.close_focus, Some(req.clone()));
+        // Adapter leg for the genuine close through the matching bound
+        // producer/consumer: the session above minted the request, so its
+        // incarnation/generation already name the handshake; the final
+        // retained publication above is the unchanged genuine core row
+        // (codec round-tripped), applied through the production consume
+        // path. The issuing (seq 7) and intermediate (seq 8, 9)
+        // publications never touch the adapter sequencer, so exactly one
+        // outbox row and one mock slot command prove latest-only.
+        assert_eq!(back.reply.adapter_incarnation, incarnation);
+        assert_eq!(back.reply.core_generation, generation);
+        let shared = focus_shared();
+        let slot = live_focus_app(&shared, CLOSE_PID, CLOSE_GEN);
+        let mut retained = close_retained(9, Some(close_target(7)), true);
+        retained.window_domains.insert(
+            req.target.0.clone(),
+            tiler_core::session::DomainKey {
+                output: req.output.clone(),
+                workspace: tiler_core::directional::WorkspaceId(req.workspace.clone()),
+            },
+        );
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &back.reply,
+            None,
+        );
+        assert_eq!(lock_focus(&focus_queue).len(), 1, "latest applies once");
+        let cmd = slot.take().expect("mock owner slot carries the attempt");
+        assert_eq!(cmd.window, format!("{CLOSE_PID}_9"));
+        let close = cmd.close.clone().expect("typed close");
+        assert_eq!(close.fallback_pre, Some(close_target(7)));
+        let revision = lock_shared(&shared).topology_revision;
+        // Production owner route with a scripted fake: fresh names the
+        // bind-time baseline, post names the target, backend reports
+        // Applied. The counted mock call proves the dispatch ran.
+        let mut fake = FakeCloseBackend {
+            fresh: Some((CLOSE_PID, Some(7))),
+            post: Some((CLOSE_PID, Some(9))),
+            reads: 0,
+            dispatches: 0,
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3 },
+        };
+        let job = crate::runtime_worker::handle_close_focus_command(
+            &mut fake, &cmd, &close, CLOSE_PID, CLOSE_GEN, revision, &shared,
+        );
+        assert_eq!(
+            fake.dispatches, 1,
+            "production owner must call dispatch_focus once"
+        );
+        assert_eq!(fake.reads, 2, "fresh baseline plus post read");
+        match &job {
+            crate::runtime_thread::EngineJob::CloseFocusResult {
+                setter,
+                reason,
+                pre,
+                post,
+                foreground_proven,
+                attempt_ms,
+                close_id,
+                target,
+                issued_rev,
+                ..
+            } => {
+                assert_eq!(
+                    *setter,
+                    tiler_core::world_report::VisibilitySetter::Accepted
+                );
+                assert_eq!(*reason, tiler_core::world_report::VisibilityReason::Empty);
+                assert_eq!(*pre, Some(close_target(7)));
+                assert_eq!(*post, Some(close_target(9)));
+                assert!(*foreground_proven);
+                assert_eq!(*attempt_ms, 3);
+                assert_eq!(close_id, &req.id);
+                assert_eq!(*issued_rev, req.issued_revision);
+                assert_eq!(*target, close_target(9));
+            }
+            other => panic!("expected CloseFocusResult"),
+        }
+        let inbox = Arc::new(Inbox::new(16));
+        crate::runtime_thread::process_job(
+            job,
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        let staged = session.peek_close_feedback().expect("accepted stages");
+        assert_eq!(staged.id, req.id);
+        assert_eq!(
+            staged.setter,
+            tiler_core::world_report::VisibilitySetter::Accepted
+        );
+        assert_eq!(
+            staged.reason,
+            tiler_core::world_report::VisibilityReason::Empty
+        );
+        assert_eq!(staged.pre, Some(close_target(7)));
+        assert_eq!(staged.post, Some(close_target(9)));
+        // Duplicate latest replays nothing new: the production dispatcher
+        // spends the envelope once (see `dispatch_close_focus`
+        // `DuplicateSpent`), so no second slot command, no second owner
+        // dispatch, and the first staged row keeps its stamp.
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &back.reply,
+            None,
+        );
+        assert!(
+            slot.take().is_none(),
+            "duplicate latest carries no new command"
+        );
+        assert_eq!(
+            fake.dispatches, 1,
+            "no second dispatch without a new command"
+        );
+        assert_eq!(
+            session.peek_close_feedback().expect("first wins").id,
+            req.id
+        );
+        // Own-success next observation: the target reports as the truthful
+        // global focus next, so the core retires the lane (no new request)
+        // and the production consume of that null publication retires the
+        // adapter epoch too.
+        let satisfied = accepted(
+            &mut engine,
+            &report(
+                &incarnation,
+                &generation,
+                11,
+                vec![
+                    fact("4242_7", "macos-display-1", 0),
+                    fact("4242_9", "macos-display-1", 200),
+                ],
+                vec![],
+                "4242_9",
+            ),
+        );
+        assert_eq!(
+            satisfied.close_focus, None,
+            "target equality retires the lane"
+        );
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &satisfied,
+            None,
+        );
+        assert!(
+            lock_shared(&shared).close_focus_current.is_none(),
+            "null publication retires the adapter epoch"
+        );
+        // FAILED-to-focus honesty through the matching bound session: the
+        // session's own engine mints the genuine request, the unchanged
+        // reply applies through the production consume path, and the backend
+        // reports Applied yet the post read still names the baseline
+        // (nothing moved). The raw row still stages Accepted with the
+        // unchanged post; the unchanged observation plus that truthful row
+        // retains the same id core-side, and the latest reemission through
+        // the production dispatcher queues nothing and sets nothing twice.
+        let mut session2 = focus_session();
+        let incarnation2 = session2.incarnation().to_owned();
+        let generation2 = session2.sequencer().bound_generation();
+        let windows_full = vec![
+            fact("4242_7", "macos-display-1", 0),
+            fact("4242_8", "macos-display-1", 100),
+            fact("4242_9", "macos-display-1", 200),
+        ];
+        let survivors2 = vec![
+            fact("4242_7", "macos-display-1", 0),
+            fact("4242_9", "macos-display-1", 200),
+        ];
+        for (seq, windows, closed_ids, focused) in [
+            (1u64, windows_full.clone(), Vec::<&str>::new(), "4242_7"),
+            (2u64, windows_full.clone(), Vec::<&str>::new(), "4242_9"),
+            (5u64, windows_full, Vec::<&str>::new(), "4242_8"),
+        ] {
+            let rep = report(
+                &incarnation2,
+                &generation2,
+                seq,
+                windows,
+                closed_ids,
+                focused,
+            );
+            match session2.engine_mut().handle_report(&rep) {
+                WorldOutcome::Accepted(_) => {}
+                other => panic!("expected accepted, got {other:?}"),
+            }
+        }
+        let close_rep = report(
+            &incarnation2,
+            &generation2,
+            7,
+            survivors2.clone(),
+            vec!["4242_8"],
+            "4242_7",
+        );
+        let closed2 = match session2.engine_mut().handle_report(&close_rep) {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("expected accepted, got {other:?}"),
+        };
+        let req2 = closed2.close_focus.clone().expect("close mints");
+        assert_eq!(req2.target.0, "4242_9");
+        let wire2 = tiler_protocol::world_protocol::encode_reply_v4(
+            &tiler_protocol::world_protocol::DecodedReplyV4 {
+                reply: closed2.clone(),
+                wire: tiler_protocol::world_protocol::ReplyWireOptionals {
+                    suspended_output_present: false,
+                },
+            },
+        )
+        .expect("latest reply encodes");
+        let back2 =
+            tiler_protocol::world_protocol::decode_reply_v4(&wire2).expect("latest decodes");
+        assert_eq!(back2.reply.close_focus, Some(req2.clone()));
+        let shared2 = focus_shared();
+        let slot2 = live_focus_app(&shared2, CLOSE_PID, CLOSE_GEN);
+        let mut retained2 = close_retained(9, Some(close_target(7)), true);
+        retained2.window_domains.insert(
+            req2.target.0.clone(),
+            tiler_core::session::DomainKey {
+                output: req2.output.clone(),
+                workspace: tiler_core::directional::WorkspaceId(req2.workspace.clone()),
+            },
+        );
+        let focus_queue2 = Arc::new(Mutex::new(Vec::new()));
+        consume_close(
+            &mut session2,
+            &mut retained2,
+            &shared2,
+            &focus_queue2,
+            &back2.reply,
+            None,
+        );
+        assert_eq!(lock_focus(&focus_queue2).len(), 1);
+        let cmd2 = slot2.take().expect("mock owner slot carries the attempt");
+        let close2 = cmd2.close.clone().expect("typed close");
+        let revision2 = lock_shared(&shared2).topology_revision;
+        let mut stuck = FakeCloseBackend {
+            fresh: Some((CLOSE_PID, Some(7))),
+            post: Some((CLOSE_PID, Some(7))),
+            reads: 0,
+            dispatches: 0,
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3 },
+        };
+        let job2 = crate::runtime_worker::handle_close_focus_command(
+            &mut stuck, &cmd2, &close2, CLOSE_PID, CLOSE_GEN, revision2, &shared2,
+        );
+        assert_eq!(stuck.dispatches, 1);
+        match &job2 {
+            crate::runtime_thread::EngineJob::CloseFocusResult {
+                setter, pre, post, ..
+            } => {
+                assert_eq!(
+                    *setter,
+                    tiler_core::world_report::VisibilitySetter::Accepted
+                );
+                assert_eq!(*pre, Some(close_target(7)));
+                assert_eq!(
+                    *post,
+                    Some(close_target(7)),
+                    "post unchanged baseline stays honest"
+                );
+            }
+            other => panic!("expected CloseFocusResult"),
+        }
+        let inbox2 = Arc::new(Inbox::new(16));
+        crate::runtime_thread::process_job(
+            job2,
+            &mut session2,
+            &mut retained2,
+            &shared2,
+            &inbox2,
+            &focus_queue2,
+            8,
+        );
+        let first = session2
+            .peek_close_feedback()
+            .expect("stuck applied still stages")
+            .clone();
+        assert_eq!(first.post, Some(close_target(7)));
+        // Unchanged observation plus the truthful failed row retains the
+        // same id core-side (Accepted disagreement stays unproven, never a
+        // terminal refusal).
+        let mut retain_rep = report(
+            &incarnation2,
+            &generation2,
+            8,
+            survivors2,
+            Vec::new(),
+            "4242_7",
+        );
+        retain_rep.focus_feedback = vec![first.clone()];
+        let retained_outcome = match session2.engine_mut().handle_report(&retain_rep) {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("expected accepted, got {other:?}"),
+        };
+        assert_eq!(
+            retained_outcome.close_focus,
+            Some(req2.clone()),
+            "truthful failed row retains the same id"
+        );
+        // Latest reemission through the production dispatcher spends
+        // nothing new (`DuplicateSpent` in `dispatch_close_focus`): no new
+        // slot command, no queued row, no second backend call, and the
+        // first staged row keeps its stamp (no second setter).
+        let queued_before = lock_focus(&focus_queue2).len();
+        consume_close(
+            &mut session2,
+            &mut retained2,
+            &shared2,
+            &focus_queue2,
+            &retained_outcome,
+            None,
+        );
+        assert!(slot2.take().is_none(), "reemission carries no new command");
+        assert_eq!(
+            lock_focus(&focus_queue2).len(),
+            queued_before,
+            "reemission queues nothing new"
+        );
+        assert_eq!(
+            stuck.dispatches, 1,
+            "no second dispatch without a new command"
+        );
+        assert_eq!(
+            session2.peek_close_feedback().expect("first wins").id,
+            first.id,
+            "same-id re-feed keeps the first row, no second setter"
+        );
+    }
+
+    #[test]
+    fn close_owner_mock_no_calls_cover_unproven_changed_superseded() {
+        // Unknown baseline performs no call: fresh unreadable refuses as
+        // FocusUnproven with zero dispatches.
+        let mut session = focus_session();
+        let shared = focus_shared();
+        let slot = live_focus_app(&shared, CLOSE_PID, CLOSE_GEN);
+        let mut retained = close_retained(9, Some(close_target(7)), true);
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let mut reply = close_reply_for(&session, "close-focus-7", 7, 9);
+        reply.adapter_incarnation = session.incarnation().to_owned();
+        reply.core_generation = session.sequencer().bound_generation();
+        let cmd = close_owner_cmd(
+            &mut session,
+            &shared,
+            &slot,
+            &mut retained,
+            &focus_queue,
+            &reply,
+        );
+        let close = cmd.close.clone().expect("typed close");
+        let revision = lock_shared(&shared).topology_revision;
+        let mut unknown = FakeCloseBackend {
+            fresh: None,
+            post: None,
+            reads: 0,
+            dispatches: 0,
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+        };
+        let job = crate::runtime_worker::handle_close_focus_command(
+            &mut unknown,
+            &cmd,
+            &close,
+            CLOSE_PID,
+            CLOSE_GEN,
+            revision,
+            &shared,
+        );
+        assert_eq!(unknown.dispatches, 0, "unproven performs no call");
+        match &job {
+            crate::runtime_thread::EngineJob::CloseFocusResult {
+                setter,
+                reason,
+                pre,
+                post,
+                ..
+            } => {
+                assert_eq!(
+                    *setter,
+                    tiler_core::world_report::VisibilitySetter::NotCalled
+                );
+                assert_eq!(
+                    *reason,
+                    tiler_core::world_report::VisibilityReason::FocusUnproven
+                );
+                assert_eq!(*pre, Some(close_target(7)));
+                assert!(post.is_none());
+            }
+            other => panic!("expected CloseFocusResult"),
+        }
+        // Changed baseline performs no call: a third window names
+        // ForegroundChanged with zero dispatches.
+        let mut session_c = focus_session();
+        let shared_c = focus_shared();
+        let slot_c = live_focus_app(&shared_c, CLOSE_PID, CLOSE_GEN);
+        let mut retained_c = close_retained(9, Some(close_target(7)), true);
+        let focus_queue_c = Arc::new(Mutex::new(Vec::new()));
+        let mut reply_c = close_reply_for(&session_c, "close-focus-7", 7, 9);
+        reply_c.adapter_incarnation = session_c.incarnation().to_owned();
+        reply_c.core_generation = session_c.sequencer().bound_generation();
+        let cmd_c = close_owner_cmd(
+            &mut session_c,
+            &shared_c,
+            &slot_c,
+            &mut retained_c,
+            &focus_queue_c,
+            &reply_c,
+        );
+        let close_c = cmd_c.close.clone().expect("typed close");
+        let revision_c = lock_shared(&shared_c).topology_revision;
+        let mut moved = FakeCloseBackend {
+            fresh: Some((CLOSE_PID, Some(5))),
+            post: Some((CLOSE_PID, Some(5))),
+            reads: 0,
+            dispatches: 0,
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+        };
+        let job_c = crate::runtime_worker::handle_close_focus_command(
+            &mut moved, &cmd_c, &close_c, CLOSE_PID, CLOSE_GEN, revision_c, &shared_c,
+        );
+        assert_eq!(moved.dispatches, 0, "changed baseline performs no call");
+        match &job_c {
+            crate::runtime_thread::EngineJob::CloseFocusResult {
+                setter,
+                reason,
+                pre,
+                post,
+                ..
+            } => {
+                assert_eq!(
+                    *setter,
+                    tiler_core::world_report::VisibilitySetter::NotCalled
+                );
+                assert_eq!(
+                    *reason,
+                    tiler_core::world_report::VisibilityReason::ForegroundChanged
+                );
+                assert_eq!(*pre, Some(close_target(7)));
+                assert_eq!(*post, Some(close_target(5)));
+            }
+            other => panic!("expected CloseFocusResult"),
+        }
+        // Null epoch while taken cancels with zero dispatches.
+        let mut session_n = focus_session();
+        let shared_n = focus_shared();
+        let slot_n = live_focus_app(&shared_n, CLOSE_PID, CLOSE_GEN);
+        let mut retained_n = close_retained(9, Some(close_target(7)), true);
+        let focus_queue_n = Arc::new(Mutex::new(Vec::new()));
+        let mut reply_n = close_reply_for(&session_n, "close-focus-7", 7, 9);
+        reply_n.adapter_incarnation = session_n.incarnation().to_owned();
+        reply_n.core_generation = session_n.sequencer().bound_generation();
+        let cmd_n = close_owner_cmd(
+            &mut session_n,
+            &shared_n,
+            &slot_n,
+            &mut retained_n,
+            &focus_queue_n,
+            &reply_n,
+        );
+        let close_n = cmd_n.close.clone().expect("typed close");
+        let revision_n = lock_shared(&shared_n).topology_revision;
+        crate::runtime_shared::publish_close_focus_current(&shared_n, None);
+        let mut nulled = FakeCloseBackend {
+            fresh: Some((CLOSE_PID, Some(7))),
+            post: Some((CLOSE_PID, Some(9))),
+            reads: 0,
+            dispatches: 0,
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+        };
+        let job_n = crate::runtime_worker::handle_close_focus_command(
+            &mut nulled,
+            &cmd_n,
+            &close_n,
+            CLOSE_PID,
+            CLOSE_GEN,
+            revision_n,
+            &shared_n,
+        );
+        assert_eq!(nulled.dispatches, 0, "null epoch cancels with no call");
+        match &job_n {
+            crate::runtime_thread::EngineJob::CloseFocusResult { setter, reason, .. } => {
+                assert_eq!(
+                    *setter,
+                    tiler_core::world_report::VisibilitySetter::NotCalled
+                );
+                assert_eq!(
+                    *reason,
+                    tiler_core::world_report::VisibilityReason::Superseded
+                );
+            }
+            other => panic!("expected CloseFocusResult"),
+        }
+        // Newer epoch while taken cancels with zero dispatches.
+        let mut session_w = focus_session();
+        let shared_w = focus_shared();
+        let slot_w = live_focus_app(&shared_w, CLOSE_PID, CLOSE_GEN);
+        let mut retained_w = close_retained(9, Some(close_target(7)), true);
+        let focus_queue_w = Arc::new(Mutex::new(Vec::new()));
+        let mut reply_w = close_reply_for(&session_w, "close-focus-7", 7, 9);
+        reply_w.adapter_incarnation = session_w.incarnation().to_owned();
+        reply_w.core_generation = session_w.sequencer().bound_generation();
+        let cmd_w = close_owner_cmd(
+            &mut session_w,
+            &shared_w,
+            &slot_w,
+            &mut retained_w,
+            &focus_queue_w,
+            &reply_w,
+        );
+        let close_w = cmd_w.close.clone().expect("typed close");
+        let revision_w = lock_shared(&shared_w).topology_revision;
+        crate::runtime_shared::publish_close_focus_current(
+            &shared_w,
+            Some(crate::runtime_shared::CloseFocusEpoch {
+                id: "close-focus-8".to_owned(),
+                revision: 8,
+                adapter_incarnation: session_w.incarnation().to_owned(),
+                core_generation: session_w.sequencer().bound_generation(),
+            }),
+        );
+        let mut newer = FakeCloseBackend {
+            fresh: Some((CLOSE_PID, Some(7))),
+            post: Some((CLOSE_PID, Some(9))),
+            reads: 0,
+            dispatches: 0,
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+        };
+        let job_w = crate::runtime_worker::handle_close_focus_command(
+            &mut newer, &cmd_w, &close_w, CLOSE_PID, CLOSE_GEN, revision_w, &shared_w,
+        );
+        assert_eq!(newer.dispatches, 0, "newer epoch cancels with no call");
+        match &job_w {
+            crate::runtime_thread::EngineJob::CloseFocusResult { setter, reason, .. } => {
+                assert_eq!(
+                    *setter,
+                    tiler_core::world_report::VisibilitySetter::NotCalled
+                );
+                assert_eq!(
+                    *reason,
+                    tiler_core::world_report::VisibilityReason::Superseded
+                );
+            }
+            other => panic!("expected CloseFocusResult"),
+        }
     }
 }

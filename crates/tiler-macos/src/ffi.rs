@@ -5960,7 +5960,9 @@ mod macos {
     /// agreeing with the NSWorkspace frontmost before AND after the direct
     /// window legs, the direct per-app selection on that PID (focused, else
     /// main fallback), the AX identity agreement, and the fresh CG owner
-    /// join. Any foreground disagreement or instability, identity mismatch,
+    /// join. Genuine windowless (NoValue on both focused and main legs with
+    /// stable frontmost) returns `Ok` with `wid: None`; the main fallback
+    /// never proves no-client. Any foreground disagreement or instability, identity mismatch,
     /// missing/zero window, or lost CG join refuses with the leg named
     /// (never a guess). Production evidence; the raw system-wide read stays
     /// available separately for diagnosis only.
@@ -5989,6 +5991,38 @@ mod macos {
             }
         }
         let Some(wid) = read.selected_wid else {
+            // Genuine windowless: only NoValue on BOTH legs proves no-client.
+            // Main fallback is not none; unsupported/unreadable/stale stays
+            // unknown. No extra AX query: reuse the already-read statuses
+            // plus the existing frontmost revalidation below (minus the CG
+            // join, which needs a wid).
+            if read.focused_status == "kAXErrorNoValue"
+                && read.main_status == "kAXErrorNoValue"
+                && read.selected_source == "none"
+            {
+                let (ws_after, _) = frontmost_app().ok_or_else(|| {
+                    "workspace frontmost unreadable after window legs; refusing".to_owned()
+                })?;
+                if ws_after != ws_before {
+                    return Err(format!(
+                        "workspace frontmost moved during direct read ({ws_before} -> {ws_after}); refusing"
+                    ));
+                }
+                let slps_after = slps_front_pid()?;
+                if slps_after != ws_before {
+                    return Err(format!(
+                        "SLPS front pid moved during direct read ({slps_before} -> {slps_after}); refusing"
+                    ));
+                }
+                return Ok(super::PreimageEvidence {
+                    pid: ws_before,
+                    wid: None,
+                    route: super::PreimageRoute::SlpsFrontDirectFocused,
+                    detail: format!(
+                        "SLPS front pid {slps_before} == workspace '{ws_bundle}' stable before+after, AXFocusedWindow kAXErrorNoValue + AXMainWindow kAXErrorNoValue, windowless"
+                    ),
+                });
+            }
             return Err(format!(
                 "direct focused window none for pid {ws_before} (focused {} main {}); refusing without a restorable wid",
                 read.focused_status, read.main_status

@@ -1330,7 +1330,7 @@ impl WorldEngine {
                     && row.target == effect.target
                     && row.revision == effect.issued_revision
                 {
-                    binding.foreground_proven = classify_focus_feedback(effect, row)
+                    binding.foreground_proven = classify_focus_feedback(&effect.target, row)
                         == crate::world_focus::FocusVerdict::Proven;
                     binding.arrival_ready = prove_selection_arrival(
                         &binding.members,
@@ -1896,7 +1896,7 @@ fn selection_terminal(
         None => SwitchFocus::Unproven,
         Some(effect) => {
             let feedback = binding.feedback.as_ref()?;
-            match classify_focus_feedback(effect, feedback) {
+            match classify_focus_feedback(&effect.target, feedback) {
                 FocusVerdict::Proven if binding.arrival_ready => SwitchFocus::Proven,
                 FocusVerdict::Proven => SwitchFocus::Unproven,
                 FocusVerdict::Refused => SwitchFocus::Refused,

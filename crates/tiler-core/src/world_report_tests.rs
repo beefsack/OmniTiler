@@ -97,6 +97,7 @@ fn test_report() -> WorldReportV4 {
         cursor: None,
         cursor_hit: None,
         focused_global: String::new(),
+        foreground_known: false,
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
@@ -191,6 +192,7 @@ fn digest_covers_every_section() {
     assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
     changed.focused_global = "win-a".to_owned();
+    changed.foreground_known = true;
     assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
     changed.action_foreground = Some(crate::directional::OutputId("out".to_owned()));

@@ -2,10 +2,11 @@
 
 ## Status, goal and scope
 
-- Active design for approval, 2026-11-10. Product decisions, including Q1/Q2
-  below, are approved. Remaining implementation choices in P1-P6 are proposed,
-  not approved. Implementation and native acceptance are pending. This note
-  changes no contract or implementation.
+- Active implementation. Product decisions Q1/Q2 and bounded choices P1-P6
+  are approved. Core, protocol/codecs, designated v4 fixtures and macOS support
+  are implemented; post-correction offline verification and independent review
+  are accepted. Native acceptance remains pending.
+  KDE and Windows adapter adoption remain separate backlog work.
 - Goal: consistently reflow and refocus after positive close of the focused
   window on KDE, macOS and Windows, without inventing observed foreground or
   fighting newer input. Follows consistency principle 1 and
@@ -78,17 +79,17 @@
   hidden/minimized, held-scope, lifetime, output, view and fullscreen/game fences.
   A shown workspace may remain unfocused; no unrelated focus-loss repair.
 
-## Evidence and current failure
+## Baseline evidence and original failure
 
 - Core source references below are relative to `crates/tiler-core/src/`;
   `world_protocol.rs` is in `crates/tiler-protocol/src/`.
 
-- Current source: `session/ops/lifecycle.rs:1075-1100` already selects tiled MRU
+- Pre-change source: `session/ops/lifecycle.rs:1075-1100` already selects tiled MRU
   on focused removal, then deterministic surviving-leaf fallback, with no target
   for an empty domain. `session/world.rs:2093-2139` repairs MRU by appending new
   leaves, but observed tiled focus wins convergence and can overwrite pre-close
   history. Freeze the winner before that ingestion.
-- Current source: `engine.rs:1494-1558` deliberately returns `focus-mismatch`
+- Pre-change source: `engine.rs:1494-1558` deliberately returns `focus-mismatch`
   after focused close with no observed focus; `engine.rs:2731-2805` also limits
   focusless projection. `world_publish.rs:258-270` maps that failure to
   `Hold(Unreadable)`. Survivor frames then disappear. The existing
@@ -97,11 +98,11 @@
   `scoped_close_reflow` cases fail (positive close, held-unreadable interval and
   missing survivor frames). See the
   [port blocker](v4-phase3-macos-port.md#blocker-positive-close-with-no-observed-focus).
-- Current source: `world_report.rs:297-388` and the strict effect codec in
+- Pre-change source: `world_report.rs:297-388` and the strict effect codec in
   `world_protocol.rs:5314-5361` have only explicit-command, admission and cursor
   effect causes. `world_focus.rs:133-183` retains historical feedback for the
   latest emitted one-shot batch, not a persistent activation request.
-- Current source: `WorldReportV4.focused_global` is empty when no lifetime is
+- Pre-change source: `WorldReportV4.focused_global` is empty when no lifetime is
   observed; it does not distinguish known no-client focus from unreadable or
   foreign foreground. The observation watermark advances for all invalidation,
   not specifically user input (`world_report.rs:1309-1348`). Neither a cursor
@@ -120,25 +121,25 @@
   macOS observation tickets cannot dispatch focus. None of these source facts
   establishes native acceptance of this design.
 
-## Proposed design
+## Approved implementation design
 
 ### P1. One retained request and stable identity
 
-- Proposed: one optional global `pending_close_focus` in `WorldEngine`, since
+- One optional global `pending_close_focus` in `WorldEngine`, since
   only the positively closed globally focused lifetime can originate a request.
   A close cohort removes all positively closed members before choosing the one
   survivor; it never produces one request per removed window or output.
-- Proposed retained fields: opaque `id`, `target` lifetime, source `DomainKey`,
+- Retained fields: opaque `id`, `target` lifetime, source `DomainKey`,
   immutable `issued_revision`, source closed lifetime(s), close-report observation
   watermark and observed-foreground baseline, command high-water and shown-view
   basis. The baseline is the close report's truthful focus, not the logical
   winner; no input counter or causal guard is retained.
-- Proposed id: `close-focus-<issued_revision>`, opaque to consumers; mint once at
+- Request id: `close-focus-<issued_revision>`, opaque to consumers; mint once at
   the accepted publication revision, unique within the bound adapter/core
   generation. No command sequence is fabricated and no extra counter is needed.
   Revision exhaustion follows existing fail-closed rules. Duplicate reports
   return cached bytes; restaging a command batch never remints the request.
-- Proposed: a fresh handshake/generation retires old requests, notifies no native
+- A fresh handshake/generation retires old requests, notifies no native
   action and cannot replay them. Bind adapter accounting to the full
   `(adapter incarnation, core generation, id)` context. A transport reconnect
   that keeps this context keeps accounting; an adapter that loses accounting
@@ -148,7 +149,7 @@
 
 ### P2. Freeze selection before focus convergence; separate geometry from focus
 
-- Proposed insertion point: capture pre-close focus, source home and retained
+- Freeze insertion point: capture pre-close focus, source home and retained
   MRU before `world_run_v4.rs` calls `converge_logical_pre` or any observation
   convergence (`:198-201`). Compute the existing removal selection against the
   surviving linked tree, excluding the entire positive-close cohort, using
@@ -159,7 +160,7 @@
   activation. Closing an ordinary focused float uses its retained source home
   and tiled MRU; surviving tile geometry is unchanged. No new candidate search
   beyond existing removal selection; an unsafe winner authorizes no request.
-- Proposed: remove the close-specific focus-mismatch hold for otherwise readable
+- Remove the close-specific focus-mismatch hold for otherwise readable
   positive-close reconciliation and permit survivor projection with no observed
   focus. Keep all independent topology, constraint, completeness and held-scope
   failures. This must work even when no activation is eligible or permitted;
@@ -175,25 +176,25 @@
   focus or clear-focus call. Native desktop/app foreground can remain; do not
   falsify observations or claim control over the host's own fallback.
 
-### P3. Decided report-order attribution; proposed minimal foreground bit
+### P3. Decided report-order attribution and minimal foreground bit
 
 - Source-read findings: none of the current focus strings preserves the needed
   empty-known versus empty-unknown distinction. Existing native reads can supply
   it with cause preservation; it is not already an ingress field:
 
-  | Adapter | Current producer and native evidence | Minimal implementation needed (proposed) |
+  | Adapter | Pre-change producer and native evidence | Required preservation |
   | --- | --- | --- |
   | KDE | `kwin/src/world-observe.ts:326-333,837-866` collapses literal null activeWindow, getter failure/undefined, invalid id and scope-foreign focus to `activeId=""`; `:1796` publishes that string, and `kwin/src/world-report.ts:2889` encodes it. Inventory completeness does not prove this separate read succeeded | Preserve the outcome of the existing activeWindow read: literal null can prove no-client; throw/undefined, unbound desktop/native object or scope-foreign focus stays unknown. No additional native read or input hook |
   | Windows | `crates/tiler-windows/src/tiling_sys/world_capture.rs:1686-1690` joins caller-read foreground HWND to observed lifetimes, otherwise emits empty. Zero and nonzero unmatched HWNDs therefore collapse. Existing native guard at `world_native.rs:2417-2438` distinguishes zero (`None`), failed identity (`Unknown`) and exact native identity (`Known`) | Preserve zero versus nonzero/unbound from the existing foreground read; keep nonzero foreign/desktop/unbound or failed identity unknown, never infer none from no managed match. Reuse existing identity reads. This is capture/port work, not a claim of an existing Windows v4 producer |
   | macOS | `crates/tiler-macos/src/native_tile_backend.rs:1289-1329` reads app-local focus and production selected-oracle evidence, then `.ok()` discards failure causes. `ffi.rs:5944-5955` already reads focused/main AX statuses; `:5991-5996` returns an error for no selected window. `runtime_native.rs:412-438` collapses failed agreement/current-domain checks to no retained focus; `world_runtime.rs:796-800` emits empty | Preserve the already-read AX statuses: only genuine NoValue on both focused and main legs, with coherent frontmost/process evidence, can prove windowless; unsupported, unreadable, stale, foreign or missing membership stays unknown. Main-window fallback is not no-client. Extend existing frontmost revalidation (`ffi.rs:6013-6027`) to the windowless branch before publishing it; no extra AX query or diagnostic system-wide route |
 
-- Proposed smallest wire addition: required report boolean `foregroundKnown`,
+- Minimal wire addition: required report boolean `foregroundKnown`,
   used with the existing `focused` string. `true` plus nonempty means proven bound
   foreground; `true` plus empty means positively known no-client; `false` requires
   empty and means unknown/unreadable/unbound/foreign. Reject inconsistent pairs.
   Do not add an origin enum, native identity payload, input history or close guard.
   No-client must come from the fresh native read, not retained focus absence.
-  Exact new field and producer changes remain proposed, not native acceptance.
+   The required field is implemented in core/codecs/macOS, not native acceptance.
 - **Decided Q1 algorithm:** freeze the winner and retain the close report's
   observed-foreground baseline. In each accepted later ingress report, check
   target equality first (satisfied), then unknown foreground (retire), then a
@@ -210,7 +211,7 @@
   failed/unproven attempt with unchanged baseline stays inert, without retry,
   until superseded or satisfied; a conclusive refusal may retire the request
   under the existing terminal rule but never renews the spent id.
-- Proposed lifecycle bookkeeping (attribution and latest-only rules above are
+- Retained lifecycle bookkeeping (attribution and latest-only rules above are
   decided; transitions remain atomic with accepted core state):
 
   | Event | Result |
@@ -234,7 +235,7 @@
 
 ### P4. Wire lane, feedback and versioning
 
-- Proposed reply field, always present and nullable; counters retain the
+- Reply field, always present and nullable; counters retain the
   contract's quoted-decimal encoding:
 
   ```json
@@ -244,11 +245,11 @@
   }
   ```
 
-- Proposed: closed `CloseFocusCause::PositiveClose` vocabulary on a separate
+- Closed `CloseFocusCause::PositiveClose` vocabulary on a separate
   retained-state type, not a new `OneShotEffect` or fake explicit/admission cause.
   No `cmdSeq`, transfer, reveal, raise/stack or `awaitShown` grant. Source domain
   fields freeze scope and must match the target's current core home.
-- Proposed: reuse existing report `focusFeedback` rows, matched against the
+- Reuse existing report `focusFeedback` rows, matched against the
   separate retained request by exact opaque `(id,target,rev)` equality, never id
   prefix parsing. Preserve `setter/reason/pre/post/foregroundProven/arrival/
   attemptMs`; spend before call or safety no-call, retain original attempt stamp,
@@ -256,7 +257,7 @@
   Unknown/malformed/mismatched feedback cannot grant or renew focus. Observed
   focus equality alone still satisfies the request; historical feedback never
   overrides current observed foreground.
-- Existing `world_focus.rs` classifies proven, refused and unproven; proposed
+- Existing `world_focus.rs` classifies proven, refused and unproven; shared
   reuse derives refusal from raw facts and safety no-call reasons. Mere
   disagreement after accepted dispatch is not proved refusal; retain as
   unproven without retry. Late evidence for a retired id grants no new work.
@@ -276,7 +277,7 @@
 
 ### P5. Latest-only adapter execution and accounting
 
-- Proposed common sequence: validate bound latest reply, resolve current target
+- Common sequence: validate bound latest reply, resolve current target
   lifetime/home and shown native workspace/Space, apply permitted nonactivating
   survivor geometry, then re-read foreground/session/visibility and all
   existing automatic-focus safety fences. No dependency on other one-shot
@@ -286,18 +287,18 @@
   mark spent before one bounded native attempt. Safety refusal/no-call also spends the id.
   Report raw feedback through the next normal capture; losing feedback does
   not permit another call. Superseded ids cannot execute from an older outbox.
-- Proposed: reject stale/superseded publication envelopes before selecting an
+- Reject stale/superseded publication envelopes before selecting an
   attempt; delivery churn alone does not spend an unchanged re-emitted request.
   Once selected for native application, a safety no-call spends it. Existing
   native invalidation and foreground rechecks still veto stale writes; they do
   not introduce causal input evidence or require applying skipped publications.
-- Proposed bounded accounting: one current close-request record plus a monotonic
+- Bounded accounting: one current close-request record plus a monotonic
   retired/spent issuing-revision fence within the bound connection context;
   reject older publications and ids. Retiring/null publication cannot make an
   older cached request executable again. Native callback completion is bound to
   the same id and exact native lifetime, never a reused handle. Do not grow an
   unbounded spent-id set. Proof of this compaction is a required burst/reconnect
-  test, not an existing implementation claim.
+  test, distinct from native acceptance.
 - KDE: do not suppress or reconfigure KWin's earlier fallback. After core
   roundtrip, re-read `activeWindow`; same winner means zero assignments, the
   latest valid request permits one assignment under existing safety fences.
@@ -309,7 +310,7 @@
 - Windows: reuse foreground acquisition/readback and `SetForegroundWindow`
   mechanics, including OS refusal, elevated/lifetime/session and existing
   in-flight landing fences. No force-foreground workaround or synthetic input.
-- macOS: proposed separate typed close-request dispatch from observation tickets
+- macOS: separate typed close-request dispatch from observation tickets
   into the existing native focus outbox/owner route; not a fabricated command
   ticket. Reuse AX lifetime/process, current native Space, visible/non-minimized,
   session, watermark, game/fullscreen and fresh readback fences. The prior used
@@ -320,7 +321,7 @@
 
 ### P6. Bounded implementation order
 
-1. Apply decided Q1/Q2; approve remaining wire/bookkeeping proposals first.
+1. Apply approved Q1/Q2 and wire/bookkeeping choices.
    Implement the minimal known-foreground bit by preserving existing read
    outcomes on each platform; verify genuine windowless versus unknown cases.
    No new input interception or causal-input protocol is part of the work.
@@ -359,21 +360,22 @@
 
 ## Decision and contract amendments at implementation completion
 
-- Amend in place, not now: `decisions/focus.md` automatic guards and active-window
+- Amended in place: `decisions/focus.md` automatic guards and active-window
   memory for the bounded close request; `decisions/workspaces.md` lifecycle focus
   and sole-close focused-output preservation, explicitly retaining the ban on
   unrelated host-loss repair; `decisions/window-state.md` ordinary float close.
-- Amend `decisions/macos.md` complete-world mapping with only the approved typed
+- Amended `decisions/macos.md` complete-world mapping with only the approved typed
   close exception and unchanged admission/observed-focus safety. Amend
   `decisions/commands.md` latest-only rule to distinguish retained close state
-  from dropped one-shots; amend `decisions/contract.md` with approved wire rollout.
+  from dropped one-shots; `decisions/contract.md` with approved wire rollout and
+  `decisions/engine.md` with the pre-convergence selection/reflow boundary.
 - Update `porting/world-contract.md`, protocol fixtures and adapter port notes
   together. Resolve the macOS port blocker record only after its regression and
   native evidence are established; do not equate this design with slice-1 closure.
 - Keep this note active through design approval and implementation; archive only
   after accepted implementation evidence and durable decision amendments.
 
-## Decided questions, remaining proposals and risks
+## Decided questions and risks
 
 - **Q1 decided, User 2026-11-10:** same-report native-fallback attribution and
   later-report focus-change supersession, with target equality satisfying first.
@@ -382,16 +384,14 @@
   guard, input history or new interception is required.
 - **Q2 decided, User 2026-11-10:** coordinated in-place pre-release v4 amendment,
   no version bump or dual-shape fallback. Old strict readers are not compatible.
-- Remaining proposed choices requiring design approval, recommendation: accept
-  these bounded implementation choices together, without reopening Q1/Q2:
+- Approved bounded implementation choices, without reopening Q1/Q2:
   - P1: one global retained request, revision-derived id, baseline/command/view
     bookkeeping and connection-scoped lifetime/reset rules.
   - P2: exact pre-convergence freeze point, existing removal fallback reuse,
     focusless survivor projection and logical-memory/native-observation split.
   - P3: one required `foregroundKnown` bit and the per-adapter read-outcome
-    preservation above; no new cause/input data. Alternative: a three-value
-    foreground enum; the bit plus existing `focused` already encodes the same
-    three states with less redundant wire data.
+    preservation above; no new cause/input data. The bit plus existing `focused`
+    encodes bound, no-client and unknown foreground.
   - P4: nullable `closeFocus` shape and typed cause, existing exact-tuple feedback
     reuse/latching and sizing/validation changes, under the decided v4 rollout.
   - P5: existing native paths including typed macOS observation dispatch, bounded
@@ -404,8 +404,41 @@
   fallback. Existing native freshness cannot expose flips entirely between
   captures. Lost feedback can leave one inert pending row; it must never become
   a retry. Lifetime reuse/spent-fence compaction and roundtrip latency/visible
-  double focus remain implementation and later native acceptance obligations.
-- Evidence: foreground findings are source-read only, not native execution.
-  `git diff --check` passed; changed links/anchors and exact source ranges were
-  checked. Independent records review found no remaining actionable findings.
-  No implementation, test execution or live acceptance is claimed.
+   double focus remain implementation and later native acceptance obligations.
+
+## Current implementation evidence
+
+- Core freezes one global source-domain tiled-MRU request before fallback
+  convergence, removes the positive-close focusless reflow hold, and preserves
+  independent safety holds. Focused core tests include float/cohort/sole-close,
+  supersession, unknown foreground, feedback and lifetime cases.
+- Codecs require `foregroundKnown` and nullable `closeFocus`, with closed cause,
+  digest and byte sizing coverage; active v4 messages/scenarios are amended,
+  immutable historical recordings unchanged. See the
+  [amended contract](../porting/world-contract.md#retained-positive-close-focus).
+- macOS uses bounded exact-context spending and typed existing-owner dispatch,
+  fresh native baseline/readback and raw feedback; it never fabricates observed
+  focus. Admission/hover remain nonactuating.
+- Offline verification: core library 2129 passed; core integration binaries
+  pass except the existing `unsafe_guardrail::workspace_unsafe_posture` three
+  allowlist violations. Full post-correction protocol suite passes: 295 tests,
+  including world-wire, close-focus wire and the v4 transcript. macOS library 1516 passed
+  with only the three existing
+  trailing-workspace lifecycle failures; all four `scoped_close_reflow` cases
+  and all five close-filtered integration cases pass.
+- Genuine macOS-capability mock journey skips the issuing close publication
+  and two later retained publications, applies only the final codec-roundtripped
+  request, counts one native-backend call and satisfies on truthful target
+  observation. Accepted-but-unchanged readback plus raw feedback retains the
+  identical id; production reapplication queues no command or second setter.
+  Other tests cover final-null supersession and stale/context/lifetime fences.
+- Independent review verified latest-only actuation and exact-context spending.
+  Corrections clear stale cross-process foreground to unknown on fresh
+  contradictory frontmost evidence, downgrade unproven known-empty provenance,
+  and classify raw feedback directly against its target without a synthetic
+  admission effect. Seven added ingress regressions and the genuine owner
+  journey pass; follow-up review accepts both corrections. Delayed cross-app
+  snapshots can conservatively clear focus to unknown; no new ordering or
+  foreground assertion is introduced.
+- `git diff --check` passes. Native close-to-refocus timing is pending; no
+  native acceptance is claimed.

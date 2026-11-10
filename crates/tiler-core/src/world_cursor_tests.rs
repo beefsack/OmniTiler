@@ -153,6 +153,7 @@ fn command_report(
         cursor,
         cursor_hit: cursor_hit.map(|hit| WindowId(hit.to_owned())),
         focused_global: focused.to_owned(),
+        foreground_known: !focused.is_empty(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),

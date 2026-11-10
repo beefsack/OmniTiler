@@ -84,22 +84,23 @@ use tiler_core::world_presentation::{
 };
 use tiler_core::world_report::{
     ActivationPolicy, ArrivalBracket, ArrivalLocation, AttemptLaneV4, AuthorityScope,
-    BorderHideReasonV4, BorderPresentationV4, CommandRejectKind, CommandResult, EffectKind,
-    FloatOrigin, FocusFeedback, FrameWitness, FullscreenOwner, HeldAttemptRow, HeldNativeRow,
-    HeldPresentationRow, HeldScreenRow, HeldWindowRow, HoldReason, IntentRecord, IntentWrite,
-    LastWrite, LastWritePath, LastWriteProperty, MAX_INTENT_RECORDS, MAX_INTENT_WRITES,
-    MAX_REPLY_DIAGNOSTICS, MAX_REPLY_EFFECTS, MAX_REPLY_NATIVE_CREATIONS, MAX_REPLY_OPERATIONS,
-    MAX_REPLY_OUTPUTS, MAX_REPLY_SCOPES, MAX_REPLY_SWITCH_EVENTS, MAX_REPLY_TRANSFERS,
-    MAX_REPLY_WINDOWS, MAX_REPLY_WORKSPACES, MAX_STATE_TARGETS_PER_WINDOW, NativeCreationDesire,
-    NativeObservation, NativeWorkspaceFact, OneShotEffect, OperationEvent, OperationOutcome,
-    OutputDesire, OutputIdentity, PresentationIngressV4, PresentationPagerFrameV4,
-    PresentationRowV4, RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind,
-    RowDiagnosticLane, ScopeAuthority, ScopeStatus, ScreenReport, StateProperty, StateTarget,
-    SwitchEvent, SwitchFocus, SwitchOutcome, TilingMode, TransferKind, TransferTargetV4,
-    VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter, VisibilityTarget,
-    WindowDesire, WindowFact, WindowType, WorkspaceDesire, WorkspaceRef, WorldCommand,
-    WorldPresentationV4, WorldReplyV4, WorldReportV4, check_screen_structure,
-    check_window_structure, push_raw_setting_value,
+    BorderHideReasonV4, BorderPresentationV4, CloseFocusCause, CloseFocusRequest,
+    CommandRejectKind, CommandResult, EffectKind, FloatOrigin, FocusFeedback, FrameWitness,
+    FullscreenOwner, HeldAttemptRow, HeldNativeRow, HeldPresentationRow, HeldScreenRow,
+    HeldWindowRow, HoldReason, IntentRecord, IntentWrite, LastWrite, LastWritePath,
+    LastWriteProperty, MAX_INTENT_RECORDS, MAX_INTENT_WRITES, MAX_REPLY_DIAGNOSTICS,
+    MAX_REPLY_EFFECTS, MAX_REPLY_NATIVE_CREATIONS, MAX_REPLY_OPERATIONS, MAX_REPLY_OUTPUTS,
+    MAX_REPLY_SCOPES, MAX_REPLY_SWITCH_EVENTS, MAX_REPLY_TRANSFERS, MAX_REPLY_WINDOWS,
+    MAX_REPLY_WORKSPACES, MAX_STATE_TARGETS_PER_WINDOW, NativeCreationDesire, NativeObservation,
+    NativeWorkspaceFact, OneShotEffect, OperationEvent, OperationOutcome, OutputDesire,
+    OutputIdentity, PresentationIngressV4, PresentationPagerFrameV4, PresentationRowV4,
+    RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
+    ScopeAuthority, ScopeStatus, ScreenReport, StateProperty, StateTarget, SwitchEvent,
+    SwitchFocus, SwitchOutcome, TilingMode, TransferKind, TransferTargetV4, VisibilityFact,
+    VisibilityReason, VisibilitySample, VisibilitySetter, VisibilityTarget, WindowDesire,
+    WindowFact, WindowType, WorkspaceDesire, WorkspaceRef, WorldCommand, WorldPresentationV4,
+    WorldReplyV4, WorldReportV4, check_screen_structure, check_window_structure,
+    push_raw_setting_value,
 };
 
 /// World protocol contract version (equals the core world contract version:
@@ -4404,6 +4405,7 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
             "closed",
             "native",
             "focused",
+            "foregroundKnown",
             "complete",
             "gesture",
             "cursor",
@@ -4893,6 +4895,7 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
             }
             text.to_owned()
         },
+        foreground_known: req_bool(map, "foregroundKnown")?,
         inventory_complete: req_bool(map, "complete")?,
         gesture_barrier: req_bool(map, "gesture")?,
         gesture,
@@ -4947,6 +4950,12 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
                 });
             }
         }
+    }
+    if !report.foreground_known && !report.focused_global.is_empty() {
+        return Err(WorldProtocolError {
+            kind: KIND_SNAPSHOT,
+            message: "focused-unknown-mismatch",
+        });
     }
     let wire = ReportWireOptionals {
         cursor_hit: match map.get("cursorHit") {
@@ -5358,6 +5367,25 @@ fn decode_effect(value: &serde_json::Value) -> Result<OneShotEffect> {
         command_seq,
         await_shown,
     })
+}
+
+fn decode_close_focus(value: &serde_json::Value) -> Result<Option<CloseFocusRequest>> {
+    match value {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Object(map) => {
+            check_keys(map, &["id", "target", "rev", "cause", "out", "ws"])?;
+            let cause = CloseFocusCause::parse(req_str(map, "cause")?).ok_or_else(unknown_value)?;
+            Ok(Some(CloseFocusRequest {
+                id: req_id(map, "id")?,
+                target: WindowId(req_id(map, "target")?),
+                issued_revision: req_u64_str(map, "rev")?,
+                cause,
+                output: OutputId(req_id(map, "out")?),
+                workspace: req_id(map, "ws")?,
+            }))
+        }
+        _ => Err(malformed()),
+    }
 }
 
 fn decode_domain_key(
@@ -6017,6 +6045,7 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
             "windows",
             "transfers",
             "effects",
+            "closeFocus",
             "result",
             "gestureSettled",
             "operationSettled",
@@ -6223,6 +6252,7 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
             windows,
             transfers,
             effects,
+            close_focus: decode_close_focus(map.get("closeFocus").ok_or_else(malformed)?)?,
             command_result,
             gesture_settled,
             operation_settled,
@@ -7152,7 +7182,26 @@ pub fn encode_reply_v4(decoded: &DecodedReplyV4) -> Result<String> {
         }
         encode_effect_v4(effect, &mut out)?;
     }
-    out.push_str("],\"result\":");
+    out.push_str("],\"closeFocus\":");
+    match &reply.close_focus {
+        None => out.push_str("null"),
+        Some(request) => {
+            out.push_str("{\"id\":");
+            push_json_string(&mut out, &request.id);
+            out.push_str(",\"target\":");
+            push_json_string(&mut out, &request.target.0);
+            out.push_str(",\"rev\":\"");
+            out.push_str(&request.issued_revision.to_string());
+            out.push_str("\",\"cause\":\"");
+            out.push_str(request.cause.as_str());
+            out.push_str("\",\"out\":");
+            push_json_string(&mut out, &request.output.0);
+            out.push_str(",\"ws\":");
+            push_json_string(&mut out, &request.workspace);
+            out.push('}');
+        }
+    }
+    out.push_str(",\"result\":");
     encode_command_result_v4(&reply.command_result, &mut out)?;
     out.push_str(",\"gestureSettled\":");
     encode_gesture_settled_v4(&reply.gesture_settled, &mut out);
@@ -8091,6 +8140,9 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
         (Some(_), GestureIngressWire::Present) => {}
         _ => return Err(snapshot_invalid("gesture-ingress-inconsistent")),
     }
+    if !report.foreground_known && !report.focused_global.is_empty() {
+        return Err(snapshot_invalid("focused-unknown-mismatch"));
+    }
     let held_in_lane = |lane: AttemptLaneV4| {
         decoded
             .report
@@ -8228,6 +8280,12 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
     }
     out.push_str("],\"focused\":");
     push_json_string(&mut out, &report.focused_global);
+    out.push_str(",\"foregroundKnown\":");
+    out.push_str(if report.foreground_known {
+        "true"
+    } else {
+        "false"
+    });
     out.push_str(",\"complete\":");
     out.push_str(if report.inventory_complete {
         "true"
@@ -8559,6 +8617,7 @@ mod tests {
             windows: Vec::new(),
             transfers: Vec::new(),
             effects: Vec::new(),
+            close_focus: None,
             command_result: None,
             gesture_settled: None,
             operation_settled: Vec::new(),
@@ -8618,7 +8677,7 @@ mod tests {
             "{{\"v\":4,\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\"obs\":\"1\",\
               \"reqSeq\":\"1\",\"req\":\"req-1\",\"monotonicMs\":\"1\",\"cmdSeq\":\"1\",\
               \"command\":{command_json},\"screens\":[],\"windows\":[],\"closed\":[],\
-              \"native\":[],\"focused\":\"\",\"complete\":true,\"gesture\":false,\
+              \"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\
               \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
               \"actionOutputs\":[],\
               \"presentation\":{{\"foreground\":\"\",\"minimized\":null,\

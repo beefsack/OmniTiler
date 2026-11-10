@@ -1491,37 +1491,12 @@ impl Engine {
                 // All-new IDs need fresh spatial adoption, not arbitrary ID-order convergence.
                 // Known minimized restore slots are not all-new: a native restore
                 // converges back to its stored old slot on the retained session.
-                // Focused-close hold (exact retained prior focus truth, not a
-                // no-focus proxy): when the adapter reports no focused window
-                // alongside explicit closes, hold only if a closed window is
-                // the retained focused window. An unrelated sibling close
-                // reflows normally. The retained focus is read pre-convergence
-                // (convergence retires the closed link and focus may fall
-                // back to a survivor); the hold itself is returned
-                // post-convergence so the closed link is already retired and
-                // survivors publish held rows without the closed window. A
-                // slot emptied by the close retires through the normal
-                // reconcile path instead of holding.
-                let focused_close_hold = event.focused_window.0.is_empty()
-                    && !event.closed_windows.is_empty()
-                    && self.sessions.get(&event.domain_key).is_some_and(|session| {
-                        if session.owner() != &event.owner
-                            || session.generation() != &event.generation
-                        {
-                            return false;
-                        }
-                        let (focus_domain, focus_leaf) = session.focus();
-                        match (focus_domain, focus_leaf) {
-                            (Some(focus_domain), Some(focus_leaf))
-                                if focus_domain == event.domain_key =>
-                            {
-                                session
-                                    .focused_window_for(&focus_leaf, &event.domain_key)
-                                    .is_some_and(|window| event.closed_windows.contains(&window))
-                            }
-                            _ => false,
-                        }
-                    });
+                // Positive-close reflow (readable, no observed focus): when
+                // the adapter reports no focused window alongside explicit
+                // closes, survivors reflow with MRU survivor focus instead
+                // of holding. Convergence retires the closed link and falls
+                // back to a survivor; the core never invents observed
+                // focus. Unrelated host-loss mismatches still refuse below.
                 let disjoint = !event.windows.is_empty()
                     && self.sessions.get(&event.domain_key).is_some_and(|session| {
                         if session.owner() != &event.owner
@@ -1541,20 +1516,7 @@ impl Engine {
                 }
                 match self.converge_for_single_domain(event, "reconcile") {
                     ConvergeOutcome::Rejected(reply) => *reply,
-                    _ => {
-                        if focused_close_hold
-                            && self
-                                .sessions
-                                .get(&event.domain_key)
-                                .is_some_and(|session| !committed_session_is_empty(session))
-                        {
-                            return CoreReply::Rejected {
-                                kind: RefusalKind::FocusMismatch.as_str(),
-                                message: RefusalKind::FocusMismatch.message(),
-                            };
-                        }
-                        self.reconcile_request(event)
-                    }
+                    _ => self.reconcile_request(event),
                 }
             }
             CoreCommand::UpdateGaps => {
@@ -2788,9 +2750,8 @@ impl Engine {
                 // close pending here (e.g. a stay-created domain whose sole
                 // member is hidden: nothing claims focus and nothing died).
                 // Converge projecting focus none instead of wedging the
-                // scope: the close-survivor hold still fires whenever a
-                // close is staged, and any later observed focus converges
-                // through the arms above. Without this a hidden sole member
+                // scope: any later observed focus converges through the
+                // arms above. Without this a hidden sole member
                 // strands forever: the hold blocks the reveal that would
                 // make it focusable, and no report can resolve the focus.
                 None

@@ -1,10 +1,10 @@
 //! Staged v4 whole-report decoder (4a): manifest-driven coverage for
 //! [`decode_report_v4`](tiler_protocol::world_protocol::decode_report_v4)
-//! over the `test-fixtures/world-wire/v4` WorldReport fixtures: 126
+//! over the `test-fixtures/world-wire/v4` WorldReport fixtures: 128
 //! valid-wire accept, 77 structural held-row accept with
 //! lane/identity/ordinal/raw/kind assertions, 4 handshake-context rows
 //! accepted as valid typed rows (contextual classification deferred to the
-//! staged engine use), 80 context-free reject-wire refusals with exact
+//! staged engine use), 81 context-free reject-wire refusals with exact
 //! kind/message from the untouched original (then a post-rejection
 //! in-memory single-pointer repair as a positive counterfactual), 2
 //! same-wire host-context negatives refused by
@@ -214,16 +214,16 @@ const WINDOW_SCHEMA: &[&str] = &[
 #[test]
 fn v4_fixture_census_matches_contract() {
     let fixtures = world_fixtures();
-    assert_eq!(fixtures.len(), 289, "WorldReport fixture family size");
+    assert_eq!(fixtures.len(), 292, "WorldReport fixture family size");
     let count = |expectation: &str| {
         fixtures
             .iter()
             .filter(|fixture| fixture.expectation == expectation)
             .count()
     };
-    assert_eq!(count("valid-wire"), 126, "valid-wire count");
+    assert_eq!(count("valid-wire"), 128, "valid-wire count");
     assert_eq!(count("accepted-held-row"), 81, "accepted-held-row count");
-    assert_eq!(count("reject-wire"), 82, "reject-wire count");
+    assert_eq!(count("reject-wire"), 83, "reject-wire count");
 }
 
 #[test]
@@ -233,7 +233,7 @@ fn v4_valid_wire_accepts() {
         .iter()
         .filter(|fixture| fixture.expectation == "valid-wire")
         .collect();
-    assert_eq!(valid.len(), 126);
+    assert_eq!(valid.len(), 128);
     for fixture in valid {
         let decoded = decode_ok(&fixture.file);
         assert_eq!(decoded.report.contract_version, 4, "{}", fixture.id);
@@ -926,6 +926,7 @@ fn expected_reject(rule: &str) -> (&'static str, &'static str) {
         }
         "report-type-tag" => ("unknown-field", "request contains an unknown field"),
         "command-seq-pair" | "command-pair" => ("snapshot-invalid", "command-pair-invalid"),
+        "foreground-unknown-mismatch" => ("snapshot-invalid", "focused-unknown-mismatch"),
         "missing-required-focused" | "focused-null" | "primary-null" => {
             ("malformed", "request is malformed")
         }
@@ -1064,7 +1065,7 @@ fn v4_reject_wire_refuses_then_repairs() {
         })
         .collect();
     rejects.sort_by(|left, right| left.file.cmp(&right.file));
-    assert_eq!(rejects.len(), 80, "non-host reject count");
+    assert_eq!(rejects.len(), 81, "non-host reject count");
     for fixture in rejects {
         let invalid = fixture.invalid.clone().expect("reject pins a pointer");
         let (kind, message) = expected_reject(&invalid.rule);
@@ -1911,9 +1912,9 @@ fn v4_presentation_structural_preflight_before_hold() {
 
 // ---- Unit 4b: staged canonical v4 report writer ----
 
-/// Canonical round trip over every accepted fixture (126 valid-wire plus
+/// Canonical round trip over every accepted fixture (128 valid-wire plus
 /// 81 held accepted): decode, re-encode, re-decode, and the value must
-/// equal the first decode and stay accepted. The 205 canonical fixtures
+/// equal the first decode and stay accepted. The 209 canonical fixtures
 /// are byte-exact; the two non-canonical decoder-input fixtures (short
 /// escape spellings, and an object-valued window rect whose nested key order
 /// no contract rule fixes) assert decoded-value equality only.
@@ -1926,7 +1927,7 @@ fn v4_writer_round_trips_all_accepted_fixtures() {
             fixture.expectation == "valid-wire" || fixture.expectation == "accepted-held-row"
         })
         .collect();
-    assert_eq!(accepted.len(), 207, "accepted fixture count");
+    assert_eq!(accepted.len(), 209, "accepted fixture count");
     for fixture in accepted {
         let text = fixture_text(&fixture.file);
         let decoded = decode_report_v4(&text).expect("accepted fixture decodes");
@@ -1958,7 +1959,7 @@ fn v4_writer_non_canonical_fixture_is_the_escaping_input() {
             fixture.expectation == "valid-wire" || fixture.expectation == "accepted-held-row"
         })
         .collect();
-    assert_eq!(accepted.len(), 207, "accepted fixture count");
+    assert_eq!(accepted.len(), 209, "accepted fixture count");
     let non_canonical: Vec<&ManifestFixture> = accepted
         .iter()
         .filter(|fixture| !fixture.canonical)
@@ -2200,6 +2201,7 @@ fn v4_writer_primary_key_order_follows_contract() {
         "closed",
         "native",
         "focused",
+        "foregroundKnown",
         "complete",
         "gesture",
         "cursor",

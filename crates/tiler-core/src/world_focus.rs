@@ -47,18 +47,18 @@ pub(crate) struct RetainedFocusGrant {
     pub(crate) verdict: FocusVerdict,
 }
 
-/// Classify one first-correlated feedback row against its granted effect.
+/// Classify one first-correlated feedback row against its granted target.
 /// Arrival brackets, mechanical reasons, and the current report foreground
 /// never decide the verdict.
 #[must_use]
-pub(crate) fn classify_focus_feedback(effect: &OneShotEffect, row: &FocusFeedback) -> FocusVerdict {
-    if row.foreground_proven && row.post.as_ref() == Some(&effect.target) {
+pub(crate) fn classify_focus_feedback(target: &WindowId, row: &FocusFeedback) -> FocusVerdict {
+    if row.foreground_proven && row.post.as_ref() == Some(target) {
         return FocusVerdict::Proven;
     }
     if row.setter == VisibilitySetter::Refused
         && let (Some(pre), Some(post)) = (&row.pre, &row.post)
         && pre == post
-        && pre != &effect.target
+        && pre != target
     {
         return FocusVerdict::Refused;
     }
@@ -147,7 +147,7 @@ impl WorldEngine {
                     && row.target == grant.effect.target
                     && row.revision == grant.effect.issued_revision
                 {
-                    grant.verdict = classify_focus_feedback(&grant.effect, row);
+                    grant.verdict = classify_focus_feedback(&grant.effect.target, row);
                     grant.feedback = Some(row.clone());
                     break;
                 }

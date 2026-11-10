@@ -19,10 +19,19 @@ use crate::runtime::{Shared, emit, lock_shared};
 use crate::runtime_backend::{AxBackend, AxBackendFactory};
 use crate::runtime_lifecycle::WorkerExit;
 use crate::runtime_log::sanitize_backend_reason;
-use crate::runtime_native::{FocusFence, fence_focus_command};
+use crate::runtime_native::{
+    CloseBaselineGate, FocusFence, close_attempt_ms, close_completion_disposition,
+    fence_focus_command, gate_close_baseline,
+};
 use crate::runtime_observe::{BackendSnapshot, PendingObservation, merge_readback, stage_latest};
+use crate::runtime_shared::close_focus_is_current;
 use crate::runtime_thread::{EngineJob, FocusSlot, FrameSlot, FrameWait, Inbox, WorkerDrainMark};
-use crate::runtime_types::{FocusEvidence, ScopedBackendSnapshot, TopologyMode, parse_window_id};
+use crate::runtime_types::{
+    CloseFocusBinding, FocusCommand, FocusEvidence, ScopedBackendSnapshot, TopologyMode,
+    parse_window_id, window_id,
+};
+use tiler_core::directional::WindowId;
+use tiler_core::world_report::{VisibilityReason, VisibilitySetter};
 
 /// Bound for one worker multiplex slice: frame waits and backend
 /// observation pumps share this cadence. Command wake stays immediate
@@ -231,6 +240,207 @@ pub(crate) fn gate_deferred_focus(
         }
         (Some(_), _) => PriorFocusGate::Moved,
         (None, _) => PriorFocusGate::Unproven,
+    }
+}
+
+/// Owner close-focus route as a callable unit returning the raw
+/// `CloseFocusResult` job. Production `app_worker_main` calls this on the
+/// SAME owner thread then sends the returned job once on the data lane.
+/// Tests call it directly with a scripted fake backend so the counted
+/// `dispatch_focus` mock call is exercised, never just the slot take. All
+/// fences, diagnostics, and emissions mirror the inlined worker path.
+pub(crate) fn handle_close_focus_command(
+    backend: &mut dyn AxBackend,
+    cmd: &FocusCommand,
+    close: &CloseFocusBinding,
+    pid: u32,
+    generation: u64,
+    current_revision: u64,
+    shared: &Arc<Mutex<Shared>>,
+) -> EngineJob {
+    let fresh: Option<(u32, Option<u32>)> = backend.selected_focus_evidence();
+    let build = |setter: VisibilitySetter,
+                 reason: VisibilityReason,
+                 pre: Option<WindowId>,
+                 post: Option<WindowId>,
+                 foreground_proven: bool,
+                 attempt_ms: u64| {
+        EngineJob::CloseFocusResult {
+            pid,
+            generation,
+            cmd_id: cmd.request_id,
+            close_id: close.close_id.clone(),
+            target: close.target.clone(),
+            issued_rev: close.issued_revision,
+            adapter_incarnation: close.adapter_incarnation.clone(),
+            core_generation: close.core_generation.clone(),
+            setter,
+            reason,
+            pre,
+            post,
+            foreground_proven,
+            attempt_ms,
+        }
+    };
+    match fence_focus_command(cmd, pid, generation, current_revision) {
+        FocusFence::Stale => {
+            lock_shared(shared).diagnostics.stale_dropped += 1;
+            emit(
+                shared,
+                pid,
+                generation,
+                cmd.request_id,
+                "focus",
+                "stale-rejected",
+                0,
+            );
+            build(
+                VisibilitySetter::NotCalled,
+                VisibilityReason::IdentityStale,
+                None,
+                None,
+                false,
+                0,
+            )
+        }
+        FocusFence::Superseded => {
+            lock_shared(shared).diagnostics.stale_dropped += 1;
+            emit(
+                shared,
+                pid,
+                generation,
+                cmd.request_id,
+                "focus",
+                "revision-superseded",
+                0,
+            );
+            build(
+                VisibilitySetter::NotCalled,
+                VisibilityReason::Superseded,
+                None,
+                None,
+                false,
+                0,
+            )
+        }
+        FocusFence::Dispatch => {
+            if !close_focus_is_current(
+                shared,
+                &close.adapter_incarnation,
+                &close.core_generation,
+                &close.close_id,
+                close.issued_revision,
+            ) {
+                lock_shared(shared).diagnostics.stale_dropped += 1;
+                emit(
+                    shared,
+                    pid,
+                    generation,
+                    cmd.request_id,
+                    "focus",
+                    "superseded",
+                    0,
+                );
+                return build(
+                    VisibilitySetter::NotCalled,
+                    VisibilityReason::Superseded,
+                    None,
+                    None,
+                    false,
+                    0,
+                );
+            }
+            match gate_close_baseline(
+                close.fallback_known,
+                close.fallback_pre.as_ref(),
+                fresh,
+                &close.target,
+            ) {
+                CloseBaselineGate::AlreadyTarget => {
+                    emit(
+                        shared,
+                        pid,
+                        generation,
+                        cmd.request_id,
+                        "focus",
+                        "already-satisfied",
+                        0,
+                    );
+                    let proven = Some(close.target.clone());
+                    build(
+                        VisibilitySetter::NotCalled,
+                        VisibilityReason::Empty,
+                        proven.clone(),
+                        proven,
+                        true,
+                        0,
+                    )
+                }
+                CloseBaselineGate::Changed { fresh } => {
+                    lock_shared(shared).diagnostics.stale_dropped += 1;
+                    emit(
+                        shared,
+                        pid,
+                        generation,
+                        cmd.request_id,
+                        "focus",
+                        "superseded-observed",
+                        1,
+                    );
+                    let foreground_proven = fresh.is_some();
+                    build(
+                        VisibilitySetter::NotCalled,
+                        VisibilityReason::ForegroundChanged,
+                        close.fallback_pre.clone(),
+                        fresh,
+                        foreground_proven,
+                        0,
+                    )
+                }
+                CloseBaselineGate::Unproven => {
+                    lock_shared(shared).diagnostics.stale_dropped += 1;
+                    emit(
+                        shared,
+                        pid,
+                        generation,
+                        cmd.request_id,
+                        "focus",
+                        "unproven-read",
+                        1,
+                    );
+                    build(
+                        VisibilitySetter::NotCalled,
+                        VisibilityReason::FocusUnproven,
+                        close.fallback_pre.clone(),
+                        None,
+                        false,
+                        0,
+                    )
+                }
+                CloseBaselineGate::Proceed { pre } => {
+                    emit(
+                        shared,
+                        pid,
+                        generation,
+                        cmd.request_id,
+                        "focus",
+                        "dispatched",
+                        0,
+                    );
+                    let completion = backend.dispatch_focus(cmd);
+                    let (setter, reason) = close_completion_disposition(&completion);
+                    let attempt_ms = close_attempt_ms(&completion);
+                    let post =
+                        backend
+                            .selected_focus_evidence()
+                            .and_then(|(fresh_pid, fresh_wid)| {
+                                fresh_wid.map(|wid| WindowId(window_id(fresh_pid, wid)))
+                            });
+                    let foreground_proven = post.is_some();
+                    build(setter, reason, pre, post, foreground_proven, attempt_ms)
+                }
+            }
+        }
     }
 }
 
@@ -474,133 +684,171 @@ pub(crate) fn app_worker_main(
         // revision); a refusal publishes a `FocusResult` and never retries.
         if native_mode && let Some(cmd) = focus.take() {
             let current_revision = lock_shared(&shared).topology_revision;
-            match fence_focus_command(&cmd, pid, generation, current_revision) {
-                FocusFence::Stale => {
-                    lock_shared(&shared).diagnostics.stale_dropped += 1;
+            // Typed close-focus route (`close: Some`): its own owner fence
+            // (lifetime plus topology revision), a latest-only epoch check
+            // (a null or newer publication cancels this taken-but-unstarted
+            // command), and a fresh selected-oracle baseline recheck. EVERY
+            // outcome sends exactly one narrowly typed `CloseFocusResult`:
+            // a no-call sends `NotCalled` (never `Accepted` without an owner
+            // attempt); a dispatch sends the honest mechanical disposition.
+            // Legacy explicit/deferred commands (`close: None`) dispatch
+            // unchanged in the `else` below.
+            if let Some(close) = cmd.close.clone() {
+                // Typed close-focus route via the callable owner unit: the
+                // SAME owner thread performs the fresh baseline recheck and
+                // the counted dispatch, returning the raw result job. One
+                // data-lane send here, never inside the helper.
+                let job = handle_close_focus_command(
+                    &mut *backend,
+                    &cmd,
+                    &close,
+                    pid,
+                    generation,
+                    current_revision,
+                    &shared,
+                );
+                sends_attempted += 1;
+                if !inbox.try_send_data(job) {
+                    lock_shared(&shared).diagnostics.result_dropped_full += 1;
                     emit(
                         &shared,
                         pid,
                         generation,
                         cmd.request_id,
-                        "focus",
-                        "stale-rejected",
+                        "focus-result",
+                        "queue-full-dropped",
                         0,
                     );
                 }
-                FocusFence::Superseded => {
-                    lock_shared(&shared).diagnostics.stale_dropped += 1;
-                    emit(
-                        &shared,
-                        pid,
-                        generation,
-                        cmd.request_id,
-                        "focus",
-                        "revision-superseded",
-                        0,
-                    );
-                }
-                FocusFence::Dispatch => {
-                    // Arrival-bound deferred selection focus only: re-check
-                    // the bind-time prior against the worker's fresh agreed
-                    // selected focus. Explicit focus carries no prior and
-                    // dispatches legacy-unchanged. Satisfied skips a
-                    // pointless write; Moved/Unproven drop counted instead
-                    // of fighting newer user input or dispatching blind.
-                    // No FocusResult rides the skip/drop paths (that lane
-                    // is diagnostics-only; nothing settles on it).
-                    let proceed = match cmd.expect_prior.as_deref() {
-                        None => true,
-                        Some(prior) => {
-                            let current = crate::ffi::ax_selected_focus_evidence().ok().and_then(
-                                |evidence| {
-                                    u32::try_from(evidence.pid)
-                                        .ok()
-                                        .map(|pid| (pid, evidence.wid))
-                                },
-                            );
-                            match gate_deferred_focus(cmd.pid, cmd.wid, prior, current) {
-                                PriorFocusGate::Proceed => true,
-                                PriorFocusGate::Satisfied => {
-                                    emit(
-                                        &shared,
-                                        pid,
-                                        generation,
-                                        cmd.request_id,
-                                        "focus",
-                                        "already-satisfied",
-                                        0,
-                                    );
-                                    false
-                                }
-                                PriorFocusGate::Moved => {
-                                    lock_shared(&shared).diagnostics.stale_dropped += 1;
-                                    emit(
-                                        &shared,
-                                        pid,
-                                        generation,
-                                        cmd.request_id,
-                                        "focus",
-                                        "superseded-observed",
-                                        1,
-                                    );
-                                    false
-                                }
-                                PriorFocusGate::Unproven => {
-                                    lock_shared(&shared).diagnostics.stale_dropped += 1;
-                                    emit(
-                                        &shared,
-                                        pid,
-                                        generation,
-                                        cmd.request_id,
-                                        "focus",
-                                        "unproven-read",
-                                        1,
-                                    );
-                                    false
-                                }
-                            }
-                        }
-                    };
-                    if !proceed {
-                        // Deferred-focus skip: the batch below stays queued
-                        // for the next pass, so the drain watermark does not
-                        // move; the mark still proves the send count.
-                        frames.note_drain(WorkerDrainMark::pass(
-                            generation,
-                            drained,
-                            sends_attempted,
-                            !pending.is_empty() || pending_scoped.is_some(),
-                        ));
-                        continue;
-                    }
-                    emit(
-                        &shared,
-                        pid,
-                        generation,
-                        cmd.request_id,
-                        "focus",
-                        "dispatched",
-                        0,
-                    );
-                    let completion = backend.dispatch_focus(&cmd);
-                    let job = EngineJob::FocusResult {
-                        pid,
-                        generation,
-                        cmd_id: cmd.request_id,
-                        completion,
-                    };
-                    sends_attempted += 1;
-                    if !inbox.try_send_data(job) {
-                        lock_shared(&shared).diagnostics.result_dropped_full += 1;
+            } else {
+                match fence_focus_command(&cmd, pid, generation, current_revision) {
+                    FocusFence::Stale => {
+                        lock_shared(&shared).diagnostics.stale_dropped += 1;
                         emit(
                             &shared,
                             pid,
                             generation,
                             cmd.request_id,
-                            "focus-result",
-                            "queue-full-dropped",
+                            "focus",
+                            "stale-rejected",
                             0,
                         );
+                    }
+                    FocusFence::Superseded => {
+                        lock_shared(&shared).diagnostics.stale_dropped += 1;
+                        emit(
+                            &shared,
+                            pid,
+                            generation,
+                            cmd.request_id,
+                            "focus",
+                            "revision-superseded",
+                            0,
+                        );
+                    }
+                    FocusFence::Dispatch => {
+                        // Arrival-bound deferred selection focus only: re-check
+                        // the bind-time prior against the worker's fresh agreed
+                        // selected focus. Explicit focus carries no prior and
+                        // dispatches legacy-unchanged. Satisfied skips a
+                        // pointless write; Moved/Unproven drop counted instead
+                        // of fighting newer user input or dispatching blind.
+                        // No FocusResult rides the skip/drop paths (that lane
+                        // is diagnostics-only; nothing settles on it).
+                        let proceed = match cmd.expect_prior.as_deref() {
+                            None => true,
+                            Some(prior) => {
+                                let current = crate::ffi::ax_selected_focus_evidence()
+                                    .ok()
+                                    .and_then(|evidence| {
+                                        u32::try_from(evidence.pid)
+                                            .ok()
+                                            .map(|pid| (pid, evidence.wid))
+                                    });
+                                match gate_deferred_focus(cmd.pid, cmd.wid, prior, current) {
+                                    PriorFocusGate::Proceed => true,
+                                    PriorFocusGate::Satisfied => {
+                                        emit(
+                                            &shared,
+                                            pid,
+                                            generation,
+                                            cmd.request_id,
+                                            "focus",
+                                            "already-satisfied",
+                                            0,
+                                        );
+                                        false
+                                    }
+                                    PriorFocusGate::Moved => {
+                                        lock_shared(&shared).diagnostics.stale_dropped += 1;
+                                        emit(
+                                            &shared,
+                                            pid,
+                                            generation,
+                                            cmd.request_id,
+                                            "focus",
+                                            "superseded-observed",
+                                            1,
+                                        );
+                                        false
+                                    }
+                                    PriorFocusGate::Unproven => {
+                                        lock_shared(&shared).diagnostics.stale_dropped += 1;
+                                        emit(
+                                            &shared,
+                                            pid,
+                                            generation,
+                                            cmd.request_id,
+                                            "focus",
+                                            "unproven-read",
+                                            1,
+                                        );
+                                        false
+                                    }
+                                }
+                            }
+                        };
+                        if !proceed {
+                            // Deferred-focus skip: the batch below stays queued
+                            // for the next pass, so the drain watermark does not
+                            // move; the mark still proves the send count.
+                            frames.note_drain(WorkerDrainMark::pass(
+                                generation,
+                                drained,
+                                sends_attempted,
+                                !pending.is_empty() || pending_scoped.is_some(),
+                            ));
+                            continue;
+                        }
+                        emit(
+                            &shared,
+                            pid,
+                            generation,
+                            cmd.request_id,
+                            "focus",
+                            "dispatched",
+                            0,
+                        );
+                        let completion = backend.dispatch_focus(&cmd);
+                        let job = EngineJob::FocusResult {
+                            pid,
+                            generation,
+                            cmd_id: cmd.request_id,
+                            completion,
+                        };
+                        sends_attempted += 1;
+                        if !inbox.try_send_data(job) {
+                            lock_shared(&shared).diagnostics.result_dropped_full += 1;
+                            emit(
+                                &shared,
+                                pid,
+                                generation,
+                                cmd.request_id,
+                                "focus-result",
+                                "queue-full-dropped",
+                                0,
+                            );
+                        }
                     }
                 }
             }

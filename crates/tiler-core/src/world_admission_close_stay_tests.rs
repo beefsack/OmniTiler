@@ -122,6 +122,7 @@ fn report(
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
+        foreground_known: !focused.is_empty(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
@@ -404,7 +405,7 @@ fn newcomer_behind_fullscreen_spends_without_emitting() {
 }
 
 #[test]
-fn close_focused_holds_until_survivor_focus_recovers() {
+fn close_focused_reflows_readable_without_observed_focus() {
     use crate::world_report::ScopeAuthority;
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
@@ -446,10 +447,11 @@ fn close_focused_holds_until_survivor_focus_recovers() {
         committed_focus(&engine, "out-a", &view_a).as_deref(),
         Some("win-b")
     );
-    // Closing the focused window with no observed focus holds the scope
-    // narrowly: the core never invents activation. Survivors keep held
-    // rows (no vanishing, no wedge).
-    let held = accepted(
+    // Closing the focused window with no observed focus reflows readable:
+    // survivors stay Controlled with frames, the closed row is absent, and
+    // committed focus falls back to a surviving resident (MRU, never an
+    // invented activation). No pending focus lane yet.
+    let reflowed = accepted(
         &mut engine,
         &report(
             3,
@@ -461,31 +463,37 @@ fn close_focused_holds_until_survivor_focus_recovers() {
             None,
         ),
     );
-    assert!(held.windows.iter().all(|row| row.lifetime.0 != "win-b"));
-    let scope = held
+    assert!(reflowed.windows.iter().all(|row| row.lifetime.0 != "win-b"));
+    let scope = reflowed
         .scopes
         .iter()
         .find(|status| {
-            status.scope
-                == crate::world_report::AuthorityScope::Workspace {
-                    output: OutputId("out-a".into()),
-                    workspace: crate::directional::WorkspaceId(view_a.clone()),
-                }
+            status
+                .scope
+                .covers_workspace(&OutputId("out-a".into()), &view_a)
         })
         .expect("scope row");
-    assert_eq!(
-        scope.authority,
-        ScopeAuthority::Hold(crate::world_report::HoldReason::Unreadable)
-    );
+    assert_eq!(scope.authority, ScopeAuthority::Controlled);
     for win in ["win-a", "win-c"] {
-        assert!(
-            held.windows.iter().any(|row| row.lifetime.0 == win),
-            "survivor retained: {:?}",
-            held.windows
+        let row = reflowed
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == win)
+            .expect("survivor row");
+        assert!(row.allocation.is_some(), "{win} reflows: {row:?}");
+        assert_eq!(
+            row.frame_authority,
+            ScopeAuthority::Controlled,
+            "{win} readable: {row:?}"
         );
     }
-    // The adapter reporting the survivor recovers to Controlled with
-    // reflowed survivors and the survivor committed.
+    let fallback = committed_focus(&engine, "out-a", &view_a).expect("survivor focus");
+    assert!(
+        ["win-a", "win-c"].contains(&fallback.as_str()),
+        "survivor focus: {fallback:?}",
+    );
+    // The adapter reporting the survivor stays Controlled with reflowed
+    // survivors and the survivor committed.
     let recovered = accepted(
         &mut engine,
         &report(

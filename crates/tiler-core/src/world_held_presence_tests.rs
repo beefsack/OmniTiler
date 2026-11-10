@@ -883,6 +883,7 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
     unknown.sticky = None;
     let mut report = two_output_report(2, vec![unknown]);
     report.focused_global = "win-a".to_owned();
+    report.foreground_known = true;
     report.action_outputs = vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
     report.command_seq = Some(11);
     report.command = Some(WorldCommand::MigrateDirectional {
@@ -918,6 +919,7 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
     sticky.sticky = Some(true);
     let mut report = two_output_report(2, vec![sticky]);
     report.focused_global = "win-a".to_owned();
+    report.foreground_known = true;
     report.action_outputs = vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
     report.command_seq = Some(11);
     report.command = Some(WorldCommand::MigrateDirectional {
@@ -940,6 +942,7 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
     );
     let mut report = two_output_report(2, vec![fact("win-a", "out-a", 0)]);
     report.focused_global = "win-a".to_owned();
+    report.foreground_known = true;
     report.action_outputs = vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
     report.command_seq = Some(11);
     report.command = Some(WorldCommand::MigrateDirectional {

@@ -50,8 +50,8 @@ use tiler_core::gesture::GestureIngress;
 use tiler_core::session::DomainKey;
 use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
-    FrameAttempt, FrameSetter, HoldReason, MemberAttempt, NativeCreationAttempt, ViewAttempt,
-    WorldCommand, WorldReportV4,
+    FocusFeedback, FrameAttempt, FrameSetter, HoldReason, MemberAttempt, NativeCreationAttempt,
+    ViewAttempt, WorldCommand, WorldReportV4,
 };
 
 use crate::focus_route::FocusRoute;
@@ -130,6 +130,11 @@ pub(crate) struct WorldSession {
     /// Explicit float-placement tokens already written once (exactly-once
     /// geometry under `frame_operation`).
     spent_frame_ops: BTreeSet<String>,
+    /// One bounded staged close-focus feedback row: the first correlated
+    /// raw row since the previous dispatch. First-wins (later rows drop
+    /// until drained); drained once into the next dispatched report with
+    /// its original stamp, never fabricated.
+    pending_close_feedback: Option<FocusFeedback>,
     /// True once an observation was refused (stale revision, no context):
     /// retained truth missed input, so the next report publishes
     /// `inventory_complete = false` until a fresh observation lands.
@@ -213,6 +218,7 @@ impl WorldSession {
                 pending_frames: BTreeMap::new(),
                 pending_writes: BTreeMap::new(),
                 spent_frame_ops: BTreeSet::new(),
+                pending_close_feedback: None,
                 coverage_gap: false,
                 pending_closes: BTreeSet::new(),
                 presentation_style: crate::active_border::PresentationStylePx::default(),
@@ -250,6 +256,7 @@ impl WorldSession {
             pending_frames: BTreeMap::new(),
             pending_writes: BTreeMap::new(),
             spent_frame_ops: BTreeSet::new(),
+            pending_close_feedback: None,
             coverage_gap: false,
             pending_closes: BTreeSet::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),
@@ -519,6 +526,31 @@ impl WorldSession {
         std::mem::take(&mut self.pending_frames)
             .into_values()
             .collect()
+    }
+
+    /// Stage one raw close-focus feedback row for the next dispatched
+    /// report. Bounded first-wins: only the first correlated raw row since
+    /// the previous drain is kept (later rows drop), and the stored row
+    /// keeps its original stamp verbatim — never re-stamped, never
+    /// fabricated.
+    pub(crate) fn stage_close_feedback(&mut self, feedback: FocusFeedback) {
+        if self.pending_close_feedback.is_none() {
+            self.pending_close_feedback = Some(feedback);
+        }
+    }
+
+    /// Drain the staged close-focus feedback row, if any. Called on every
+    /// dispatch alongside the attempt drains, whether or not the report is
+    /// accepted — feedback rows describe attempted actuation, never retry
+    /// themselves.
+    fn take_close_feedback(&mut self) -> Option<FocusFeedback> {
+        self.pending_close_feedback.take()
+    }
+
+    /// Test-only peek at the staged close-focus feedback row without
+    /// draining (cross-module dispatch tests assert first-wins staging).
+    pub(crate) fn peek_close_feedback(&self) -> Option<FocusFeedback> {
+        self.pending_close_feedback.clone()
     }
 
     /// Adapter-side core-delivery lifetime memory for wire-flag
@@ -792,12 +824,18 @@ pub(crate) fn build_dispatch_report(
     let member_rows = session.take_member_attempts();
     let frame_rows = session.take_frame_attempts();
     let creation_rows = session.take_creation_attempts();
+    let focus_rows: Vec<FocusFeedback> = session.take_close_feedback().into_iter().collect();
     let memory = session.lifetime_memory();
     let focused_global = retained
         .observed_focus
         .as_ref()
         .map(|w| w.0.clone())
         .unwrap_or_default();
+    // Truthful foreground provenance: non-empty focus is always proven bound
+    // (the codec refuses false+nonempty); empty focus is known only on
+    // genuine windowless proof, otherwise unknown. Never invent known from
+    // bare absence.
+    let foreground_known = !focused_global.is_empty() || retained.observed_focus_known;
     match dispatch {
         DispatchContext::Native(ctx) => {
             let keys: Vec<DomainKey> = ctx
@@ -919,8 +957,10 @@ pub(crate) fn build_dispatch_report(
                 view_attempts: &view_rows,
                 clear_attempts: &[],
                 creation_attempts: &creation_rows,
+                focus_feedback: &focus_rows,
                 gesture,
                 focused_global: &focused_global,
+                foreground_known,
                 complete: !incomplete,
                 coverage_gap: session.coverage_gap,
                 incomplete_outputs: &[],
@@ -1000,8 +1040,10 @@ pub(crate) fn build_dispatch_report(
                 view_attempts: &view_rows,
                 clear_attempts: &[],
                 creation_attempts: &creation_rows,
+                focus_feedback: &focus_rows,
                 gesture,
                 focused_global: &focused_global,
+                foreground_known,
                 complete: true,
                 coverage_gap: session.coverage_gap,
                 incomplete_outputs: &[],
@@ -1175,4 +1217,98 @@ pub(crate) fn forget_world_members(
         .retain(|id, _| !id.starts_with(&format!("{pid}_")));
     session.pending_writes.retain(|(wpid, _), _| *wpid != pid);
     clear_focus_into(retained, pid);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use tiler_core::directional::WindowId;
+    use tiler_core::world_report::{FocusFeedback, VisibilityReason, VisibilitySetter};
+
+    use crate::focus_route::FocusRoute;
+
+    fn fixed_session(nonce: &str) -> WorldSession {
+        WorldSession::new_with_tokens(
+            Some((format!("macos-{nonce}"), format!("phase-1-{nonce}"))),
+            false,
+            FocusRoute::Slps,
+            Arc::new(ObservationClock::new()),
+            &[],
+        )
+    }
+
+    fn feedback_row(id: &str, revision: u64) -> FocusFeedback {
+        FocusFeedback {
+            id: id.to_owned(),
+            target: WindowId("1001_2".to_owned()),
+            revision,
+            setter: VisibilitySetter::NotCalled,
+            reason: VisibilityReason::Empty,
+            pre: Some(WindowId("1001_2".to_owned())),
+            post: Some(WindowId("1001_2".to_owned())),
+            foreground_proven: true,
+            arrival: Vec::new(),
+            attempt_ms: 7,
+        }
+    }
+
+    #[test]
+    fn close_feedback_first_wins_and_drains_once_with_stamp() {
+        let mut session = fixed_session("cccccccccccccccccccccccccccccccc");
+        let first = feedback_row("close-focus-3", 3);
+        let second = feedback_row("close-focus-4", 4);
+        session.stage_close_feedback(first.clone());
+        session.stage_close_feedback(second);
+        // First-wins: the second staged row drops.
+        let drained = session.take_close_feedback().expect("staged row");
+        assert_eq!(drained, first, "original stamp forwarded verbatim");
+        assert!(
+            session.take_close_feedback().is_none(),
+            "drained once, never retried"
+        );
+        // After a drain a new row stages again.
+        let third = feedback_row("close-focus-5", 5);
+        session.stage_close_feedback(third.clone());
+        assert_eq!(session.take_close_feedback(), Some(third));
+    }
+
+    #[test]
+    fn close_feedback_rides_next_dispatch_report_once() {
+        let mut session = fixed_session("dddddddddddddddddddddddddddddddd");
+        session.stage_close_feedback(feedback_row("close-focus-3", 3));
+        let retained = RetainedCore::default();
+        let first = build_dispatch_report(
+            &mut session,
+            &retained,
+            &DispatchContext::Synthetic,
+            &[],
+            1,
+            1,
+            None,
+            None,
+            None,
+            "req-1",
+        )
+        .expect("synthetic report builds");
+        assert_eq!(first.focus_feedback.len(), 1);
+        assert_eq!(first.focus_feedback[0].id, "close-focus-3");
+        assert_eq!(first.focus_feedback[0].attempt_ms, 7);
+        // Second dispatch carries nothing: forwarded once.
+        let second = build_dispatch_report(
+            &mut session,
+            &retained,
+            &DispatchContext::Synthetic,
+            &[],
+            2,
+            2,
+            None,
+            None,
+            None,
+            "req-2",
+        )
+        .expect("synthetic report builds");
+        assert!(second.focus_feedback.is_empty());
+    }
 }

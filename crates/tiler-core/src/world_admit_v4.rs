@@ -673,6 +673,7 @@ impl WorldEngine {
             windows: Vec::new(),
             transfers: Vec::new(),
             effects: Vec::new(),
+            close_focus: None,
             command_result: None,
             gesture_settled: None,
             operation_settled: Vec::new(),

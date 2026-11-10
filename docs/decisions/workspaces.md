@@ -66,6 +66,7 @@
 
 ### Workspace lifecycle, focus and history
 - Decision: Closing sole window retains shown empty workspace without focused client; workspace return restores remembered focus when verified. Showing occupied workspace without valid remembered focus chooses MRU eligible member, else first eligible by deterministic layout child order; empty/minimized-only retains no focus. Host-caused focus loss is not repaired. Directional focus without focused window uses existing topology and destination remembered tiled selection in all four directions to cross to an adjacent output, else no-op; it adds no current-workspace candidate, local-window, MRU/layout fallback or edge-nearest policy. A shown workspace may remain unfocused.
+- Sole positive close also retains source focused-output intent, including with another occupied output/workspace; no other-domain activation or native clear-focus is issued. Readable survivors reflow independently of observed focus or activation eligibility. The bounded [positive-close correction](focus.md#automatic-focus-guards) is close-caused policy, not repair of unrelated host focus loss; native desktop/app foreground stays truthful.
 - Why: not recorded.
 - Assumes / revisit if: candidate eligibility and fullscreen/game gates unchanged; COSMIC directional outcome remains TBD; focus safety remains authoritative.
 - Status: active, 2026-10-26

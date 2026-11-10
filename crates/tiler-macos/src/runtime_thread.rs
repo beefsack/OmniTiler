@@ -142,6 +142,30 @@ pub(crate) enum EngineJob {
         cmd_id: u64,
         completion: AxCompletion,
     },
+    /// Narrowly typed close-focus result from the owning AX worker (the
+    /// SAME owner that observed the window): the frozen close stamp
+    /// (`close_id`, `target`, `issued_rev`) plus the honest mechanical
+    /// outcome. Sent only after the actual owner attempt or owner no-call
+    /// (never pre-dispatch, never on queueing): the engine stages it as
+    /// the next report's raw close-focus feedback row. No verdict ingress —
+    /// the core settles from the row. Data lane (drops counted when full,
+    /// never blocking).
+    CloseFocusResult {
+        pid: u32,
+        generation: u64,
+        cmd_id: u64,
+        close_id: String,
+        target: WindowId,
+        issued_rev: u64,
+        adapter_incarnation: String,
+        core_generation: String,
+        setter: tiler_core::world_report::VisibilitySetter,
+        reason: tiler_core::world_report::VisibilityReason,
+        pre: Option<WindowId>,
+        post: Option<WindowId>,
+        foreground_proven: bool,
+        attempt_ms: u64,
+    },
     /// Raw mechanical view-attempt evidence from one proven select-drain
     /// outcome (never a verdict): the setter disposition plus the drain's
     /// native Space reads around the actuation. The engine resolves the
@@ -269,6 +293,7 @@ impl EngineJob {
                 | Self::NativeCreation { .. }
                 | Self::AxResult { .. }
                 | Self::FocusResult { .. }
+                | Self::CloseFocusResult { .. }
         )
     }
 }
@@ -1332,7 +1357,7 @@ fn note_completion(
     }
 }
 
-fn process_job(
+pub(crate) fn process_job(
     job: EngineJob,
     session: &mut WorldSession,
     retained: &mut RetainedCore,
@@ -1560,7 +1585,10 @@ fn process_job(
             let window_count = entry.windows.len() as u64;
             let homed_windows = entry.windows.clone();
             match observed_target {
-                Some(window) => retained.observed_focus = Some(window),
+                Some(window) => {
+                    retained.observed_focus = Some(window);
+                    retained.observed_focus_known = true;
+                }
                 None => crate::runtime_core::clear_focus_into(retained, pid),
             }
             // Synthetic homing: every retained window belongs to the
@@ -1839,6 +1867,93 @@ fn process_job(
             completion,
         } => {
             note_completion(shared, "focus-result", pid, generation, cmd_id, &completion);
+        }
+        EngineJob::CloseFocusResult {
+            pid,
+            generation,
+            cmd_id,
+            close_id,
+            target,
+            issued_rev,
+            adapter_incarnation,
+            core_generation,
+            setter,
+            reason,
+            pre,
+            post,
+            foreground_proven,
+            attempt_ms,
+        } => {
+            // Narrowly typed close result: diagnostics plus the truthful
+            // staged row under the original stamp. First-wins bounded;
+            // later rows drop until the next dispatch drains. Diagnostics
+            // mirror `note_completion` freshness without inventing a
+            // backend completion: the setter names the token. The row
+            // stages only for the exact still-current request: a result
+            // whose lifetime died or whose identity no longer names the
+            // current record (null/newer supersession, session alias) is
+            // stale evidence, counted and never staged. The setter, reason,
+            // and pre/post legs stage verbatim: raw facts only, never an
+            // adapter verdict.
+            let (token, count): (&'static str, u64) = match setter {
+                tiler_core::world_report::VisibilitySetter::Accepted => ("applied", attempt_ms),
+                tiler_core::world_report::VisibilitySetter::Refused => ("refused", 0),
+                tiler_core::world_report::VisibilitySetter::Threw => ("threw", 0),
+                tiler_core::world_report::VisibilitySetter::NotCalled => ("not-called", 0),
+            };
+            lock_shared(shared).count_completion(token);
+            let live = lock_shared(shared)
+                .apps
+                .get(&pid)
+                .is_some_and(|r| r.generation == generation && !r.terminated);
+            let current = session.sequencer().is_current_close_request(
+                &close_id,
+                &target,
+                issued_rev,
+                &adapter_incarnation,
+                &core_generation,
+            ) && crate::runtime_shared::close_focus_is_current(
+                shared,
+                &adapter_incarnation,
+                &core_generation,
+                &close_id,
+                issued_rev,
+            );
+            if live && current {
+                emit(
+                    shared,
+                    pid,
+                    generation,
+                    cmd_id,
+                    "focus-result",
+                    token,
+                    count,
+                );
+                session.stage_close_feedback(tiler_core::world_report::FocusFeedback {
+                    id: close_id,
+                    target,
+                    revision: issued_rev,
+                    setter,
+                    reason,
+                    pre,
+                    post,
+                    foreground_proven,
+                    arrival: Vec::new(),
+                    attempt_ms,
+                });
+                emit(shared, 0, 0, 0, "feedback", "staged", 1);
+            } else {
+                lock_shared(shared).diagnostics.stale_dropped += 1;
+                emit(
+                    shared,
+                    pid,
+                    generation,
+                    cmd_id,
+                    "focus-result",
+                    "stale-rejected",
+                    0,
+                );
+            }
         }
         EngineJob::ManagedFactsQuery { window, reply } => {
             // Current engine-managed truth for one subject window: the
@@ -2457,6 +2572,7 @@ mod tests {
             revision,
             route: crate::focus_route::FocusRoute::Slps,
             expect_prior: None,
+            close: None,
         }
     }
 
@@ -2684,6 +2800,7 @@ mod trailing_join_tests {
             select_claim_pending: false,
             selection_focus_pending: None,
             selection_focus_floor_seq: 0,
+            close_focus_current: None,
             focus_evidence: None,
             zombies: Vec::new(),
             engine_handle: None,
@@ -2753,6 +2870,116 @@ mod trailing_join_tests {
         assert_eq!(guard.select_pending.len(), 1);
     }
 
+    #[test]
+    fn close_focus_epoch_latest_only_cancels_taken_unstarted() {
+        // The dispatch half publishes the latest coherent close envelope;
+        // the owning worker refuses a taken-but-unstarted command whose
+        // bound id/revision/session no longer matches. A newer publication
+        // — or a null one (explicit focus, user command) — cancels the old
+        // epoch. The session legs fence handshake aliases reusing the same
+        // id/revision.
+        let shared = test_shared(ctx());
+        assert!(
+            !crate::runtime_shared::close_focus_is_current(
+                &shared,
+                "adapter-1",
+                "gen-1",
+                "close-focus-3",
+                3
+            ),
+            "empty epoch matches nothing"
+        );
+        crate::runtime_shared::publish_close_focus_current(
+            &shared,
+            Some(crate::runtime_shared::CloseFocusEpoch {
+                id: "close-focus-3".to_owned(),
+                revision: 3,
+                adapter_incarnation: "adapter-1".to_owned(),
+                core_generation: "gen-1".to_owned(),
+            }),
+        );
+        assert!(crate::runtime_shared::close_focus_is_current(
+            &shared,
+            "adapter-1",
+            "gen-1",
+            "close-focus-3",
+            3
+        ));
+        // Same id but a newer issuing revision is a different epoch.
+        assert!(
+            !crate::runtime_shared::close_focus_is_current(
+                &shared,
+                "adapter-1",
+                "gen-1",
+                "close-focus-3",
+                4
+            ),
+            "revision is part of the epoch, never id alone"
+        );
+        // Same id/revision on a foreign session never matches (handshake
+        // alias: a new handshake reusing close-focus-3/3 must not satisfy
+        // the old taken command).
+        assert!(
+            !crate::runtime_shared::close_focus_is_current(
+                &shared,
+                "adapter-2",
+                "gen-1",
+                "close-focus-3",
+                3
+            ),
+            "incarnation is part of the epoch"
+        );
+        assert!(
+            !crate::runtime_shared::close_focus_is_current(
+                &shared,
+                "adapter-1",
+                "gen-2",
+                "close-focus-3",
+                3
+            ),
+            "generation is part of the epoch"
+        );
+        // A newer publication supersedes the old taken-but-unstarted one.
+        crate::runtime_shared::publish_close_focus_current(
+            &shared,
+            Some(crate::runtime_shared::CloseFocusEpoch {
+                id: "close-focus-4".to_owned(),
+                revision: 4,
+                adapter_incarnation: "adapter-1".to_owned(),
+                core_generation: "gen-1".to_owned(),
+            }),
+        );
+        assert!(
+            !crate::runtime_shared::close_focus_is_current(
+                &shared,
+                "adapter-1",
+                "gen-1",
+                "close-focus-3",
+                3
+            ),
+            "newer envelope cancels the old command"
+        );
+        assert!(crate::runtime_shared::close_focus_is_current(
+            &shared,
+            "adapter-1",
+            "gen-1",
+            "close-focus-4",
+            4
+        ));
+        // A null publication cancels everything taken-but-unstarted.
+        crate::runtime_shared::publish_close_focus_current(&shared, None);
+        assert!(
+            !crate::runtime_shared::close_focus_is_current(
+                &shared,
+                "adapter-1",
+                "gen-1",
+                "close-focus-4",
+                4
+            ),
+            "null cancels the current epoch"
+        );
+    }
+
     fn session() -> WorldSession {
         WorldSession::new(
             true,
@@ -2760,6 +2987,274 @@ mod trailing_join_tests {
             Arc::new(ObservationClock::new()),
             &[],
         )
+    }
+
+    fn close_app(shared: &Arc<Mutex<Shared>>, pid: u32, generation: u64) {
+        use crate::runtime_shared::AppRecord;
+        lock_shared(shared).apps.insert(
+            pid,
+            AppRecord {
+                generation,
+                terminated: false,
+                stop: Arc::new(AtomicBool::new(false)),
+                frames: Arc::new(FrameSlot::new()),
+                focus: Arc::new(FocusSlot::new()),
+                ready: Arc::new(Mutex::new(Some(Ok(())))),
+                worker: None,
+                worker_name: "test-close".to_owned(),
+            },
+        );
+    }
+
+    fn prime_close_current(
+        session: &WorldSession,
+        shared: &Arc<Mutex<Shared>>,
+        id: &str,
+        rev: u64,
+        wid: u32,
+    ) {
+        use tiler_core::directional::WindowId;
+        let incarnation = session.incarnation().to_owned();
+        let generation = session.sequencer().bound_generation();
+        session.sequencer().observe_close_envelope(
+            Some(&tiler_core::world_report::CloseFocusRequest {
+                id: id.to_owned(),
+                target: WindowId(format!("4242_{wid}")),
+                issued_revision: rev,
+                cause: tiler_core::world_report::CloseFocusCause::PositiveClose,
+                output: tiler_core::directional::OutputId("macos-display-1".to_owned()),
+                workspace: "ws-a".to_owned(),
+            }),
+            &incarnation,
+            &generation,
+        );
+        assert!(
+            session.sequencer().is_current_close_request(
+                id,
+                &WindowId(format!("4242_{wid}")),
+                rev,
+                &incarnation,
+                &generation,
+            ),
+            "primed request must read current"
+        );
+        crate::runtime_shared::publish_close_focus_current(
+            shared,
+            Some(crate::runtime_shared::CloseFocusEpoch {
+                id: id.to_owned(),
+                revision: rev,
+                adapter_incarnation: incarnation,
+                core_generation: generation,
+            }),
+        );
+    }
+
+    fn close_result(
+        session: &WorldSession,
+        pid: u32,
+        generation: u64,
+        id: &str,
+        rev: u64,
+        wid: u32,
+    ) -> EngineJob {
+        EngineJob::CloseFocusResult {
+            pid,
+            generation,
+            cmd_id: 5,
+            close_id: id.to_owned(),
+            target: tiler_core::directional::WindowId(format!("4242_{wid}")),
+            issued_rev: rev,
+            adapter_incarnation: session.incarnation().to_owned(),
+            core_generation: session.sequencer().bound_generation(),
+            setter: tiler_core::world_report::VisibilitySetter::NotCalled,
+            reason: tiler_core::world_report::VisibilityReason::IdentityStale,
+            pre: None,
+            post: None,
+            foreground_proven: false,
+            attempt_ms: 0,
+        }
+    }
+
+    #[test]
+    fn close_result_invalid_lifetime_stages_nothing() {
+        // Dead lifetimes stage nothing, even for the current request:
+        // generation drift first, then termination. The live lifetime
+        // for the same request still stages under its original stamp.
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), RetainedCore::default());
+        close_app(&shared, 4242, 1);
+        prime_close_current(&session, &shared, "close-focus-7", 7, 9);
+        let stale_before = lock_shared(&shared).diagnostics.stale_dropped;
+        process_job(
+            close_result(&session, 4242, 2, "close-focus-7", 7, 9),
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        assert!(
+            session.peek_close_feedback().is_none(),
+            "drifted lifetime stages nothing"
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.stale_dropped,
+            stale_before + 1
+        );
+        lock_shared(&shared)
+            .apps
+            .get_mut(&4242)
+            .expect("app")
+            .terminated = true;
+        process_job(
+            close_result(&session, 4242, 1, "close-focus-7", 7, 9),
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        assert!(
+            session.peek_close_feedback().is_none(),
+            "terminated lifetime stages nothing"
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.stale_dropped,
+            stale_before + 2
+        );
+        lock_shared(&shared)
+            .apps
+            .get_mut(&4242)
+            .expect("app")
+            .terminated = false;
+        process_job(
+            close_result(&session, 4242, 1, "close-focus-7", 7, 9),
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        let staged = session.peek_close_feedback().expect("live stages");
+        assert_eq!(staged.id, "close-focus-7");
+        assert_eq!(staged.revision, 7);
+    }
+
+    #[test]
+    fn close_result_stale_identity_never_supersedes_fresh() {
+        // Old result before fresh row: stale identity rejects and the
+        // fresh row still stages under its original stamp. A session
+        // alias and a superseded predecessor both reject; the first
+        // staged row wins and keeps its stamp.
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), RetainedCore::default());
+        close_app(&shared, 4242, 1);
+        prime_close_current(&session, &shared, "close-focus-7", 7, 9);
+        let stale_before = lock_shared(&shared).diagnostics.stale_dropped;
+        // Old result arrives first: rejected, nothing staged, so the
+        // fresh row is not suppressed.
+        process_job(
+            close_result(&session, 4242, 1, "close-focus-6", 6, 9),
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        assert!(
+            session.peek_close_feedback().is_none(),
+            "old result stages nothing"
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.stale_dropped,
+            stale_before + 1
+        );
+        // Fresh result stages under its original stamp.
+        process_job(
+            close_result(&session, 4242, 1, "close-focus-7", 7, 9),
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        let staged = session.peek_close_feedback().expect("fresh stages");
+        assert_eq!(staged.id, "close-focus-7");
+        assert_eq!(staged.revision, 7);
+        // Same id/revision on an aliased session: rejected, original kept.
+        let mut alias = close_result(&session, 4242, 1, "close-focus-7", 7, 9);
+        if let EngineJob::CloseFocusResult {
+            ref mut core_generation,
+            ..
+        } = alias
+        {
+            *core_generation = "gen-alias".to_owned();
+        }
+        process_job(
+            alias,
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        assert_eq!(
+            session.peek_close_feedback().expect("original kept").id,
+            "close-focus-7"
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.stale_dropped,
+            stale_before + 2
+        );
+        // Same-lifetime new request supersedes: the predecessor result
+        // rejects, and the first staged row keeps its original stamp even
+        // when the current request's own result correlates.
+        prime_close_current(&session, &shared, "close-focus-8", 8, 9);
+        process_job(
+            close_result(&session, 4242, 1, "close-focus-7", 7, 9),
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        assert_eq!(
+            session.peek_close_feedback().expect("original kept").id,
+            "close-focus-7"
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.stale_dropped,
+            stale_before + 3
+        );
+        let stale_before_current = lock_shared(&shared).diagnostics.stale_dropped;
+        process_job(
+            close_result(&session, 4242, 1, "close-focus-8", 8, 9),
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        assert_eq!(
+            session.peek_close_feedback().expect("first wins").id,
+            "close-focus-7",
+            "original stamp preserved, never re-stamped"
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.stale_dropped,
+            stale_before_current,
+            "current request correlates: first-wins drops it, not the stale fence"
+        );
     }
 
     fn observed(wid: u32) -> ObservedWindow {
@@ -6454,6 +6949,7 @@ mod drag_gesture_handoff_tests {
             select_claim_pending: false,
             selection_focus_pending: None,
             selection_focus_floor_seq: 0,
+            close_focus_current: None,
             focus_evidence: None,
             zombies: Vec::new(),
             engine_handle: None,

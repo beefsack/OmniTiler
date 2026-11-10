@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use tiler_core::directional::{OutputId, WorkspaceId};
+use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::session::DomainKey;
 use tiler_core::size_hints::{FixedSizePredicate, WindowSizeHints};
@@ -629,6 +629,36 @@ pub struct FocusEvidence {
     pub ax_focus: Option<(u32, Option<u32>)>,
 }
 
+/// Typed close-focus context on one owner focus command: the exact frozen
+/// close intent (`close-focus-<rev>` id, target, issuing publication
+/// revision) plus its full bound context. `generation` pins the target
+/// app lifetime, `topology_revision` the display/Space revision at bind,
+/// `domain` the frozen source domain (output plus logical workspace).
+/// `adapter_incarnation`/`core_generation` pin the handshake session so a
+/// reused id/revision on a new handshake never aliases the old command.
+/// `fallback_pre` is the same-report native foreground fallback (`None`
+/// is empty, never unknown-by-default) and `fallback_known` tells whether
+/// that fallback was proven (a bound window or proven windowless) or
+/// unknown — an unknown baseline must refuse as `FocusUnproven`, never
+/// bypass the fresh foreground recheck. `None` on
+/// [`FocusCommand::close`] is the legacy explicit/deferred path, which
+/// dispatches unchanged and never carries close identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloseFocusBinding {
+    pub close_id: String,
+    pub target: WindowId,
+    pub issued_revision: u64,
+    pub adapter_incarnation: String,
+    pub core_generation: String,
+    pub output: OutputId,
+    pub workspace: WorkspaceId,
+    pub domain: DomainKey,
+    pub generation: u64,
+    pub topology_revision: u64,
+    pub fallback_pre: Option<WindowId>,
+    pub fallback_known: bool,
+}
+
 /// Typed focus command to one app worker through its latest-wins focus
 /// slot. `generation` fences PID reuse exactly like [`FrameCommand`], and
 /// `revision` fences display/Space change mid-plan: a worker dispatches
@@ -640,6 +670,11 @@ pub struct FocusEvidence {
 /// dispatch when the agreed selected focus names neither the prior nor the
 /// target, so a same-app user focus move the main thread cannot see never
 /// gets fought. Never guessed: `None` means no prior check.
+/// `close` carries the typed close-focus context above (`Some` only on the
+/// close-focus route, never on explicit/deferred commands): the owner
+/// worker rechecks the captured baseline fresh plus the liveness fences
+/// before dispatching, and reports a narrowly typed close result back.
+/// Existing explicit/deferred selection paths keep `close: None`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FocusCommand {
     pub pid: u32,
@@ -650,6 +685,7 @@ pub struct FocusCommand {
     pub revision: u64,
     pub route: FocusRoute,
     pub expect_prior: Option<String>,
+    pub close: Option<CloseFocusBinding>,
 }
 
 /// Typed semantic input action. Produced by the input thread from exact

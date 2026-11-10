@@ -169,6 +169,7 @@ fn report(
             .first()
             .map(|f| f.window.0.clone())
             .unwrap_or_default(),
+        foreground_known: false,
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),

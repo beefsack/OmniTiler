@@ -1,7 +1,7 @@
 //! Staged v4 whole-reply decoder (5a): manifest-driven coverage for
 //! [`decode_reply_v4`](tiler_protocol::world_protocol::decode_reply_v4)
-//! over the `test-fixtures/world-wire/v4` WorldReply fixtures: 114
-//! valid-wire accepts stable under re-parse, 23 context-free reject-wire
+//! over the `test-fixtures/world-wire/v4` WorldReply fixtures: 115
+//! valid-wire accepts stable under re-parse, 25 context-free reject-wire
 //! refusals with exact kind/message from the untouched original (then an
 //! in-memory single-pointer repair as a positive counterfactual), 3
 //! handshake-context rows accepted context-free but refused by
@@ -100,7 +100,7 @@ fn handshake_capabilities(file: &str) -> serde_json::Value {
 #[test]
 fn v4_reply_census_matches_contract() {
     let fixtures = world_fixtures();
-    assert_eq!(fixtures.len(), 140, "WorldReply fixture count");
+    assert_eq!(fixtures.len(), 143, "WorldReply fixture count");
     let valid: Vec<_> = fixtures
         .iter()
         .filter(|fixture| fixture.expectation == "valid-wire")
@@ -109,8 +109,8 @@ fn v4_reply_census_matches_contract() {
         .iter()
         .filter(|fixture| fixture.expectation == "reject-wire")
         .collect();
-    assert_eq!(valid.len(), 114, "valid-wire count");
-    assert_eq!(reject.len(), 26, "reject-wire count");
+    assert_eq!(valid.len(), 115, "valid-wire count");
+    assert_eq!(reject.len(), 28, "reject-wire count");
     assert!(
         valid.iter().all(|fixture| fixture.canonical),
         "every valid-wire reply is canonical"
@@ -123,7 +123,7 @@ fn v4_reply_census_matches_contract() {
         .iter()
         .filter(|fixture| !fixture.context.is_null())
         .count();
-    assert_eq!(context_free, 23, "context-free reject count");
+    assert_eq!(context_free, 25, "context-free reject count");
     assert_eq!(contextual, 3, "handshake-context reject count");
     for fixture in &reject {
         if fixture.context.is_null() {
@@ -151,7 +151,7 @@ fn v4_reply_valid_wire_accepts() {
         assert_eq!(first, second, "decode stable under re-parse {}", fixture.id);
         count += 1;
     }
-    assert_eq!(count, 114, "every valid-wire reply decodes");
+    assert_eq!(count, 115, "every valid-wire reply decodes");
 }
 
 #[test]
@@ -343,6 +343,18 @@ fn expected_reject(id: &str) -> (&'static str, &'static str, &'static str, &'sta
             "messages/reply-state-authority.json",
             "/windows/0/state/4",
         ),
+        "invalid-close-focus-unknown-cause" => (
+            "unknown-value",
+            "request contains an unknown value",
+            "messages/reply-close-focus-pending.json",
+            "/closeFocus/cause",
+        ),
+        "invalid-close-focus-missing-lane" => (
+            "malformed",
+            "request is malformed",
+            "messages/reply-bootstrap.json",
+            "/closeFocus",
+        ),
         other => panic!("reject table misses {other}"),
     }
 }
@@ -432,7 +444,7 @@ fn v4_reply_reject_wire_refuses_then_repairs() {
         decode_reply_v4(&repaired).expect("repaired decodes");
         count += 1;
     }
-    assert_eq!(count, 23, "every context-free reject refuses then repairs");
+    assert_eq!(count, 25, "every context-free reject refuses then repairs");
 }
 
 #[test]
@@ -932,7 +944,7 @@ fn v4_reply_writer_round_trips_all_valid_wire() {
         assert_eq!(back, decoded, "re-decode equals {}", fixture.id);
         count += 1;
     }
-    assert_eq!(count, 114, "every valid-wire reply round-trips");
+    assert_eq!(count, 115, "every valid-wire reply round-trips");
 }
 
 #[test]

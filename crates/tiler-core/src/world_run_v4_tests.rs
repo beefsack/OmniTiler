@@ -114,6 +114,7 @@ fn report_full(
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
+        foreground_known: !focused.is_empty(),
         action_foreground: action_foreground.map(|out| OutputId(out.to_owned())),
         action_cached: None,
         action_outputs: Vec::new(),

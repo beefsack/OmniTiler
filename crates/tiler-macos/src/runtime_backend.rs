@@ -169,6 +169,16 @@ pub trait AxBackend {
             reason: "focus dispatch unsupported by backend".to_owned(),
         }
     }
+    /// Bounded selected-oracle focus evidence on THIS owning thread (`(pid,
+    /// wid)`; `None` wid is genuine windowless, `None` return unknown).
+    /// Default unknown (fail closed, never a guessed read). The native
+    /// backend overrides this with the SAME selected SLPS+direct read the
+    /// scoped observation leg uses (the main-fallback route maps to
+    /// unknown); mocks return scripted plain evidence. No new query or
+    /// diagnostic route: production delegates the existing read.
+    fn selected_focus_evidence(&mut self) -> Option<(u32, Option<u32>)> {
+        None
+    }
 }
 
 /// Factory for per-app AX backends. Shared across threads; `create` is

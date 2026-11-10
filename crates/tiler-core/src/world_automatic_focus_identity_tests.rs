@@ -99,6 +99,7 @@ fn report(
         cursor,
         cursor_hit: cursor_hit.map(|hit| WindowId(hit.to_owned())),
         focused_global: focused.to_owned(),
+        foreground_known: !focused.is_empty(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
@@ -994,6 +995,7 @@ fn rejected_command_keeps_admission_mapping_envelope_rejection_adopts_nothing() 
     // nothing: no mapping, no revision motion.
     let mut tampered = refused.clone();
     tampered.focused_global = "w2".to_owned();
+    tampered.foreground_known = true;
     match engine.handle_report(&tampered) {
         WorldOutcome::Rejected { .. } => {}
         other => panic!("expected envelope rejection, got {other:?}"),

@@ -143,13 +143,13 @@ fn reply_messages() -> Vec<(String, String)> {
 
 #[test]
 fn v4_anchored_border_reply_census() {
-    // 114 valid-wire replies: every border fragment decodes, re-encodes to
+    // 115 valid-wire replies: every border fragment decodes, re-encodes to
     // the exact carried bytes, and sizes exactly. 101 visible rows carry
-    // the empty reason with full descriptors; 13 hidden rows carry a closed
-    // token with all-null descriptors. 101 witness objects, 13 nulls.
+    // the empty reason with full descriptors; 14 hidden rows carry a closed
+    // token with all-null descriptors. 101 witness objects, 14 nulls.
     let root = fixture_root();
     let messages = reply_messages();
-    assert_eq!(messages.len(), 114, "valid-wire reply census");
+    assert_eq!(messages.len(), 115, "valid-wire reply census");
     let mut visible = 0usize;
     let mut hidden = 0usize;
     let mut witness_objects = 0usize;
@@ -182,9 +182,9 @@ fn v4_anchored_border_reply_census() {
         reasons.insert(row.reason.map_or(String::new(), |r| r.as_str().to_owned()));
     }
     assert_eq!(visible, 101, "visible border rows");
-    assert_eq!(hidden, 13, "hidden border rows");
+    assert_eq!(hidden, 14, "hidden border rows");
     assert_eq!(witness_objects, 101, "witness objects");
-    assert_eq!(witness_nulls, 13, "null witnesses");
+    assert_eq!(witness_nulls, 14, "null witnesses");
     let expected: BTreeSet<String> = [
         "",
         "disabled",

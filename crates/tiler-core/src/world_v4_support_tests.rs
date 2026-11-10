@@ -138,6 +138,7 @@ pub(crate) fn report_full(
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
+        foreground_known: !focused.is_empty(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),

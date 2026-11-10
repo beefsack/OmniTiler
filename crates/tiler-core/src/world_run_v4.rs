@@ -198,6 +198,10 @@ impl WorldEngine {
         let observation = Self::capture_observation_v4(report);
         self.ingest_staged_intent(&observation);
         self.stage_captured_v4(effective, observation);
+        // Freeze the positive-close survivor before convergence ingests the
+        // host fallback: the retained request records the pre-close MRU
+        // winner while later observations stay truthful.
+        self.freeze_close_focus(report, issuing_revision, consumed);
         self.converge_logical_pre();
         self.settle_views_pre();
         self.build_staged_domains();

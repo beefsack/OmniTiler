@@ -1230,6 +1230,24 @@ impl AxBackend for ScopedAxBackend {
             }
         }
     }
+
+    fn selected_focus_evidence(&mut self) -> Option<(u32, Option<u32>)> {
+        #[cfg(target_os = "macos")]
+        {
+            crate::ffi::ax_selected_focus_evidence()
+                .ok()
+                .and_then(|evidence| match evidence.route {
+                    crate::ffi::PreimageRoute::SlpsFrontDirectMain => None,
+                    _ => u32::try_from(evidence.pid)
+                        .ok()
+                        .map(|pid| (pid, evidence.wid)),
+                })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    }
 }
 
 /// Native scoped owner reads over live FFI (macOS only): the [`TileGates`]
@@ -1323,10 +1341,18 @@ mod native {
             // (`ffi::ax_focused_preimage_evidence`, behind
             // `focus-diagnose --fallback`, unproven and lacking acceptance),
             // and `AXFrontmost` never gates. `None` is honest unknown
-            // (withholds promotion, never a claim).
-            snapshot.sys_focus = crate::ffi::ax_selected_focus_evidence()
-                .ok()
-                .map(|evidence| (evidence.pid as u32, evidence.wid));
+            // (withholds promotion, never a claim). The main-fallback route
+            // never proves foreground: it maps to unknown, never to bound
+            // and never to windowless none. Only the focused route with a
+            // wid promotes, and only genuine NoValue on both legs (Ok with
+            // `wid: None`) proves windowless.
+            snapshot.sys_focus =
+                crate::ffi::ax_selected_focus_evidence()
+                    .ok()
+                    .and_then(|evidence| match evidence.route {
+                        crate::ffi::PreimageRoute::SlpsFrontDirectMain => None,
+                        _ => Some((evidence.pid as u32, evidence.wid)),
+                    });
             // Eligibility publish (best-effort side channel, never fails the
             // observation): ONLY this owner's bound PID, from snapshot data
             // already read above (window facts, Space membership, selected
@@ -1582,12 +1608,13 @@ mod native {
                     reason: "topology revision drift; superseded".to_owned(),
                 };
             }
+            let target = cmd.close.as_ref().map(|c| c.domain.clone());
             let gates = NativeGates::for_op(
                 self.pid,
                 cmd.wid,
                 &self.identity,
                 &hook,
-                None,
+                target,
                 None,
                 self.scope.is_unscoped(),
             );

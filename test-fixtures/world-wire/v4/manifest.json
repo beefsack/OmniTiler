@@ -6782,6 +6782,87 @@
         "handshake": "handshake-macos",
         "hostOwned": true
       }
+    },
+    {
+      "id": "report-foreground-known-none",
+      "file": "messages/report-foreground-known-none.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "valid-wire",
+      "json": true,
+      "canonical": true,
+      "note": "Known absence of foreground: empty focused with foregroundKnown true."
+    },
+    {
+      "id": "report-foreground-known-bound",
+      "file": "messages/report-foreground-known-bound.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "valid-wire",
+      "json": true,
+      "canonical": true,
+      "note": "Known bound foreground: nonempty focused with foregroundKnown true.",
+      "context": {
+        "hostOwned": false
+      }
+    },
+    {
+      "id": "invalid-foreground-unknown-mismatch",
+      "file": "messages/invalid-foreground-unknown-mismatch.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "Unknown foreground cannot carry a bound window: foregroundKnown false with nonempty focused.",
+      "invalid": {
+        "pointer": "/foregroundKnown",
+        "rule": "foreground-unknown-mismatch",
+        "source": "report-observe"
+      }
+    },
+    {
+      "id": "reply-close-focus-pending",
+      "file": "messages/reply-close-focus-pending.json",
+      "family": "WorldReply",
+      "direction": "core-to-adapter",
+      "expectation": "valid-wire",
+      "json": true,
+      "canonical": true,
+      "note": "Retained close-focus lane carries a pending positive-close request.",
+      "context": {
+        "ready": "waiting-for-settings-and-complete-facts"
+      }
+    },
+    {
+      "id": "invalid-close-focus-unknown-cause",
+      "file": "messages/invalid-close-focus-unknown-cause.json",
+      "family": "WorldReply",
+      "direction": "core-to-adapter",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "Invalid value at /closeFocus/cause.",
+      "invalid": {
+        "pointer": "/closeFocus/cause",
+        "rule": "close-focus-unknown-cause",
+        "source": "reply-close-focus-pending"
+      }
+    },
+    {
+      "id": "invalid-close-focus-missing-lane",
+      "file": "messages/invalid-close-focus-missing-lane.json",
+      "family": "WorldReply",
+      "direction": "core-to-adapter",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "Missing required key at /closeFocus.",
+      "invalid": {
+        "pointer": "/closeFocus",
+        "rule": "close-focus-missing-lane",
+        "source": "reply-bootstrap"
+      }
     }
   ],
   "catalogs": {

@@ -158,6 +158,26 @@ pub type MidflightHook = Arc<dyn Fn() + Send + Sync>;
 /// [`RuntimeHandle::set_post_accept_hook_for_test`]`(None)`.
 pub type PostAcceptHook = Arc<dyn Fn() + Send + Sync>;
 
+/// Current close-focus publication identity for taken-but-not-started
+/// owner invalidation: the dispatch half publishes the latest coherent
+/// nullable close envelope here on every reply (`Some` on a fresh close
+/// envelope, `None` on null/newer publication, user command, or
+/// explicit-focus supersession). A worker holding a taken close command
+/// refuses to dispatch when its bound id/revision/session no longer
+/// matches — the newer publication already superseded it. Skipped
+/// publications cannot be required: only the latest coherent envelope
+/// publishes. The session legs (`adapter_incarnation`, `core_generation`)
+/// fence handshake aliases: a new handshake reusing the same
+/// `close-focus-<rev>` id/revision never matches a command bound to the
+/// old session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CloseFocusEpoch {
+    pub id: String,
+    pub revision: u64,
+    pub adapter_incarnation: String,
+    pub core_generation: String,
+}
+
 /// Bind-time focus baselines for one deferred selection intent: the owning
 /// app generation, the engine's worker-gated observed global focus, and
 /// the main-thread foreground PID — all read at dispatch. `None` in any
@@ -343,6 +363,12 @@ pub(crate) struct Shared {
     /// floor; anything below was superseded by newer input and drops
     /// counted instead of ever reapplying.
     pub(crate) selection_focus_floor_seq: u64,
+    /// Latest coherent close-focus publication identity (see
+    /// [`CloseFocusEpoch`]): written by the engine dispatch half on every
+    /// latest close envelope, read by the owning worker before dispatching
+    /// a taken close command. `None` cancels: any taken-but-not-started
+    /// close command invalidates and never dispatches.
+    pub(crate) close_focus_current: Option<CloseFocusEpoch>,
     /// Main-thread-supplied global focus evidence (workspace-frontmost PID
     /// plus bundle, plain IDs — never AX reads: the main thread performs no
     /// AX under any cadence). The AX focused leg (`ax_focus`) is NOT read on
@@ -456,6 +482,43 @@ pub(crate) fn lock_focus(
 /// submitter is told to retry. Lock-free; safe mid-flight from any thread.
 pub(crate) fn invalidate_clock(shared: &Mutex<Shared>) {
     lock_shared(shared).clock.invalidate();
+}
+
+/// Publish the latest coherent close-focus envelope identity for
+/// taken-but-not-started owner invalidation. The dispatch half calls this
+/// on every latest close envelope: `Some` on a fresh close record, `None`
+/// on a null envelope, a newer superseding publication, a user command, or
+/// explicit-focus supersession. Overwrites latest-wins; skipped
+/// publications are never required.
+pub(crate) fn publish_close_focus_current(
+    shared: &Arc<Mutex<Shared>>,
+    next: Option<CloseFocusEpoch>,
+) {
+    lock_shared(shared).close_focus_current = next;
+}
+
+/// Whether the bound close command is still the current publication: true
+/// only when the shared epoch names exactly this session plus this id and
+/// issuing revision. A taken-but-not-started command whose epoch moved
+/// (null, newer, user supersession) or whose session aliased (new
+/// handshake reusing the same id/revision) reads false and must never
+/// dispatch.
+pub(crate) fn close_focus_is_current(
+    shared: &Arc<Mutex<Shared>>,
+    adapter_incarnation: &str,
+    core_generation: &str,
+    id: &str,
+    revision: u64,
+) -> bool {
+    lock_shared(shared)
+        .close_focus_current
+        .as_ref()
+        .is_some_and(|epoch| {
+            epoch.id == id
+                && epoch.revision == revision
+                && epoch.adapter_incarnation == adapter_incarnation
+                && epoch.core_generation == core_generation
+        })
 }
 
 impl Shared {

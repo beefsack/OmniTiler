@@ -157,6 +157,7 @@ fn report(
             .first()
             .map(|f| f.window.0.clone())
             .unwrap_or_default(),
+        foreground_known: false,
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
@@ -1799,6 +1800,7 @@ fn creation_triple_mismatch_is_invalid() {
         native: vec![native_obs("out-a", &[D1], Some(D1))],
         held_native: Vec::new(),
         focused_global: String::new(),
+        foreground_known: false,
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),

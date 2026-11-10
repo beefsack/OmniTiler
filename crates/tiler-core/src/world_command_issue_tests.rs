@@ -97,6 +97,7 @@ fn report_v4_simple(seq: u64, screens: Vec<crate::world_report::ScreenReport>) -
         cursor: None,
         cursor_hit: None,
         focused_global: String::new(),
+        foreground_known: false,
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
@@ -125,6 +126,7 @@ fn focus_report_v4() -> WorldReportV4 {
     let mut v4 = report_v4_simple(2, vec![screen("out-a", 0)]);
     v4.windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 200)];
     v4.focused_global = "win-a".to_owned();
+    v4.foreground_known = true;
     v4
 }
 
@@ -207,6 +209,7 @@ fn contra_v4(seq: u64) -> WorldReportV4 {
     let mut report = report_v4_simple(seq, vec![screen("out-a", 0)]);
     report.windows = vec![fact("win-a", "out-a", 0)];
     report.focused_global = "win-other".to_owned();
+    report.foreground_known = true;
     report
 }
 
@@ -273,6 +276,7 @@ fn sticky_transition_uses_issue_owner_with_ownerless_connection() {
     let mut bootstrap = report_v4_simple(1, vec![screen("out-a", 0)]);
     bootstrap.windows = windows.clone();
     bootstrap.focused_global = "win-a".to_owned();
+    bootstrap.foreground_known = true;
     accepted_v4(&mut engine, &bootstrap);
     stage_v4(&mut engine, &bootstrap);
     seed_ring_views(&mut engine);
@@ -353,6 +357,7 @@ fn sticky_toggle_float_clear_restages_staged_facts_only() {
     let mut bootstrap = report_v4_simple(1, vec![screen("out-a", 0)]);
     bootstrap.windows = windows.clone();
     bootstrap.focused_global = "win-a".to_owned();
+    bootstrap.foreground_known = true;
     accepted_v4(&mut engine, &bootstrap);
     stage_v4(&mut engine, &bootstrap);
     seed_ring_views(&mut engine);
@@ -436,6 +441,7 @@ fn sticky_composed_transition_restages_staged_facts_only() {
     let mut bootstrap = report_v4_simple(1, vec![screen("out-a", 0)]);
     bootstrap.windows = windows.clone();
     bootstrap.focused_global = "win-a".to_owned();
+    bootstrap.foreground_known = true;
     accepted_v4(&mut engine, &bootstrap);
     stage_v4(&mut engine, &bootstrap);
     seed_ring_views(&mut engine);
@@ -506,6 +512,7 @@ fn local_toggle_orientation_uses_issue_owner_with_ownerless_connection() {
         let mut bootstrap = report_v4_simple(1, vec![screen("out-a", 0)]);
         bootstrap.windows = windows.clone();
         bootstrap.focused_global = "win-a".to_owned();
+        bootstrap.foreground_known = true;
         accepted_v4(&mut engine, &bootstrap);
         stage_v4(&mut engine, &bootstrap);
         seed_ring_views(&mut engine);
@@ -612,10 +619,12 @@ fn toggle_maximize_focus_gate_reads_staged_not_contra() {
     let mut refused_v4 = report_v4_simple(2, vec![screen("out-a", 0)]);
     refused_v4.windows = windows;
     refused_v4.focused_global = "win-zzz".to_owned();
+    refused_v4.foreground_known = true;
     stage_v4(&mut refused_engine, &refused_v4);
     seed_command_domain(&mut refused_engine);
     let mut eligible_probe = contra_v4(91);
     eligible_probe.focused_global = "win-a".to_owned();
+    eligible_probe.foreground_known = true;
     match refused_engine.execute_command(
         &test_issue(&eligible_probe),
         12,
@@ -671,6 +680,7 @@ fn composed_maximize_staged_inventory_and_barrier_gates() {
         let mut v4report = report_v4_simple(2, vec![screen("out-a", 0)]);
         v4report.windows = vec![win];
         v4report.focused_global = "win-a".to_owned();
+        v4report.foreground_known = true;
         v4report.inventory_complete = inventory_complete;
         v4report.gesture_barrier = gesture_barrier;
         v4report
@@ -790,6 +800,7 @@ fn move_float_destination_reads_staged_screens_not_contra() {
     let mut v4report = report_v4_simple(2, vec![custom]);
     v4report.windows = vec![fact("win-a", "out-a", 0)];
     v4report.focused_global = "win-a".to_owned();
+    v4report.foreground_known = true;
     let mut engine = new_engine();
     seed_ring_views(&mut engine);
     stage_v4(&mut engine, &v4report);
@@ -852,6 +863,7 @@ fn move_float_destination_reads_staged_screens_not_contra() {
     let mut off_v4 = report_v4_simple(2, vec![screen("out-b", 800)]);
     off_v4.windows = vec![fact("win-a", "out-a", 0)];
     off_v4.focused_global = "win-a".to_owned();
+    off_v4.foreground_known = true;
     stage_v4(&mut missing_engine, &off_v4);
     seed_float_domain(&mut missing_engine);
     let mut home_probe = contra_v4(91);
@@ -941,6 +953,7 @@ fn shared_retain_view_fans_out_across_staged_screens_not_contra() {
         let mut v4report = report_v4_simple(2, vec![screen("out-a", 0), screen("out-b", 800)]);
         v4report.windows = vec![fact("win-a", "out-a", 0)];
         v4report.focused_global = "win-a".to_owned();
+        v4report.foreground_known = true;
         stage_v4(&mut engine, &v4report);
         seed_command_domain(&mut engine);
         let probe = contra_v4(90);
@@ -985,6 +998,7 @@ fn global_unique_select_swap_gated_by_staged_inventory_not_contra() {
         let mut v4report = report_v4_simple(2, vec![screen("out-a", 0), screen("out-b", 800)]);
         v4report.windows = vec![fact("win-a", "out-a", 0)];
         v4report.focused_global = "win-a".to_owned();
+        v4report.foreground_known = true;
         v4report.inventory_complete = inventory_complete;
         v4report
     };
@@ -1103,6 +1117,7 @@ fn migrate_mode_and_inventory_gates_read_staged_not_contra() {
         let mut v4report = report_v4_simple(2, vec![screen("out-a", 0), screen("out-b", 800)]);
         v4report.windows = vec![fact("win-a", "out-a", 0)];
         v4report.focused_global = "win-a".to_owned();
+        v4report.foreground_known = true;
         v4report.inventory_complete = inventory_complete;
         v4report
     };
@@ -1337,6 +1352,7 @@ fn fresh_focus_current_retained_native_and_primary_order() {
         );
         v4report.windows = vec![fact("win-a", "out-a", 0), fact("win-new", "out-b", 800)];
         v4report.focused_global = focused.to_owned();
+        v4report.foreground_known = !focused.is_empty();
         v4report.primary_output = Some(OutputId("out-c".to_owned()));
         v4report
     };
@@ -1437,6 +1453,7 @@ fn switch_view_command_moves_view_parity() {
     let mut v4report = report_v4_simple(2, vec![screen("out-a", 0)]);
     v4report.windows = vec![fact("win-a", "out-a", 0)];
     v4report.focused_global = "win-a".to_owned();
+    v4report.foreground_known = true;
     stage_v4(&mut engine, &v4report);
     seed_command_domain(&mut engine);
     let probe = contra_v4(90);
@@ -1473,6 +1490,7 @@ fn handle_report_echoes_envelope_request_and_command_sequence() {
     let mut bootstrap = report_v4_simple(1, vec![screen("out-a", 0)]);
     bootstrap.windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 200)];
     bootstrap.focused_global = "win-a".to_owned();
+    bootstrap.foreground_known = true;
     match engine.handle_report(&bootstrap) {
         WorldOutcome::Accepted(_) => {}
         other => panic!("bootstrap must accept, got {other:?}"),
@@ -1480,6 +1498,7 @@ fn handle_report_echoes_envelope_request_and_command_sequence() {
     let mut command_report = report_v4_simple(2, vec![screen("out-a", 0)]);
     command_report.windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 200)];
     command_report.focused_global = "win-a".to_owned();
+    command_report.foreground_known = true;
     command_report.command_seq = Some(7);
     command_report.command = Some(focus_command("win-b"));
     let reply = match engine.handle_report(&command_report) {
@@ -1494,6 +1513,7 @@ fn handle_report_echoes_envelope_request_and_command_sequence() {
     let mut observation_only = report_v4_simple(3, vec![screen("out-a", 0)]);
     observation_only.windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 200)];
     observation_only.focused_global = "win-a".to_owned();
+    observation_only.foreground_known = true;
     let reply = match engine.handle_report(&observation_only) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("observation-only must accept, got {other:?}"),
@@ -1527,6 +1547,7 @@ fn hidden_focus_target_refuses_complete_and_incomplete() {
         let mut bootstrap = report_v4_simple(1, vec![screen("out-a", 0)]);
         bootstrap.windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 200)];
         bootstrap.focused_global = "win-a".to_owned();
+        bootstrap.foreground_known = true;
         accepted_v4(&mut engine, &bootstrap);
         let mut hidden_report = report_v4_simple(2, vec![screen("out-a", 0)]);
         let mut hidden_win = fact("win-b", "out-a", 200);
@@ -1537,6 +1558,7 @@ fn hidden_focus_target_refuses_complete_and_incomplete() {
         }
         hidden_report.windows = vec![fact("win-a", "out-a", 0), hidden_win];
         hidden_report.focused_global = "win-a".to_owned();
+        hidden_report.foreground_known = true;
         hidden_report.inventory_complete = inventory_complete;
         stage_v4(&mut engine, &hidden_report);
         seed_ring_views(&mut engine);
@@ -1652,6 +1674,7 @@ fn hidden_directional_source_refuses_stale_complete_and_incomplete() {
         let mut bootstrap = report_v4_simple(1, vec![screen("out-a", 0)]);
         bootstrap.windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 200)];
         bootstrap.focused_global = "win-a".to_owned();
+        bootstrap.foreground_known = true;
         accepted_v4(&mut engine, &bootstrap);
         let mut hidden_report = report_v4_simple(2, vec![screen("out-a", 0)]);
         let mut hidden_win = fact("win-b", "out-a", 200);
@@ -1662,6 +1685,7 @@ fn hidden_directional_source_refuses_stale_complete_and_incomplete() {
         }
         hidden_report.windows = vec![fact("win-a", "out-a", 0), hidden_win];
         hidden_report.focused_global = "win-a".to_owned();
+        hidden_report.foreground_known = true;
         hidden_report.inventory_complete = inventory_complete;
         stage_v4(&mut engine, &hidden_report);
         seed_ring_views(&mut engine);

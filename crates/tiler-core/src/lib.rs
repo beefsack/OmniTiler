@@ -36,6 +36,7 @@ pub(crate) mod world_above;
 pub(crate) mod world_admit_v4;
 pub mod world_born;
 pub mod world_clear;
+pub(crate) mod world_close_focus;
 pub mod world_commands;
 pub mod world_cursor;
 pub mod world_directional;
@@ -118,6 +119,8 @@ mod world_born_tests;
 mod world_capacity_diagnostic_tests;
 #[cfg(test)]
 mod world_clear_tests;
+#[cfg(test)]
+mod world_close_focus_tests;
 #[cfg(test)]
 mod world_command_issue_tests;
 #[cfg(test)]

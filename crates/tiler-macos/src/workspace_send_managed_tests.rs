@@ -3712,6 +3712,7 @@ mod send_join_tests {
             select_claim_pending: false,
             selection_focus_pending: None,
             selection_focus_floor_seq: 0,
+            close_focus_current: None,
             focus_evidence: None,
             zombies: Vec::new(),
             engine_handle: None,

@@ -197,6 +197,7 @@ fn build_report_v4(
         // Truthful observation: the predicted real foreground, "" when no
         // managed window can hold it. Never the command subject.
         focused_global: sim.foreground.clone().unwrap_or_default(),
+        foreground_known: true,
         action_foreground: None,
         action_cached: None,
         action_outputs: vec![],
@@ -1370,6 +1371,7 @@ fn probe_completions_v4(
     {
         let mut reused = last_report.clone();
         reused.focused_global = "nobody".to_owned();
+        reused.foreground_known = true;
         match engine.handle_report(&reused) {
             WorldOutcome::Rejected {
                 kind: "request-reused",

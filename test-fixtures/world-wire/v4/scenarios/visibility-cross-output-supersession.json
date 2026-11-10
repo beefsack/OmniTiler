@@ -213,7 +213,8 @@
             "intentRecords": [],
             "stateAttempts": [],
             "focusFeedback": [],
-            "rendererInput": null
+            "rendererInput": null,
+            "foregroundKnown": false
           }
         }
       },
@@ -436,7 +437,8 @@
           },
           "intentWrites": [],
           "switchSettled": [],
-          "diagnostics": []
+          "diagnostics": [],
+          "closeFocus": null
         }
       },
       "expect": {
@@ -495,7 +497,8 @@
             "intentRecords": [],
             "stateAttempts": [],
             "focusFeedback": [],
-            "rendererInput": null
+            "rendererInput": null,
+            "foregroundKnown": false
           }
         }
       },
@@ -779,7 +782,8 @@
           },
           "intentWrites": [],
           "switchSettled": [],
-          "diagnostics": []
+          "diagnostics": [],
+          "closeFocus": null
         }
       },
       "expect": {
@@ -897,7 +901,8 @@
             "intentRecords": [],
             "stateAttempts": [],
             "focusFeedback": [],
-            "rendererInput": null
+            "rendererInput": null,
+            "foregroundKnown": false
           }
         }
       },
@@ -1110,7 +1115,8 @@
           },
           "intentWrites": [],
           "switchSettled": [],
-          "diagnostics": []
+          "diagnostics": [],
+          "closeFocus": null
         }
       },
       "expect": {
@@ -1168,7 +1174,8 @@
             "intentRecords": [],
             "stateAttempts": [],
             "focusFeedback": [],
-            "rendererInput": null
+            "rendererInput": null,
+            "foregroundKnown": false
           }
         }
       },
@@ -1381,7 +1388,8 @@
           },
           "intentWrites": [],
           "switchSettled": [],
-          "diagnostics": []
+          "diagnostics": [],
+          "closeFocus": null
         }
       },
       "expect": {
@@ -1439,7 +1447,8 @@
             "intentRecords": [],
             "stateAttempts": [],
             "focusFeedback": [],
-            "rendererInput": null
+            "rendererInput": null,
+            "foregroundKnown": false
           }
         }
       },
@@ -1652,7 +1661,8 @@
           },
           "intentWrites": [],
           "switchSettled": [],
-          "diagnostics": []
+          "diagnostics": [],
+          "closeFocus": null
         }
       },
       "expect": {
@@ -1732,7 +1742,8 @@
             "intentRecords": [],
             "stateAttempts": [],
             "focusFeedback": [],
-            "rendererInput": null
+            "rendererInput": null,
+            "foregroundKnown": false
           }
         }
       },
@@ -1945,7 +1956,8 @@
           },
           "intentWrites": [],
           "switchSettled": [],
-          "diagnostics": []
+          "diagnostics": [],
+          "closeFocus": null
         }
       },
       "expect": {

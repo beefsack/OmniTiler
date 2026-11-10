@@ -616,7 +616,8 @@ fn rich_v4(seq: u64, lanes: RichLanes) -> WorldReportV4 {
         held_native: lanes.held_native,
         cursor: lanes.cursor,
         cursor_hit: lanes.cursor_hit,
-        focused_global: lanes.focused,
+        focused_global: lanes.focused.clone(),
+        foreground_known: !lanes.focused.is_empty(),
         action_foreground: lanes.action_foreground,
         action_cached: lanes.action_cached,
         action_outputs: lanes.action_outputs,
@@ -1024,6 +1025,7 @@ fn capture_mutates_no_retained_routing() {
         Vec::new(),
     );
     seed.focused_global = "win-a".to_owned();
+    seed.foreground_known = true;
     match subject.handle_report(&seed) {
         crate::world_run_v4::V4RunOutcome::Accepted(_) => {}
         other => panic!("expected accepted, got {other:?}"),
@@ -1285,6 +1287,7 @@ fn v4_capture_keeps_original_rows_through_capability_grading() {
         cursor: Some((10, 20)),
         cursor_hit: Some(WindowId("win-b".to_owned())),
         focused_global: String::new(),
+        foreground_known: false,
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
@@ -1555,6 +1558,7 @@ fn report_v4_simple(
         cursor: None,
         cursor_hit: None,
         focused_global: String::new(),
+        foreground_known: false,
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
@@ -3198,6 +3202,7 @@ fn stage_cursor(
     v4report.cursor = cursor;
     v4report.cursor_hit = hit.map(|hit| WindowId(hit.to_owned()));
     v4report.focused_global = focused.to_owned();
+    v4report.foreground_known = !focused.is_empty();
     v4report.inventory_complete = complete;
     v4report.gesture_barrier = barrier;
     stage_v4_ingested(engine, &v4report);
@@ -3559,6 +3564,7 @@ fn cursor_v4_capability_hold_kills_hover() {
     report.cursor = Some((10, 10));
     report.cursor_hit = Some(WindowId("win-a".to_owned()));
     report.focused_global = "win-b".to_owned();
+    report.foreground_known = true;
     stage_v4_ingested(&mut supported, &report);
     stage_v4_ingested(&mut held, &report);
     // Raw lanes retain the original rows on both engines.
@@ -3875,6 +3881,7 @@ fn stage_attempts_4b2d(
     // argument is dropped, focused/views routing comes from staged homing.
     let mut v4report = report_v4_simple(seq, screens, Vec::new(), windows, held, closed);
     v4report.focused_global = focused.to_owned();
+    v4report.foreground_known = !focused.is_empty();
     v4report.inventory_complete = complete;
     v4report.gesture_barrier = barrier;
     v4report.clear_attempts = clears;
@@ -3897,6 +3904,7 @@ fn passed_report_v4_4b2d(seq: u64) -> WorldReportV4 {
         Vec::new(),
     );
     report.focused_global = "win-other".to_owned();
+    report.foreground_known = true;
     report
 }
 
@@ -3937,6 +3945,7 @@ fn stage_views_pre_4b2d(
         Vec::new(),
     );
     v4report.focused_global = "win-a".to_owned();
+    v4report.foreground_known = true;
     v4report.inventory_complete = complete;
     v4report.gesture_barrier = barrier;
     v4report.view_attempts = view_attempts;
@@ -5635,6 +5644,7 @@ fn settle_clear_focus_view_home_read_staged_not_passed_report() {
     seed_clear_4b2d(&mut engine, "op-1");
     let mut proving_focus = passed_report_v4_4b2d(90);
     proving_focus.focused_global = "win-a".to_owned();
+    proving_focus.foreground_known = true;
     engine.settle_clears(
         proving_focus.command.as_ref(),
         &test_issue(&proving_focus),
@@ -5948,6 +5958,7 @@ fn gesture_rig() -> WorldEngine {
         Vec::new(),
     );
     bootstrap.focused_global = "win-a".to_owned();
+    bootstrap.foreground_known = true;
     match engine.handle_report(&bootstrap) {
         crate::world_run_v4::V4RunOutcome::Accepted(_) => {}
         other => panic!("expected accepted, got {other:?}"),
@@ -7134,6 +7145,7 @@ fn staged_displacement_reads_staged_live_not_contra() {
         let mut fv4 = v4_report(2, vec![fact("win-a", "out-b", 800)], Vec::new());
         fv4.screens = vec![screen("out-b", 800)];
         fv4.focused_global = focused.to_owned();
+        fv4.foreground_known = !focused.is_empty();
         stage_v4_ingested(&mut focus_engine, &fv4);
         // Proof-only join: homing proves through retained residency,
         // the view transfer must come from the staged focus above.
@@ -7214,6 +7226,7 @@ fn staged_domain_focus_and_host_readability_win_over_contra() {
     );
     let mut v4report = v4_report(2, vec![fact("win-a", "out-a", 0)], Vec::new());
     v4report.focused_global = "win-a".to_owned();
+    v4report.foreground_known = true;
     stage_v4_ingested(&mut engine, &v4report);
     // Staged focus wins with no report parameter: a ghost focus has
     // no staged fact, so it can never surface as domain focus.
@@ -7393,6 +7406,7 @@ fn staged_focused_policy_owns_post_capture_routing_and_trace() {
     v4report.screens = screens;
     v4report.inventory_complete = true;
     v4report.focused_global = "win-focus".to_owned();
+    v4report.foreground_known = true;
     v4report.cursor = Some((100, 100));
     v4report.primary_output = Some(OutputId("out-b".to_owned()));
     stage_v4_ingested(&mut engine, &v4report);
@@ -7400,6 +7414,7 @@ fn staged_focused_policy_owns_post_capture_routing_and_trace() {
     // primary, cursor swung to the other output. Staged routing owns
     // post-capture fresh placement, never the mutated source.
     v4report.focused_global = "win-ghost".to_owned();
+    v4report.foreground_known = true;
     v4report.primary_output = Some(OutputId("out-a".to_owned()));
     v4report.cursor = Some((900, 100));
     engine.converge_logical_pre();
@@ -7540,6 +7555,7 @@ fn staged_retained_home_survives_mutated_source() {
     stage_v4_ingested(&mut engine, &v4report);
     v4report.screens = vec![screen("out-a", 0)];
     v4report.focused_global = "win-ghost".to_owned();
+    v4report.foreground_known = true;
     engine.converge_logical_pre();
     engine.build_staged_domains();
     assert_eq!(
@@ -8429,6 +8445,7 @@ fn staged_above_suspends_focused_fullscreen_scope() {
     let mut v4report = v4_report(1, vec![fact("win-a", "out-a", 0), full], Vec::new());
     v4report.inventory_complete = true;
     v4report.focused_global = String::new();
+    v4report.foreground_known = false;
     stage_v4_ingested(&mut engine, &v4report);
     seed_readable_domain(&mut engine, "win-a");
     // Same homing seed as the suspended leg: identical staged
@@ -8476,6 +8493,7 @@ fn staged_above_suspends_focused_fullscreen_scope() {
     let mut v4report = v4_report(1, vec![fact("win-a", "out-a", 0), full], Vec::new());
     v4report.inventory_complete = true;
     v4report.focused_global = "win-full".to_owned();
+    v4report.foreground_known = true;
     stage_v4_ingested(&mut engine, &v4report);
     seed_readable_domain(&mut engine, "win-a");
     // TEST-ONLY homing seed: the focused fullscreen lifetime homes on
@@ -8531,6 +8549,7 @@ fn staged_above_health_fallback_holds_rows_over_contra() {
         v4report.inventory_complete = complete;
         v4report.gesture_barrier = barrier;
         v4report.focused_global = String::new();
+        v4report.foreground_known = false;
         stage_v4_ingested(&mut engine, &v4report);
         seed_readable_domain(&mut engine, "win-a");
         seed_member(&mut engine, "win-a");
@@ -9350,6 +9369,7 @@ fn staged_focused_output_latch_reads_staged_capture() {
     // prior context.
     let mut v4report = v4_report(1, vec![fact("win-a", "out-a", 0)], Vec::new());
     v4report.focused_global = "win-a".to_owned();
+    v4report.foreground_known = true;
     stage_v4_ingested(&mut subject, &v4report);
     assert_eq!(
         subject.staged.observation.focused_global, "win-a",
@@ -9364,6 +9384,7 @@ fn staged_focused_output_latch_reads_staged_capture() {
     // Unknown/newcomer focus (no retained homing) never overwrites.
     let mut v4report = v4_report(2, vec![fact("win-a", "out-a", 0)], Vec::new());
     v4report.focused_global = "win-new".to_owned();
+    v4report.foreground_known = true;
     stage_v4_ingested(&mut subject, &v4report);
     subject.note_focused_output();
     assert_eq!(
@@ -9374,6 +9395,7 @@ fn staged_focused_output_latch_reads_staged_capture() {
     // Empty focus never overwrites.
     let mut v4report = v4_report(3, vec![fact("win-a", "out-a", 0)], Vec::new());
     v4report.focused_global = String::new();
+    v4report.foreground_known = false;
     stage_v4_ingested(&mut subject, &v4report);
     subject.note_focused_output();
     assert_eq!(
@@ -9385,6 +9407,7 @@ fn staged_focused_output_latch_reads_staged_capture() {
     // focus still names win-a, but only out-b stages live.
     let mut v4report = v4_report(4, vec![fact("win-a", "out-a", 0)], Vec::new());
     v4report.focused_global = "win-a".to_owned();
+    v4report.foreground_known = true;
     v4report.screens = vec![screen("out-b", 800)];
     stage_v4_ingested(&mut subject, &v4report);
     subject.fresh_focus.last_output = Some(OutputId("out-prior".to_owned()));
@@ -9400,6 +9423,7 @@ fn staged_focused_output_latch_reads_staged_capture() {
     prior.fresh_focus.last_output = Some(OutputId("out-prior".to_owned()));
     let mut v4report = v4_report(5, vec![fact("win-a", "out-a", 0)], Vec::new());
     v4report.focused_global = String::new();
+    v4report.foreground_known = false;
     stage_v4_ingested(&mut prior, &v4report);
     prior.note_focused_output();
     assert_eq!(
@@ -10684,6 +10708,7 @@ fn host_report(
     let mut out = report_v4_simple(seq, screens, Vec::new(), windows, Vec::new(), Vec::new());
     out.native = native;
     out.focused_global = focused.to_owned();
+    out.foreground_known = !focused.is_empty();
     if let Some((command_seq, cmd)) = command {
         out.command_seq = Some(command_seq);
         out.command = Some(cmd);

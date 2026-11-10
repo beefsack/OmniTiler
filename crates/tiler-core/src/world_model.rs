@@ -1581,6 +1581,15 @@ impl WorldEngine {
             }
             None => CoreCommand::Reconcile,
         };
+        let retained_focus = self.engine.session(&key).and_then(|session| {
+            let (focus_domain, focus_leaf) = session.focus();
+            match (focus_domain, focus_leaf) {
+                (Some(focus_domain), Some(focus_leaf)) if focus_domain == key => {
+                    session.focused_window_for(&focus_leaf, &key)
+                }
+                _ => None,
+            }
+        });
         let event = CoreEvent {
             owner: owner.clone(),
             generation: self.core_generation.clone(),
@@ -1600,7 +1609,24 @@ impl WorldEngine {
             command,
         };
         match self.engine.handle(&event) {
-            CoreReply::Projection(_) | CoreReply::Tiled(_) | CoreReply::Released => {}
+            CoreReply::Projection(_) | CoreReply::Tiled(_) | CoreReply::Released => {
+                // Safety-exclusion focus hold: the retained focus converged
+                // away as a safety/own-process exclusion (never an explicit
+                // positive close) with no observed focus. The scope stays
+                // fenced until the adapter proves focus, even though an
+                // explicit positive close of the focus reflows readable.
+                // Convergence already ran, so the slot is retired; only
+                // publication holds.
+                if domain.focused.0.is_empty()
+                    && let Some(window) = retained_focus
+                    && self.staged.excluded.contains(&window)
+                    && !domain.closed.contains(&window)
+                {
+                    self.hold_reasons
+                        .insert(key.clone(), HoldReason::Unreadable);
+                    held_scopes.insert(key);
+                }
+            }
             refused => {
                 // Single-policy classification (capacity B): the staged
                 // reason publishes with the held scope and its rows.

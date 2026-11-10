@@ -135,6 +135,9 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
             return Some("cursor-hit-unknown");
         }
     }
+    if !report.foreground_known && !report.focused_global.is_empty() {
+        return Some("focused-unknown-mismatch");
+    }
     for output in [&report.action_foreground, &report.action_cached]
         .into_iter()
         .flatten()
@@ -1123,6 +1126,7 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         cursor,
         cursor_hit,
         focused_global,
+        foreground_known,
         action_foreground,
         action_cached,
         action_outputs,
@@ -1160,6 +1164,7 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
     flag(&mut hash, *inventory_complete);
     feed(&mut hash, focused_global);
     sep(&mut hash);
+    flag(&mut hash, *foreground_known);
     feed(
         &mut hash,
         &action_foreground

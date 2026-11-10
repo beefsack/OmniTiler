@@ -195,6 +195,7 @@ fn report(
         cursor: None,
         cursor_hit: None,
         focused_global: focused.to_owned(),
+        foreground_known: !focused.is_empty(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
@@ -2182,6 +2183,7 @@ fn follow_to_different_workspace_prunes_stale_select_view_flight() {
     };
     let mut staged = host_native_report(2, stage(), "n0", None, None);
     staged.focused_global = "w2".to_owned();
+    staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let selected = host_select_windows(&mut engine, 3, &away, stage(), "n0", "w2");
     assert!(
@@ -2205,6 +2207,7 @@ fn follow_to_different_workspace_prunes_stale_select_view_flight() {
         }),
     );
     follow_report.focused_global = "w2".to_owned();
+    follow_report.foreground_known = true;
     let followed = accepted(&mut engine, &follow_report);
     assert_eq!(followed.effects.len(), 1, "follow grants: {followed:?}");
     assert!(followed.effects[0].await_shown);
@@ -2228,6 +2231,7 @@ fn follow_to_different_workspace_prunes_stale_select_view_flight() {
     // the new binding survives with no terminal from stale evidence.
     let mut late = host_native_report(5, stage(), "n0", None, None);
     late.focused_global = "w2".to_owned();
+    late.foreground_known = true;
     late.view_attempts = vec![crate::world_report::ViewAttempt {
         operation_id: "op-3".to_owned(),
         target_output: OutputId("out-a".to_owned()),
@@ -2948,6 +2952,7 @@ fn host_owned_follow_binds_native_obligation_and_settles_window_first() {
         None,
     );
     staged.focused_global = "w0".to_owned();
+    staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let mut followed_report = host_native_report(
         3,
@@ -2966,6 +2971,7 @@ fn host_owned_follow_binds_native_obligation_and_settles_window_first() {
         }),
     );
     followed_report.focused_global = "w0".to_owned();
+    followed_report.foreground_known = true;
     let followed = accepted(&mut engine, &followed_report);
     assert_eq!(followed.effects.len(), 1, "follow focuses: {followed:?}");
     assert_eq!(followed.effects[0].target.0, "w0");
@@ -3199,6 +3205,7 @@ fn host_owned_follow_source_home_bracket_never_proves_arrival() {
         None,
     );
     staged.focused_global = "w0".to_owned();
+    staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let mut followed_report = host_native_report(
         3,
@@ -3217,6 +3224,7 @@ fn host_owned_follow_source_home_bracket_never_proves_arrival() {
         }),
     );
     followed_report.focused_global = "w0".to_owned();
+    followed_report.foreground_known = true;
     let followed = accepted(&mut engine, &followed_report);
     assert_eq!(followed.effects.len(), 1, "follow focuses: {followed:?}");
     let effect = followed.effects[0].clone();
@@ -6400,6 +6408,7 @@ fn host_select_windows(
         }),
     );
     staged.focused_global = focused.to_owned();
+    staged.foreground_known = !focused.is_empty();
     accepted(engine, &staged)
 }
 
@@ -6418,6 +6427,7 @@ fn host_owned_focus_bearing_grants_await_shown_with_native_obligations() {
         None,
     );
     staged.focused_global = "w2".to_owned();
+    staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let reply = host_select_windows(
         &mut engine,
@@ -6524,6 +6534,7 @@ fn host_focus_grant() -> (WorldEngine, String, crate::world_report::WorldReplyV4
     };
     let mut staged = host_native_report(2, stage(), "n0", None, None);
     staged.focused_global = "w2".to_owned();
+    staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let reply = host_select_windows(&mut engine, 3, &away, stage(), "n0", "w2");
     assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
@@ -7165,6 +7176,7 @@ fn host_owned_focus_bearing_shared_needs_every_output_proof() {
         None,
     );
     staged.focused_global = "wA".to_owned();
+    staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let mut selecting = mk(
         3,
@@ -7185,6 +7197,7 @@ fn host_owned_focus_bearing_shared_needs_every_output_proof() {
         )),
     );
     selecting.focused_global = "wA".to_owned();
+    selecting.foreground_known = true;
     let reply = accepted(&mut engine, &selecting);
     assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
     let effect = &reply.effects[0];
@@ -7388,6 +7401,7 @@ fn host_owned_focus_bearing_shared_nonfocus_external_move_drops_binding() {
     };
     let mut staged = mk3(2, "n0", "n0", stage(), vec![], None);
     staged.focused_global = "wA".to_owned();
+    staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let mut selecting = mk3(
         3,
@@ -7404,6 +7418,7 @@ fn host_owned_focus_bearing_shared_nonfocus_external_move_drops_binding() {
         )),
     );
     selecting.focused_global = "wA".to_owned();
+    selecting.foreground_known = true;
     let reply = accepted(&mut engine, &selecting);
     assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
     let effect = reply.effects[0].clone();
@@ -7564,6 +7579,7 @@ fn host_owned_focus_bearing_shared_partial_then_external_move_drops_binding() {
     };
     let mut staged = mk3(2, "n0", "n0", stage(), vec![], None);
     staged.focused_global = "wA".to_owned();
+    staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let mut selecting = mk3(
         3,
@@ -7580,6 +7596,7 @@ fn host_owned_focus_bearing_shared_partial_then_external_move_drops_binding() {
         )),
     );
     selecting.focused_global = "wA".to_owned();
+    selecting.foreground_known = true;
     let reply = accepted(&mut engine, &selecting);
     assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
     let effect = reply.effects[0].clone();
@@ -7756,6 +7773,7 @@ fn host_owned_focus_bearing_shared_nonfocus_own_refusal_pends_then_fails() {
     };
     let mut staged = mk3(2, "n0", "n0", stage(), vec![], None);
     staged.focused_global = "wA".to_owned();
+    staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let mut selecting = mk3(
         3,
@@ -7772,6 +7790,7 @@ fn host_owned_focus_bearing_shared_nonfocus_own_refusal_pends_then_fails() {
         )),
     );
     selecting.focused_global = "wA".to_owned();
+    selecting.foreground_known = true;
     let reply = accepted(&mut engine, &selecting);
     assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
     let effect = reply.effects[0].clone();
@@ -7979,6 +7998,7 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
             cursor: None,
             cursor_hit: None,
             focused_global: focused.to_owned(),
+            foreground_known: !focused.is_empty(),
             action_foreground: None,
             action_cached: None,
             action_outputs: Vec::new(),
@@ -9273,6 +9293,7 @@ fn host_owned_focus_bearing_fullscreen_focus_freezes_frameless_and_proves() {
     };
     let mut staged = host_native_report(2, stage(), "n0", None, None);
     staged.focused_global = "w2".to_owned();
+    staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let reply = host_select_windows(&mut engine, 3, &away, stage(), "n0", "w2");
     assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
@@ -9340,6 +9361,7 @@ fn host_owned_focus_bearing_float_focus_freezes_frameless_and_proves() {
     };
     let mut staged = host_native_report(2, stage(), "n0", None, None);
     staged.focused_global = "w2".to_owned();
+    staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let reply = host_select_windows(&mut engine, 3, &away, stage(), "n0", "w2");
     assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
@@ -9401,12 +9423,14 @@ fn host_owned_focus_bearing_freezes_sticky_focus_at_actual_home() {
     // observation is the only canonical write.
     let mut introduced = host_native_report(2, stage(), "n0", None, None);
     introduced.focused_global = "w2".to_owned();
+    introduced.foreground_known = true;
     let _ = accepted(&mut engine, &introduced);
     // Record sticky memory at the away domain: the adapter shows away
     // while the sticky window stays homed to home. No newcomers, so no
     // admission focus overwrites the slot.
     let mut observed = host_native_report(3, stage(), "n1", None, None);
     observed.focused_global = "ws".to_owned();
+    observed.foreground_known = true;
     let _ = accepted(&mut engine, &observed);
     // Select away from home: the remembered sticky focus must resolve.
     let mut selecting = host_native_report(
@@ -9420,6 +9444,7 @@ fn host_owned_focus_bearing_freezes_sticky_focus_at_actual_home() {
         }),
     );
     selecting.focused_global = "ws".to_owned();
+    selecting.foreground_known = true;
     let reply = accepted(&mut engine, &selecting);
     assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
     assert_eq!(
@@ -9520,6 +9545,7 @@ fn host_focus_grant_fullscreen_nonfocus() -> (WorldEngine, String, crate::world_
     };
     let mut staged = host_native_report(2, stage(), "n0", None, None);
     staged.focused_global = "w2".to_owned();
+    staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let reply = host_select_windows(&mut engine, 3, &away, stage(), "n0", "w2");
     assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
@@ -11491,6 +11517,7 @@ fn d23_minimized_native_rehome_forgets_source_slot() {
     // A / (B, C) grouping on the n0 workspace.
     let mut staged = host_native_report(2, vec![hfact("win-a", "n0", 0, true)], "n0", None, None);
     staged.focused_global = "win-a".to_owned();
+    staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let mut staged = host_native_report(
         3,
@@ -11503,6 +11530,7 @@ fn d23_minimized_native_rehome_forgets_source_slot() {
         None,
     );
     staged.focused_global = "win-b".to_owned();
+    staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let mut staged = host_native_report(
         4,
@@ -11516,6 +11544,7 @@ fn d23_minimized_native_rehome_forgets_source_slot() {
         None,
     );
     staged.focused_global = "win-b".to_owned();
+    staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     // Confirm the starting tree nests B with C, apart from A.
     let pre_tree = d23_home_tree(&engine, &home_key);
@@ -11546,6 +11575,7 @@ fn d23_minimized_native_rehome_forgets_source_slot() {
         None,
     );
     staged.focused_global = "win-c".to_owned();
+    staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let old_slot = engine
         .engine
@@ -11639,6 +11669,7 @@ fn d23_minimized_native_rehome_forgets_source_slot() {
         None,
     );
     focus_a.focused_global = "win-a".to_owned();
+    focus_a.foreground_known = true;
     let _ = accepted(&mut engine, &focus_a);
     assert_eq!(
         d23_focused_window(&engine, &home_key),
@@ -11669,6 +11700,7 @@ fn d23_minimized_native_rehome_forgets_source_slot() {
         None,
     );
     staged.focused_global = "win-a".to_owned();
+    staged.foreground_known = true;
     let reply9 = accepted(&mut engine, &staged);
     assert!(
         reply9.transfers.is_empty(),
@@ -12201,6 +12233,7 @@ fn d23_minimized_unsettled_transfer_retains_slot() {
         }),
     );
     send.focused_global = "win-b".to_owned();
+    send.foreground_known = true;
     let sent = accepted(&mut engine, &send);
     assert!(
         sent.transfers.iter().any(|t| matches!(
@@ -12273,6 +12306,7 @@ fn d23_minimized_unsettled_transfer_retains_slot() {
         None,
     );
     arrival.focused_global = "win-b".to_owned();
+    arrival.foreground_known = true;
     let settled = accepted(&mut engine, &arrival);
     assert!(
         settled.transfers.is_empty(),
@@ -12509,6 +12543,7 @@ fn d23_minimized_workspace_migration_retains_relocated_slot() {
         }),
     );
     migrate.focused_global = "win-a".to_owned();
+    migrate.foreground_known = true;
     let migrated = accepted(&mut engine, &migrate);
     assert!(
         migrated

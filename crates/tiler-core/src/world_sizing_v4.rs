@@ -157,6 +157,8 @@ pub fn report_estimate_v4(report: &WorldReportV4) -> usize {
         + report.command_seq.map_or(4, |seq| 2 + u64_len(seq))
         + report.command.as_ref().map_or(4, command_estimate_owned)
         + json_string_len(&report.focused_global)
+        + 19
+        + bool_len(report.foreground_known)
         + bool_len(report.inventory_complete)
         + bool_len(report.gesture_barrier)
         + presentation_row_v4_estimate(&report.presentation);
@@ -402,6 +404,23 @@ pub fn report_estimate_v4(report: &WorldReportV4) -> usize {
     bytes
 }
 
+/// Conservative size of the retained close-focus lane body (after the
+/// `,"closeFocus":` joiner): `null` (4) with no request, else the fixed
+/// object shape with quoted revision and closed cause token.
+fn close_focus_estimate_v4(request: &Option<crate::world_report::CloseFocusRequest>) -> usize {
+    match request {
+        None => 4,
+        Some(request) => {
+            63 + json_string_len(&request.id)
+                + json_string_len(&request.target.0)
+                + u64_len(request.issued_revision)
+                + json_string_len(request.cause.as_str())
+                + json_string_len(&request.output.0)
+                + json_string_len(&request.workspace)
+        }
+    }
+}
+
 /// Structural reply size estimate over the staged v4 reply with the v4
 /// deltas (transfers carry the quoted `cmdSeq` correlation, presentation
 /// carries the anchored border). Shared lanes reuse the shared estimators;
@@ -520,6 +539,7 @@ pub fn reply_estimate_v4(reply: &WorldReplyV4) -> usize {
             + bool_len(effect.await_shown);
     }
     bytes += reply.effects.len().saturating_sub(1);
+    bytes += 14 + close_focus_estimate_v4(&reply.close_focus);
     bytes += command_result_estimate(&reply.command_result);
     bytes += gesture_settled_estimate(&reply.gesture_settled);
     bytes += operation_settled_estimate(&reply.operation_settled);
@@ -728,6 +748,19 @@ pub fn reply_exact_bytes_v4(reply: &WorldReplyV4) -> usize {
             + bool_len(effect.await_shown);
     }
     bytes += reply.effects.len().saturating_sub(1);
+    bytes += 14
+        + reply.close_focus.as_ref().map_or(4, |request| {
+            // 48 fixed: 50 joiner literals plus the 8 quote pairs the four
+            // opaque fields carry, minus the 10 quotes the five
+            // `json_string_len` values below already count (rev is unquoted
+            // on both sides; its quotes ride the joiners).
+            48 + json_string_len(&request.id)
+                + json_string_len(&request.target.0)
+                + u64_len(request.issued_revision)
+                + json_string_len(request.cause.as_str())
+                + json_string_len(&request.output.0)
+                + json_string_len(&request.workspace)
+        });
     bytes += command_result_exact_v4(&reply.command_result);
     bytes += reply.gesture_settled.as_ref().map_or(4, |terminal| {
         // {"id":"","committed":} = 22 punctuation.

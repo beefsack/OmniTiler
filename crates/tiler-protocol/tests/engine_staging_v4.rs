@@ -144,9 +144,9 @@ fn assert_conserved(id: &str, report: &WorldReportV4, census: &StagedV4Census) {
 }
 
 /// Permissive staging engine for the conservation census: all four state
-/// capabilities true so supported state facts and attempts stay live and the
-/// 207-fixture count stays meaningful. Everything else keeps the
-/// `new_test_bound` defaults, so only state-capability grading changes.
+/// capabilities true so supported state facts and attempts stay live.
+/// Everything else keeps the `new_test_bound` defaults, so only
+/// state-capability grading changes.
 fn permissive_engine() -> WorldEngine {
     WorldEngine::new_test_bound_with_capabilities(
         "gen-1",
@@ -169,7 +169,7 @@ fn permissive_engine() -> WorldEngine {
 #[test]
 fn v4_staging_conserves_all_accepted_reports() {
     let reports = accepted_reports();
-    assert_eq!(reports.len(), 207, "accepted WorldReport fixture count");
+    assert_eq!(reports.len(), 209, "accepted WorldReport fixture count");
     let engine = permissive_engine();
     for (id, report) in &reports {
         let census = engine.stage_report_v4_census(report);

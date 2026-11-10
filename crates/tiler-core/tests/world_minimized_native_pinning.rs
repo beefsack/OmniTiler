@@ -156,6 +156,7 @@ fn report(
             .first()
             .map(|f| f.window.0.clone())
             .unwrap_or_default(),
+        foreground_known: false,
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
@@ -540,6 +541,7 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
         }),
     );
     send_report.focused_global = "win-a".to_owned();
+    send_report.foreground_known = true;
     match engine.handle_report(&send_report) {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
@@ -567,6 +569,7 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
         }),
     );
     focus_report.focused_global = "win-a".to_owned();
+    focus_report.foreground_known = true;
     match engine.handle_report(&focus_report) {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
@@ -645,6 +648,7 @@ fn minimized_trailing_retains_workspace_and_focus_global_ignored() {
         None,
     );
     second_input.focused_global = "win-b".to_owned();
+    second_input.foreground_known = true;
     let second = accepted(&mut engine, &second_input);
     assert!(
         second.workspaces.iter().any(|row| row.id == bound[N2]),
@@ -1061,6 +1065,7 @@ fn close_focused_tiled_reflows_without_minimized_focus() {
     );
     closing.closed = vec![WindowId("win-a".to_owned())];
     closing.focused_global = "win-a".to_owned();
+    closing.foreground_known = true;
     let reply = accepted(&mut engine, &closing);
     let minimized = reply
         .windows
@@ -1121,6 +1126,7 @@ fn pager_click_minimized_refuses_while_tiled_focus_succeeds() {
         }),
     );
     click_minimized.focused_global = "win-a".to_owned();
+    click_minimized.foreground_known = true;
     match engine.handle_report(&click_minimized) {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
@@ -1147,6 +1153,7 @@ fn pager_click_minimized_refuses_while_tiled_focus_succeeds() {
         }),
     );
     click_tiled.focused_global = "win-a".to_owned();
+    click_tiled.foreground_known = true;
     let reply = accepted(&mut engine, &click_tiled);
     assert!(
         reply

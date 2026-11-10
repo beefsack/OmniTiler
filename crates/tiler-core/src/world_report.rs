@@ -328,6 +328,51 @@ impl EffectCause {
     }
 }
 
+/// Typed retained close-focus cause. Closed: only the positive close of
+/// the focused lifetime originates the retained request. Separate from
+/// [`EffectCause`]: no command sequence, no admission/hover semantics,
+/// and no new verdict ingress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CloseFocusCause {
+    PositiveClose,
+}
+
+impl CloseFocusCause {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PositiveClose => "positive-close",
+        }
+    }
+
+    /// Parse a wire token; `None` for unknown tokens (the codec refuses).
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "positive-close" => Self::PositiveClose,
+            _ => return None,
+        })
+    }
+}
+
+/// Retained close-focus request (outbound only): the frozen target of the
+/// positively closed focused lifetime plus its frozen source domain. No
+/// command sequence, no transfer, no raise/stack semantics. `None` on the
+/// row carries no close intent: no activation is authorized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloseFocusRequest {
+    pub id: String,
+    pub target: WindowId,
+    /// Publication revision that minted the request (quoted on the wire).
+    pub issued_revision: u64,
+    pub cause: CloseFocusCause,
+    /// Frozen source output scope.
+    pub output: OutputId,
+    /// Frozen source logical workspace id.
+    pub workspace: String,
+}
+
 /// One-shot effect: the adapter marks it spent BEFORE first native dispatch;
 /// duplicates and repeated diffs never reapply. Lost/stale effects drop
 /// (at-most-once), never steal focus on a later unrelated report.
@@ -1340,6 +1385,12 @@ pub struct WorldReportV4 {
     pub cursor_hit: Option<WindowId>,
     /// Global active window id ("" when none).
     pub focused_global: String,
+    /// Provenance of the `focused_global` read: `true` plus nonempty names
+    /// proven bound foreground; `true` plus empty is positively known
+    /// no-client; `false` requires empty and means unknown (unreadable,
+    /// unbound, foreign). Only a fresh native read proves either known
+    /// state; retained focus absence never proves no-client.
+    pub foreground_known: bool,
     /// Neutral migration/control action foreground (`None` unknown).
     pub action_foreground: Option<OutputId>,
     /// Neutral migration/control action cache (`None` empty/unmapped).
@@ -2500,6 +2551,9 @@ pub struct WorldReplyV4 {
     pub windows: Vec<WindowDesire>,
     pub transfers: Vec<TransferTargetV4>,
     pub effects: Vec<OneShotEffect>,
+    /// Retained close-focus request, always present on the wire (`null`
+    /// carries no request). Zero or one row, never a chain.
+    pub close_focus: Option<CloseFocusRequest>,
     pub command_result: Option<CommandResult>,
     pub gesture_settled: Option<GestureSettled>,
     pub operation_settled: Vec<OperationEvent>,
