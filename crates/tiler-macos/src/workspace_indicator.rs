@@ -500,7 +500,7 @@ pub fn verify_core_row_click(
     current_generation: u64,
     fresh_revision: u64,
     render_core_generation: &str,
-    presentation: &tiler_core::world_presentation::WorldPresentation,
+    presentation: &tiler_core::world_report::WorldPresentationV4,
     desires: &[tiler_core::world_report::WorkspaceDesire],
     snapshot_generation: &str,
 ) -> Result<InputSemanticAction, String> {
@@ -2706,11 +2706,12 @@ mod tests {
         trailing: bool,
         order: usize,
     ) -> tiler_core::world_report::WorkspaceDesire {
+        let out = tiler_core::directional::OutputId(output.to_owned());
         tiler_core::world_report::WorkspaceDesire {
             id: id.to_owned(),
-            output: tiler_core::directional::OutputId(output.to_owned()),
+            output: out.clone(),
             native_binding: native_binding.map(str::to_owned),
-            scope: output.to_owned(),
+            scope: tiler_core::world_report::workspace_authority_scope(&out, id),
             order,
             tiling_mode: tiler_core::world_report::TilingMode::Tiled,
             existence: true,
@@ -2834,11 +2835,10 @@ mod tests {
 
     fn core_presentation_for(
         screens: &[tiler_core::world_presentation::PagerScreen],
-    ) -> tiler_core::world_presentation::WorldPresentation {
-        tiler_core::world_presentation::WorldPresentation {
-            pager: screens.to_vec(),
-            ..Default::default()
-        }
+    ) -> tiler_core::world_report::WorldPresentationV4 {
+        let mut base = crate::runtime::empty_world_presentation_v4();
+        base.pager = screens.to_vec();
+        base
     }
 
     #[test]
@@ -3023,7 +3023,7 @@ mod tests {
                      current_generation: u64,
                      fresh_revision: u64,
                      render_core_generation: &str,
-                     presentation: &tiler_core::world_presentation::WorldPresentation,
+                     presentation: &tiler_core::world_report::WorldPresentationV4,
                      desires: &[tiler_core::world_report::WorkspaceDesire],
                      snapshot_generation: &str| {
             verify_core_row_click(

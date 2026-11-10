@@ -682,6 +682,7 @@ fn build_scoped_snapshot_maps_complete_reads_with_membership() {
         hidden: false,
         activation_policy: tiler_macos::classifier::ActivationPolicy::Regular,
         is_own_bundle: false,
+        app_id: None,
     };
     let spaces_of = |wid: u32| match wid {
         7 => Ok(vec![11]),
@@ -730,6 +731,7 @@ fn build_scoped_snapshot_refuses_unhomed_and_incomplete_reads() {
         hidden: false,
         activation_policy: tiler_macos::classifier::ActivationPolicy::Regular,
         is_own_bundle: false,
+        app_id: None,
     };
     // Every membership unreadable: whole read fails (nothing homable).
     let outcome = NativeReadOutcome {

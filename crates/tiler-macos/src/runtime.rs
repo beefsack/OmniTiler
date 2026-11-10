@@ -111,6 +111,31 @@ impl std::fmt::Display for StartFailure {
 
 impl std::error::Error for StartFailure {}
 
+// -- Empty v4 presentation ----------------------------------------------------
+// Slice 1: the v4 reply presentation carries no separate legacy shape and no
+// `Default`; initial runtime state starts from this explicitly empty value
+// (no foreground, revision 0, hidden border/underlay, empty pager) until
+// the first accepted reply arrives.
+#[must_use]
+pub(crate) fn empty_world_presentation_v4() -> tiler_core::world_report::WorldPresentationV4 {
+    tiler_core::world_report::WorldPresentationV4 {
+        foreground: String::new(),
+        rev: 0,
+        suspended_output: None,
+        border: tiler_core::world_report::BorderPresentationV4 {
+            visible: false,
+            reason: Some(tiler_core::world_report::BorderHideReasonV4::NoTarget),
+            subject: None,
+            outsets: None,
+            width: None,
+            radius: None,
+            witness: None,
+        },
+        underlay: tiler_core::world_presentation::PresentationUnderlay::default(),
+        pager: Vec::new(),
+    }
+}
+
 // -- Scoped observations -------------------------------------------------------
 
 /// Revision-tagged scoped observation for native topology mode. `windows`
@@ -307,7 +332,7 @@ impl Runtime {
                 test_wake: None,
                 test_seq: 0,
                 last_geometry_key: None,
-                last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+                last_presentation: empty_world_presentation_v4(),
                 last_pager_bindings: Vec::new(),
                 last_workspace_desires: Vec::new(),
                 last_core_generation: String::new(),
@@ -367,7 +392,7 @@ impl Runtime {
             test_wake: None,
             test_seq: 0,
             last_geometry_key: None,
-            last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            last_presentation: empty_world_presentation_v4(),
             last_pager_bindings: Vec::new(),
             last_workspace_desires: Vec::new(),
             last_core_generation: String::new(),
@@ -970,17 +995,6 @@ impl RuntimeHandle {
         lock_shared(&self.shared).select_wake = Some(wake);
     }
 
-    /// Publish the startup-resolved presentation style numbers for the
-    /// report ingress. Call once at startup from the tile main thread
-    /// (startup-only config, never re-read). Brief lock.
-    pub fn publish_presentation_style(
-        &self,
-        style: &crate::active_border::ActiveBorderStyle,
-        enabled: bool,
-    ) {
-        lock_shared(&self.shared).presentation_style =
-            crate::active_border::presentation_style(style, enabled);
-    }
     /// Shared active-Space wake (`None` until published — both waiters
     /// refuse honestly). Brief lock clone only.
     pub fn select_wake(&self) -> Option<crate::ffi::SpaceSelectWake> {
@@ -1802,7 +1816,7 @@ impl RuntimeHandle {
     /// thread renders these shapes through the existing native carriers,
     /// revalidating liveness plus the fresh native safety vetoes before
     /// painting.
-    pub fn last_presentation(&self) -> tiler_core::world_presentation::WorldPresentation {
+    pub fn last_presentation(&self) -> tiler_core::world_report::WorldPresentationV4 {
         lock_shared(&self.shared).last_presentation.clone()
     }
 
@@ -1824,7 +1838,7 @@ impl RuntimeHandle {
     pub fn last_indicator_snapshot(
         &self,
     ) -> (
-        tiler_core::world_presentation::WorldPresentation,
+        tiler_core::world_report::WorldPresentationV4,
         Vec<crate::pager::PagerWorkspaceBinding>,
         Vec<tiler_core::world_report::WorkspaceDesire>,
         String,

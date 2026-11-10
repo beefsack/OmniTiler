@@ -1908,6 +1908,7 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "tiler-core",
+ "tiler-protocol",
  "tiler-windows",
 ]
 

@@ -42,8 +42,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tiler_core::directional::WindowId;
+#[cfg(test)]
 use tiler_core::world_engine::WorldEngine;
-use tiler_core::world_report::{EffectKind, OneShotEffect, WorldCommand, WorldReply};
+use tiler_core::world_report::{
+    EffectCause, EffectKind, OneShotEffect, WorldCommand, WorldReplyV4,
+};
 
 /// Thread-safe observation watermark. `invalidate` advances synchronously on
 /// every invalidating input (plain atomics: never blocks, even mid-flight);
@@ -110,7 +113,7 @@ pub(crate) struct RequestTicket {
 /// and changes no sequencer state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReplyVerdict {
-    Applied(Box<WorldReply>),
+    Applied(Box<WorldReplyV4>),
     Refused { reason: &'static str },
 }
 
@@ -124,7 +127,7 @@ struct SequencerState {
     has_accepted: bool,
     spent_effects: BTreeSet<String>,
     spent_commands: BTreeSet<u64>,
-    last_reply: Option<WorldReply>,
+    last_reply: Option<WorldReplyV4>,
 }
 
 /// Adapter-side world sequencing. `Send + Sync` so AX/input observers can
@@ -221,7 +224,7 @@ impl WorldSequencer {
     }
 
     /// Last applied reply snapshot, if any.
-    pub(crate) fn last_reply(&self) -> Option<WorldReply> {
+    pub(crate) fn last_reply(&self) -> Option<WorldReplyV4> {
         self.lock().last_reply.clone()
     }
 
@@ -283,7 +286,7 @@ impl WorldSequencer {
     /// (`command_consumed`) still apply as observation (the core already
     /// advanced their revision; the command never re-executes here because
     /// command identity is claimed once at dispatch).
-    pub(crate) fn accept_reply(&self, reply: &WorldReply) -> ReplyVerdict {
+    pub(crate) fn accept_reply(&self, reply: &WorldReplyV4) -> ReplyVerdict {
         let mut state = self.lock();
         if reply.core_generation != state.generation {
             return ReplyVerdict::Refused {
@@ -340,7 +343,7 @@ impl WorldSequencer {
     /// Filter one accepted reply's effects to the never-spent ones, spending
     /// each returned id. Unit B calls this BEFORE dispatch so duplicates and
     /// repeated diffs never reapply.
-    pub(crate) fn take_unspent_effects(&self, reply: &WorldReply) -> Vec<OneShotEffect> {
+    pub(crate) fn take_unspent_effects(&self, reply: &WorldReplyV4) -> Vec<OneShotEffect> {
         let mut state = self.lock();
         reply
             .effects
@@ -365,17 +368,6 @@ impl WorldSequencer {
         state.spent_commands.clear();
         state.last_reply = None;
     }
-
-    /// Bootstrap reply for discovery: generation/capabilities with
-    /// `ready=false` and no applicable desired state. Thin wrapper over the
-    /// core constructor so Unit B has one call site.
-    pub(crate) fn bootstrap_reply(
-        engine: &WorldEngine,
-        adapter_incarnation: &str,
-        request_id: &str,
-    ) -> WorldReply {
-        engine.bootstrap_reply(adapter_incarnation, request_id)
-    }
 }
 
 /// Mint the stable command operation identity for one command sequence.
@@ -399,16 +391,41 @@ pub(crate) fn focus_effect(command_seq: u64, window: &str, issued_revision: u64)
         kind: EffectKind::Focus,
         target: WindowId(window.to_owned()),
         issued_revision,
+        cause: EffectCause::ExplicitCommand,
+        command_seq: Some(command_seq),
+        await_shown: false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tiler_core::world_report::WORLD_CONTRACT_VERSION;
+    use tiler_core::world_report::WORLD_CONTRACT_VERSION_V4;
 
     const INCARNATION: &str = "adapter-1";
     const GENERATION: &str = "gen-1";
+
+    fn empty_presentation() -> tiler_core::world_report::WorldPresentationV4 {
+        tiler_core::world_report::WorldPresentationV4 {
+            foreground: String::new(),
+            rev: 0,
+            suspended_output: None,
+            border: tiler_core::world_report::BorderPresentationV4 {
+                visible: false,
+                reason: None,
+                subject: None,
+                outsets: None,
+                width: None,
+                radius: None,
+                witness: None,
+            },
+            underlay: tiler_core::world_presentation::PresentationUnderlay::Hidden {
+                base_revision: None,
+                reason: tiler_core::world_presentation::GroupHideReason::NoGroup,
+            },
+            pager: Vec::new(),
+        }
+    }
 
     fn reply(
         request_id: &str,
@@ -416,9 +433,9 @@ mod tests {
         revision: u64,
         ready: bool,
         generation: &str,
-    ) -> WorldReply {
-        WorldReply {
-            contract_version: WORLD_CONTRACT_VERSION,
+    ) -> WorldReplyV4 {
+        WorldReplyV4 {
+            contract_version: WORLD_CONTRACT_VERSION_V4,
             adapter_incarnation: INCARNATION.to_owned(),
             core_generation: generation.to_owned(),
             request_id: request_id.to_owned(),
@@ -437,7 +454,10 @@ mod tests {
             operation_settled: Vec::new(),
             native_creations: Vec::new(),
             cursor_warp: None,
-            presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            presentation: empty_presentation(),
+            intent_writes: Vec::new(),
+            switch_settled: Vec::new(),
+            diagnostics: Vec::new(),
         }
     }
 
@@ -661,11 +681,84 @@ mod tests {
 
     #[test]
     fn bootstrap_carries_no_desired_state() {
-        let engine = WorldEngine::new(GENERATION).expect("valid generation");
-        let bootstrap = WorldSequencer::bootstrap_reply(&engine, INCARNATION, "req-bootstrap");
+        // Pre-handshake engine publishes no desired native writes: an
+        // unbound engine (no handshake/settings) refuses the report at the
+        // owner gate, so nothing is admitted and no authority is published.
+        let mut unbound = WorldEngine::new(GENERATION).expect("valid generation");
+        let report = tiler_core::world_report::WorldReportV4 {
+            contract_version: WORLD_CONTRACT_VERSION_V4,
+            adapter_incarnation: INCARNATION.to_owned(),
+            core_generation: GENERATION.to_owned(),
+            observation_seq: 0,
+            request_seq: 1,
+            request_id: "req-1".to_owned(),
+            command_seq: None,
+            command: None,
+            screens: Vec::new(),
+            held_screens: Vec::new(),
+            windows: Vec::new(),
+            held_windows: Vec::new(),
+            closed: Vec::new(),
+            native: Vec::new(),
+            held_native: Vec::new(),
+            cursor: None,
+            cursor_hit: None,
+            focused_global: String::new(),
+            action_foreground: None,
+            action_cached: None,
+            action_outputs: Vec::new(),
+            primary_output: None,
+            inventory_complete: false,
+            gesture_barrier: false,
+            gesture: None,
+            monotonic_ms: 0,
+            frames: Vec::new(),
+            member_attempts: Vec::new(),
+            view_attempts: Vec::new(),
+            clear_attempts: Vec::new(),
+            creation_attempts: Vec::new(),
+            held_attempts: Vec::new(),
+            state_attempts: Vec::new(),
+            focus_feedback: Vec::new(),
+            presentation: tiler_core::world_report::PresentationRowV4::Valid(
+                tiler_core::world_report::PresentationIngressV4::default(),
+            ),
+            intent_records: Vec::new(),
+            renderer_input: None,
+        };
+        match unbound.handle_report(&report) {
+            tiler_core::world_engine::WorldOutcome::Rejected { .. } => {}
+            tiler_core::world_engine::WorldOutcome::Accepted(_)
+            | tiler_core::world_engine::WorldOutcome::Duplicate(_)
+            | tiler_core::world_engine::WorldOutcome::CommandConsumed(_) => {
+                panic!("pre-handshake report must not be admitted")
+            }
+        }
+        // Adapter-side readiness gate mirrors the same invariant: a
+        // not-ready bootstrap-shaped reply carries no desired state and
+        // never applies, so no native write is authorized pre-readiness.
+        let bootstrap = reply("req-bootstrap", 0, 0, false, GENERATION);
         assert!(!bootstrap.ready);
         assert!(bootstrap.windows.is_empty() && bootstrap.transfers.is_empty());
         assert_eq!(bootstrap.core_generation, GENERATION);
+        assert!(bootstrap.presentation.pager.is_empty());
+        assert!(!bootstrap.presentation.border.visible);
+        let sequencer = WorldSequencer::new(INCARNATION, GENERATION);
+        let ticket = sequencer.try_begin_request(None).expect("flight");
+        assert_eq!(ticket.request_id, "req-1");
+        match sequencer.accept_reply(&bootstrap) {
+            ReplyVerdict::Refused { reason } => {
+                // Stale-request (bootstrap id unbound to the flight) or
+                // not-ready both gate pre-readiness writes; either preserves
+                // the no-writes invariant.
+                assert!(
+                    reason == "stale-request" || reason == "not-ready",
+                    "unexpected gate: {reason}"
+                );
+            }
+            ReplyVerdict::Applied(_) => panic!("not-ready bootstrap must not apply"),
+        }
+        assert!(sequencer.last_reply().is_none());
     }
 
     #[test]

@@ -1920,10 +1920,10 @@ pub fn run(display: usize, actions: &[InputSemanticAction]) -> Result<String, (i
     // History lives core-side across the batch and dies with it.
     let clock = std::sync::Arc::new(crate::world_sequencer::ObservationClock::new());
     let mut session = crate::world_runtime::WorldSession::new(
-        tiler_core::size_hints::FixedSizePredicate::BothAxes,
         true,
         crate::focus_route::FocusRoute::Slps,
         clock,
+        &[],
     );
     let mut retained = crate::runtime_core::RetainedCore::default();
     let mut select_state = SelectionState::default();

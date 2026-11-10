@@ -419,7 +419,7 @@ fn tile_request(words: &[&str]) -> TileRequest {
         run_dir,
         fixture_owned_spaces,
         fixture_starting_space,
-        border: _,
+        border,
         pager_highlight: _,
         drag: _,
         indicator: _,
@@ -446,6 +446,7 @@ fn tile_request(words: &[&str]) -> TileRequest {
         pager_highlight: tiler_macos::pager_highlight::PagerHighlightStyle::default(),
         drag: tiler_macos::drag_drop::DragOptions::default(),
         indicator: tiler_macos::workspace_indicator::IndicatorOptions::default(),
+        core_settings: tiler_macos::dev_selection::collect_raw_core_settings(&border, None),
     }
 }
 

@@ -480,18 +480,16 @@ fn select_output_prefers_focus_home_then_first_current() {
 fn ordinary_frame_traffic_never_occupies_write_correlation() {
     use std::sync::Arc;
 
-    use tiler_core::size_hints::FixedSizePredicate;
-
     use crate::focus_route::FocusRoute;
     use crate::world_sequencer::ObservationClock;
     // Placement rows (explicit `frame_operation` tokens) are the only
     // rows that settle anything core-side, so they are the only rows
     // tracked: ordinary frame traffic must neither insert nor evict.
     let mut session = WorldSession::new(
-        FixedSizePredicate::BothAxes,
         false,
         FocusRoute::Slps,
         Arc::new(ObservationClock::new()),
+        &[],
     );
     track_write(
         &mut session,
@@ -590,10 +588,10 @@ fn raw_attempt_staging_drops_unknown_operations_without_evidence() {
     // unknown operations (forged, retired, or never issued) drop without
     // evidence — never fabricated rows, never guessed targets.
     let mut session = WorldSession::new(
-        tiler_core::size_hints::FixedSizePredicate::BothAxes,
         false,
         FocusRoute::Slps,
         Arc::new(ObservationClock::new()),
+        &[],
     );
     session.stage_view_attempt(
         "op-404",
@@ -815,11 +813,12 @@ fn hidden_repeat_snapshots_after_prune_retain_fact_and_close() {
     );
 }
 
-/// Host-owned native-attempt absence (option B follow-up): staged view and
+/// Host-owned native-attempt namespace (option B follow-up): staged view and
 /// member attempts keep their logical target correlation but never
 /// translate drain-observed native Space ids to logical pre/post receipts.
-/// Native pre/post ride as absence (`None`); the current attempt fields
-/// represent logical observations only. Unknown operations still drop.
+/// Native pre/post/baseline ride in the native namespace (`WorkspaceRef::Native`);
+/// the logical observation fields stay out of the translation. Unknown
+/// operations still drop.
 #[test]
 fn staged_native_attempts_report_absence_not_translated_logical() {
     use crate::focus_route::FocusRoute;
@@ -831,13 +830,13 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
     use tiler_core::world_engine::WorldOutcome;
     use tiler_core::world_report::FrameSetter;
     let mut session = WorldSession::new(
-        tiler_core::size_hints::FixedSizePredicate::BothAxes,
         true,
         FocusRoute::Slps,
         Arc::new(ObservationClock::new()),
+        &[],
     );
     let incarnation = session.incarnation().to_owned();
-    let generation = crate::runtime_types::PHASE1_GENERATION.to_owned();
+    let generation = session.sequencer().bound_generation();
     let output = OutputId("macos-display-1".to_owned());
     let native_a = crate::topology::workspace_key(11);
     let native_b = crate::topology::workspace_key(12);
@@ -914,9 +913,26 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
     let memory = crate::runtime_core::LifetimeMemory::empty();
     let closed: Vec<WindowId> = Vec::new();
     let unreadable: BTreeMap<DomainKey, tiler_core::world_report::HoldReason> = BTreeMap::new();
+    // Explicit synthetic ordinary captures for `1001_7`: AXWindow /
+    // AXStandardWindow, non-modal, resizable, base layer, regular app,
+    // host-visible. Same vocabulary as the workspace_send/managed lanes;
+    // without this the builder defaults to null native admission facts and
+    // the Send carrier never admits.
+    let raw: BTreeMap<String, crate::runtime_types::WindowRawFacts> = BTreeMap::from([(
+        "1001_7".to_owned(),
+        crate::runtime_types::WindowRawFacts {
+            role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+            subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+            modal: Some(false),
+            resizable: Some(true),
+            layer: Some(0),
+            app_id: Some("com.example.app".to_owned()),
+            activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+            host_hidden: Some(false),
+        },
+    )]);
     let owned_first = "req-1".to_owned();
     let mut input = crate::world_builder::ReportInput::new(
-        &incarnation,
         &incarnation,
         &generation,
         &ctx,
@@ -931,11 +947,17 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
         "1001_7",
         false,
     );
+    input.raw = &raw;
     let first = crate::world_builder::build_report(&mut input);
     let adopted = match session.engine_mut().handle_report(&first) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("adopt report must accept, got {other:?}"),
     };
+    assert!(
+        adopted.windows.iter().any(|w| w.lifetime.0 == "1001_7"
+            && w.frame_authority == tiler_core::world_report::ScopeAuthority::Controlled),
+        "1001_7 admitted Controlled before send"
+    );
     let logical_for = |native: &str| {
         adopted
             .workspaces
@@ -948,10 +970,9 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
     let logical_b = logical_for(&native_b);
     assert_ne!(logical_a, logical_b, "adoption binds distinct logical ids");
     // View transfer via SwitchView to the hidden logical view retains
-    // operation `op-2`; staging native Space reads must ride as absence.
+    // operation `op-2`; staging native Space reads ride the native keys.
     let owned_second = "req-2".to_owned();
     let mut second = crate::world_builder::ReportInput::new(
-        &incarnation,
         &incarnation,
         &generation,
         &ctx,
@@ -966,6 +987,7 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
         "1001_7",
         false,
     );
+    second.raw = &raw;
     second.command_seq = Some(2);
     second.command = Some(tiler_core::world_report::WorldCommand::SwitchView {
         output: output.clone(),
@@ -978,10 +1000,9 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
     }
     session.stage_view_attempt("op-2", FrameSetter::Accepted, Some(11), Some(12), Some(11));
     // Window transfer via Send to the hidden logical workspace retains
-    // operation `op-3`; its native post must also ride as absence.
+    // operation `op-3`; its native pre/post ride the native keys too.
     let owned_third = "req-3".to_owned();
     let mut third = crate::world_builder::ReportInput::new(
-        &incarnation,
         &incarnation,
         &generation,
         &ctx,
@@ -996,6 +1017,7 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
         "1001_7",
         false,
     );
+    third.raw = &raw;
     third.command_seq = Some(3);
     third.command = Some(tiler_core::world_report::WorldCommand::Send {
         window: WindowId("1001_7".to_owned()),
@@ -1007,7 +1029,20 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
     match session.engine_mut().handle_report(&third_report) {
         WorldOutcome::Accepted(_) => {}
         other => panic!("send must accept, got {other:?}"),
-    }
+    };
+    assert!(
+        session
+            .engine_mut()
+            .retained_transfers()
+            .into_iter()
+            .any(|t| t.operation_id == "op-3"
+                && matches!(
+                    t.kind,
+                    tiler_core::world_report::TransferKind::Window(ref w)
+                    if w.0 == "1001_7"
+                )),
+        "op-3 window transfer retained before staging"
+    );
     session.stage_member_attempt("op-3", FrameSetter::Accepted, Some(11), Some(12));
     // Stage with unknown operation drops (existing fence, unchanged).
     session.stage_view_attempt(
@@ -1037,9 +1072,28 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
         .iter()
         .find(|a| a.operation_id == "op-2")
         .expect("view row");
-    assert!(
-        view.pre.is_none() && view.post.is_none(),
-        "native pre/post ride as absence"
+    // v4 carries the native Space reads in the native namespace (never a
+    // logical translation): pre/post/baseline ride as Native refs.
+    let native_pre = tiler_core::world_report::WorkspaceRef::Native {
+        output: output.clone(),
+        workspace: tiler_core::ids::NativeWorkspaceId::parse(&native_a)
+            .expect("valid native workspace"),
+    };
+    let native_post = tiler_core::world_report::WorkspaceRef::Native {
+        output: output.clone(),
+        workspace: tiler_core::ids::NativeWorkspaceId::parse(&native_b)
+            .expect("valid native workspace"),
+    };
+    assert_eq!(view.pre, Some(native_pre.clone()), "view pre rides native");
+    assert_eq!(
+        view.post,
+        Some(native_post.clone()),
+        "view post rides native"
+    );
+    assert_eq!(
+        view.baseline,
+        Some(native_pre.clone()),
+        "view baseline rides native"
     );
     assert_eq!(view.target_output, output);
     assert_eq!(
@@ -1051,11 +1105,8 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
         .iter()
         .find(|a| a.operation_id == "op-3")
         .expect("member row");
-    assert!(
-        member.post.is_none(),
-        "native post rides as absence, got {:?}",
-        member.post
-    );
+    assert_eq!(member.pre, Some(native_pre), "member pre rides native");
+    assert_eq!(member.post, Some(native_post), "member post rides native");
     assert_eq!(
         member.target_workspace, logical_b,
         "logical target correlation kept"
@@ -1070,5 +1121,476 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
                 .iter()
                 .all(|a| a.operation_id != "op-404"),
         "unknown operations drop"
+    );
+}
+
+#[test]
+fn staged_appended_sid_never_claims_causal_created_identity() {
+    use std::sync::Arc;
+
+    use tiler_core::directional::OutputId;
+    use tiler_core::world_report::FrameSetter;
+
+    use crate::focus_route::FocusRoute;
+    use crate::runtime_core::RetainedCore;
+    use crate::world_sequencer::ObservationClock;
+
+    // M5: an observed appended order alone is not causal proof of what the
+    // create leg made. The production v4 attempt keeps `created` null even
+    // when the legacy drain exposes an appended candidate SID.
+    let mut session = WorldSession::new(
+        true,
+        FocusRoute::Slps,
+        Arc::new(ObservationClock::new()),
+        &[],
+    );
+    let output = OutputId("macos-display-1".to_owned());
+    session.stage_native_creation(
+        "op-9",
+        "logical-9",
+        output.clone(),
+        FrameSetter::Accepted,
+        &[11, 12],
+        &[11, 12, 13],
+        Some(13),
+        7,
+    );
+    let retained = RetainedCore::default();
+    let report = crate::world_runtime::build_dispatch_report(
+        &mut session,
+        &retained,
+        &crate::world_runtime::DispatchContext::Synthetic,
+        &[],
+        1,
+        1,
+        None,
+        None,
+        None,
+        "req-1",
+    )
+    .expect("synthetic report builds");
+    assert_eq!(
+        report.creation_attempts.len(),
+        1,
+        "staged creation attempt rides the report"
+    );
+    let row = &report.creation_attempts[0];
+    assert_eq!(row.operation_id, "op-9");
+    assert_eq!(row.logical_workspace, "logical-9");
+    assert_eq!(row.target_output, output);
+    assert_eq!(row.setter, FrameSetter::Accepted);
+    assert_eq!(
+        row.order_before,
+        vec![
+            crate::topology::workspace_key(11),
+            crate::topology::workspace_key(12)
+        ],
+        "genuine pre-order preserved"
+    );
+    assert_eq!(
+        row.order_after,
+        vec![
+            crate::topology::workspace_key(11),
+            crate::topology::workspace_key(12),
+            crate::topology::workspace_key(13)
+        ],
+        "genuine post-order preserved"
+    );
+    assert!(
+        row.created_native.is_none(),
+        "appended observed SID never claims causal created identity"
+    );
+    assert_eq!(row.attempt_ms, 7, "attempt identity preserved");
+
+    // Codec seam: the production receipt rule maps `None` to explicit null
+    // (never absent), and the null round-trips back to `None`.
+    use tiler_protocol::world_protocol::{
+        CreationReceiptWire, CursorHitWire, DecodedReportV4, GestureIngressWire,
+        ReportWireOptionals, decode_report_v4, encode_report_v4,
+    };
+    let decoded = DecodedReportV4 {
+        report: report.clone(),
+        wire: ReportWireOptionals {
+            cursor_hit: CursorHitWire::Absent,
+            monotonic_ms_present: report.monotonic_ms != 0,
+            frame_attempts_present: !report.frames.is_empty(),
+            member_attempts_present: !report.member_attempts.is_empty(),
+            view_attempts_present: !report.view_attempts.is_empty(),
+            clear_attempts_present: !report.clear_attempts.is_empty(),
+            creation_attempts_present: !report.creation_attempts.is_empty(),
+            gesture_ingress: GestureIngressWire::Absent,
+        },
+        creation_receipts: vec![CreationReceiptWire::Null],
+    };
+    let wire = encode_report_v4(&decoded).expect("report encodes");
+    let back = decode_report_v4(&wire).expect("report decodes");
+    assert_eq!(
+        back.creation_receipts,
+        vec![CreationReceiptWire::Null],
+        "absent causal proof rides explicit null"
+    );
+    assert!(
+        back.report.creation_attempts[0].created_native.is_none(),
+        "null decodes to no causal identity"
+    );
+}
+
+/// Restart fencing: two `WorldSession` constructions in one process (the
+/// production restart shape: one engine thread dies, a new one starts under
+/// the same PID) must mint distinct adapter/generation pairs through the
+/// real handshake route, and the new session must refuse the old session's
+/// reply, report, and settings. Otherwise queued replies or settings from
+/// the dead session could actuate under the new one.
+#[test]
+fn restart_sessions_mint_distinct_tokens_and_fence_old_traffic() {
+    use std::sync::Arc;
+
+    use tiler_core::world_engine::WorldOutcome;
+    use tiler_core::world_report::{WORLD_CONTRACT_VERSION_V4, WorldPresentationV4, WorldReplyV4};
+
+    use crate::focus_route::FocusRoute;
+    use crate::runtime_core::RetainedCore;
+    use crate::world_sequencer::{ObservationClock, ReplyVerdict};
+
+    fn test_session() -> WorldSession {
+        WorldSession::new(
+            false,
+            FocusRoute::Slps,
+            Arc::new(ObservationClock::new()),
+            &[],
+        )
+    }
+
+    fn stale_reply(
+        incarnation: &str,
+        generation: &str,
+        request_id: &str,
+        observation_seq: u64,
+    ) -> WorldReplyV4 {
+        WorldReplyV4 {
+            contract_version: WORLD_CONTRACT_VERSION_V4,
+            adapter_incarnation: incarnation.to_owned(),
+            core_generation: generation.to_owned(),
+            request_id: request_id.to_owned(),
+            based_on_observation_seq: observation_seq,
+            state_revision: 1,
+            ready: true,
+            command_consumed: false,
+            scopes: Vec::new(),
+            workspaces: Vec::new(),
+            outputs: Vec::new(),
+            windows: Vec::new(),
+            transfers: Vec::new(),
+            effects: Vec::new(),
+            command_result: None,
+            gesture_settled: None,
+            operation_settled: Vec::new(),
+            native_creations: Vec::new(),
+            cursor_warp: None,
+            presentation: WorldPresentationV4 {
+                foreground: String::new(),
+                rev: 0,
+                suspended_output: None,
+                border: tiler_core::world_report::BorderPresentationV4 {
+                    visible: false,
+                    reason: None,
+                    subject: None,
+                    outsets: None,
+                    width: None,
+                    radius: None,
+                    witness: None,
+                },
+                underlay: tiler_core::world_presentation::PresentationUnderlay::Hidden {
+                    base_revision: None,
+                    reason: tiler_core::world_presentation::GroupHideReason::NoGroup,
+                },
+                pager: Vec::new(),
+            },
+            intent_writes: Vec::new(),
+            switch_settled: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    let mut old = test_session();
+    let mut new = test_session();
+
+    // Distinct identity pair across the restart.
+    assert_ne!(
+        old.incarnation(),
+        new.incarnation(),
+        "restart mints a fresh adapter incarnation"
+    );
+    let old_generation = old.sequencer().bound_generation();
+    let new_generation = new.sequencer().bound_generation();
+    assert_ne!(
+        old_generation, new_generation,
+        "restart mints a fresh core generation"
+    );
+    let old_incarnation = old.incarnation().to_owned();
+    let new_incarnation = new.incarnation().to_owned();
+
+    // The old session's reply (old tokens, new flight id) refuses on the
+    // new sequencer instead of actuating.
+    let ticket = new
+        .sequencer()
+        .try_begin_request(None)
+        .expect("flight opens");
+    match new.sequencer().accept_reply(&stale_reply(
+        &old_incarnation,
+        &old_generation,
+        &ticket.request_id,
+        ticket.observation_seq,
+    )) {
+        ReplyVerdict::Refused { .. } => {}
+        ReplyVerdict::Applied(_) => panic!("old-session reply must not apply after restart"),
+    }
+    // Either half of the pair fences alone: the new incarnation with the
+    // old generation still refuses.
+    match new.sequencer().accept_reply(&stale_reply(
+        &new_incarnation,
+        &old_generation,
+        &ticket.request_id,
+        ticket.observation_seq,
+    )) {
+        ReplyVerdict::Refused { reason } => assert_eq!(reason, "generation-mismatch"),
+        ReplyVerdict::Applied(_) => panic!("old generation must not apply under a new incarnation"),
+    }
+    // The new session still converges on its own tokens.
+    new.sequencer().clear_flight();
+    let fresh = new
+        .sequencer()
+        .try_begin_request(None)
+        .expect("fresh flight opens");
+    match new.sequencer().accept_reply(&stale_reply(
+        &new_incarnation,
+        &new_generation,
+        &fresh.request_id,
+        fresh.observation_seq,
+    )) {
+        ReplyVerdict::Applied(applied) => assert_eq!(applied.request_id, fresh.request_id),
+        ReplyVerdict::Refused { reason } => panic!("own tokens must apply: {reason}"),
+    }
+
+    // The old session's report (built through the real dispatch route, so
+    // the shape is production-valid) is admitted by its own engine but
+    // rejected by the new engine.
+    let old_report = build_dispatch_report(
+        &mut old,
+        &RetainedCore::default(),
+        &DispatchContext::Synthetic,
+        &[],
+        1,
+        1,
+        None,
+        None,
+        None,
+        "req-1",
+    )
+    .expect("synthetic report builds");
+    assert!(
+        matches!(
+            old.engine_mut().handle_report(&old_report),
+            WorldOutcome::Accepted(_)
+                | WorldOutcome::Duplicate(_)
+                | WorldOutcome::CommandConsumed(_)
+        ),
+        "old report is well-formed for its own engine"
+    );
+    assert!(
+        matches!(
+            new.engine_mut().handle_report(&old_report),
+            WorldOutcome::Rejected { .. }
+        ),
+        "old report must not be admitted after restart"
+    );
+
+    // The old session's settings envelope never reaches new settings
+    // state, while the new session's own revision routes.
+    assert!(
+        crate::world_connection::apply_settings_revision(
+            new.engine_mut(),
+            &old_incarnation,
+            &old_generation,
+            2,
+            &[],
+        )
+        .is_none(),
+        "old settings envelope must not route after restart"
+    );
+    assert!(
+        crate::world_connection::apply_settings_revision(
+            new.engine_mut(),
+            &new_incarnation,
+            &new_generation,
+            2,
+            &[],
+        )
+        .is_some(),
+        "own settings revision still routes"
+    );
+}
+
+/// Same-PID restart with PID reuse: the identity pair must come solely from
+/// the fresh CSPRNG nonce, never from the PID (PID reuse across process
+/// restarts could otherwise reproduce the pair). Two sessions built over
+/// distinct caller-supplied nonces — the deterministic stand-in for two
+/// successive fresh-nonce mints under one reused PID — bind distinct pairs through the real
+/// handshake route and fence each other's traffic.
+#[test]
+fn reused_pid_shape_with_distinct_nonces_fences_old_traffic() {
+    use std::sync::Arc;
+
+    use tiler_core::world_engine::WorldOutcome;
+
+    use crate::focus_route::FocusRoute;
+    use crate::runtime_core::RetainedCore;
+    use crate::world_sequencer::ObservationClock;
+
+    fn fixed_session(nonce: &str) -> WorldSession {
+        WorldSession::new_with_tokens(
+            Some((format!("macos-{nonce}"), format!("phase-1-{nonce}"))),
+            false,
+            FocusRoute::Slps,
+            Arc::new(ObservationClock::new()),
+            &[],
+        )
+    }
+
+    let mut old = fixed_session("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let mut new = fixed_session("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    assert!(old.connection_bound(), "fixed tokens bind");
+    assert!(new.connection_bound(), "fixed tokens bind");
+    assert_ne!(
+        old.incarnation(),
+        new.incarnation(),
+        "distinct nonces mint distinct incarnations under one reused PID"
+    );
+    let old_generation = old.sequencer().bound_generation();
+    let new_generation = new.sequencer().bound_generation();
+    assert_ne!(
+        old_generation, new_generation,
+        "distinct nonces mint distinct generations under one reused PID"
+    );
+
+    // The old session's report (production-valid shape) is admitted by its
+    // own engine but rejected by the new engine.
+    let old_report = build_dispatch_report(
+        &mut old,
+        &RetainedCore::default(),
+        &DispatchContext::Synthetic,
+        &[],
+        1,
+        1,
+        None,
+        None,
+        None,
+        "req-1",
+    )
+    .expect("synthetic report builds");
+    assert!(
+        matches!(
+            old.engine_mut().handle_report(&old_report),
+            WorldOutcome::Accepted(_)
+                | WorldOutcome::Duplicate(_)
+                | WorldOutcome::CommandConsumed(_)
+        ),
+        "old report is well-formed for its own engine"
+    );
+    assert!(
+        matches!(
+            new.engine_mut().handle_report(&old_report),
+            WorldOutcome::Rejected { .. }
+        ),
+        "old report must not be admitted after restart under a reused PID"
+    );
+
+    // The old session's settings envelope never reaches new settings state.
+    let old_incarnation = old.incarnation().to_owned();
+    assert!(
+        crate::world_connection::apply_settings_revision(
+            new.engine_mut(),
+            &old_incarnation,
+            &old_generation,
+            2,
+            &[],
+        )
+        .is_none(),
+        "old settings envelope must not route after restart under a reused PID"
+    );
+}
+
+/// CSPRNG failure stays fail-closed: the `None` token source builds an
+/// unbound session (no handshake, no bind) whose own engine rejects even
+/// directly built reports and whose settings route never opens. The
+/// dispatch route additionally refuses via `connection_bound` before any
+/// report builds (see `dispatch_report`'s `refused-no-connection` gate).
+#[test]
+fn entropy_failure_session_stays_unbound_and_admits_nothing() {
+    use std::sync::Arc;
+
+    use tiler_core::world_engine::WorldOutcome;
+
+    use crate::focus_route::FocusRoute;
+    use crate::runtime_core::RetainedCore;
+    use crate::world_sequencer::ObservationClock;
+
+    fn unbound_session() -> WorldSession {
+        WorldSession::new_with_tokens(
+            None,
+            false,
+            FocusRoute::Slps,
+            Arc::new(ObservationClock::new()),
+            &[],
+        )
+    }
+
+    let mut session = unbound_session();
+    assert!(!session.connection_bound(), "entropy failure never binds");
+    assert!(
+        session.initial_settings_reply().is_none(),
+        "entropy failure carries no settings"
+    );
+    // A second entropy-failure session is equally unbound: sentinels never
+    // bind, so sharing them claims no lifetime.
+    let other = unbound_session();
+    assert!(!other.connection_bound(), "entropy failure never binds");
+
+    // No settings envelope routes on the unbound engine.
+    let incarnation = session.incarnation().to_owned();
+    let generation = session.sequencer().bound_generation();
+    assert!(
+        crate::world_connection::apply_settings_revision(
+            session.engine_mut(),
+            &incarnation,
+            &generation,
+            2,
+            &[],
+        )
+        .is_none(),
+        "unbound settings envelope must not route"
+    );
+
+    // Even a directly built report is rejected owner-side: the unbound
+    // engine minted no connection owner, so nothing admits or actuates.
+    let report = build_dispatch_report(
+        &mut session,
+        &RetainedCore::default(),
+        &DispatchContext::Synthetic,
+        &[],
+        1,
+        1,
+        None,
+        None,
+        None,
+        "req-1",
+    )
+    .expect("synthetic report builds");
+    assert!(
+        matches!(
+            session.engine_mut().handle_report(&report),
+            WorldOutcome::Rejected { .. }
+        ),
+        "unbound session must reject even its own report"
     );
 }

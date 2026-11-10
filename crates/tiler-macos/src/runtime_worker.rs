@@ -1054,9 +1054,11 @@ mod settled_fence_tests {
 
     use crate::runtime::{
         AxCompletion, AxObservation, FrameCommand, ObservedWindow, Runtime, RuntimeConfig,
-        ShutdownOutcome, SubmitOutcome, WindowSizeHints,
+        ScopedObservation, ShutdownOutcome, SubmitOutcome, WindowSizeHints,
     };
     use crate::runtime_backend::{AxBackend, AxBackendFactory, NativeInputStub};
+    use crate::runtime_types::ScopedWindowMeta;
+    use crate::runtime_types::{ScopedBackendSnapshot, TopologyMode};
 
     const PID: u32 = 4242;
     const SETTLED: Duration = Duration::from_secs(5);
@@ -1066,6 +1068,8 @@ mod settled_fence_tests {
         entered: u64,
         open: bool,
         windows: Vec<ObservedWindow>,
+        meta: Vec<ScopedWindowMeta>,
+        revision: u64,
         shutdown_open: bool,
         shutdown_entered: u64,
     }
@@ -1112,6 +1116,33 @@ mod settled_fence_tests {
 
         fn snapshot(&mut self) -> Result<Vec<ObservedWindow>, String> {
             Ok(self.state.0.lock().expect("mutex").windows.clone())
+        }
+
+        fn snapshot_scoped(&mut self) -> Result<ScopedBackendSnapshot, String> {
+            // Fixture-only scoped read: actual state windows plus the
+            // handbuilt ordinary neutral meta and the published topology
+            // revision. Never a live SLS/CG read; the resolver is scripted
+            // at `update_topology_with`. The oracle is complete over the
+            // fixture's own inventory (sorted owner wids), so a removal the
+            // test submits proves absence instead of retaining unknown.
+            let guard = self.state.0.lock().expect("mutex");
+            let mut owner_wids: Vec<u32> = guard.windows.iter().map(|w| w.wid).collect();
+            owner_wids.sort_unstable();
+            Ok(ScopedBackendSnapshot {
+                windows: guard.windows.clone(),
+                focused_wid: None,
+                focus_cg_owned: true,
+                focus_evidence: None,
+                sys_focus: None,
+                global_focus: None,
+                meta: guard.meta.clone(),
+                excluded: 0,
+                excluded_reasons: Vec::new(),
+                cg_complete: true,
+                cg_owner_wids: owner_wids,
+                cg_alive: Vec::new(),
+                revision: guard.revision,
+            })
         }
 
         fn shutdown(&mut self) -> Result<(), String> {
@@ -1165,6 +1196,8 @@ mod settled_fence_tests {
                 entered: 0,
                 open,
                 windows,
+                meta: Vec::new(),
+                revision: 0,
                 shutdown_open: true,
                 shutdown_entered: 0,
             }),
@@ -1181,6 +1214,143 @@ mod settled_fence_tests {
         // The worker publishes its startup snapshot as sequence 1, so the
         // test owns the sequence space from 2 on.
         (handle, state)
+    }
+
+    /// Single-display native fixture topology: one 1440x900 display whose
+    /// SLS row homes the single Space `SID` as current, so the derived
+    /// context actuates exactly that domain with work area (0,0,1440,900).
+    const SID: u64 = 277;
+    const UUID: &str = "37AC4E19-0000-4000-8000-123456789ABC";
+
+    fn scoped_topology() -> crate::topology::TopologySnapshot {
+        use crate::ffi::{DisplayRect, NsDisplay, SlsDisplayRow};
+        let ns = vec![NsDisplay {
+            cg_id: 1,
+            uuid: Some(UUID.to_owned()),
+            frame: DisplayRect {
+                x: 0.0,
+                y: 0.0,
+                w: 1440.0,
+                h: 900.0,
+            },
+            visible: DisplayRect {
+                x: 0.0,
+                y: 0.0,
+                w: 1440.0,
+                h: 900.0,
+            },
+            scale: 2.0,
+        }];
+        let rows = vec![SlsDisplayRow {
+            identifier: Some(UUID.to_owned()),
+            spaces: vec![SID],
+            current: Some(SID),
+        }];
+        crate::topology::build_snapshot(&ns, &rows, Some(false))
+    }
+
+    /// Ordinary neutral raw facts for one fixture window, homed to the
+    /// fixture Space: `AXWindow`/`AXStandardWindow` classifies Normal,
+    /// non-modal, resizable, layer 0, regular policy — the sanctioned
+    /// roster shape, so the core holds nothing.
+    fn scoped_meta(wid: u32) -> ScopedWindowMeta {
+        ScopedWindowMeta {
+            wid,
+            spaces: vec![SID],
+            fullscreen: false,
+            minimized: false,
+            hidden: false,
+            role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+            subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+            modal: Some(false),
+            resizable: Some(true),
+            layer: Some(0),
+            app_id: Some("com.example.app".to_owned()),
+            activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+        }
+    }
+
+    /// Native-mode gate: same GateBackend fixture, but the runtime runs the
+    /// native topology (scripted `User` Space types, no live SLS reads) and
+    /// the backend serves scoped snapshots with the ordinary meta above.
+    /// `windows` preload the fixture truth before launch, so the worker's
+    /// startup snapshot (sequence 1) already carries them.
+    fn start_scoped_gate(
+        windows: Vec<ObservedWindow>,
+        open: bool,
+    ) -> (
+        crate::runtime::RuntimeHandle,
+        Arc<(Mutex<GateState>, Condvar)>,
+    ) {
+        let snapshot = scoped_topology();
+        let revision = snapshot.revision;
+        let meta = windows.iter().map(|w| scoped_meta(w.wid)).collect();
+        let state = Arc::new((
+            Mutex::new(GateState {
+                applied: Vec::new(),
+                entered: 0,
+                open,
+                windows,
+                meta,
+                revision,
+                shutdown_open: true,
+                shutdown_entered: 0,
+            }),
+            Condvar::new(),
+        ));
+        let config = RuntimeConfig {
+            topology_mode: TopologyMode::Native,
+            ..RuntimeConfig::default()
+        };
+        let handle = Runtime::start(
+            config,
+            Arc::new(GateFactory {
+                state: Arc::clone(&state),
+            }),
+            Arc::new(NativeInputStub),
+        )
+        .expect("runtime starts offline");
+        handle.update_topology_with(snapshot, &|_| Some(crate::ffi::SlsSpaceType::User));
+        // The worker publishes its startup snapshot as sequence 1, so the
+        // test owns the sequence space from 2 on.
+        (handle, state)
+    }
+
+    /// Native-mode observation submit: routes to the current fixture domain
+    /// with the ordinary meta, the published revision, and no focus legs
+    /// (focus stays unfocused, never guessed). Mirrors the fixture
+    /// `snapshot_scoped` fields so worker readbacks compare equal; the
+    /// oracle is complete over the submitted inventory (sorted owner
+    /// wids), so a submitted removal proves absence.
+    fn submit_scoped(
+        handle: &crate::runtime::RuntimeHandle,
+        pid: u32,
+        generation: u64,
+        seq: u64,
+        windows: Vec<ObservedWindow>,
+        revision: u64,
+    ) -> SubmitOutcome {
+        let meta = windows.iter().map(|w| scoped_meta(w.wid)).collect();
+        let mut owner_wids: Vec<u32> = windows.iter().map(|w| w.wid).collect();
+        owner_wids.sort_unstable();
+        handle.submit_scoped_observation(ScopedObservation {
+            pid,
+            generation,
+            seq,
+            windows,
+            focused_wid: None,
+            revision,
+            frontmost_pid: None,
+            ax_focus: None,
+            cg_owned: true,
+            meta,
+            cg_complete: true,
+            cg_owner_wids: owner_wids,
+        })
+    }
+
+    fn scoped_revision(state: &Arc<(Mutex<GateState>, Condvar)>) -> u64 {
+        state.0.lock().expect("mutex").revision
     }
 
     fn open(state: &Arc<(Mutex<GateState>, Condvar)>) {
@@ -1249,16 +1419,18 @@ mod settled_fence_tests {
     fn fence_does_not_return_before_blocked_actuation() {
         // The startup snapshot is empty, so the test's batch is the only
         // one carrying commands: exactly one actuation follows.
-        let (handle, state) = start_gate(Vec::new(), false);
+        let (handle, state) = start_scoped_gate(Vec::new(), false);
         let generation = handle.launch_app(PID).expect("launch");
+        let revision = scoped_revision(&state);
         assert_eq!(
-            handle.submit_observation(AxObservation {
-                pid: PID,
+            submit_scoped(
+                &handle,
+                PID,
                 generation,
-                seq: 2,
-                windows: vec![plain(7, 0, 0, 960, 1080)],
-                focused_wid: None,
-            }),
+                2,
+                vec![plain(7, 0, 0, 960, 1080)],
+                revision
+            ),
             SubmitOutcome::Accepted
         );
         assert!(handle.flush(Duration::from_secs(5)));
@@ -1289,17 +1461,15 @@ mod settled_fence_tests {
     fn fence_settles_redundant_no_frame_path() {
         // Backend truth already matches the plan: the worker must skip every
         // command (no AxResult, no applied frame) and still settle.
-        let windows = vec![plain(7, 0, 0, 1920, 1080)];
-        let (handle, state) = start_gate(windows.clone(), true);
+        // Single-window plan on the fixture work area (0,0,1440,900) with
+        // Single-window plan on the fixture work area (0,0,1440,900) with
+        // the Phase 1 outer gap (8 each side): (8,8,1424,884).
+        let windows = vec![plain(7, 8, 8, 1424, 884)];
+        let (handle, state) = start_scoped_gate(windows.clone(), true);
         let generation = handle.launch_app(PID).expect("launch");
+        let revision = scoped_revision(&state);
         assert_eq!(
-            handle.submit_observation(AxObservation {
-                pid: PID,
-                generation,
-                seq: 2,
-                windows,
-                focused_wid: None,
-            }),
+            submit_scoped(&handle, PID, generation, 2, windows, revision),
             SubmitOutcome::Accepted
         );
         assert!(handle.flush(Duration::from_secs(5)));
@@ -1327,29 +1497,32 @@ mod settled_fence_tests {
         // of the taken batch fences as superseded, and the latest plan
         // actuates. Entry order is deterministic: exactly two writes total,
         // the last one for the first window matching the latest plan.
-        let (handle, state) = start_gate(Vec::new(), false);
+        let (handle, state) = start_scoped_gate(Vec::new(), false);
         let generation = handle.launch_app(PID).expect("launch");
+        let revision = scoped_revision(&state);
         assert_eq!(
-            handle.submit_observation(AxObservation {
-                pid: PID,
+            submit_scoped(
+                &handle,
+                PID,
                 generation,
-                seq: 2,
-                windows: vec![plain(7, 0, 0, 960, 1080), plain(8, 960, 0, 960, 1080)],
-                focused_wid: None,
-            }),
+                2,
+                vec![plain(7, 0, 0, 960, 1080), plain(8, 960, 0, 960, 1080)],
+                revision
+            ),
             SubmitOutcome::Accepted
         );
         assert!(handle.flush(Duration::from_secs(5)));
         // Parked inside the taken batch: the next plan supersedes the rest.
         assert!(wait_entered(&state, 1), "worker never entered actuation");
         assert_eq!(
-            handle.submit_observation(AxObservation {
-                pid: PID,
+            submit_scoped(
+                &handle,
+                PID,
                 generation,
-                seq: 3,
-                windows: vec![plain(7, 0, 0, 960, 1080)],
-                focused_wid: None,
-            }),
+                3,
+                vec![plain(7, 0, 0, 960, 1080)],
+                revision
+            ),
             SubmitOutcome::Accepted
         );
         assert!(handle.flush(Duration::from_secs(5)));
@@ -1412,17 +1585,19 @@ mod settled_fence_tests {
         // mark, so only the baseline-independent terminal rule (plus one
         // barrier) can settle. Without it the fence waits for a second mark
         // that never comes and times out despite nothing outstanding.
-        let (handle, state) = start_gate(Vec::new(), false);
+        let (handle, state) = start_scoped_gate(Vec::new(), false);
         hold_shutdown(&state);
         let generation = handle.launch_app(PID).expect("launch");
+        let revision = scoped_revision(&state);
         assert_eq!(
-            handle.submit_observation(AxObservation {
-                pid: PID,
+            submit_scoped(
+                &handle,
+                PID,
                 generation,
-                seq: 2,
-                windows: vec![plain(7, 0, 0, 960, 1080)],
-                focused_wid: None,
-            }),
+                2,
+                vec![plain(7, 0, 0, 960, 1080)],
+                revision
+            ),
             SubmitOutcome::Accepted
         );
         assert!(handle.flush(Duration::from_secs(5)));
@@ -1472,6 +1647,8 @@ mod settled_fence_tests {
                         entered: 0,
                         open: true,
                         windows: Vec::new(),
+                        meta: Vec::new(),
+                        revision: 0,
                         shutdown_open: true,
                         shutdown_entered: 0,
                     }),

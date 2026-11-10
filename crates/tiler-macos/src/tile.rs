@@ -213,6 +213,11 @@ pub struct TileRequest {
     /// representative icons). Startup-only: a running session never
     /// re-reads it.
     pub indicator: crate::workspace_indicator::IndicatorOptions,
+    /// Raw core-owned settings acquired at startup (CLI-over-file; see
+    /// `dev_selection::collect_raw_core_settings`). Forwarded verbatim as
+    /// the initial revisioned settings exchange; core owns
+    /// validation/defaulting with per-field diagnostics.
+    pub core_settings: Vec<(String, tiler_core::connection::RawSettingValue)>,
 }
 
 impl TileRequest {
@@ -1202,7 +1207,7 @@ mod native {
             observations: u64,
             report: Option<crate::runtime::WorkspaceOccupancyReport>,
             frontmost_pid: Option<u32>,
-            presentation: &tiler_core::world_presentation::WorldPresentation,
+            presentation: &tiler_core::world_report::WorldPresentationV4,
             bindings: &[crate::pager::PagerWorkspaceBinding],
             desires: &[tiler_core::world_report::WorkspaceDesire],
             core_generation: &str,
@@ -2181,6 +2186,7 @@ mod native {
             },
             modifier: request.modifier,
             tile_bindings: Some(catalogue),
+            core_settings: request.core_settings.clone(),
             ..RuntimeConfig::default()
         };
         config.validate().map_err(|reason| (2, reason))?;
@@ -2315,10 +2321,6 @@ mod native {
         // The guard owns the active-Space observer for the run lifetime;
         // its shared wake settles off-main Dock-swipe selects event-driven.
         handle.publish_select_wake(guard.select_wake());
-        // Startup-resolved presentation style for the report ingress, so
-        // core shapes use the configured width/gap instead of a default
-        // outset. Startup-only: a running session never re-reads it.
-        handle.publish_presentation_style(&request.border.style, request.border.enabled);
         // Meta+left drag-preview arm (tap route with the startup switch
         // on only): session plus filled carrier plus the mouse-tap owner
         // thread. A spawn denial parks the arm with its reason (keyboard
@@ -4108,7 +4110,7 @@ mod native {
                 test_wake: None,
                 test_seq: 0,
                 last_geometry_key: None,
-                last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+                last_presentation: crate::runtime::empty_world_presentation_v4(),
                 last_pager_bindings: Vec::new(),
                 last_workspace_desires: Vec::new(),
                 last_core_generation: String::new(),
@@ -4524,6 +4526,7 @@ mod tests {
             pager_highlight: crate::pager_highlight::PagerHighlightStyle::default(),
             drag: crate::drag_drop::DragOptions::default(),
             indicator: crate::workspace_indicator::IndicatorOptions::default(),
+            core_settings: Vec::new(),
             diag_stay: None,
             diag_trailing_click: false,
         }
@@ -4547,6 +4550,7 @@ mod tests {
             pager_highlight: crate::pager_highlight::PagerHighlightStyle::default(),
             drag: crate::drag_drop::DragOptions::default(),
             indicator: crate::workspace_indicator::IndicatorOptions::default(),
+            core_settings: Vec::new(),
             diag_stay: None,
             diag_trailing_click: false,
         }
@@ -5045,10 +5049,11 @@ mod tests {
             IndicatorDriver, IndicatorMode, SpaceOccupancy, project_indicator, segment_column_width,
         };
         use tiler_core::directional::{OutputId, WindowId};
-        use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+        use tiler_core::world_engine::WorldOutcome;
         use tiler_core::world_report::{
-            NativeObservation, NativeOccupancy, PresentationIngress, ScreenReport,
-            WORLD_CONTRACT_VERSION, WindowFact, WorldReport,
+            NativeObservation, NativeOccupancy, NativeWorkspaceFact, PresentationIngressV4,
+            PresentationPagerFrameV4, PresentationRowV4, ScreenReport, WORLD_CONTRACT_VERSION_V4,
+            WindowFact, WorldReportV4,
         };
         // Host-owned admission through the real engine: two Spaces, focus
         // on the first.
@@ -5058,48 +5063,80 @@ mod tests {
         fn fact(window: &str, native_ws: &str, x: i32) -> WindowFact {
             WindowFact {
                 window: WindowId(window.to_owned()),
-                output: OutputId("out-a".to_owned()),
+                output: Some(OutputId("out-a".to_owned())),
                 rect: Some(rect(x, 0, 40, 90)),
-                floating: false,
-                fit_excluded: false,
-                fullscreen: false,
-                maximized: false,
-                sticky: false,
-                fixed_auto: false,
-                fixed_suppress: false,
-                hints: tiler_core::size_hints::WindowSizeHints::none(),
-                minimized: false,
-                observed_workspace: None,
-                native_workspace: Some(native_ws.to_owned()),
+                fullscreen: Some(false),
+                maximized: Some(false),
+                sticky: Some(false),
+                hints: Some(tiler_core::size_hints::WindowSizeHints::none()),
+                minimized: Some(false),
+                native_workspace: NativeWorkspaceFact::Value(native_ws.to_owned()),
+                host_hidden: Some(false),
+                privileged: Some(false),
+                managed: Some(true),
+                accepts_input: Some(true),
+                activation_inhibited: Some(false),
+                tool_window: Some(false),
+                owned: Some(false),
+                transient: Some(false),
+                modal: Some(false),
+                resizable: Some(true),
+                above: Some(false),
+                below: Some(false),
+                owner: None,
+                parent: None,
+                role: None,
+                app_id: None,
+                executable: Some("synthetic.exe".to_owned()),
+                process_id: Some("foreign-pid".to_owned()),
+                class: Some("Synthetic".to_owned()),
+                title: None,
+                window_type: Some(tiler_core::world_report::WindowType::Normal),
+                activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+                layer: Some(0),
+                fullscreen_owner: None,
+                fullscreen_exitable: None,
+                suppression_available: None,
+                visibility: tiler_core::world_report::VisibilityFact {
+                    visible: Some(true),
+                    suppression_owned: None,
+                },
+                last_write: None,
             }
         }
-        fn ingress(token: &str) -> PresentationIngress {
-            PresentationIngress {
+        fn ingress(token: &str) -> PresentationIngressV4 {
+            PresentationIngressV4 {
                 foreground: token.to_owned(),
+                foreground_minimized: Some(false),
+                foreground_maximized: Some(false),
+                foreground_fullscreen: Some(false),
+                foreground_host_hidden: Some(false),
+                foreground_hidden_workspace: Some(false),
                 foreground_frame: Some(rect(0, 0, 40, 90)),
-                border_enabled: true,
-                ..PresentationIngress::disabled()
+                chord_held: false,
+                move_window: String::new(),
+                pager_order: Vec::new(),
+                pager_frames: Vec::new(),
+                witness: None,
+                foreground_out: None,
             }
         }
-        fn host_report(seq: u64, focused: &str, ingress: PresentationIngress) -> WorldReport {
+        fn host_report(seq: u64, focused: &str, ingress: PresentationIngressV4) -> WorldReportV4 {
             let windows = vec![fact("win-a", "space-1", 0), fact("win-b", "space-2", 100)];
             let mut pager_frames = Vec::new();
             let mut pager_order = Vec::new();
             for w in &windows {
-                pager_frames.push(tiler_core::world_report::PresentationPagerFrame {
+                pager_frames.push(PresentationPagerFrameV4 {
                     window: w.window.clone(),
                     live: w.rect,
-                    float_frame: None,
-                    tile_frame: None,
                 });
                 pager_order.push(w.window.clone());
             }
             let mut presentation = ingress;
             presentation.pager_frames = pager_frames;
             presentation.pager_order = pager_order;
-            WorldReport {
-                contract_version: WORLD_CONTRACT_VERSION,
-                owner: "owner-a".to_owned(),
+            WorldReportV4 {
+                contract_version: WORLD_CONTRACT_VERSION_V4,
                 adapter_incarnation: "adapter-1".to_owned(),
                 core_generation: "gen-1".to_owned(),
                 observation_seq: seq,
@@ -5107,22 +5144,18 @@ mod tests {
                 request_id: format!("req-{seq}"),
                 command_seq: None,
                 command: None,
-                workspace_mode: tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
                 screens: vec![ScreenReport {
                     output: OutputId("out-a".to_owned()),
                     full_rect: Some(rect(0, 0, 800, 600)),
                     work_area: Some(rect(0, 0, 800, 560)),
-                    gap: 0,
-                    outer_gap: 0,
                     complete: true,
-                    primary: true,
+                    scale: 1.0,
+                    identity: tiler_core::world_report::OutputIdentity::unknown(),
                 }],
+                held_screens: Vec::new(),
                 windows,
-                views: Vec::new(),
+                held_windows: Vec::new(),
                 closed: vec![],
-                host_owned_workspace_domains: true,
-                equal_workspace_count: false,
-                birth_clear: false,
                 native: vec![NativeObservation {
                     output: OutputId("out-a".to_owned()),
                     native_order: vec!["space-1".to_owned(), "space-2".to_owned()],
@@ -5138,23 +5171,14 @@ mod tests {
                         },
                     ],
                 }],
-                fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-                migration_source_refill:
-                    tiler_core::output_selection::MigrationSourceRefill::default(),
-                anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-                no_space_result: tiler_core::admission::NoSpaceResult::default(),
-                born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-                switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-                fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-                focus_follows_cursor: false,
-                cursor_warp: false,
+                held_native: Vec::new(),
                 cursor: None,
                 cursor_hit: None,
                 focused_global: focused.to_owned(),
                 action_foreground: None,
                 action_cached: None,
                 action_outputs: Vec::new(),
-                default_tiled: true,
+                primary_output: None,
                 inventory_complete: true,
                 gesture_barrier: false,
                 gesture: None,
@@ -5164,10 +5188,17 @@ mod tests {
                 view_attempts: Vec::new(),
                 clear_attempts: Vec::new(),
                 creation_attempts: Vec::new(),
-                presentation,
+                held_attempts: Vec::new(),
+                state_attempts: Vec::new(),
+                focus_feedback: Vec::new(),
+                presentation: PresentationRowV4::Valid(presentation),
+                intent_records: Vec::new(),
+                renderer_input: None,
             }
         }
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine =
+            tiler_core::world_engine::WorldEngine::new_test_host_owned("gen-1", "adapter-1")
+                .expect("bound host engine");
         for seq in 1..=3u64 {
             match engine.handle_report(&host_report(seq, "win-a", ingress("win-a"))) {
                 WorldOutcome::Accepted(_) => {}
@@ -5280,16 +5311,84 @@ mod tests {
         use crate::pager::indicator_miniatures_for_id;
         use crate::workspace_indicator::{CoreRowTarget, IndicatorRow, SpaceOccupancy};
         use tiler_core::directional::{OutputId, WindowId};
-        use tiler_core::world_engine::{WorldEngine, WorldOutcome};
-        use tiler_core::world_report::{PresentationIngress, WORLD_CONTRACT_VERSION, WorldReport};
+        use tiler_core::world_engine::WorldOutcome;
+        use tiler_core::world_report::{
+            NativeWorkspaceFact, PresentationIngressV4, PresentationPagerFrameV4,
+            PresentationRowV4, ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldReportV4,
+        };
         fn rect(x: i32, y: i32, w: i32, h: i32) -> tiler_core::geometry::Rect {
             tiler_core::geometry::Rect { x, y, w, h }
         }
         // Core reply with one ordinary plus one trailing spare workspace.
-        let mut engine = WorldEngine::new("gen-9").expect("generation");
-        let report = WorldReport {
-            contract_version: WORLD_CONTRACT_VERSION,
-            owner: "owner-a".to_owned(),
+        let mut engine =
+            tiler_core::world_engine::WorldEngine::new_test_host_owned("gen-9", "adapter-1")
+                .expect("bound host engine");
+        fn v4_fact() -> WindowFact {
+            WindowFact {
+                window: WindowId("win-a".to_owned()),
+                output: Some(OutputId("out-a".to_owned())),
+                rect: Some(rect(0, 0, 40, 90)),
+                fullscreen: Some(false),
+                maximized: Some(false),
+                sticky: Some(false),
+                hints: Some(tiler_core::size_hints::WindowSizeHints::none()),
+                minimized: Some(false),
+                native_workspace: NativeWorkspaceFact::Value("space-1".to_owned()),
+                host_hidden: Some(false),
+                privileged: Some(false),
+                managed: Some(true),
+                accepts_input: Some(true),
+                activation_inhibited: Some(false),
+                tool_window: Some(false),
+                owned: Some(false),
+                transient: Some(false),
+                modal: Some(false),
+                resizable: Some(true),
+                above: Some(false),
+                below: Some(false),
+                owner: None,
+                parent: None,
+                role: None,
+                app_id: None,
+                executable: Some("synthetic.exe".to_owned()),
+                process_id: Some("foreign-pid".to_owned()),
+                class: Some("Synthetic".to_owned()),
+                title: None,
+                window_type: Some(tiler_core::world_report::WindowType::Normal),
+                activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+                layer: Some(0),
+                fullscreen_owner: None,
+                fullscreen_exitable: None,
+                suppression_available: None,
+                visibility: tiler_core::world_report::VisibilityFact {
+                    visible: Some(true),
+                    suppression_owned: None,
+                },
+                last_write: None,
+            }
+        }
+        fn v4_ingress() -> PresentationIngressV4 {
+            PresentationIngressV4 {
+                foreground: "win-a".to_owned(),
+                foreground_minimized: Some(false),
+                foreground_maximized: Some(false),
+                foreground_fullscreen: Some(false),
+                foreground_host_hidden: Some(false),
+                foreground_hidden_workspace: Some(false),
+                foreground_frame: Some(rect(0, 0, 40, 90)),
+                chord_held: false,
+                move_window: String::new(),
+                pager_order: vec![WindowId("win-a".to_owned())],
+                pager_frames: vec![PresentationPagerFrameV4 {
+                    window: WindowId("win-a".to_owned()),
+                    live: Some(rect(0, 0, 40, 90)),
+                }],
+                witness: None,
+                foreground_out: None,
+            }
+        }
+        let report = WorldReportV4 {
+            contract_version: WORLD_CONTRACT_VERSION_V4,
             adapter_incarnation: "adapter-1".to_owned(),
             core_generation: "gen-9".to_owned(),
             observation_seq: 1,
@@ -5297,37 +5396,18 @@ mod tests {
             request_id: "req-1".to_owned(),
             command_seq: None,
             command: None,
-            workspace_mode: tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
-            screens: vec![tiler_core::world_report::ScreenReport {
+            screens: vec![ScreenReport {
                 output: OutputId("out-a".to_owned()),
                 full_rect: Some(rect(0, 0, 800, 600)),
                 work_area: Some(rect(0, 0, 800, 560)),
-                gap: 0,
-                outer_gap: 0,
                 complete: true,
-                primary: true,
+                scale: 1.0,
+                identity: tiler_core::world_report::OutputIdentity::unknown(),
             }],
-            windows: vec![tiler_core::world_report::WindowFact {
-                window: WindowId("win-a".to_owned()),
-                output: OutputId("out-a".to_owned()),
-                rect: Some(rect(0, 0, 40, 90)),
-                floating: false,
-                fit_excluded: false,
-                fullscreen: false,
-                maximized: false,
-                sticky: false,
-                fixed_auto: false,
-                fixed_suppress: false,
-                hints: tiler_core::size_hints::WindowSizeHints::none(),
-                minimized: false,
-                observed_workspace: None,
-                native_workspace: Some("space-1".to_owned()),
-            }],
-            views: Vec::new(),
+            held_screens: Vec::new(),
+            windows: vec![v4_fact()],
+            held_windows: Vec::new(),
             closed: vec![],
-            host_owned_workspace_domains: true,
-            equal_workspace_count: false,
-            birth_clear: false,
             native: vec![tiler_core::world_report::NativeObservation {
                 output: OutputId("out-a".to_owned()),
                 native_order: vec!["space-1".to_owned(), "space-2".to_owned()],
@@ -5343,22 +5423,14 @@ mod tests {
                     },
                 ],
             }],
-            fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-            migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::default(),
-            anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-            no_space_result: tiler_core::admission::NoSpaceResult::default(),
-            born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-            switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-            fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-            focus_follows_cursor: false,
-            cursor_warp: false,
+            held_native: Vec::new(),
             cursor: None,
             cursor_hit: None,
             focused_global: "win-a".to_owned(),
             action_foreground: None,
             action_cached: None,
             action_outputs: Vec::new(),
-            default_tiled: true,
+            primary_output: None,
             inventory_complete: true,
             gesture_barrier: false,
             gesture: None,
@@ -5368,20 +5440,12 @@ mod tests {
             view_attempts: Vec::new(),
             clear_attempts: Vec::new(),
             creation_attempts: Vec::new(),
-            presentation: {
-                let mut ingress = PresentationIngress::disabled();
-                ingress.foreground = "win-a".to_owned();
-                ingress.foreground_frame = Some(rect(0, 0, 40, 90));
-                ingress.border_enabled = true;
-                ingress.pager_frames = vec![tiler_core::world_report::PresentationPagerFrame {
-                    window: WindowId("win-a".to_owned()),
-                    live: Some(rect(0, 0, 40, 90)),
-                    float_frame: None,
-                    tile_frame: None,
-                }];
-                ingress.pager_order = vec![WindowId("win-a".to_owned())];
-                ingress
-            },
+            held_attempts: Vec::new(),
+            state_attempts: Vec::new(),
+            focus_feedback: Vec::new(),
+            presentation: PresentationRowV4::Valid(v4_ingress()),
+            intent_records: Vec::new(),
+            renderer_input: None,
         };
         let reply = match engine.handle_report(&report) {
             WorldOutcome::Accepted(reply) => reply,

@@ -243,6 +243,13 @@ fn meta(wid: u32) -> ScopedWindowMeta {
         fullscreen: false,
         minimized: false,
         hidden: false,
+        role: None,
+        subrole: None,
+        modal: None,
+        resizable: None,
+        layer: None,
+        app_id: None,
+        activation_policy: None,
     }
 }
 

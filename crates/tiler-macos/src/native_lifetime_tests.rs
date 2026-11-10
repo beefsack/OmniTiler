@@ -16,8 +16,8 @@ use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::session::DomainKey;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
-use tiler_core::world_report::validate_report;
+use tiler_core::world_engine::WorldOutcome;
+use tiler_core::world_report_v4_checks::validate_report_v4_reason;
 
 use crate::runtime_core::{
     RetainedApp, RetainedCore, RosterEntry, apply_roster_covering, audit_roster_hold,
@@ -30,7 +30,6 @@ use crate::runtime_types::{
 use crate::world_builder::{ReportInput, build_report};
 use crate::world_runtime::WorldSession;
 
-const OWNER: &str = "macos-phase-1";
 const GENERATION: &str = "gen-1";
 const INCARNATION: &str = "adapter-1";
 
@@ -110,6 +109,15 @@ fn scoped_snapshot(
             fullscreen: w.fullscreen,
             minimized: false,
             hidden: false,
+
+            role: None,
+
+            subrole: None,
+            modal: None,
+            resizable: None,
+            layer: None,
+            app_id: None,
+            activation_policy: None,
         })
         .collect();
     ScopedBackendSnapshot {
@@ -149,10 +157,10 @@ fn retained_with_roster(pid: u32, generation: u64) -> RetainedCore {
 
 fn session_native() -> WorldSession {
     WorldSession::new(
-        tiler_core::size_hints::FixedSizePredicate::BothAxes,
         true,
         crate::focus_route::FocusRoute::Slps,
         Arc::new(crate::world_sequencer::ObservationClock::new()),
+        &[],
     )
 }
 
@@ -184,7 +192,6 @@ fn grounded_unknown_facts_carry_proven_output_ties_and_outside_omit() {
     let unknown = vec![(1001u32, grounded), (1001u32, tied), (1001u32, outside)];
     let owned = "req-1".to_owned();
     let mut input = ReportInput::new(
-        OWNER,
         INCARNATION,
         GENERATION,
         &ctx,
@@ -202,16 +209,19 @@ fn grounded_unknown_facts_carry_proven_output_ties_and_outside_omit() {
     input.unknown = &unknown;
     input.roster_incomplete = true;
     let report = build_report(&mut input);
-    assert!(validate_report(&report));
+    assert!(validate_report_v4_reason(&report).is_none());
     assert!(!report.inventory_complete, "omitted rows hold inventory");
     let row = report
         .windows
         .iter()
         .find(|w| w.window.0 == "1001_1")
         .expect("grounded unknown surfaces");
-    assert_eq!(row.output.0, "macos-display-2");
-    assert_eq!(row.native_workspace, None);
-    assert!(!row.sticky);
+    assert_eq!(row.output.as_ref().unwrap().0, "macos-display-2");
+    assert_eq!(row.native_workspace.as_deref(), None);
+    assert_eq!(
+        row.sticky, None,
+        "unsupported sticky stays null, never false"
+    );
     assert!(
         report.windows.iter().all(|w| w.window.0 != "1001_2"),
         "tied frame mints no fact on either output"
@@ -224,7 +234,7 @@ fn grounded_unknown_facts_carry_proven_output_ties_and_outside_omit() {
         report
             .windows
             .iter()
-            .all(|w| w.output.0 != "macos-display-1" || w.window.0 != "1001_2"),
+            .all(|w| w.output.as_ref().unwrap().0 != "macos-display-1" || w.window.0 != "1001_2"),
         "tie never falls back to the first output"
     );
 }
@@ -247,10 +257,15 @@ fn unknown_fullscreen_grounds_and_holds_without_actuation() {
     let unreadable: BTreeMap<DomainKey, tiler_core::world_report::HoldReason> = BTreeMap::new();
     let unknown = vec![(1001u32, full)];
     let owned = "req-2".to_owned();
+    // Bind the report to the actual session incarnation/generation: the
+    // session handshake (production macOS caps) owns the bound tokens, so
+    // only they admit the report core-side.
+    let mut session = session_native();
+    let incarnation = session.incarnation().to_owned();
+    let generation = session.sequencer().bound_generation();
     let mut input = ReportInput::new(
-        OWNER,
-        INCARNATION,
-        GENERATION,
+        &incarnation,
+        &generation,
         &ctx,
         2,
         2,
@@ -266,16 +281,16 @@ fn unknown_fullscreen_grounds_and_holds_without_actuation() {
     input.unknown = &unknown;
     input.roster_incomplete = retained.apps[&1001].roster_incomplete;
     let report = build_report(&mut input);
-    assert!(validate_report(&report));
+    assert!(validate_report_v4_reason(&report).is_none());
     let row = report
         .windows
         .iter()
         .find(|w| w.window.0 == "1001_1")
         .expect("grounded fullscreen surfaces");
-    assert!(row.fullscreen);
-    assert_eq!(row.native_workspace, None);
-    assert_eq!(row.output.0, "macos-display-2");
-    let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+    assert_eq!(row.fullscreen, Some(true));
+    assert_eq!(row.native_workspace.as_deref(), None);
+    assert_eq!(row.output.as_ref().unwrap().0, "macos-display-2");
+    let engine = session.engine_mut();
     match engine.handle_report(&report) {
         WorldOutcome::Accepted(reply) => {
             assert!(
@@ -397,7 +412,6 @@ fn terminate_emits_flat_close_while_other_app_incomplete() {
     let unreadable: BTreeMap<DomainKey, tiler_core::world_report::HoldReason> = BTreeMap::new();
     let owned = "req-9".to_owned();
     let mut input = ReportInput::new(
-        OWNER,
         INCARNATION,
         GENERATION,
         &ctx,
@@ -414,7 +428,7 @@ fn terminate_emits_flat_close_while_other_app_incomplete() {
     );
     input.roster_incomplete = true;
     let report = build_report(&mut input);
-    assert!(validate_report(&report));
+    assert!(validate_report_v4_reason(&report).is_none());
     assert!(!report.inventory_complete);
     assert!(report.closed.iter().any(|id| id.0 == "1001_1"));
 }
@@ -474,11 +488,21 @@ fn explicit_close_beats_minimized_and_live() {
         output: key.output.clone(),
         workspace: key.workspace.clone(),
         sticky: false,
+        minimized: true,
+        host_hidden: false,
+        fullscreen: false,
+        process_id: None,
+        role: None,
+        subrole: None,
+        modal: None,
+        resizable: None,
+        layer: None,
+        app_id: None,
+        activation_policy: None,
     }];
     let unreadable: BTreeMap<DomainKey, tiler_core::world_report::HoldReason> = BTreeMap::new();
     let owned = "req-3".to_owned();
     let mut input = ReportInput::new(
-        OWNER,
         INCARNATION,
         GENERATION,
         &ctx,
@@ -494,7 +518,7 @@ fn explicit_close_beats_minimized_and_live() {
         false,
     );
     let report = build_report(&mut input);
-    assert!(validate_report(&report));
+    assert!(validate_report_v4_reason(&report).is_none());
     assert!(report.windows.iter().all(|w| w.window.0 != "1001_1"));
     assert!(report.closed.iter().any(|id| id.0 == "1001_1"));
 }
@@ -615,7 +639,6 @@ fn fullscreen_current_derives_ordered_users_with_full_and_work_screen() {
     let unreadable: BTreeMap<DomainKey, tiler_core::world_report::HoldReason> = BTreeMap::new();
     let owned = "req-5".to_owned();
     let mut input = ReportInput::new(
-        OWNER,
         INCARNATION,
         GENERATION,
         &ctx,
@@ -631,7 +654,7 @@ fn fullscreen_current_derives_ordered_users_with_full_and_work_screen() {
         false,
     );
     let report = build_report(&mut input);
-    assert!(validate_report(&report));
+    assert!(validate_report_v4_reason(&report).is_none());
     assert_eq!(report.native.len(), 1);
     assert_eq!(
         report.native[0].native_order,
@@ -732,7 +755,7 @@ fn selected_exclusions_never_hold_hidden_unknown_holds_without_live_fact() {
         "req-1",
     )
     .expect("context reports");
-    assert!(validate_report(&report));
+    assert!(validate_report_v4_reason(&report).is_none());
     let regular = report
         .windows
         .iter()
@@ -744,8 +767,8 @@ fn selected_exclusions_never_hold_hidden_unknown_holds_without_live_fact() {
         .iter()
         .find(|w| w.window.0 == "1001_1")
         .expect("groundable unknown reports while live");
-    assert_eq!(grounded.native_workspace, None);
-    assert_eq!(grounded.output.0, "macos-display-1");
+    assert_eq!(grounded.native_workspace.as_deref(), None);
+    assert_eq!(grounded.output.as_ref().unwrap().0, "macos-display-1");
     assert!(
         report.inventory_complete,
         "representable read holds nothing"
@@ -825,7 +848,7 @@ fn selected_exclusions_never_hold_hidden_unknown_holds_without_live_fact() {
             &format!("req-{seq}"),
         )
         .expect("context reports");
-        assert!(validate_report(&report));
+        assert!(validate_report_v4_reason(&report).is_none());
         assert!(
             !report.inventory_complete,
             "hidden unrepresentable fences inventory"
@@ -867,7 +890,7 @@ fn selected_exclusions_never_hold_hidden_unknown_holds_without_live_fact() {
         "req-9",
     )
     .expect("context reports");
-    assert!(validate_report(&report));
+    assert!(validate_report_v4_reason(&report).is_none());
     assert!(
         report.closed.iter().any(|id| id.0 == "1001_1"),
         "hidden destroy closes flat"
@@ -910,6 +933,7 @@ fn cg_oracle_rides_build_scoped_snapshot_from_real_read() {
         hidden: false,
         activation_policy: ActivationPolicy::Regular,
         is_own_bundle: false,
+        app_id: None,
     };
     // Complete read: the snapshot proves what it saw.
     let outcome = NativeReadOutcome {
@@ -982,6 +1006,15 @@ fn homed_current_retained(pid: u32, wid: u32) -> RetainedCore {
                 minimized_meta: false,
                 hidden_meta: false,
                 excluded: None,
+
+                role: None,
+
+                subrole: None,
+                modal: None,
+                resizable: None,
+                layer: None,
+                app_id: None,
+                activation_policy: None,
             },
         );
     }
@@ -1187,6 +1220,15 @@ fn terminate_flat_close_rides_while_other_app_holds_on_oracle() {
                 minimized_meta: false,
                 hidden_meta: false,
                 excluded: None,
+
+                role: None,
+
+                subrole: None,
+                modal: None,
+                resizable: None,
+                layer: None,
+                app_id: None,
+                activation_policy: None,
             },
         );
         app.roster_incomplete = true;
@@ -1209,7 +1251,7 @@ fn terminate_flat_close_rides_while_other_app_holds_on_oracle() {
         "req-3",
     )
     .expect("context reports");
-    assert!(validate_report(&report));
+    assert!(validate_report_v4_reason(&report).is_none());
     assert!(
         report.closed.iter().any(|id| id.0 == "1001_7"),
         "flat terminate close rides despite the unrelated hold"

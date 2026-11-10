@@ -14,10 +14,11 @@
 //!   listed explicitly (fixture exception); the own probe bundle
 //!   ([`crate::BUNDLE_ID`]) never does.
 //! - Unscoped (user dogfood): every ordinary app on each display's current
-//!   user Space. Ghostty is an ordinary product candidate here. Both own
-//!   bundles (probe and helper) stay excluded, plus optional exact
-//!   bundle-ID exclusions. Unknown (`None`/empty) bundles never authorize
-//!   in either mode.
+//!   user Space. Ghostty is an ordinary product candidate here, as are both
+//!   own product bundles when observed from a different process (M1:
+//!   own-process protection is pid-based at launch, never bundle-wide).
+//!   Optional exact bundle-ID exclusions still apply. Unknown (`None`/empty)
+//!   bundles never authorize in either mode.
 //!
 //! Identity, Space-membership, show-state, and topology-revision fences stay
 //! in the existing per-app AX owners and effect gates; this module only
@@ -28,8 +29,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::active_border::{
-    ActiveBorderOptions, DEFAULT_COLOR_RGB, DEFAULT_GAP, DEFAULT_USE_THEME, DEFAULT_WIDTH, MAX_GAP,
-    MAX_RADIUS, MAX_WIDTH, host_default_radius, parse_color, parse_gap, parse_radius, parse_width,
+    ActiveBorderOptions, DEFAULT_COLOR_RGB, DEFAULT_USE_THEME, parse_color,
 };
 use crate::config::ProbeModifier;
 use crate::input_policy::InputPreset;
@@ -82,19 +82,19 @@ impl TileScope {
 
     /// Effect-boundary scope check: scoped delegates to the allowlist gate
     /// (Ghostty/own/protected/unknown refused); unscoped admits any
-    /// non-empty, non-own, non-excluded bundle — including Ghostty, which
-    /// is an ordinary product candidate outside the scoped allowlist mode.
-    /// Unknown (`None`) never authorizes in either mode.
+    /// non-empty, non-excluded bundle — including Ghostty and both own
+    /// product bundles when they arrive from a different process — as
+    /// ordinary product candidates. Unknown (`None`) never authorizes in
+    /// either mode. Own-process protection stays pid-based at launch
+    /// (`launchable` refuses the current pid); M1 keeps no bundle-wide
+    /// probe/helper exclusion unscoped. Scoped fixture/test fences are
+    /// unchanged (see `AppScope`).
     #[must_use]
     pub fn allows_effect(&self, bundle: Option<&str>) -> bool {
         match self {
             Self::Scoped(scope) => scope.allows_effect(bundle),
             Self::Unscoped { excluded } => match bundle {
-                Some(id) => {
-                    !id.is_empty()
-                        && !Self::is_product_bundle(id)
-                        && !excluded.contains(&id.to_owned())
-                }
+                Some(id) => !id.is_empty() && !excluded.contains(&id.to_owned()),
                 None => false,
             },
         }
@@ -160,19 +160,45 @@ pub struct DevSettings {
 /// width 3, gap 0, host-derived centerline radius (17.5 on Tahoe 26+,
 /// 10.5 older/unknown with default width/gap), fallback `#2a82da`, theme
 /// on, switch on.
+///
+/// The four core-owned keys (`enabled/width/gap/radius`) ride to core as
+/// raw acquisition values (see [`collect_raw_core_settings`]): core owns
+/// validation/defaulting with per-field diagnostics, so the adapter never
+/// refuses them here. `width/gap/radius` stay `serde_json::Value` (not
+/// `f64`) so a wrong-typed file value (`"wide"`, `true`) survives loading
+/// and reaches core diagnostics instead of refusing at file parse.
+/// `color/use_theme` stay host-local (no core wire slot): they keep the
+/// strict local validation below.
+/// Presence-preserving raw acquisition field: absent stays `None`
+/// (key omitted, core diagnoses `Missing` on defaults) while an explicit
+/// JSON `null` loads as `Some(Value::Null)` (forwarded verbatim, core
+/// diagnoses `WrongType`). Stock `Option` would erase explicit null into
+/// missing; this keeps the two truthfully distinct for all four core keys.
+fn de_opt_raw<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_json::Value::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ActiveBorderSettings {
-    /// Master switch (default on).
-    pub enabled: Option<bool>,
-    /// Ring thickness in points, `0..=32` (default 3).
-    pub width: Option<f64>,
-    /// Gap between target frame and ring in points, `0..=64` (default 0).
-    pub gap: Option<f64>,
-    /// Centerline stroke-path corner radius in points, `0..=64` (default
-    /// host-derived: native base + gap + width / 2; explicit values apply
-    /// verbatim, never re-offset).
-    pub radius: Option<f64>,
+    /// Master switch (default on). Raw: forwarded verbatim to core, which
+    /// validates (`"bad"`, `null`, `[]` diagnose `WrongType` there).
+    #[serde(default, deserialize_with = "de_opt_raw")]
+    pub enabled: Option<serde_json::Value>,
+    /// Ring thickness in points. Raw: forwarded verbatim to core.
+    #[serde(default, deserialize_with = "de_opt_raw")]
+    pub width: Option<serde_json::Value>,
+    /// Gap between target frame and ring in points. Raw: forwarded
+    /// verbatim to core, which validates.
+    #[serde(default, deserialize_with = "de_opt_raw")]
+    pub gap: Option<serde_json::Value>,
+    /// Centerline stroke-path corner radius in points. Raw: forwarded
+    /// verbatim to core.
+    #[serde(default, deserialize_with = "de_opt_raw")]
+    pub radius: Option<serde_json::Value>,
     /// Fallback colour as `#rrggbb` (default `#2a82da`).
     pub color: Option<String>,
     /// Follow the live system accent (default on).
@@ -180,30 +206,15 @@ pub struct ActiveBorderSettings {
 }
 
 impl ActiveBorderSettings {
-    /// Validate merged file content (no OS reads).
+    /// Validate merged file content (no OS reads). Only host-local fields
+    /// validate here (`color`); the core-owned numeric keys (`width/gap/
+    /// radius`) never refuse adapter-side — core owns their
+    /// validation/defaulting with per-field diagnostics.
     pub fn validate(&self) -> Result<(), String> {
-        if let Some(width) = self.width {
-            file_bound(width, MAX_WIDTH, "width")?;
-        }
-        if let Some(gap) = self.gap {
-            file_bound(gap, MAX_GAP, "gap")?;
-        }
-        if let Some(radius) = self.radius {
-            file_bound(radius, MAX_RADIUS, "radius")?;
-        }
         if let Some(color) = &self.color {
             parse_color(color).map_err(|reason| format!("settings: {reason}"))?;
         }
         Ok(())
-    }
-}
-
-/// Numeric file bound shared by the border section validator and merger.
-fn file_bound(value: f64, max: f64, name: &str) -> Result<f64, String> {
-    if value.is_finite() && value >= 0.0 && value <= max {
-        Ok(value)
-    } else {
-        Err(format!("settings: active_border.{name} needs 0..={max}"))
     }
 }
 
@@ -232,38 +243,62 @@ pub struct BorderCli {
 
 /// Merge CLI border selections over the settings file: an explicitly passed
 /// CLI flag always wins; otherwise the file value applies; otherwise the
-/// host default (on, width 3, gap 0, centerline radius derived as native
-/// base + gap + width / 2 after width/gap resolve, `#2a82da`, theme on).
-/// Every value validates through the shared bounds; failures refuse closed
-/// (never a silent fallback). Border configuration is startup-only: a
-/// running tile session never re-reads it.
+/// core catalog default (on, width 3, gap 0, radius 6, `#2a82da`, theme on).
+///
+/// This merger feeds the host-local renderer only. Core-owned numeric keys
+/// (`enabled/width/gap/radius`) never validate here: a wrong-typed or
+/// non-finite value falls back to the core catalog default for the renderer
+/// while the raw value still rides to core via
+/// [`collect_raw_core_settings`], which diagnoses per field. Only
+/// host-local fields (`color`) refuse closed (never a silent fallback).
+/// Border configuration is startup-only: a running tile session never
+/// re-reads it.
 pub fn resolve_border_config(
     cli: &BorderCli,
     file: Option<&ActiveBorderSettings>,
-    os_major: Option<u32>,
 ) -> Result<ActiveBorderOptions, String> {
-    let enabled = cli.enabled.or(file.and_then(|f| f.enabled)).unwrap_or(true);
-    let width = match &cli.width {
-        Some(raw) => parse_width(raw)?,
-        None => match file.and_then(|f| f.width) {
-            Some(value) => file_bound(value, MAX_WIDTH, "width")?,
-            None => DEFAULT_WIDTH,
-        },
-    };
-    let gap = match &cli.gap {
-        Some(raw) => parse_gap(raw)?,
-        None => match file.and_then(|f| f.gap) {
-            Some(value) => file_bound(value, MAX_GAP, "gap")?,
-            None => DEFAULT_GAP,
-        },
-    };
-    let radius = match &cli.radius {
-        Some(raw) => parse_radius(raw)?,
-        None => match file.and_then(|f| f.radius) {
-            Some(value) => file_bound(value, MAX_RADIUS, "radius")?,
-            None => host_default_radius(os_major, width, gap),
-        },
-    };
+    let enabled = cli
+        .enabled
+        .or_else(|| match file.and_then(|f| f.enabled.as_ref()) {
+            Some(serde_json::Value::Bool(b)) => Some(*b),
+            _ => None,
+        })
+        .unwrap_or(true);
+    // Renderer-side numeric view of a core-owned key: finite numbers apply
+    // verbatim with no range check (core owns OutOfRange diagnostics);
+    // anything else falls back to the core catalog default without refusing.
+    fn carrier_number(raw: Option<&str>, file: Option<&serde_json::Value>, fallback: f64) -> f64 {
+        if let Some(text) = raw {
+            if let Ok(parsed) = text.parse::<f64>()
+                && parsed.is_finite()
+            {
+                return parsed;
+            }
+            return fallback;
+        }
+        match file {
+            Some(serde_json::Value::Number(n)) => {
+                let parsed = n.as_f64().unwrap_or(f64::NAN);
+                if parsed.is_finite() { parsed } else { fallback }
+            }
+            _ => fallback,
+        }
+    }
+    let width = carrier_number(
+        cli.width.as_deref(),
+        file.and_then(|f| f.width.as_ref()),
+        tiler_core::settings_catalog::DEFAULT_CATALOG_BORDER_WIDTH,
+    );
+    let gap = carrier_number(
+        cli.gap.as_deref(),
+        file.and_then(|f| f.gap.as_ref()),
+        tiler_core::settings_catalog::DEFAULT_CATALOG_BORDER_GAP,
+    );
+    let radius = carrier_number(
+        cli.radius.as_deref(),
+        file.and_then(|f| f.radius.as_ref()),
+        tiler_core::settings_catalog::DEFAULT_CATALOG_BORDER_RADIUS,
+    );
     let color = match &cli.color {
         Some(raw) => parse_color(raw)?,
         None => match file.and_then(|f| f.color.as_ref()) {
@@ -285,6 +320,105 @@ pub fn resolve_border_config(
             use_theme,
         },
     })
+}
+
+/// Raw core wire keys for the active-border section, in stable order.
+const CORE_BORDER_KEYS: [(&str, &str); 4] = [
+    ("borderEnabled", "enabled"),
+    ("borderWidth", "width"),
+    ("borderGap", "gap"),
+    ("borderRadius", "radius"),
+];
+
+/// Convert one raw JSON acquisition value to its core wire form,
+/// preserving JSON types and values verbatim (no adapter validation,
+/// no silent defaulting). Full-document syntax errors still refuse at
+/// [`load_settings`]; per-field wrong types ride through here so core
+/// emits per-field diagnostics.
+#[must_use]
+pub fn raw_setting_value_from_json(
+    value: &serde_json::Value,
+) -> tiler_core::connection::RawSettingValue {
+    use tiler_core::connection::RawSettingValue as Raw;
+    match value {
+        serde_json::Value::Null => Raw::Null,
+        serde_json::Value::Bool(b) => Raw::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(parsed) = n.as_f64() {
+                Raw::Number(parsed)
+            } else {
+                Raw::String(n.to_string())
+            }
+        }
+        serde_json::Value::String(s) => Raw::String(s.clone()),
+        serde_json::Value::Array(items) => {
+            Raw::Array(items.iter().map(raw_setting_value_from_json).collect())
+        }
+        serde_json::Value::Object(map) => Raw::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), raw_setting_value_from_json(v)))
+                .collect(),
+        ),
+    }
+}
+
+/// Convert one raw CLI string for a core numeric key to its wire form.
+/// Numeric strings that parse to a finite `f64` ride as `Number` verbatim
+/// (even when out of core range — core diagnoses `OutOfRange`); anything
+/// else (non-numeric text, `nan`/`inf` spellings the JSON codec cannot
+/// carry as numbers) rides as `String` so core diagnoses `WrongType`.
+#[must_use]
+fn raw_core_number_from_cli(text: &str) -> tiler_core::connection::RawSettingValue {
+    match text.parse::<f64>() {
+        Ok(parsed) if parsed.is_finite() => tiler_core::connection::RawSettingValue::Number(parsed),
+        _ => tiler_core::connection::RawSettingValue::String(text.to_owned()),
+    }
+}
+
+/// Collect the raw core-owned border settings for the revisioned settings
+/// route: the four core wire keys (`borderEnabled/borderWidth/borderGap/
+/// borderRadius`) with CLI-over-file precedence per key. An explicitly
+/// passed CLI flag always wins (even a non-numeric string, which core
+/// diagnoses); otherwise the raw file value applies verbatim (even a
+/// wrong-typed JSON value, which core diagnoses); otherwise the key is
+/// omitted and core applies its default (`Missing` diagnostic). Never
+/// refuses, never defaults adapter-side: core owns validation/defaulting
+/// with per-field diagnostics while valid sibling fields still apply.
+#[must_use]
+pub fn collect_raw_core_settings(
+    cli: &BorderCli,
+    file: Option<&ActiveBorderSettings>,
+) -> Vec<(String, tiler_core::connection::RawSettingValue)> {
+    use tiler_core::connection::RawSettingValue as Raw;
+    let mut values = Vec::with_capacity(CORE_BORDER_KEYS.len());
+    if let Some(enabled) = cli.enabled.map(Raw::Bool).or_else(|| {
+        file.and_then(|f| f.enabled.as_ref())
+            .map(raw_setting_value_from_json)
+    }) {
+        values.push(("borderEnabled".to_owned(), enabled));
+    }
+    let file_value = |name: &str| -> Option<&serde_json::Value> {
+        let section = file?;
+        match name {
+            "width" => section.width.as_ref(),
+            "gap" => section.gap.as_ref(),
+            "radius" => section.radius.as_ref(),
+            _ => None,
+        }
+    };
+    for (wire, name, cli_raw) in [
+        ("borderWidth", "width", cli.width.as_deref()),
+        ("borderGap", "gap", cli.gap.as_deref()),
+        ("borderRadius", "radius", cli.radius.as_deref()),
+    ] {
+        debug_assert!(CORE_BORDER_KEYS.iter().any(|(key, _)| *key == wire));
+        if let Some(text) = cli_raw {
+            values.push((wire.to_owned(), raw_core_number_from_cli(text)));
+        } else if let Some(raw) = file_value(name) {
+            values.push((wire.to_owned(), raw_setting_value_from_json(raw)));
+        }
+    }
+    values
 }
 
 /// Pager-highlight settings file section (`"pager_highlight"` object; every
@@ -539,22 +673,31 @@ mod tests {
     }
 
     #[test]
-    fn own_bundles_excluded_in_both_modes() {
-        // The own probe bundle never authorizes anywhere, even listed.
-        assert!(!unscoped(&[]).allows_effect(Some(crate::BUNDLE_ID)));
-        assert!(!launchable(&unscoped(&[]), 4242, crate::BUNDLE_ID));
+    fn own_bundles_scoped_fence_holds_unscoped_admits_other_processes() {
+        // Scoped fences are unchanged: the own probe bundle never authorizes
+        // anywhere scoped, even listed.
         assert!(!scoped(&[crate::BUNDLE_ID]).allows_effect(Some(crate::BUNDLE_ID)));
-        // The signed helper never authorizes unscoped (own product
-        // bundle), but stays admittable as an explicit scoped fixture
-        // member — the only exception.
-        assert!(!unscoped(&[]).allows_effect(Some(crate::HELPER_BUNDLE_ID)));
-        assert!(!launchable(&unscoped(&[]), 4242, crate::HELPER_BUNDLE_ID));
+        // The signed helper stays admittable as an explicit scoped fixture
+        // member — the only scoped exception.
         assert!(scoped(&[crate::HELPER_BUNDLE_ID]).validate().is_ok());
         assert!(scoped(&[crate::HELPER_BUNDLE_ID]).allows_effect(Some(crate::HELPER_BUNDLE_ID)));
         assert!(!scoped(&["com.example.app"]).allows_effect(Some(crate::HELPER_BUNDLE_ID)));
-        // Explicitly listing an own bundle unscoped is still refused (the
-        // "exclusion" cannot re-admit: unscoped admits by rule, not list).
+        // M1 unscoped: same bundle in a different process is eligible (no
+        // bundle-wide probe/helper exclusion). Own-process protection stays
+        // pid-based at launch: a non-self pid with the probe bundle admits
+        // at the effect gate, while the current pid never launches.
+        assert!(unscoped(&[]).allows_effect(Some(crate::BUNDLE_ID)));
+        assert!(unscoped(&[]).allows_effect(Some(crate::HELPER_BUNDLE_ID)));
+        assert!(!launchable(
+            &unscoped(&[]),
+            std::process::id(),
+            crate::BUNDLE_ID
+        ));
+        // Explicit unscoped "exclusions" of own bundles cannot re-admit or
+        // re-refuse beyond the exact exclusion rule: listing the probe bundle
+        // as excluded refuses it, otherwise it admits.
         assert!(!unscoped(&[crate::BUNDLE_ID]).allows_effect(Some(crate::BUNDLE_ID)));
+        assert!(unscoped(&[]).allows_effect(Some(crate::BUNDLE_ID)));
     }
 
     #[test]
@@ -750,96 +893,103 @@ mod tests {
 
     #[test]
     fn border_defaults_match_shared_parity() {
-        // Nothing set anywhere: on, width 3, gap 0, host-derived centerline
-        // radius (`#2a82da`, theme on). Tahoe 26+ derives 16 + 0 + 3/2;
-        // older/unknown derive 9 + 0 + 3/2 (portable `None` route matches
-        // `ActiveBorderStyle::default`).
-        for (family, want) in [(Some(26), 17.5), (Some(15), 10.5), (None, 10.5)] {
-            let resolved =
-                resolve_border_config(&BorderCli::default(), None, family).expect("resolves");
-            assert!(resolved.enabled);
-            assert_eq!(resolved.style.width, 3.0);
-            assert_eq!(resolved.style.gap, 0.0);
-            assert_eq!(resolved.style.radius, want, "family={family:?}");
-            assert_eq!(
-                crate::active_border::render_color(resolved.style.color),
-                "#2a82da"
-            );
-            assert!(resolved.style.use_theme);
-        }
+        // Nothing set anywhere: on, core catalog width 3 / gap 0 /
+        // radius 6 (`#2a82da`, theme on). No host derivation: the renderer
+        // carrier falls back to the core catalog defaults.
+        let resolved = resolve_border_config(&BorderCli::default(), None).expect("resolves");
+        assert!(resolved.enabled);
         assert_eq!(
-            resolve_border_config(&BorderCli::default(), None, None).expect("resolves"),
-            crate::active_border::ActiveBorderOptions::default()
+            resolved.style.width,
+            tiler_core::settings_catalog::DEFAULT_CATALOG_BORDER_WIDTH
         );
+        assert_eq!(
+            resolved.style.gap,
+            tiler_core::settings_catalog::DEFAULT_CATALOG_BORDER_GAP
+        );
+        assert_eq!(
+            resolved.style.radius,
+            tiler_core::settings_catalog::DEFAULT_CATALOG_BORDER_RADIUS
+        );
+        assert_eq!(
+            crate::active_border::render_color(resolved.style.color),
+            "#2a82da"
+        );
+        assert!(resolved.style.use_theme);
     }
 
     #[test]
-    fn border_host_default_derives_after_width_gap() {
-        // Unset radius follows the RESOLVED width/gap, not the 3/0 defaults.
+    fn border_carrier_passes_finite_verbatim_without_range_checks() {
+        // Finite numbers apply verbatim with no adapter range check (core
+        // owns OutOfRange); unset keys fall back to the core catalog
+        // default. Radius never derives from width/gap/host.
         let file = ActiveBorderSettings {
-            width: Some(5.0),
-            gap: Some(2.0),
+            width: Some(serde_json::json!(5.0)),
+            gap: Some(serde_json::json!(2.0)),
             ..ActiveBorderSettings::default()
         };
-        let modern =
-            resolve_border_config(&BorderCli::default(), Some(&file), Some(26)).expect("resolves");
-        assert_eq!(modern.style.radius, 16.0 + 2.0 + 2.5);
-        let legacy =
-            resolve_border_config(&BorderCli::default(), Some(&file), Some(15)).expect("resolves");
-        assert_eq!(legacy.style.radius, 9.0 + 2.0 + 2.5);
-        // Empty section is the same as absent: pure host default.
-        let empty = ActiveBorderSettings::default();
+        let resolved = resolve_border_config(&BorderCli::default(), Some(&file)).expect("resolves");
+        assert_eq!(resolved.style.width, 5.0);
+        assert_eq!(resolved.style.gap, 2.0);
         assert_eq!(
-            resolve_border_config(&BorderCli::default(), Some(&empty), Some(26))
-                .expect("resolves")
-                .style
-                .radius,
-            17.5
+            resolved.style.radius,
+            tiler_core::settings_catalog::DEFAULT_CATALOG_BORDER_RADIUS
         );
-        // Explicit radius (CLI or file) applies verbatim on every family.
+        // Empty section is the same as absent: core catalog defaults.
+        let empty = ActiveBorderSettings::default();
+        let resolved =
+            resolve_border_config(&BorderCli::default(), Some(&empty)).expect("resolves");
+        assert_eq!(
+            resolved.style.radius,
+            tiler_core::settings_catalog::DEFAULT_CATALOG_BORDER_RADIUS
+        );
+        // Explicit radius (CLI or file) applies verbatim.
         let cli = BorderCli {
             radius: Some("12".to_owned()),
             ..BorderCli::default()
         };
-        for family in [Some(26), Some(15), None] {
-            assert_eq!(
-                resolve_border_config(&cli, Some(&file), family)
-                    .expect("resolves")
-                    .style
-                    .radius,
-                12.0,
-                "family={family:?}"
-            );
-        }
-        // Auto-derived default caps at the configured radius range; the
-        // width/gap config itself still resolves.
+        assert_eq!(
+            resolve_border_config(&cli, Some(&file))
+                .expect("resolves")
+                .style
+                .radius,
+            12.0
+        );
+        // Out-of-range finite numbers ride verbatim (no adapter refusal).
         let wide = ActiveBorderSettings {
-            width: Some(32.0),
-            gap: Some(64.0),
+            width: Some(serde_json::json!(99.0)),
+            gap: Some(serde_json::json!(-1.0)),
+            radius: Some(serde_json::json!(65.0)),
             ..ActiveBorderSettings::default()
         };
-        for family in [Some(26), None] {
-            let capped = resolve_border_config(&BorderCli::default(), Some(&wide), family)
-                .expect("resolves");
-            assert_eq!(capped.style.width, 32.0);
-            assert_eq!(capped.style.gap, 64.0);
-            assert_eq!(capped.style.radius, 64.0, "family={family:?}");
-        }
+        let resolved = resolve_border_config(&BorderCli::default(), Some(&wide)).expect("resolves");
+        assert_eq!(resolved.style.width, 99.0);
+        assert_eq!(resolved.style.gap, -1.0);
+        assert_eq!(resolved.style.radius, 65.0);
+        let cli = BorderCli {
+            width: Some("32.1".to_owned()),
+            ..BorderCli::default()
+        };
+        assert_eq!(
+            resolve_border_config(&cli, None)
+                .expect("resolves")
+                .style
+                .width,
+            32.1
+        );
     }
 
     #[test]
     fn border_file_applies_and_cli_wins_per_field() {
         let file = ActiveBorderSettings {
-            enabled: Some(false),
-            width: Some(5.0),
-            gap: Some(2.0),
-            radius: Some(10.0),
+            enabled: Some(serde_json::json!(false)),
+            width: Some(serde_json::json!(5.0)),
+            gap: Some(serde_json::json!(2.0)),
+            radius: Some(serde_json::json!(10.0)),
             color: Some("#112233".to_owned()),
             use_theme: Some(false),
         };
         // File alone applies wholesale (switch off included).
-        let resolved =
-            resolve_border_config(&BorderCli::default(), Some(&file), None).expect("resolves");
+        let resolved = resolve_border_config(&BorderCli::default(), Some(&file)).expect("resolves");
         assert!(!resolved.enabled);
         assert_eq!(resolved.style.width, 5.0);
         assert_eq!(resolved.style.gap, 2.0);
@@ -853,7 +1003,7 @@ mod tests {
             use_theme: Some(true),
             ..BorderCli::default()
         };
-        let resolved = resolve_border_config(&cli, Some(&file), Some(26)).expect("resolves");
+        let resolved = resolve_border_config(&cli, Some(&file)).expect("resolves");
         assert!(!resolved.enabled);
         assert_eq!(resolved.style.width, 7.0);
         assert_eq!(resolved.style.gap, 2.0);
@@ -865,43 +1015,129 @@ mod tests {
             enabled: Some(false),
             ..BorderCli::default()
         };
-        assert!(
-            !resolve_border_config(&cli, None, None)
-                .expect("resolves")
-                .enabled
-        );
+        assert!(!resolve_border_config(&cli, None).expect("resolves").enabled);
         let cli = BorderCli {
             use_theme: Some(true),
             ..BorderCli::default()
         };
         assert!(
-            resolve_border_config(&cli, Some(&file), Some(26))
+            resolve_border_config(&cli, Some(&file))
                 .expect("resolves")
                 .style
                 .use_theme
         );
+        // Wrong-typed file `enabled` is ignored renderer-side (stays on)
+        // while the raw lane still forwards it to core diagnostics.
+        for bad in [
+            serde_json::json!("bad"),
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!(1),
+        ] {
+            let file = ActiveBorderSettings {
+                enabled: Some(bad),
+                ..ActiveBorderSettings::default()
+            };
+            assert!(
+                resolve_border_config(&BorderCli::default(), Some(&file))
+                    .expect("resolves")
+                    .enabled
+            );
+        }
     }
 
     #[test]
-    fn border_config_refuses_bad_values() {
-        // CLI strings validate through the shared bounds (Windows parity).
+    fn border_config_falls_back_on_bad_core_numbers_but_refuses_bad_color() {
+        // Core-owned numeric keys never refuse adapter-side: a wrong-typed
+        // or non-finite CLI/file value falls back to the core catalog
+        // default for the renderer while the raw value still rides to core
+        // (see `collect_raw_core_settings`), which diagnoses per field.
+        // Finite numbers (even out-of-range) ride verbatim. Host-local
+        // `color` still refuses.
+        use tiler_core::settings_catalog as catalog;
+        for (cli, width, gap) in [
+            (
+                BorderCli {
+                    width: Some("abc".to_owned()),
+                    ..BorderCli::default()
+                },
+                catalog::DEFAULT_CATALOG_BORDER_WIDTH,
+                catalog::DEFAULT_CATALOG_BORDER_GAP,
+            ),
+            (
+                BorderCli {
+                    radius: Some("nan".to_owned()),
+                    ..BorderCli::default()
+                },
+                catalog::DEFAULT_CATALOG_BORDER_WIDTH,
+                catalog::DEFAULT_CATALOG_BORDER_GAP,
+            ),
+            (
+                BorderCli {
+                    width: Some("32.1".to_owned()),
+                    ..BorderCli::default()
+                },
+                32.1,
+                catalog::DEFAULT_CATALOG_BORDER_GAP,
+            ),
+            (
+                BorderCli {
+                    width: Some("-1".to_owned()),
+                    ..BorderCli::default()
+                },
+                -1.0,
+                catalog::DEFAULT_CATALOG_BORDER_GAP,
+            ),
+        ] {
+            let resolved = resolve_border_config(&cli, None).expect("resolves");
+            assert_eq!(resolved.style.width, width);
+            assert_eq!(resolved.style.gap, gap);
+        }
+        // Wrong-typed file numbers fall back the same way (and validate
+        // cleanly: core owns those diagnostics); out-of-range finite file
+        // numbers ride verbatim.
+        for (file, width, gap) in [
+            (
+                ActiveBorderSettings {
+                    width: Some(serde_json::json!("wide")),
+                    ..ActiveBorderSettings::default()
+                },
+                catalog::DEFAULT_CATALOG_BORDER_WIDTH,
+                catalog::DEFAULT_CATALOG_BORDER_GAP,
+            ),
+            (
+                ActiveBorderSettings {
+                    radius: Some(serde_json::json!(true)),
+                    ..ActiveBorderSettings::default()
+                },
+                catalog::DEFAULT_CATALOG_BORDER_WIDTH,
+                catalog::DEFAULT_CATALOG_BORDER_GAP,
+            ),
+            (
+                ActiveBorderSettings {
+                    width: Some(serde_json::json!(33.0)),
+                    ..ActiveBorderSettings::default()
+                },
+                33.0,
+                catalog::DEFAULT_CATALOG_BORDER_GAP,
+            ),
+            (
+                ActiveBorderSettings {
+                    gap: Some(serde_json::json!(-1.0)),
+                    ..ActiveBorderSettings::default()
+                },
+                catalog::DEFAULT_CATALOG_BORDER_WIDTH,
+                -1.0,
+            ),
+        ] {
+            assert!(file.validate().is_ok());
+            let resolved =
+                resolve_border_config(&BorderCli::default(), Some(&file)).expect("resolves");
+            assert_eq!(resolved.style.width, width);
+            assert_eq!(resolved.style.gap, gap);
+        }
+        // Host-local colour still refuses on both routes.
         for cli in [
-            BorderCli {
-                width: Some("32.1".to_owned()),
-                ..BorderCli::default()
-            },
-            BorderCli {
-                width: Some("-1".to_owned()),
-                ..BorderCli::default()
-            },
-            BorderCli {
-                gap: Some("65".to_owned()),
-                ..BorderCli::default()
-            },
-            BorderCli {
-                radius: Some("nan".to_owned()),
-                ..BorderCli::default()
-            },
             BorderCli {
                 color: Some("2a82da".to_owned()),
                 ..BorderCli::default()
@@ -911,30 +1147,14 @@ mod tests {
                 ..BorderCli::default()
             },
         ] {
-            assert!(resolve_border_config(&cli, None, None).is_err());
+            assert!(resolve_border_config(&cli, None).is_err());
         }
-        // File numbers validate the same way (never a silent fallback).
-        for file in [
-            ActiveBorderSettings {
-                width: Some(33.0),
-                ..ActiveBorderSettings::default()
-            },
-            ActiveBorderSettings {
-                gap: Some(-1.0),
-                ..ActiveBorderSettings::default()
-            },
-            ActiveBorderSettings {
-                radius: Some(f64::INFINITY),
-                ..ActiveBorderSettings::default()
-            },
-            ActiveBorderSettings {
-                color: Some("#zzzzzz".to_owned()),
-                ..ActiveBorderSettings::default()
-            },
-        ] {
-            assert!(file.validate().is_err());
-            assert!(resolve_border_config(&BorderCli::default(), Some(&file), None).is_err());
-        }
+        let bad_color = ActiveBorderSettings {
+            color: Some("#zzzzzz".to_owned()),
+            ..ActiveBorderSettings::default()
+        };
+        assert!(bad_color.validate().is_err());
+        assert!(resolve_border_config(&BorderCli::default(), Some(&bad_color)).is_err());
         // Boundary values pass on both routes.
         let cli = BorderCli {
             width: Some("32".to_owned()),
@@ -943,7 +1163,7 @@ mod tests {
             color: Some("#2A82DA".to_owned()),
             ..BorderCli::default()
         };
-        let resolved = resolve_border_config(&cli, None, None).expect("resolves");
+        let resolved = resolve_border_config(&cli, None).expect("resolves");
         assert_eq!(resolved.style.width, 32.0);
         assert_eq!(resolved.style.color, (0x2a, 0x82, 0xda));
     }
@@ -1016,7 +1236,7 @@ mod tests {
             color: Some("#ff0000".to_owned()),
             ..BorderCli::default()
         };
-        let border = resolve_border_config(&border_cli, None, None).expect("resolves");
+        let border = resolve_border_config(&border_cli, None).expect("resolves");
         let highlight =
             resolve_pager_highlight_config(&PagerHighlightCli::default(), None).expect("resolves");
         assert_eq!(border.style.color, (0xff, 0x00, 0x00));
@@ -1065,28 +1285,159 @@ mod tests {
         )
         .expect("parses");
         let section = settings.active_border.as_ref().expect("section");
-        assert_eq!(section.enabled, Some(false));
-        assert_eq!(section.width, Some(5.0));
+        assert_eq!(section.enabled, Some(serde_json::json!(false)));
+        assert_eq!(section.width, Some(serde_json::json!(5)));
         assert_eq!(section.color.as_deref(), Some("#112233"));
         assert!(settings.validate().is_ok());
-        let resolved = resolve_border_config(
-            &BorderCli::default(),
-            settings.active_border.as_ref(),
-            Some(26),
-        )
-        .expect("resolves");
+        let resolved =
+            resolve_border_config(&BorderCli::default(), settings.active_border.as_ref())
+                .expect("resolves");
         assert!(!resolved.enabled);
         assert_eq!(resolved.style.radius, 8.0);
         // Unknown nested fields refuse loudly (typos never silently no-op).
         assert!(
             serde_json::from_str::<DevSettings>(r#"{"active_border":{"thicknes":5}}"#).is_err()
         );
-        // A bad section fails the whole file closed.
+        // A wrong-typed core number still parses and validates file-side:
+        // core owns that diagnostic via the raw lane (never a file refusal).
+        let raw: DevSettings =
+            serde_json::from_str(r#"{"active_border":{"width":"wide"}}"#).expect("parses shape");
+        assert!(raw.validate().is_ok());
+        let values = collect_raw_core_settings(&BorderCli::default(), raw.active_border.as_ref());
+        assert_eq!(
+            values,
+            vec![(
+                "borderWidth".to_owned(),
+                tiler_core::connection::RawSettingValue::String("wide".to_owned())
+            )]
+        );
+        // An out-of-range finite core number rides verbatim renderer-side;
+        // the raw value still rides to core diagnostics.
         let bad: DevSettings =
             serde_json::from_str(r#"{"active_border":{"width":99}}"#).expect("parses shape");
-        assert!(bad.validate().is_err());
+        assert!(bad.validate().is_ok());
+        let resolved = resolve_border_config(&BorderCli::default(), bad.active_border.as_ref())
+            .expect("resolves");
+        assert_eq!(resolved.style.width, 99.0);
+        let values = collect_raw_core_settings(&BorderCli::default(), bad.active_border.as_ref());
+        assert_eq!(
+            values,
+            vec![(
+                "borderWidth".to_owned(),
+                tiler_core::connection::RawSettingValue::Number(99.0)
+            )]
+        );
+        // Wrong-typed `enabled` variants parse file-side and ride raw to
+        // core (WrongType there); absent omits (Missing on defaults).
+        for (text, want) in [
+            (
+                r#"{"active_border":{"enabled":"bad"}}"#,
+                tiler_core::connection::RawSettingValue::String("bad".to_owned()),
+            ),
+            (
+                r#"{"active_border":{"enabled":null}}"#,
+                tiler_core::connection::RawSettingValue::Null,
+            ),
+            (
+                r#"{"active_border":{"enabled":[]}}"#,
+                tiler_core::connection::RawSettingValue::Array(vec![]),
+            ),
+        ] {
+            let parsed: DevSettings = serde_json::from_str(text).expect("parses shape");
+            assert!(parsed.validate().is_ok());
+            assert_eq!(
+                collect_raw_core_settings(&BorderCli::default(), parsed.active_border.as_ref()),
+                vec![("borderEnabled".to_owned(), want)]
+            );
+        }
+        let absent: DevSettings =
+            serde_json::from_str(r#"{"active_border":{"width":5}}"#).expect("parses");
         assert!(
-            resolve_border_config(&BorderCli::default(), bad.active_border.as_ref(), None).is_err()
+            collect_raw_core_settings(&BorderCli::default(), absent.active_border.as_ref())
+                .iter()
+                .all(|(k, _)| k != "borderEnabled")
+        );
+        let explicit_null: DevSettings =
+            serde_json::from_str(r#"{"active_border":{"enabled":null}}"#).expect("parses");
+        assert_eq!(
+            collect_raw_core_settings(&BorderCli::default(), explicit_null.active_border.as_ref()),
+            vec![(
+                "borderEnabled".to_owned(),
+                tiler_core::connection::RawSettingValue::Null
+            )]
+        );
+    }
+
+    #[test]
+    fn raw_core_settings_merge_cli_over_file_per_key() {
+        use tiler_core::connection::RawSettingValue as Raw;
+        // File alone maps to the four core wire keys verbatim.
+        let file = ActiveBorderSettings {
+            enabled: Some(serde_json::json!(true)),
+            width: Some(serde_json::json!(5)),
+            gap: Some(serde_json::json!(2)),
+            radius: Some(serde_json::json!(10)),
+            ..ActiveBorderSettings::default()
+        };
+        assert_eq!(
+            collect_raw_core_settings(&BorderCli::default(), Some(&file)),
+            vec![
+                ("borderEnabled".to_owned(), Raw::Bool(true)),
+                ("borderWidth".to_owned(), Raw::Number(5.0)),
+                ("borderGap".to_owned(), Raw::Number(2.0)),
+                ("borderRadius".to_owned(), Raw::Number(10.0)),
+            ]
+        );
+        // Explicit CLI wins per key; unset CLI keys keep the file value.
+        let cli = BorderCli {
+            enabled: Some(false),
+            width: Some("7".to_owned()),
+            gap: None,
+            radius: Some("abc".to_owned()),
+            ..BorderCli::default()
+        };
+        assert_eq!(
+            collect_raw_core_settings(&cli, Some(&file)),
+            vec![
+                ("borderEnabled".to_owned(), Raw::Bool(false)),
+                ("borderWidth".to_owned(), Raw::Number(7.0)),
+                ("borderGap".to_owned(), Raw::Number(2.0)),
+                ("borderRadius".to_owned(), Raw::String("abc".to_owned())),
+            ]
+        );
+        // Empty acquisition omits every key (core defaults apply).
+        assert!(collect_raw_core_settings(&BorderCli::default(), None).is_empty());
+        assert!(
+            collect_raw_core_settings(
+                &BorderCli::default(),
+                Some(&ActiveBorderSettings::default())
+            )
+            .is_empty()
+        );
+        // Non-finite CLI spellings ride as strings: the JSON codec cannot
+        // carry them as numbers, and core diagnoses the truthful wrong type.
+        let cli = BorderCli {
+            width: Some("nan".to_owned()),
+            gap: Some("inf".to_owned()),
+            radius: Some("-inf".to_owned()),
+            ..BorderCli::default()
+        };
+        assert_eq!(
+            collect_raw_core_settings(&cli, None),
+            vec![
+                ("borderWidth".to_owned(), Raw::String("nan".to_owned())),
+                ("borderGap".to_owned(), Raw::String("inf".to_owned())),
+                ("borderRadius".to_owned(), Raw::String("-inf".to_owned())),
+            ]
+        );
+        // Out-of-range numerics ride verbatim (core diagnoses per field).
+        let cli = BorderCli {
+            width: Some("32.1".to_owned()),
+            ..BorderCli::default()
+        };
+        assert_eq!(
+            collect_raw_core_settings(&cli, None),
+            vec![("borderWidth".to_owned(), Raw::Number(32.1))]
         );
     }
 }

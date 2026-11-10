@@ -252,6 +252,15 @@ mod tests {
                 fullscreen: false,
                 minimized: false,
                 hidden: false,
+
+                role: None,
+
+                subrole: None,
+                modal: None,
+                resizable: None,
+                layer: None,
+                app_id: None,
+                activation_policy: None,
             }],
             excluded: 0,
             excluded_reasons: Vec::new(),

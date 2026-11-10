@@ -3565,7 +3565,7 @@ mod send_join_tests {
 
     use crate::focus_route::FocusRoute;
     use crate::runtime::{FocusRequest, Shared, lock_shared, window_id};
-    use crate::runtime_core::{RetainedApp, RetainedCore};
+    use crate::runtime_core::{RetainedApp, RetainedCore, RosterEntry};
     use crate::runtime_thread::{Inbox, bind_send_plan};
     use crate::runtime_types::{
         ClaimedSelect, InputSemanticAction, NativeContext, NativeDomain, ObservedWindow,
@@ -3642,18 +3642,43 @@ mod send_join_tests {
     }
 
     /// Retained truth for the join lane: subject window on the current
-    /// Space (observed focus), homed exactly, generation 1.
+    /// Space (observed focus), homed exactly, generation 1. The roster
+    /// carries the genuine neutral raw capture (ordinary AXWindow /
+    /// AXStandardWindow, non-modal, resizable, base layer, regular policy)
+    /// so the v4 builder emits a classifiable live fact; a missing raw
+    /// entry would report nulls and the core would refuse
+    /// `send-window-unknown`.
     fn retained_send_subject() -> RetainedCore {
         let mut retained = RetainedCore::default();
+        let subject = observed(7);
+        let mut roster = BTreeMap::new();
+        roster.insert(
+            7,
+            RosterEntry {
+                observed: Some(subject),
+                spaces: vec![20],
+                fullscreen_meta: false,
+                minimized_meta: false,
+                hidden_meta: false,
+                excluded: None,
+                role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                modal: Some(false),
+                resizable: Some(true),
+                layer: Some(0),
+                app_id: Some("com.example.app".to_owned()),
+                activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+            },
+        );
         retained.apps.insert(
             4242,
             RetainedApp {
                 generation: 1,
                 seq_last: 1,
                 cmd_counter: 0,
-                windows: vec![observed(7)],
+                windows: vec![subject],
                 focused_wid: Some(7),
-                roster: BTreeMap::new(),
+                roster,
                 roster_incomplete: false,
                 roster_cause: String::new(),
             },
@@ -3705,7 +3730,7 @@ mod send_join_tests {
             test_wake: None,
             test_seq: 0,
             last_geometry_key: None,
-            last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            last_presentation: crate::runtime::empty_world_presentation_v4(),
             last_pager_bindings: Vec::new(),
             last_workspace_desires: Vec::new(),
             last_core_generation: String::new(),
@@ -3726,10 +3751,10 @@ mod send_join_tests {
     ) {
         (
             WorldSession::new(
-                tiler_core::size_hints::FixedSizePredicate::BothAxes,
                 true,
                 FocusRoute::Slps,
                 Arc::new(ObservationClock::new()),
+                &[],
             ),
             retained,
             test_shared(ctx),
@@ -3827,10 +3852,8 @@ mod send_join_tests {
         };
         // Same implicit core-owned source mapping as production: no
         // adapter output decision, no native-domain default.
-        let command = crate::world_command_map::send_command_implicit_with_capability(
-            &action, "4242_7", true,
-        )
-        .expect("armed send maps");
+        let command = crate::world_command_map::send_command_implicit(&action, "4242_7")
+            .expect("armed send maps");
         let mut claim = ClaimedSelect::tap(action);
         claim.send_subject = Some("4242_7".to_owned());
         claim.send_generation = Some(1);
@@ -3873,13 +3896,13 @@ mod send_join_tests {
             Some(3),
             "owner target rides the reply binding"
         );
-        // The follow view identity is the reply's own published View flight
-        // for the same target - read, never formatted.
+        // The follow view moves logically core-side without minting a
+        // distinct View flight (see `settle_send`): the reply publishes
+        // only the Window transfer, so the claim carries no follow view
+        // identity - read, never formatted.
         let reply = session.sequencer().last_reply().expect("applied reply");
-        let view_flight = reply
-            .transfers
-            .iter()
-            .find(|flight| {
+        assert!(
+            !reply.transfers.iter().any(|flight| {
                 matches!(flight.kind, tiler_core::world_report::TransferKind::View)
                     && flight.target_output.0 == output().0
                     && flight.target_workspace
@@ -3887,11 +3910,11 @@ mod send_join_tests {
                             .select_target_workspace
                             .clone()
                             .expect("plan binds target")
-            })
-            .expect("reply publishes the follow view flight");
+            }),
+            "follow moves the logical view with no distinct View flight"
+        );
         assert_eq!(
-            claim.send_follow_view_operation.as_deref(),
-            Some(view_flight.operation_id.as_str()),
+            claim.send_follow_view_operation, None,
             "follow view identity rides the reply, never a formatted id"
         );
         let target =
@@ -4012,25 +4035,13 @@ mod send_join_tests {
             backend.counts.key_down > 0,
             "forward chord posted exactly once"
         );
-        // The follow view flight settles on the same genuine reads through
-        // the ordinary view-attempt lane, under the reply's own published
-        // view identity carried by the claim.
-        let follow_op = claim
-            .send_follow_view_operation
-            .clone()
-            .expect("reply binds the follow view flight");
+        // The follow view moves logically with no distinct flight: only the
+        // Window member attempt stages, under the reply-bound operation.
         session.stage_member_attempt(
             &operation,
             completion.setter,
             completion.pre_member,
             completion.post_member,
-        );
-        session.stage_view_attempt(
-            &follow_op,
-            completion.setter,
-            completion.pre_view,
-            completion.post_view,
-            claim.select_baseline_sid,
         );
         assert_eq!(claim.select_baseline_sid, Some(20));
         // Arrival observation: homing names the bound target's native key
@@ -4085,7 +4096,7 @@ mod send_join_tests {
             &focus_queue,
             &ctx,
         );
-        let (claim, operation, target) = dispatch_bound_send(
+        let (_claim, operation, target) = dispatch_bound_send(
             &mut session,
             &mut retained,
             &shared,
@@ -4107,6 +4118,8 @@ mod send_join_tests {
             "pre-actuation refusal posts nothing"
         );
         // The confirming re-read names the untouched source on both legs.
+        // Follow carries no distinct flight: only the refusal member proof
+        // stages.
         assert_eq!(
             (completion.pre_member, completion.post_member),
             (Some(20), Some(20))
@@ -4115,22 +4128,11 @@ mod send_join_tests {
             (completion.pre_view, completion.post_view),
             (Some(20), Some(20))
         );
-        let follow_op = claim
-            .send_follow_view_operation
-            .clone()
-            .expect("reply binds the follow view flight");
         session.stage_member_attempt(
             &operation,
             completion.setter,
             completion.pre_member,
             completion.post_member,
-        );
-        session.stage_view_attempt(
-            &follow_op,
-            completion.setter,
-            completion.pre_view,
-            completion.post_view,
-            claim.select_baseline_sid,
         );
         match dispatch_report(
             &mut session,
@@ -4171,7 +4173,7 @@ mod send_join_tests {
             &focus_queue,
             &ctx,
         );
-        let (claim, operation, target) = dispatch_bound_send(
+        let (_claim, operation, target) = dispatch_bound_send(
             &mut session,
             &mut retained,
             &shared,
@@ -4195,22 +4197,13 @@ mod send_join_tests {
             (completion.pre_member, completion.post_member),
             (Some(20), Some(3))
         );
-        let follow_op = claim
-            .send_follow_view_operation
-            .clone()
-            .expect("reply binds the follow view flight");
+        // Follow carries no distinct flight: only the Window member proof
+        // stages.
         session.stage_member_attempt(
             &operation,
             completion.setter,
             completion.pre_member,
             completion.post_member,
-        );
-        session.stage_view_attempt(
-            &follow_op,
-            completion.setter,
-            completion.pre_view,
-            completion.post_view,
-            claim.select_baseline_sid,
         );
         retained.window_domains.insert(
             window_id(4242, 7),
@@ -4266,7 +4259,7 @@ mod send_join_tests {
             &focus_queue,
             &ctx,
         );
-        let (claim, operation, target) = dispatch_bound_send(
+        let (_claim, operation, target) = dispatch_bound_send(
             &mut session,
             &mut retained,
             &shared,
@@ -4296,22 +4289,13 @@ mod send_join_tests {
             (completion.pre_view, completion.post_view),
             (Some(20), None)
         );
-        let follow_op = claim
-            .send_follow_view_operation
-            .clone()
-            .expect("reply binds the follow view flight");
+        // Follow carries no distinct flight: only the Window member proof
+        // stages.
         session.stage_member_attempt(
             &operation,
             completion.setter,
             completion.pre_member,
             completion.post_member,
-        );
-        session.stage_view_attempt(
-            &follow_op,
-            completion.setter,
-            completion.pre_view,
-            completion.post_view,
-            claim.select_baseline_sid,
         );
         // The staged row carries the write truth verbatim: Accepted with a
         // genuine preimage and an unknown post.
@@ -4320,8 +4304,12 @@ mod send_join_tests {
             .get(&(operation.clone(), "4242_7".to_owned()))
             .expect("member attempt staged");
         assert_eq!(staged.setter, FrameSetter::Accepted);
-        assert_eq!(staged.native_pre.as_deref(), Some("space-20"));
-        assert_eq!(staged.native_post, None);
+        assert!(matches!(
+            staged.pre.as_ref(),
+            Some(tiler_core::world_report::WorkspaceRef::Native { workspace, .. })
+                if workspace.as_str() == "space-20"
+        ));
+        assert_eq!(staged.post, None);
         match dispatch_report(
             &mut session,
             &mut retained,
@@ -4361,7 +4349,7 @@ mod send_join_tests {
             &focus_queue,
             &ctx,
         );
-        let (claim, operation, target) = dispatch_bound_send(
+        let (_claim, operation, target) = dispatch_bound_send(
             &mut session,
             &mut retained,
             &shared,
@@ -4373,22 +4361,13 @@ mod send_join_tests {
         let completion = execute_captured(&target, &mut backend, |_| {});
         assert_eq!(completion.outcome, SendEffectOutcome::Applied);
         assert_eq!(completion.setter, FrameSetter::Accepted);
-        let follow_op = claim
-            .send_follow_view_operation
-            .clone()
-            .expect("reply binds the follow view flight");
+        // Follow carries no distinct flight: only the Window member proof
+        // stages.
         session.stage_member_attempt(
             &operation,
             completion.setter,
             completion.pre_member,
             completion.post_member,
-        );
-        session.stage_view_attempt(
-            &follow_op,
-            completion.setter,
-            completion.pre_view,
-            completion.post_view,
-            claim.select_baseline_sid,
         );
         // Newer external input moves the window to a third Space before
         // the next report: the verified post still names the bound target,

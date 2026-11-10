@@ -126,17 +126,21 @@ impl NativeWindowFacts {
     }
 }
 
-/// Typed owner-app facts. No bundle strings cross (only the owned-bundle
-/// verdict); no titles, no content.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Typed owner-app facts. No bundle strings cross except the neutral
+/// `app_id` carried for v4 core classification (never a policy echo); no
+/// titles, no content.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeAppFacts {
     pub pid: u32,
     /// `NSRunningApplication.isHidden`.
     pub hidden: bool,
     pub activation_policy: ActivationPolicy,
-    /// Whether the owner bundle is this crate's own probe bundle. Own windows
-    /// are never observed.
+    /// True only for the current process (M1 own-process-only): same bundle
+    /// in a different process stays eligible. Never a bundle-wide filter.
     pub is_own_bundle: bool,
+    /// Live bundle ID for the neutral v4 `appId` fact (`None` only when
+    /// unreadable here; readers fail closed so this stays `Some` on success).
+    pub app_id: Option<String>,
 }
 
 impl NativeAppFacts {
@@ -146,6 +150,22 @@ impl NativeAppFacts {
             hidden: self.hidden,
             activation_policy: self.activation_policy,
             is_own_bundle: self.is_own_bundle,
+        }
+    }
+
+    /// Neutral v4 activation policy: `Unknown` maps to `None` (never
+    /// inferred; unknown never excludes on its own).
+    #[must_use]
+    pub fn core_activation_policy(&self) -> Option<tiler_core::world_report::ActivationPolicy> {
+        match self.activation_policy {
+            ActivationPolicy::Regular => Some(tiler_core::world_report::ActivationPolicy::Regular),
+            ActivationPolicy::Accessory => {
+                Some(tiler_core::world_report::ActivationPolicy::Accessory)
+            }
+            ActivationPolicy::Prohibited => {
+                Some(tiler_core::world_report::ActivationPolicy::Prohibited)
+            }
+            ActivationPolicy::Unknown => None,
         }
     }
 }
@@ -290,8 +310,11 @@ fn messaging_secs() -> f32 {
 }
 
 /// Read owner-app facts on the caller (main) thread: hidden state plus
-/// activation policy over public AppKit plus the own-bundle verdict. No AX,
-/// no titles. Unknown pids fail closed.
+/// activation policy over public AppKit plus the own-process verdict and the
+/// neutral bundle ID for v4 `appId`. No AX, no titles. Missing/empty bundles
+/// are truthful unknown (`app_id: None`, never an error on that leg alone):
+/// own exclusion is pid-equality only, never a bundle comparison. Only genuine
+/// native read/liveness failures (hidden/policy lookup) fail closed.
 ///
 /// The scoped backend also calls this on its owning per-app AX thread (one
 /// justified off-main exception): every read underneath is an
@@ -305,19 +328,18 @@ pub fn read_app_facts(pid: u32) -> Result<NativeAppFacts, String> {
     let pid_i32 = pid as i32;
     let hidden = crate::ffi::app_hidden_for_pid(pid_i32)?;
     let policy_raw = crate::ffi::activation_policy_raw_for_pid(pid_i32)?;
-    let is_own_bundle = match crate::ffi::bundle_id_for_pid(pid_i32) {
-        Some(bundle) => bundle == crate::BUNDLE_ID,
-        // Directly spawned helpers have no LaunchServices bundle entry; a
-        // live PID with no bundle defers to the record (same shape as the
-        // existing owned gates).
-        None if crate::ffi::process_exists(pid_i32) => true,
-        None => return Err(format!("no live bundle for pid {pid}")),
-    };
+    let bundle = crate::ffi::bundle_id_for_pid(pid_i32).filter(|b| !b.is_empty());
+    // Own-process-only suppression (M1): same bundle in a different process
+    // stays eligible. The classifier omits only the current process; a
+    // missing bundle is unknown app_id, never assumed own and never an
+    // error on that leg alone.
+    let is_own_bundle = pid == std::process::id();
     Ok(NativeAppFacts {
         pid,
         hidden,
         activation_policy: map_activation_policy(policy_raw),
         is_own_bundle,
+        app_id: bundle,
     })
 }
 
@@ -648,11 +670,17 @@ mod tests {
             hidden: false,
             activation_policy: ActivationPolicy::Regular,
             is_own_bundle: false,
+            app_id: Some("com.example.app".to_owned()),
         };
         let app = native.to_app_facts();
         assert!(!app.hidden);
         assert!(!app.is_own_bundle);
         assert_eq!(app.activation_policy, ActivationPolicy::Regular);
+        assert_eq!(
+            native.core_activation_policy(),
+            Some(tiler_core::world_report::ActivationPolicy::Regular)
+        );
+        assert_eq!(native.app_id.as_deref(), Some("com.example.app"));
     }
 
     #[test]

@@ -123,7 +123,7 @@ pub(crate) fn select_command_with_capability(
 /// positional [`WorldCommand::SendNumbered`]: the ordinal resolves core-side
 /// against the scoped send ring for the core-resolved source, whose order
 /// tracks native Desktop order under host-owned adoption. The source stays
-/// [`SendSource::HomeThenCachedLive`](tiler_core::world_report::SendSource)
+/// [`SendSource::HomeThenAction`](tiler_core::world_report::SendSource)
 /// (the keyboard send route: retained pre-observation home first, never an
 /// adapter output decision and never a native-domain default). The adapter
 /// pins only subject lifetime/generation/source freshness natively; targeting
@@ -155,7 +155,7 @@ pub(crate) fn send_command_implicit_with_capability(
         InputSemanticAction::WorkspaceSend { index, follow } if (1..=9).contains(index) => {
             Some(WorldCommand::SendNumbered {
                 window: tiler_core::directional::WindowId(window.to_owned()),
-                source: SendSource::HomeThenCachedLive,
+                source: SendSource::HomeThenAction,
                 index: *index,
                 follow: *follow,
             })
@@ -165,7 +165,7 @@ pub(crate) fn send_command_implicit_with_capability(
             follow: true,
         } if trailing_enabled => Some(WorldCommand::SendNumbered {
             window: tiler_core::directional::WindowId(window.to_owned()),
-            source: SendSource::HomeThenCachedLive,
+            source: SendSource::HomeThenAction,
             index: 0,
             follow: true,
         }),
@@ -403,7 +403,7 @@ mod trailing_command_tests {
             send_command_implicit(&send1, "4242_7"),
             Some(WorldCommand::SendNumbered {
                 window: tiler_core::directional::WindowId("4242_7".to_owned()),
-                source: SendSource::HomeThenCachedLive,
+                source: SendSource::HomeThenAction,
                 index: 1,
                 follow: true,
             })
@@ -412,7 +412,7 @@ mod trailing_command_tests {
             send_command_implicit_with_capability(&send0, "4242_7", true),
             Some(WorldCommand::SendNumbered {
                 window: tiler_core::directional::WindowId("4242_7".to_owned()),
-                source: SendSource::HomeThenCachedLive,
+                source: SendSource::HomeThenAction,
                 index: 0,
                 follow: true,
             })
@@ -460,191 +460,222 @@ mod trailing_command_tests {
     #[test]
     fn indicator_spare_click_selects_exact_id_with_creation_desire_and_plan() {
         use crate::focus_route::FocusRoute;
-        use crate::runtime_types::{ClaimedSelect, NativeContext, NativeDomain, PHASE1_GENERATION};
+        use crate::runtime_core::LifetimeMemory;
+        use crate::runtime_types::{
+            ClaimedSelect, NativeContext, NativeDomain, ObservedWindow, WindowRawFacts, window_id,
+        };
         use crate::workspace_indicator::{
             IndicatorClickKind, IndicatorMode, SpaceOccupancy, project_core_indicator,
             verify_core_row_click,
         };
         use crate::workspace_select::parse_native_binding;
+        use crate::world_builder::{ReportInput, build_report};
         use crate::world_runtime::WorldSession;
         use crate::world_sequencer::{ObservationClock, ReplyVerdict};
+        use std::collections::BTreeMap;
         use std::sync::Arc;
         use tiler_core::directional::{OutputId, WorkspaceId};
         use tiler_core::geometry::Rect;
-        use tiler_core::size_hints::FixedSizePredicate;
+        use tiler_core::session::DomainKey;
+        use tiler_core::size_hints::WindowSizeHints;
         use tiler_core::world_engine::{WorldEngine, WorldOutcome};
         use tiler_core::world_report::TransferKind;
 
         fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
             Rect { x, y, w, h }
         }
-        // Offline spare fixture: one screen, both native spaces occupied
-        // (win-a on space-1, win-b on space-2), so the lifecycle appends a
-        // true unbound trailing spare. The core adopts the bound rows and
-        // mints the spare; every id below comes from the accepted reply,
-        // never a literal.
+        // Offline spare fixture via the genuine v4 production report
+        // builder: one screen, both native spaces occupied (4242_7 on
+        // space-1, 4242_9 on space-2), so the lifecycle appends a true
+        // unbound trailing spare. The core adopts the bound rows and mints
+        // the spare; every id below comes from the accepted reply, never
+        // a literal. Raw captures are explicit synthetic fixture facts
+        // (ordinary AXWindow/AXStandardWindow, non-modal, resizable, base
+        // layer, regular app, visible) — never policy derivations — so the
+        // rows stay support-consistent with the production macOS
+        // capabilities (unavailable facts stay null via
+        // `collect_window_facts`).
+        fn spare_ctx(output: &OutputId) -> NativeContext {
+            NativeContext {
+                revision: 9,
+                domains: vec![
+                    NativeDomain {
+                        cg_id: 1,
+                        uuid: None,
+                        output: output.clone(),
+                        workspace: WorkspaceId(crate::topology::workspace_key(1)),
+                        space: 1,
+                        current: true,
+                        readable: true,
+                        bounds: rect(0, 0, 800, 600),
+                        visible: rect(0, 0, 800, 560),
+                    },
+                    NativeDomain {
+                        cg_id: 1,
+                        uuid: None,
+                        output: output.clone(),
+                        workspace: WorkspaceId(crate::topology::workspace_key(2)),
+                        space: 2,
+                        current: false,
+                        readable: true,
+                        bounds: rect(0, 0, 800, 600),
+                        visible: rect(0, 0, 800, 560),
+                    },
+                ],
+                skipped: Vec::new(),
+            }
+        }
+        fn spare_members(output: &OutputId) -> BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> {
+            BTreeMap::from([
+                (
+                    DomainKey {
+                        output: output.clone(),
+                        workspace: WorkspaceId(crate::topology::workspace_key(1)),
+                    },
+                    vec![(
+                        4242,
+                        ObservedWindow {
+                            wid: 7,
+                            x: 0,
+                            y: 0,
+                            w: 40,
+                            h: 90,
+                            floating: false,
+                            fullscreen: false,
+                            hints: WindowSizeHints::none(),
+                        },
+                    )],
+                ),
+                (
+                    DomainKey {
+                        output: output.clone(),
+                        workspace: WorkspaceId(crate::topology::workspace_key(2)),
+                    },
+                    vec![(
+                        4242,
+                        ObservedWindow {
+                            wid: 9,
+                            x: 100,
+                            y: 0,
+                            w: 40,
+                            h: 90,
+                            floating: false,
+                            fullscreen: false,
+                            hints: WindowSizeHints::none(),
+                        },
+                    )],
+                ),
+            ])
+        }
+        fn spare_raw_for(
+            members: &BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
+        ) -> BTreeMap<String, WindowRawFacts> {
+            let mut raw = BTreeMap::new();
+            for pairs in members.values() {
+                for (pid, window) in pairs {
+                    raw.insert(
+                        window_id(*pid, window.wid),
+                        WindowRawFacts {
+                            role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                            subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                            modal: Some(false),
+                            resizable: Some(true),
+                            layer: Some(0),
+                            app_id: Some("com.example.app".to_owned()),
+                            activation_policy: Some(
+                                tiler_core::world_report::ActivationPolicy::Regular,
+                            ),
+                            host_hidden: Some(false),
+                        },
+                    );
+                }
+            }
+            raw
+        }
+        #[allow(clippy::too_many_arguments)]
         fn spare_observation(
             incarnation: &str,
+            generation: &str,
+            ctx: &NativeContext,
+            members: &BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
+            raw: &BTreeMap<String, WindowRawFacts>,
+            memory: &LifetimeMemory,
+            focused_global: &str,
             observation_seq: u64,
             request_seq: u64,
             request_id: &str,
             command_seq: Option<u64>,
             command: Option<WorldCommand>,
-        ) -> tiler_core::world_report::WorldReport {
-            use tiler_core::directional::WindowId;
-            use tiler_core::world_report::{
-                PresentationIngress, WORLD_CONTRACT_VERSION, WorldReport,
-            };
-            WorldReport {
-                contract_version: WORLD_CONTRACT_VERSION,
-                owner: "owner-a".to_owned(),
-                adapter_incarnation: incarnation.to_owned(),
-                core_generation: PHASE1_GENERATION.to_owned(),
+        ) -> tiler_core::world_report::WorldReportV4 {
+            use tiler_core::world_report::HoldReason;
+            let unreadable: BTreeMap<DomainKey, HoldReason> = BTreeMap::new();
+            let mut input = ReportInput::new(
+                incarnation,
+                generation,
+                ctx,
                 observation_seq,
                 request_seq,
-                request_id: request_id.to_owned(),
-                command_seq,
-                command,
-                workspace_mode: tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
-                screens: vec![tiler_core::world_report::ScreenReport {
-                    output: OutputId("out-a".to_owned()),
-                    full_rect: Some(rect(0, 0, 800, 600)),
-                    work_area: Some(rect(0, 0, 800, 560)),
-                    gap: 0,
-                    outer_gap: 0,
-                    complete: true,
-                    primary: true,
-                }],
-                windows: vec![
-                    tiler_core::world_report::WindowFact {
-                        window: WindowId("win-a".to_owned()),
-                        output: OutputId("out-a".to_owned()),
-                        rect: Some(rect(0, 0, 40, 90)),
-                        floating: false,
-                        fit_excluded: false,
-                        fullscreen: false,
-                        maximized: false,
-                        sticky: false,
-                        fixed_auto: false,
-                        fixed_suppress: false,
-                        hints: tiler_core::size_hints::WindowSizeHints::none(),
-                        minimized: false,
-                        observed_workspace: None,
-                        native_workspace: Some("space-1".to_owned()),
-                    },
-                    tiler_core::world_report::WindowFact {
-                        window: WindowId("win-b".to_owned()),
-                        output: OutputId("out-a".to_owned()),
-                        rect: Some(rect(100, 0, 40, 90)),
-                        floating: false,
-                        fit_excluded: false,
-                        fullscreen: false,
-                        maximized: false,
-                        sticky: false,
-                        fixed_auto: false,
-                        fixed_suppress: false,
-                        hints: tiler_core::size_hints::WindowSizeHints::none(),
-                        minimized: false,
-                        observed_workspace: None,
-                        native_workspace: Some("space-2".to_owned()),
-                    },
-                ],
-                views: Vec::new(),
-                closed: vec![],
-                host_owned_workspace_domains: true,
-                equal_workspace_count: false,
-                birth_clear: false,
-                native: vec![tiler_core::world_report::NativeObservation {
-                    output: OutputId("out-a".to_owned()),
-                    native_order: vec!["space-1".to_owned(), "space-2".to_owned()],
-                    current_native: Some("space-1".to_owned()),
-                    occupancy: vec![
-                        tiler_core::world_report::NativeOccupancy {
-                            native: "space-1".to_owned(),
-                            count: None,
-                        },
-                        tiler_core::world_report::NativeOccupancy {
-                            native: "space-2".to_owned(),
-                            count: None,
-                        },
-                    ],
-                }],
-                fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-                migration_source_refill:
-                    tiler_core::output_selection::MigrationSourceRefill::default(),
-                anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-                no_space_result: tiler_core::admission::NoSpaceResult::default(),
-                born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-                switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-                fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-                focus_follows_cursor: false,
-                cursor_warp: false,
-                cursor: None,
-                cursor_hit: None,
-                focused_global: "win-a".to_owned(),
-                action_foreground: None,
-                action_cached: None,
-                action_outputs: Vec::new(),
-                default_tiled: true,
-                inventory_complete: true,
-                gesture_barrier: false,
-                gesture: None,
-                monotonic_ms: 0,
-                frames: Vec::new(),
-                member_attempts: Vec::new(),
-                view_attempts: Vec::new(),
-                clear_attempts: Vec::new(),
-                creation_attempts: Vec::new(),
-                presentation: {
-                    let mut ingress = PresentationIngress::disabled();
-                    ingress.foreground = "win-a".to_owned();
-                    ingress.foreground_frame = Some(rect(0, 0, 40, 90));
-                    ingress.border_enabled = true;
-                    ingress.pager_frames = vec![
-                        tiler_core::world_report::PresentationPagerFrame {
-                            window: WindowId("win-a".to_owned()),
-                            live: Some(rect(0, 0, 40, 90)),
-                            float_frame: None,
-                            tile_frame: None,
-                        },
-                        tiler_core::world_report::PresentationPagerFrame {
-                            window: WindowId("win-b".to_owned()),
-                            live: Some(rect(100, 0, 40, 90)),
-                            float_frame: None,
-                            tile_frame: None,
-                        },
-                    ];
-                    ingress.pager_order =
-                        vec![WindowId("win-a".to_owned()), WindowId("win-b".to_owned())];
-                    ingress
-                },
-            }
+                request_id,
+                members,
+                memory,
+                &[],
+                &unreadable,
+                &[],
+                focused_global,
+                false,
+            );
+            input.command_seq = command_seq;
+            input.command = command;
+            input.raw = raw;
+            build_report(&mut input)
         }
 
         // Observation through the session engine plus the sequencer flight:
         // the accepted reply names the trailing spare.
         let mut session = WorldSession::new(
-            FixedSizePredicate::BothAxes,
             true,
             FocusRoute::Slps,
             Arc::new(ObservationClock::new()),
+            &[],
         );
         let incarnation = session.incarnation().to_owned();
+        let generation = session.sequencer().bound_generation();
+        let output = OutputId(crate::topology::output_key(1));
+        let ctx = spare_ctx(&output);
+        let members = spare_members(&output);
+        let raw = spare_raw_for(&members);
+        let memory = LifetimeMemory::empty();
+        let focused = window_id(4242, 7);
         let ticket1 = session
             .sequencer()
             .try_begin_request(None)
             .expect("observation flight opens");
         let first = spare_observation(
             &incarnation,
+            &generation,
+            &ctx,
+            &members,
+            &raw,
+            &memory,
+            &focused,
             ticket1.observation_seq,
             ticket1.request_seq,
             &ticket1.request_id,
             ticket1.command_seq,
             None,
         );
-        // Sanity: the standalone engine accepts the same fixture (pins the
-        // shape to the engine contract, not the session harness).
-        let mut probe = WorldEngine::new(PHASE1_GENERATION).expect("generation parses");
+        // Sanity: a standalone engine bound to the SAME session tokens
+        // through the production macOS capabilities accepts the same
+        // fixture (pins the shape to the engine contract, not the session
+        // harness; the synthetic full-support default would hold every
+        // realistic row unreadable, and the capability-less default
+        // refuses native evidence without `host_owned`).
+        let mut probe = WorldEngine::new_test_bound_with_capabilities(
+            &generation,
+            &incarnation,
+            crate::world_connection::macos_capabilities(),
+        )
+        .expect("production capabilities bind");
         assert!(
             matches!(probe.handle_report(&first), WorldOutcome::Accepted(_)),
             "spare fixture is engine-accepted"
@@ -735,29 +766,36 @@ mod trailing_command_tests {
         assert_eq!(
             action,
             InputSemanticAction::IndicatorSelectWorkspace {
-                output: "out-a".to_owned(),
+                output: output.0.clone(),
                 workspace: spare.clone(),
             }
         );
         // The existing command route carries the exact id (no ordinal).
-        let command = select_command(&action, Some(OutputId("out-a".to_owned())));
+        let command = select_command(&action, Some(output.clone()));
         assert_eq!(
             command,
             Some(WorldCommand::SelectWorkspace {
-                output: OutputId("out-a".to_owned()),
+                output: output.clone(),
                 workspace: spare.clone(),
             })
         );
         // Dispatch the exact-id command: the core retains the View
         // transfer on the exact logical id and publishes the native
         // creation desire downstream (a desire record only — this offline
-        // path creates no display).
+        // path creates no display, stages no creation attempt with an
+        // inferred `created` identity, and mutates no native order).
         let ticket2 = session
             .sequencer()
             .try_begin_request(command.clone())
             .expect("command flight opens");
         let second = spare_observation(
             &incarnation,
+            &generation,
+            &ctx,
+            &members,
+            &raw,
+            &memory,
+            &focused,
             ticket2.observation_seq,
             ticket2.request_seq,
             &ticket2.request_id,
@@ -783,7 +821,7 @@ mod trailing_command_tests {
                 matches!(target.kind, TransferKind::View) && target.target_workspace == spare
             })
             .expect("exact-id View transfer retained");
-        assert_eq!(transfer.target_output.0, "out-a");
+        assert_eq!(transfer.target_output.0, output.0);
         let creations: Vec<_> = reply2
             .native_creations
             .iter()
@@ -795,25 +833,11 @@ mod trailing_command_tests {
             "exactly one creation desire for the spare logical: {:?}",
             reply2.native_creations
         );
-        assert_eq!(creations[0].target_output.0, "out-a");
+        assert_eq!(creations[0].target_output.0, output.0);
         // The existing plan binder resolves the retained target to the
         // exact id/output/op with no binding (unbound spare) and the
         // creation desire attached — never an ordinal reinterpretation.
-        let ctx = Arc::new(NativeContext {
-            revision: 9,
-            domains: vec![NativeDomain {
-                cg_id: 1,
-                uuid: None,
-                output: OutputId("out-a".to_owned()),
-                workspace: WorkspaceId("space-1".to_owned()),
-                space: 1,
-                current: true,
-                readable: true,
-                bounds: rect(0, 0, 800, 600),
-                visible: rect(0, 0, 800, 560),
-            }],
-            skipped: Vec::new(),
-        });
+        let ctx = Arc::new(ctx);
         let mut claim = ClaimedSelect::indicator(action, rendered.sid, 7, 9);
         crate::runtime_thread::bind_select_plan(
             &mut session,
@@ -821,7 +845,10 @@ mod trailing_command_tests {
             &mut claim,
             &transfer.operation_id,
         );
-        assert_eq!(claim.select_target_output.as_deref(), Some("out-a"));
+        assert_eq!(
+            claim.select_target_output.as_deref(),
+            Some(output.0.as_str())
+        );
         assert_eq!(
             claim.select_target_workspace.as_deref(),
             Some(spare.as_str())
@@ -835,7 +862,10 @@ mod trailing_command_tests {
             claim.select_creation_logical.as_deref(),
             Some(spare.as_str())
         );
-        assert_eq!(claim.select_creation_output.as_deref(), Some("out-a"));
+        assert_eq!(
+            claim.select_creation_output.as_deref(),
+            Some(output.0.as_str())
+        );
         assert_eq!(
             claim.select_creation_operation,
             Some(creations[0].operation_id.clone()),

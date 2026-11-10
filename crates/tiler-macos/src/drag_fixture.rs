@@ -32,7 +32,7 @@ use tiler_core::gesture::GestureIngress;
 use tiler_core::session::DomainKey;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
-use tiler_core::world_report::{CommandResult, WorldReport};
+use tiler_core::world_report::{CommandResult, WorldReportV4};
 
 use crate::border_runtime::{BorderAppRecord, BorderWindowFacts};
 use crate::classifier::{AppFacts, AxFacts, CgFacts};
@@ -155,6 +155,46 @@ fn fences_ok() -> DragFences {
     }
 }
 
+/// Real-engine binding for this fixture: production macOS capabilities bound
+/// to the fixture generation/incarnation (never the synthetic full-support
+/// test default, which would hold every realistic row unreadable).
+fn production_engine() -> WorldEngine {
+    WorldEngine::new_test_bound_with_capabilities(
+        "drag-fixture-gen",
+        "drag-fixture-1",
+        crate::world_connection::macos_capabilities(),
+    )
+    .expect("production capabilities bind")
+}
+
+/// Realistic macOS raw native facts for every member window: ordinary
+/// `AXWindow`/`AXStandardWindow`, non-modal, resizable, base layer,
+/// regular app, visible. Explicit synthetic fixture captures, never
+/// policy derivations.
+fn realistic_raw_for(
+    members: &BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
+) -> BTreeMap<String, crate::runtime_types::WindowRawFacts> {
+    let mut raw = BTreeMap::new();
+    for pairs in members.values() {
+        for (pid, window) in pairs {
+            raw.insert(
+                crate::runtime_types::window_id(*pid, window.wid),
+                crate::runtime_types::WindowRawFacts {
+                    role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                    subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                    modal: Some(false),
+                    resizable: Some(true),
+                    layer: Some(0),
+                    app_id: Some("com.example.app".to_owned()),
+                    activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+                    host_hidden: Some(false),
+                },
+            );
+        }
+    }
+    raw
+}
+
 /// Read-only preview summary: outcome token, optional slot rect
 /// `(x, y, w, h)`, optional target window token.
 type PreviewSummary = (String, Option<(i32, i32, i32, i32)>, Option<String>);
@@ -214,7 +254,7 @@ impl DragFixture {
             pair: FixturePair::new(),
             gate: crate::drag_drop::DragTapGate::new(),
             session: DragSession::new(DragOptions::default(), ProbeModifier::Ctrl),
-            engine: WorldEngine::new("drag-fixture-gen").expect("generation"),
+            engine: production_engine(),
             now_ms: 1_000,
             obs: 0,
             req: 0,
@@ -278,7 +318,7 @@ impl DragFixture {
         &mut self,
         gesture: Option<GestureIngress>,
         frames: Vec<(String, (i32, i32, i32, i32))>,
-    ) -> tiler_core::world_report::WorldReply {
+    ) -> tiler_core::world_report::WorldReplyV4 {
         self.obs += 1;
         self.req += 1;
         let request_id = format!("req-{}", self.req);
@@ -310,7 +350,6 @@ impl DragFixture {
         let memory = LifetimeMemory::empty();
         let a_token = self.pair.a.token();
         let mut input = ReportInput::new(
-            "macos-drag-fixture",
             "drag-fixture-1",
             "drag-fixture-gen",
             &ctx,
@@ -326,9 +365,11 @@ impl DragFixture {
             false,
         );
         input.gesture = gesture;
-        let report: WorldReport = build_report(&mut input);
+        let raw = realistic_raw_for(&members);
+        input.raw = &raw;
+        let report: WorldReportV4 = build_report(&mut input);
         assert!(
-            tiler_core::world_report::validate_report(&report),
+            tiler_core::world_report_v4_checks::validate_report_v4_reason(&report).is_none(),
             "fixture report validates"
         );
         match self.engine.handle_report(&report) {
@@ -345,7 +386,7 @@ impl DragFixture {
         }
     }
 
-    fn to_preview(reply: &tiler_core::world_report::WorldReply) -> PreviewOutcome {
+    fn to_preview(reply: &tiler_core::world_report::WorldReplyV4) -> PreviewOutcome {
         match &reply.command_result {
             Some(CommandResult::DragPreview {
                 rect,

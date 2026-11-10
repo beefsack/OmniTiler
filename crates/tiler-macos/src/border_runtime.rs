@@ -487,25 +487,25 @@ pub struct BorderReplyTick<'a> {
     /// Millisecond clock for record freshness.
     pub now_ms: u64,
     /// Last applied reply presentation (shapes plus tick-time token).
-    pub presentation: &'a tiler_core::world_presentation::WorldPresentation,
+    pub presentation: &'a tiler_core::world_report::WorldPresentationV4,
 }
 
 /// Map one core border hide reason to the stable tick token. Core-only
 /// reasons the legacy vocabulary never named (cloaked, hidden-workspace,
 /// shell) report as `excluded`; an eligible-but-uncomputable shape (no
 /// reason) reports `bad-geometry`, the same token as a failed flip.
-fn reply_hide_token(reason: Option<tiler_core::visual::BorderHideReason>) -> &'static str {
-    use tiler_core::visual::BorderHideReason;
+fn reply_hide_token(reason: Option<tiler_core::world_report::BorderHideReasonV4>) -> &'static str {
+    use tiler_core::world_report::BorderHideReasonV4;
     match reason {
-        Some(BorderHideReason::Disabled) => "disabled",
-        Some(BorderHideReason::NoTarget) => "no-target",
-        Some(BorderHideReason::Minimized) => "minimized",
-        Some(BorderHideReason::Maximized) => "maximized",
-        Some(BorderHideReason::Fullscreen) => "fullscreen",
-        Some(BorderHideReason::Cloaked)
-        | Some(BorderHideReason::HiddenWorkspace)
-        | Some(BorderHideReason::Shell) => "excluded",
-        Some(BorderHideReason::Suspended) => "suspended",
+        Some(BorderHideReasonV4::Disabled) => "disabled",
+        Some(BorderHideReasonV4::NoTarget) => "no-target",
+        Some(BorderHideReasonV4::Minimized) => "minimized",
+        Some(BorderHideReasonV4::Maximized) => "maximized",
+        Some(BorderHideReasonV4::Fullscreen) => "fullscreen",
+        Some(BorderHideReasonV4::HostHidden)
+        | Some(BorderHideReasonV4::HiddenWorkspace)
+        | Some(BorderHideReasonV4::Shell) => "excluded",
+        Some(BorderHideReasonV4::Suspended) => "suspended",
         None => "bad-geometry",
     }
 }
@@ -623,40 +623,11 @@ pub fn decide_border_reply(input: &BorderReplyTick<'_>) -> Result<BorderShowPara
     if !border.visible {
         return Err(reply_hide_token(border.reason));
     }
-    let outer = border.outer.ok_or("bad-geometry")?;
-    if outer.w <= 0 || outer.h <= 0 {
-        return Err("bad-geometry");
-    }
-    // Core adapter units are logical points in CG top-left orientation;
-    // the carrier takes AppKit bottom-left points (global flip around the
-    // primary height; x/width pass through untouched).
-    let flipped = VisualRect {
-        x: outer.x as f64,
-        y: primary_h - (outer.y as f64 + outer.h as f64),
-        w: outer.w as f64,
-        h: outer.h as f64,
-    };
-    for v in [flipped.x, flipped.y, flipped.w, flipped.h] {
-        if !v.is_finite() {
-            return Err("bad-geometry");
-        }
-    }
-    if flipped.w <= 0.0 || flipped.h <= 0.0 {
-        return Err("bad-geometry");
-    }
-    // The core outer shape is the carrier frame: no adapter geometry is
-    // recomputed here, only the validated flip above. Single show
-    // authority: the core verdict (target visibility), the Space leg
-    // above, and the unlocked session must ALL hold.
-    if !render_fence(true, on_active_space, input.session_unlocked) {
-        return Err("not-on-current-space");
-    }
-    Ok(BorderShowParams {
-        target_wid: wid,
-        outer: flipped,
-        style: input.style,
-        color: effective_color(&input.style, input.accent),
-    })
+    // Slice 1: the v4 anchored border row carries no outer rect (subject /
+    // outsets / witness join is later-slice work). Fail closed rather than
+    // fabricating carrier geometry from adapter state.
+    let _ = primary_h;
+    return Err("bad-geometry");
 }
 
 /// One carrier effect per tick: at most one panel call, only on change.
@@ -1549,41 +1520,54 @@ mod tests {
         assert_eq!(snapshot_primary_height(&flat), None);
     }
 
-    use tiler_core::visual::BorderHideReason as CoreHideReason;
-    use tiler_core::visual::BorderPresentation as CoreBorder;
-    use tiler_core::world_presentation::WorldPresentation;
+    use tiler_core::world_report::BorderHideReasonV4 as CoreHideReason;
+    use tiler_core::world_report::{BorderPresentationV4, WorldPresentationV4};
 
-    fn core_rect(x: i32, y: i32, w: i32, h: i32) -> tiler_core::geometry::Rect {
-        tiler_core::geometry::Rect { x, y, w, h }
-    }
-
-    fn shown_presentation(token: &str, outer: tiler_core::geometry::Rect) -> WorldPresentation {
-        WorldPresentation {
+    fn shown_presentation(token: &str) -> WorldPresentationV4 {
+        WorldPresentationV4 {
             foreground: token.to_owned(),
-            border: CoreBorder {
+            rev: 1,
+            suspended_output: None,
+            border: BorderPresentationV4 {
                 visible: true,
                 reason: None,
-                inner: Some(core_rect(100, 500, 400, 300)),
-                outer: Some(outer),
+                subject: None,
+                outsets: None,
+                width: None,
+                radius: None,
+                witness: None,
             },
-            ..WorldPresentation::default()
+            underlay: tiler_core::world_presentation::PresentationUnderlay::Hidden {
+                base_revision: None,
+                reason: tiler_core::world_presentation::GroupHideReason::NoGroup,
+            },
+            pager: Vec::new(),
         }
     }
 
-    fn hidden_presentation(token: &str, reason: Option<CoreHideReason>) -> WorldPresentation {
-        WorldPresentation {
+    fn hidden_presentation(token: &str, reason: Option<CoreHideReason>) -> WorldPresentationV4 {
+        WorldPresentationV4 {
             foreground: token.to_owned(),
-            border: CoreBorder {
+            rev: 1,
+            suspended_output: None,
+            border: BorderPresentationV4 {
                 visible: false,
                 reason,
-                inner: None,
-                outer: None,
+                subject: None,
+                outsets: None,
+                width: None,
+                radius: None,
+                witness: None,
             },
-            ..WorldPresentation::default()
+            underlay: tiler_core::world_presentation::PresentationUnderlay::Hidden {
+                base_revision: None,
+                reason: tiler_core::world_presentation::GroupHideReason::NoGroup,
+            },
+            pager: Vec::new(),
         }
     }
 
-    fn reply_tick<'a>(now_ms: u64, presentation: &'a WorldPresentation) -> BorderReplyTick<'a> {
+    fn reply_tick<'a>(now_ms: u64, presentation: &'a WorldPresentationV4) -> BorderReplyTick<'a> {
         BorderReplyTick {
             enabled: true,
             style: ActiveBorderStyle::default(),
@@ -1621,29 +1605,23 @@ mod tests {
     }
 
     #[test]
-    fn reply_visible_shows_with_flipped_outer() {
-        // Core outer (100,100,400x300) in CG top-left points flips to
-        // AppKit (100,500,400x300) on a 900pt primary. Token "4242_7"
-        // matches the live focused identity.
-        let presentation = shown_presentation("4242_7", core_rect(100, 100, 400, 300));
-        let outcome = decide_border_reply(&reply_tick(10_000, &presentation)).expect("shows");
-        assert_eq!(outcome.target_wid, 7);
+    fn reply_visible_hides_without_geometry_join() {
+        // Slice 1: the v4 anchored border row carries no outer rect, so even
+        // a visible verdict fails closed until the geometry join lands.
+        let presentation = shown_presentation("4242_7");
         assert_eq!(
-            outcome.outer,
-            VisualRect {
-                x: 100.0,
-                y: 500.0,
-                w: 400.0,
-                h: 300.0,
-            }
+            decide_border_reply(&reply_tick(10_000, &presentation)),
+            Err("bad-geometry")
         );
-        assert_eq!(outcome.color, crate::active_border::DEFAULT_COLOR_RGB);
     }
 
     #[test]
     fn reply_denial_matrix() {
-        let visible = shown_presentation("4242_7", core_rect(100, 100, 400, 300));
-        assert!(decide_border_reply(&reply_tick(10_000, &visible)).is_ok());
+        let visible = shown_presentation("4242_7");
+        assert_eq!(
+            decide_border_reply(&reply_tick(10_000, &visible)),
+            Err("bad-geometry")
+        );
         type Denial = (&'static str, Box<dyn Fn(&mut BorderReplyTick<'_>)>);
         let cases: Vec<Denial> = vec![
             ("disabled", Box::new(|i| i.enabled = false)),
@@ -1687,7 +1665,7 @@ mod tests {
             ("bad-geometry", Box::new(|i| i.primary_h = None)),
         ];
         for (want, mutate) in cases {
-            let presented = shown_presentation("4242_7", core_rect(100, 100, 400, 300));
+            let presented = shown_presentation("4242_7");
             let mut probe = reply_tick(10_000, &presented);
             mutate(&mut probe);
             assert_eq!(decide_border_reply(&probe).unwrap_err(), want, "token");
@@ -1697,19 +1675,19 @@ mod tests {
     #[test]
     fn reply_stale_or_unknown_focus_hides() {
         // Live focus moved on: the shape names the old token.
-        let stale = shown_presentation("4242_9", core_rect(100, 100, 400, 300));
+        let stale = shown_presentation("4242_9");
         assert_eq!(
             decide_border_reply(&reply_tick(10_000, &stale)).unwrap_err(),
             "focus-changed"
         );
         // Empty foreground focuses nothing, never a guess.
-        let empty = shown_presentation("", core_rect(100, 100, 400, 300));
+        let empty = shown_presentation("");
         assert_eq!(
             decide_border_reply(&reply_tick(10_000, &empty)).unwrap_err(),
             "no-target"
         );
         // A changed wid under the same PID is stale too.
-        let changed = shown_presentation("4242_7", core_rect(100, 100, 400, 300));
+        let changed = shown_presentation("4242_7");
         let mut probe = reply_tick(10_000, &changed);
         probe.record.as_mut().unwrap().focused_wid = Some(9);
         probe.record.as_mut().unwrap().selected = Some((4242, Some(9)));
@@ -1725,7 +1703,7 @@ mod tests {
             (Some(CoreHideReason::Minimized), "minimized"),
             (Some(CoreHideReason::Maximized), "maximized"),
             (Some(CoreHideReason::Fullscreen), "fullscreen"),
-            (Some(CoreHideReason::Cloaked), "excluded"),
+            (Some(CoreHideReason::HostHidden), "excluded"),
             (Some(CoreHideReason::HiddenWorkspace), "excluded"),
             (Some(CoreHideReason::Shell), "excluded"),
             (Some(CoreHideReason::Suspended), "suspended"),
@@ -1738,17 +1716,21 @@ mod tests {
                 "reason {reason:?}"
             );
         }
-        // Core suspended (game lane) hides even with live focus.
+        // Core suspended (game lane) surfaces its token through the
+        // controller even with live focus. No Show precedes it: slice 1
+        // carries no outer-rect join, so a visible shape fails closed and
+        // the controller starts hidden.
         let mut controller = BorderController::new();
-        let shown = shown_presentation("4242_7", core_rect(100, 100, 400, 300));
-        assert!(matches!(
-            controller.tick_reply(&reply_tick(10_000, &shown)),
-            BorderEffect::Show { .. }
-        ));
         let suspended = hidden_presentation("4242_7", Some(CoreHideReason::Suspended));
         assert_eq!(
+            controller.tick_reply(&reply_tick(10_000, &suspended)),
+            BorderEffect::None
+        );
+        assert_eq!(controller.hide_reason(), Some("suspended"));
+        // Steady-state hidden ticks stay silent on the same token.
+        assert_eq!(
             controller.tick_reply(&reply_tick(10_001, &suspended)),
-            BorderEffect::Hide
+            BorderEffect::None
         );
         assert_eq!(controller.hide_reason(), Some("suspended"));
     }
@@ -1756,13 +1738,30 @@ mod tests {
     #[test]
     fn reply_degenerate_outer_hides() {
         for outer in [
-            core_rect(100, 100, 0, 300),
-            core_rect(100, 100, -5, 300),
-            core_rect(100, 100, 400, 0),
+            VisualRect {
+                x: 100.0,
+                y: 100.0,
+                w: 0.0,
+                h: 300.0,
+            },
+            VisualRect {
+                x: 100.0,
+                y: 100.0,
+                w: -5.0,
+                h: 300.0,
+            },
+            VisualRect {
+                x: 100.0,
+                y: 100.0,
+                w: 400.0,
+                h: 0.0,
+            },
         ] {
-            let presentation = shown_presentation("4242_7", outer);
+            let presentation = shown_presentation("4242_7");
+            let mut probe = reply_tick(10_000, &presentation);
+            probe.native_frame_cg = outer;
             assert_eq!(
-                decide_border_reply(&reply_tick(10_000, &presentation)).unwrap_err(),
+                decide_border_reply(&probe).unwrap_err(),
                 "bad-geometry",
                 "outer {outer:?}"
             );
@@ -1782,8 +1781,10 @@ mod tests {
         // truthfully, so the fresh whole-display/work-area zoom
         // approximation vetoes even when the core shape says visible.
         // A ToggleFloat-floated window (unplaced) filling the work area
-        // hides; the same frame on an engine-placed tile still shows.
-        let presentation = shown_presentation("4242_7", core_rect(0, 25, 1440, 875));
+        // hides with `maximized`; the same frame on an engine-placed tile
+        // still hides fail-closed (`bad-geometry`) until the slice-1
+        // outer-rect join lands — never a painted ring.
+        let presentation = shown_presentation("4242_7");
         let mut floated = reply_tick(10_000, &presentation);
         floated.engine_placed = false;
         floated.native_frame_cg = VisualRect {
@@ -1800,7 +1801,11 @@ mod tests {
             w: 1440.0,
             h: 875.0,
         };
-        assert!(decide_border_reply(&placed).is_ok());
+        assert_eq!(
+            decide_border_reply(&placed).unwrap_err(),
+            "bad-geometry",
+            "placed frame fails closed without the geometry join"
+        );
     }
 
     #[test]
@@ -1808,7 +1813,7 @@ mod tests {
         // Borderless full-display coverage is never a legitimate tile
         // (tiling truth only ever fills work areas), so the fence hides
         // even engine-placed provenance with the closed `maximized` token.
-        let presentation = shown_presentation("4242_7", core_rect(0, 0, 1440, 900));
+        let presentation = shown_presentation("4242_7");
         for engine_placed in [false, true] {
             let mut probe = reply_tick(10_000, &presentation);
             probe.engine_placed = engine_placed;
@@ -1830,7 +1835,7 @@ mod tests {
     fn reply_transient_exclusion_hides_despite_visible_core_shape() {
         // The existing classifier entry point vetoes transients the
         // ingress cannot name: a modal dialog maps excluded and hides.
-        let presentation = shown_presentation("4242_7", core_rect(100, 100, 400, 300));
+        let presentation = shown_presentation("4242_7");
         let mut probe = reply_tick(10_000, &presentation);
         probe
             .record
@@ -1849,7 +1854,7 @@ mod tests {
         // Fresh minimized/fullscreen reads veto even when the fabricated
         // core shape says visible (production ingress carries these
         // truthfully, so the veto agrees with the core reason there).
-        let presentation = shown_presentation("4242_7", core_rect(100, 100, 400, 300));
+        let presentation = shown_presentation("4242_7");
         let mut minimized = reply_tick(10_000, &presentation);
         minimized
             .record
@@ -1881,55 +1886,46 @@ mod tests {
             color: (0xaa, 0xbb, 0xcc),
             alpha: 0xC4,
         };
-        // Default style (theme on): no accent falls back, live accent wins.
-        let presentation = shown_presentation("4242_7", core_rect(100, 100, 400, 300));
+        // Slice 1 carries no outer rect, so the reply decision itself
+        // fails closed (`bad-geometry`) and never reaches a color. The
+        // theme/override mapping below is asserted through the pure
+        // resolver the reply path paints with once the geometry join
+        // lands — never a fabricated Show.
+        let presentation = shown_presentation("4242_7");
         assert_eq!(
-            decide_border_reply(&reply_tick(10_000, &presentation))
-                .expect("shows")
-                .color,
+            decide_border_reply(&reply_tick(10_000, &presentation)).unwrap_err(),
+            "bad-geometry"
+        );
+        // Default style (theme on): no accent falls back, live accent wins.
+        let style = ActiveBorderStyle::default();
+        assert_eq!(
+            crate::active_border::effective_color(&style, None),
             crate::active_border::DEFAULT_COLOR_RGB
         );
-        let mut themed = reply_tick(10_000, &presentation);
-        themed.accent = Some(accent);
         assert_eq!(
-            decide_border_reply(&themed).expect("shows").color,
+            crate::active_border::effective_color(&style, Some(accent)),
             (0xaa, 0xbb, 0xcc)
         );
         // Explicit override (theme off): the live accent never applies.
-        let mut explicit = reply_tick(10_000, &presentation);
-        explicit.style.use_theme = false;
-        explicit.style.color = (0x11, 0x22, 0x33);
-        explicit.accent = Some(accent);
+        let explicit = ActiveBorderStyle {
+            use_theme: false,
+            color: (0x11, 0x22, 0x33),
+            ..ActiveBorderStyle::default()
+        };
         assert_eq!(
-            decide_border_reply(&explicit).expect("shows").color,
+            crate::active_border::effective_color(&explicit, Some(accent)),
             (0x11, 0x22, 0x33)
         );
-        // Live theme update restyles without refocus: same target, no
-        // reorder, new resolved color.
+        // Accent changes never surface a phantom show while fail-closed:
+        // identical hidden ticks stay silent on the same token.
         let mut controller = BorderController::new();
-        let first = controller.tick_reply(&reply_tick(10_000, &presentation));
-        assert!(matches!(
-            first,
-            BorderEffect::Show {
-                target_wid: 7,
-                reorder_above: true,
-                ..
-            }
-        ));
+        assert_eq!(
+            controller.tick_reply(&reply_tick(10_000, &presentation)),
+            BorderEffect::None
+        );
         let mut restyled = reply_tick(10_001, &presentation);
         restyled.accent = Some(accent);
-        match controller.tick_reply(&restyled) {
-            BorderEffect::Show {
-                target_wid,
-                reorder_above,
-                color,
-                ..
-            } => {
-                assert_eq!(target_wid, 7);
-                assert!(!reorder_above);
-                assert_eq!(color, (0xaa, 0xbb, 0xcc));
-            }
-            other => panic!("want restyle show, got {other:?}"),
-        }
+        assert_eq!(controller.tick_reply(&restyled), BorderEffect::None);
+        assert_eq!(controller.hide_reason(), Some("bad-geometry"));
     }
 }

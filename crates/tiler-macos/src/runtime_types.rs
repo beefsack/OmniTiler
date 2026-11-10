@@ -69,10 +69,12 @@ pub enum LifecycleEvent {
 /// born fullscreen arrivals slotless off the truthful flag (no synthetic
 /// floating, never automatic) and asserts first-sight fixed origins;
 /// retained overlays keep their reserved slot/allocation in plan truth
-/// with no geometry writes. Minimized, hidden-app, policy/own-bundle, and
-/// layer exclusions never reach this shape: the classifier omits them
-/// from the submission instead (the core folds absence into
-/// minimize/restore, never into close).
+/// with no geometry writes. Minimized, hidden-app, and own-bundle windows
+/// never reach this shape: the producer omits them into the retained
+/// minimized path or the omitted count (the core folds absence into
+/// minimize/restore, never into close). All other shapes (including
+/// accessory/prohibited policy, nonordinary layers, and unknown roles)
+/// publish live with raw nullable facts; the core excludes/holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObservedWindow {
     pub wid: u32,
@@ -379,7 +381,12 @@ impl NativeContext {
 /// unreadable/unknown, never "no Space"); the engine admits a window only
 /// on exact `[current]` membership and omits everything else. Show-state
 /// flags ride along for the pre-effect recheck baseline (setters re-read
-/// live; these never authorize alone).
+/// live; these never authorize alone). The trailing neutral facts are raw
+/// native reads for v4 core classification (never policy echoes, null when
+/// unknown): `role` is the raw `AXRole`, `modal` the raw `AXModal`,
+/// `resizable` the raw `AXSize` settability, `layer` the raw
+/// `kCGWindowLayer`, `app_id` the owner bundle ID, and
+/// `activation_policy` the neutral core policy (`None` when unreadable).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopedWindowMeta {
     pub wid: u32,
@@ -387,7 +394,71 @@ pub struct ScopedWindowMeta {
     pub fullscreen: bool,
     pub minimized: bool,
     pub hidden: bool,
+    pub role: Option<String>,
+    pub subrole: Option<String>,
+    pub modal: Option<bool>,
+    pub resizable: Option<bool>,
+    pub layer: Option<i32>,
+    pub app_id: Option<String>,
+    pub activation_policy: Option<tiler_core::world_report::ActivationPolicy>,
 }
+
+/// Neutral raw native facts for one window, keyed by runtime window id
+/// (`"<pid>_<wid>"`) for v4 core classification. Raw reads only, never
+/// policy echoes, never inferred from legacy classification: `role` is the
+/// raw `AXRole`, `modal` the raw `AXModal`, `resizable` the raw `AXSize`
+/// settability, `layer` the raw `kCGWindowLayer`, `app_id` the owner bundle
+/// ID, `activation_policy` the neutral core policy (`None` when unreadable).
+/// Absent map entries and `None` fields both mean unknown (never a default).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WindowRawFacts {
+    pub role: Option<String>,
+    pub subrole: Option<String>,
+    pub modal: Option<bool>,
+    pub resizable: Option<bool>,
+    pub layer: Option<i32>,
+    pub app_id: Option<String>,
+    pub activation_policy: Option<tiler_core::world_report::ActivationPolicy>,
+    pub host_hidden: Option<bool>,
+}
+
+/// Neutral native window-type normalization (factual vocabulary only, never
+/// classifier-policy echoes, never inferred from legacy disposition):
+/// - `AXSheet` role maps to `Sheet`.
+/// - `AXWindow` + `AXStandardWindow` maps to `Normal`.
+/// - `AXWindow` + `AXDialog`/`AXSystemDialog` maps to `Dialog`.
+/// - `AXWindow` + `AXFloatingWindow`/`AXSystemFloatingWindow` maps to `None`
+///   (native utility/palette meaning unverified locally; withhold, never a
+///   compatibility `Dialog` echo and never an unverified `Utility` claim).
+/// - `AXWindow` + known other subrole (e.g. `AXUnknown`) maps to `Other`.
+/// - Missing role+subrole, missing subrole on `AXWindow`, or missing role
+///   maps to `None` (unknown, never a default `Normal` or `Other`).
+/// - Present but non-window/non-sheet role maps to `Other` (known
+///   non-ordinary shape; the core holds it narrowly).
+#[must_use]
+pub fn normalize_window_type(
+    role: Option<&str>,
+    subrole: Option<&str>,
+) -> Option<tiler_core::world_report::WindowType> {
+    use tiler_core::world_report::WindowType;
+    match (role, subrole) {
+        (Some("AXSheet"), _) => Some(WindowType::Sheet),
+        (Some("AXWindow"), Some("AXStandardWindow")) => Some(WindowType::Normal),
+        (Some("AXWindow"), Some("AXDialog" | "AXSystemDialog")) => Some(WindowType::Dialog),
+        (Some("AXWindow"), Some("AXFloatingWindow" | "AXSystemFloatingWindow")) => None,
+        (Some("AXWindow"), Some(_)) => Some(WindowType::Other),
+        (Some("AXWindow"), None) => None,
+        (None, None) => None,
+        (None, Some(_)) => None,
+        (Some(_), _) => Some(WindowType::Other),
+    }
+}
+
+/// Empty raw-facts map for synthetic/offline report inputs with no live
+/// native readers (all lookups miss to unknown/null).
+pub static EMPTY_RAW_FACTS: std::sync::LazyLock<
+    std::collections::BTreeMap<String, WindowRawFacts>,
+> = std::sync::LazyLock::new(std::collections::BTreeMap::new);
 
 /// One classifier-omitted window: identity plus the gate that fired.
 /// Diagnostic only (wid plus a status name); never titles, content, or raw
@@ -1045,6 +1116,12 @@ pub struct RuntimeConfig {
     /// Both-axes default (current delivered behavior); changing it affects
     /// subsequent admissions only, never existing classifications.
     pub fixed_size_predicate: FixedSizePredicate,
+    /// Raw core-owned settings acquired at startup (CLI-over-file, CLI
+    /// wins per key; see `dev_selection::collect_raw_core_settings`). The
+    /// engine thread forwards these verbatim as the initial revisioned
+    /// settings exchange; core owns validation/defaulting with per-field
+    /// diagnostics. Empty runs on core defaults.
+    pub core_settings: Vec<(String, tiler_core::connection::RawSettingValue)>,
 }
 
 impl Default for RuntimeConfig {
@@ -1065,6 +1142,7 @@ impl Default for RuntimeConfig {
             topology_mode: TopologyMode::Synthetic,
             focus_route: FocusRoute::default(),
             fixed_size_predicate: FixedSizePredicate::BothAxes,
+            core_settings: Vec::new(),
         }
     }
 }
@@ -1309,6 +1387,46 @@ pub enum WorkerReadiness {
 mod tests {
     use super::*;
     use crate::ffi::{DisplayRect, NsDisplay, SlsDisplayRow, SlsSpaceType};
+
+    #[test]
+    fn normalize_window_type_uses_factual_neutral_vocabulary() {
+        use tiler_core::world_report::WindowType;
+        // Sheet role maps by role; standard maps to normal; dialogs map
+        // to dialog; unverified floating withholds (never a compatibility
+        // dialog echo, never an unverified utility claim).
+        assert_eq!(
+            normalize_window_type(Some("AXSheet"), None),
+            Some(WindowType::Sheet)
+        );
+        assert_eq!(
+            normalize_window_type(Some("AXWindow"), Some("AXStandardWindow")),
+            Some(WindowType::Normal)
+        );
+        assert_eq!(
+            normalize_window_type(Some("AXWindow"), Some("AXDialog")),
+            Some(WindowType::Dialog)
+        );
+        assert_eq!(
+            normalize_window_type(Some("AXWindow"), Some("AXSystemDialog")),
+            Some(WindowType::Dialog)
+        );
+        assert_eq!(
+            normalize_window_type(Some("AXWindow"), Some("AXFloatingWindow")),
+            None
+        );
+        // Unknown reads withhold; known non-ordinary shapes read other.
+        assert_eq!(normalize_window_type(None, None), None);
+        assert_eq!(normalize_window_type(Some("AXWindow"), None), None);
+        assert_eq!(normalize_window_type(None, Some("AXDialog")), None);
+        assert_eq!(
+            normalize_window_type(Some("AXWindow"), Some("AXUnknown")),
+            Some(WindowType::Other)
+        );
+        assert_eq!(
+            normalize_window_type(Some("AXUnknown"), Some("AXUnknown")),
+            Some(WindowType::Other)
+        );
+    }
     use crate::topology;
 
     fn ns(cg_id: u32, uuid: &str, x: f64, y: f64, w: f64, h: f64) -> NsDisplay {

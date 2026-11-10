@@ -15,7 +15,7 @@
 //!   detection is later-stage work, never guessed here.
 //! - Screens carry the FULL native output rectangle plus the RAW visible
 //!   work area with the adapter-side outer gap riding separately (native:
-//!   [`PHASE1_OUTER_GAP`]; synthetic skeleton: `0`, which preserves the
+//!   [`PHASE1_OUTER_GAP`](crate::runtime_types::PHASE1_OUTER_GAP); synthetic skeleton: `0`, which preserves the
 //!   legacy skeleton's exact edge-to-edge geometry because the
 //!   [`WorldEngine`](tiler_core::world_engine::WorldEngine) always insets by
 //!   the carried gap).
@@ -57,26 +57,24 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::gesture::GestureIngress;
-use tiler_core::output_selection::MigrationSourceRefill;
 use tiler_core::session::DomainKey;
-use tiler_core::size_hints::FixedSizePredicate;
-use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_report::{
     ClearAttempt, FrameAttempt, HoldReason, MemberAttempt, NativeCreationAttempt,
-    NativeObservation, NativeOccupancy, ScreenReport, ViewAttempt, WORLD_CONTRACT_VERSION,
-    WindowFact, WorldCommand, WorldReport,
+    NativeObservation, NativeOccupancy, NativeWorkspaceFact, OutputIdentity, PresentationRowV4,
+    ScreenReport, ViewAttempt, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReportV4,
 };
 
 use crate::runtime_core::{LifetimeMemory, MinimizedRecord, collect_window_facts, minimized_fact};
-use crate::runtime_types::{NativeContext, ObservedWindow, PHASE1_GAP, PHASE1_OUTER_GAP};
+use crate::runtime_types::{NativeContext, ObservedWindow};
 
-/// Grounded focus eligibility facts for one presentation ingress: the
-/// retained home-current verdict, the current work areas and full display
-/// bounds in adapter units, and the engine-placement truth for the focused
-/// window. All three feed core-owned eligibility from the same retained
-/// snapshot as the foreground frame, so eligibility and geometry agree.
-/// Fresh-read renderer vetoes stay as last-moment fences over stale
-/// reports (see [`crate::border_runtime::BorderReplyTick`]).
+/// Grounded focus home-current verdict for one presentation ingress: the
+/// retained home domain currency for the focused window from the same
+/// retained snapshot as the foreground frame, so eligibility and geometry
+/// agree. Unproven currency fails closed to hidden-workspace.
+/// Contract M4: macOS never asserts a native maximize fact, so no
+/// work-area, display, or placement inputs ride here; zoom and
+/// full-display coverage stay renderer-local vetoes and the report
+/// maximized lane stays null.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FocusEligibilityFacts {
     /// Retained home-current verdict for the focused window: `Some(true)`
@@ -84,15 +82,6 @@ pub(crate) struct FocusEligibilityFacts {
     /// when homed but not current, `None` when unhomed (unknown). Unproven
     /// currency fails closed to hidden-workspace.
     pub home_current: Option<bool>,
-    /// Current visible work areas in adapter units (zoom-veto inputs).
-    pub visibles: Vec<tiler_core::geometry::Rect>,
-    /// Current full display bounds in adapter units (fullscreen-fence
-    /// inputs, never work areas).
-    pub full_displays: Vec<tiler_core::geometry::Rect>,
-    /// Engine-placement truth: the last applied reply planned geometry for
-    /// the focused window (tiling truth exempts the zoom heuristic, exactly
-    /// like the renderer's placement join over `last_desired_geometry`).
-    pub engine_placed: bool,
 }
 
 /// Build the presentation ingress for one report from retained truth.
@@ -102,8 +91,9 @@ pub(crate) struct FocusEligibilityFacts {
 ///   the renderer revalidates it live against the reply token, so a stale
 ///   token hides instead of painting.
 /// - The foreground frame is the live retained rect for that id (`None`
-///   when unreadable or minimized); minimized/fullscreen ride as truthful
-///   flags from the retained minimized set and the retained fullscreen bit.
+///   when unreadable, minimized, or owner-hidden); minimized/host_hidden/
+///   fullscreen ride as truthful flags from the retained minimized record
+///   legs and the retained fullscreen bit.
 ///   `foreground_shell` is grounded false: classifier exclusions (own
 ///   bundle, accessory/prohibited policy, nonordinary layer, unknown role)
 ///   are omitted from membership by construction, so an admitted focused
@@ -112,19 +102,21 @@ pub(crate) struct FocusEligibilityFacts {
 ///   fresh SLS current flags: homed-but-not-current (and unhomed) reads
 ///   hidden, so the core — not just the renderer Space leg — owns the
 ///   off-Space hide.
-/// - `foreground_maximized` is grounded from the same whole-display and
-///   work-area approximation the renderer vetoes on (1pt tolerance over
-///   the retained frame, exempting engine-placed tiling truth, ORed with
-///   the borderless full-display fence): the core owns the zoom hide with
-///   the same inputs the fresh-read veto would use, so eligibility and
-///   geometry share one snapshot.
+/// - Contract M4: macOS never asserts a native maximize fact. Zoom and
+///   full-display coverage stay renderer-local vetoes and never ride the
+///   report: `foreground_maximized` is always null (unknown), even for
+///   work-area- or full-display-sized frames.
 /// - `foreground_cloaked` stays false: no roster fact names cloaking
 ///   (CG offscreen alone proves nothing, per the port record), and the
 ///   render-side classifier/facts-unknown vetoes fail closed instead.
 /// - No positively grounded game signal exists (a focused fullscreen bit
-///   alone never proves a game; ordinary fullscreen never pauses), so
-///   `paused` rides false and the render-side fullscreen fence stays the
-///   game-lane veto. Session lock stays renderer-side (main-thread only).
+///   alone never proves a game), so `paused` rides false and game
+///   suspension stays separate. Fullscreen rides truthfully and a
+///   focused-fullscreen output suspends presentation surfaces per the
+///   focused-fullscreen rule (borders, underlays, and overlays suppressed,
+///   preview dropped); the render-side fullscreen fence stays the
+///   last-moment veto over stale reports. Session lock stays
+///   renderer-side (main-thread only).
 /// - Border enable plus gap/width/extension ride the startup-resolved
 ///   style; underlay enable rides false (no production underlay loop yet).
 /// - Chord/move ride silent (no chord source; the drag gesture ingress
@@ -142,16 +134,23 @@ pub(crate) fn build_presentation_ingress(
     minimized: &[MinimizedRecord],
     focused_fullscreen: bool,
     eligibility: &FocusEligibilityFacts,
-    style: &crate::active_border::PresentationStylePx,
-) -> tiler_core::world_report::PresentationIngress {
-    use tiler_core::world_report::PresentationIngress;
-    let minimized_set: BTreeSet<&str> = minimized
+    _style: &crate::active_border::PresentationStylePx,
+) -> tiler_core::world_report::PresentationIngressV4 {
+    use tiler_core::world_report::PresentationIngressV4;
+    // Separated retained lifetimes: `minimized` is the truthful
+    // AXMinimized leg, `host_hidden` the truthful owner-hidden leg. A
+    // hidden-only record (minimized false, host_hidden true) must not
+    // read as minimized.
+    let focused_record = minimized
         .iter()
-        .map(|entry| entry.window.0.as_str())
-        .collect();
-    let foreground_minimized = !focused_global.is_empty() && minimized_set.contains(focused_global);
+        .find(|entry| entry.window.0.as_str() == focused_global);
+    let foreground_minimized = focused_record.map(|entry| entry.minimized).unwrap_or(false);
+    let foreground_host_hidden = focused_record
+        .map(|entry| entry.host_hidden)
+        .unwrap_or(false);
+    let foreground_retained_hidden = foreground_minimized || foreground_host_hidden;
     let mut foreground_frame = None;
-    if !focused_global.is_empty() && !foreground_minimized {
+    if !focused_global.is_empty() && !foreground_retained_hidden {
         'search: for members_of_domain in members.values() {
             for (pid, window) in members_of_domain {
                 if crate::runtime_types::window_id(*pid, window.wid) == focused_global {
@@ -188,7 +187,7 @@ pub(crate) fn build_presentation_ingress(
     for members_of_domain in members.values() {
         for (pid, window) in members_of_domain {
             if window.w > 0 && window.h > 0 {
-                pager_frames.push(tiler_core::world_report::PresentationPagerFrame {
+                pager_frames.push(tiler_core::world_report::PresentationPagerFrameV4 {
                     window: tiler_core::directional::WindowId(crate::runtime_types::window_id(
                         *pid, window.wid,
                     )),
@@ -198,8 +197,6 @@ pub(crate) fn build_presentation_ingress(
                         w: window.w,
                         h: window.h,
                     }),
-                    float_frame: None,
-                    tile_frame: None,
                 });
             }
         }
@@ -209,61 +206,23 @@ pub(crate) fn build_presentation_ingress(
     // unproven currency fails closed to hidden-workspace (the core owns
     // the off-Space hide; empty focus still hides as no-target first).
     let foreground_hidden_workspace = !matches!(eligibility.home_current, Some(true));
-    // Grounded maximized from the renderer's own zoom/full-display inputs
-    // over the retained frame: engine-placed tiling truth exempts the zoom
-    // heuristic, and a borderless full-display frame reads maximized on
-    // both axes. A minimized or unreadable focus has no frame here, so it
-    // never reads maximized from this path.
-    let foreground_maximized = foreground_frame.is_some_and(|frame| {
-        use tiler_core::visual::VisualRect;
-        let visual = VisualRect {
-            x: frame.x as f64,
-            y: frame.y as f64,
-            w: frame.w as f64,
-            h: frame.h as f64,
-        };
-        let to_visual = |rect: tiler_core::geometry::Rect| VisualRect {
-            x: rect.x as f64,
-            y: rect.y as f64,
-            w: rect.w as f64,
-            h: rect.h as f64,
-        };
-        let visibles: Vec<VisualRect> = eligibility
-            .visibles
-            .iter()
-            .copied()
-            .map(to_visual)
-            .collect();
-        let fulls: Vec<VisualRect> = eligibility
-            .full_displays
-            .iter()
-            .copied()
-            .map(to_visual)
-            .collect();
-        let (zoom_h, zoom_v) =
-            crate::border_runtime::zoom_axes(visual, &visibles, eligibility.engine_placed);
-        let full_display = crate::border_runtime::covers_full_display(visual, &fulls);
-        (zoom_h || full_display) || (zoom_v || full_display)
-    });
-    PresentationIngress {
+    // Contract M4: macOS never asserts a native maximize fact; the
+    // zoom/full-display heuristic stays renderer-local and never rides the
+    // report. Foreground maximized is therefore always null (unknown).
+    PresentationIngressV4 {
         foreground: focused_global.to_owned(),
-        foreground_minimized,
-        foreground_maximized,
-        foreground_fullscreen: focused_fullscreen,
-        foreground_cloaked: false,
-        foreground_hidden_workspace,
-        foreground_shell: false,
+        foreground_minimized: Some(foreground_minimized),
+        foreground_maximized: None,
+        foreground_fullscreen: Some(focused_fullscreen),
+        foreground_host_hidden: Some(foreground_host_hidden),
+        foreground_hidden_workspace: Some(foreground_hidden_workspace),
         foreground_frame,
-        border_enabled: style.border_enabled,
-        underlay_enabled: false,
-        border_gap_px: style.gap_px,
-        border_width_px: style.width_px,
-        underlay_extension_px: style.extension_px,
         chord_held: false,
         move_window: String::new(),
-        paused: false,
         pager_order: Vec::new(),
         pager_frames,
+        witness: None,
+        foreground_out: None,
     }
 }
 
@@ -271,7 +230,6 @@ pub(crate) fn build_presentation_ingress(
 /// (Unit B wires retained homing/lifetime memory); the builder only shapes,
 /// normalizes, and de-overlaps.
 pub(crate) struct ReportInput<'a> {
-    pub owner: &'a str,
     pub adapter_incarnation: &'a str,
     pub core_generation: &'a str,
     pub observation_seq: u64,
@@ -287,6 +245,10 @@ pub(crate) struct ReportInput<'a> {
     /// Adapter-side core-delivery lifetime memory (last applied reply rows)
     /// for wire-flag normalization.
     pub memory: &'a LifetimeMemory,
+    /// Neutral raw native facts per runtime window id (`"<pid>_<wid>"`) for
+    /// v4 core classification. Missing entries and `None` fields both mean
+    /// unknown (null, never a default, never a policy echo).
+    pub raw: &'a BTreeMap<String, crate::runtime_types::WindowRawFacts>,
     /// Explicit closes as flat ids (always honored, even incomplete).
     /// Flat ids are the actual close authority; no homing is required and
     /// no domain key is invented for unknown homes.
@@ -333,40 +295,23 @@ pub(crate) struct ReportInput<'a> {
     pub incomplete_outputs: &'a [OutputId],
     /// Gesture barrier active (all scopes hold gesture-side).
     pub gesture_barrier: bool,
-    /// Ingress fixed-size admission predicate (existing predicate per report).
-    pub predicate: FixedSizePredicate,
-    /// Ingress migration source-refill mode.
-    pub refill: MigrationSourceRefill,
-    /// Saved default-tiling seed for newly observed natives.
-    pub default_tiled: bool,
     /// Primary output (`None` = first output in context order).
     pub primary_output: Option<OutputId>,
-    /// Adapter-side inner gap riding with each screen (the engine applies
-    /// its single inset).
-    pub gap: i32,
-    /// Adapter-side outer gap riding with each screen (the engine applies
-    /// its single inset). Native reports carry [`PHASE1_OUTER_GAP`]; the
-    /// synthetic skeleton reports `0` to preserve the legacy skeleton's
-    /// exact edge-to-edge geometry.
-    pub outer_gap: i32,
     /// Adapter monotonic clock in milliseconds (arbitrary process epoch).
     /// `0` means unreported (stage 1: no clock source claimed).
     pub monotonic_ms: u64,
     /// Presentation ingress facts for the reply presentation shapes (see
     /// [`build_presentation_ingress`]). Built by the dispatcher from
-    /// retained truth; silent (`disabled`) only when the caller has no
-    /// live focus facts.
-    pub presentation: tiler_core::world_report::PresentationIngress,
+    /// retained truth.
+    pub presentation: tiler_core::world_report::PresentationIngressV4,
 }
 
 impl<'a> ReportInput<'a> {
-    /// Fresh input with migration/product defaults: both-axes predicate,
-    /// last-remaining refill, default-tiled seed, complete inventory, no
+    /// Fresh input with migration/product defaults: complete inventory, no
     /// barrier, first-output primary, silent presentation, no clock. The
     /// caller fills members/memory and any holds/closes/minimized/attempts.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        owner: &'a str,
         adapter_incarnation: &'a str,
         core_generation: &'a str,
         ctx: &'a NativeContext,
@@ -382,7 +327,6 @@ impl<'a> ReportInput<'a> {
         coverage_gap: bool,
     ) -> Self {
         Self {
-            owner,
             adapter_incarnation,
             core_generation,
             observation_seq,
@@ -395,6 +339,7 @@ impl<'a> ReportInput<'a> {
             memory,
             closed,
             unknown: &[],
+            raw: &*crate::runtime_types::EMPTY_RAW_FACTS,
             roster_incomplete: false,
             minimized,
             unreadable,
@@ -409,22 +354,17 @@ impl<'a> ReportInput<'a> {
             coverage_gap,
             incomplete_outputs: &[],
             gesture_barrier: false,
-            predicate: FixedSizePredicate::BothAxes,
-            refill: MigrationSourceRefill::LastRemaining,
-            default_tiled: true,
             primary_output: None,
-            gap: PHASE1_GAP,
-            outer_gap: PHASE1_OUTER_GAP,
             monotonic_ms: 0,
-            presentation: tiler_core::world_report::PresentationIngress::disabled(),
+            presentation: tiler_core::world_report::PresentationIngressV4::default(),
         }
     }
 }
 
 /// Build one complete world report. Infallible over the typed inputs; id
 /// validity (opaque alphabet) stays the caller's contract, checked by
-/// [`validate_report`](tiler_core::world_report::validate_report).
-pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReport {
+/// [`validate_report_v4_reason`](tiler_core::world_report_v4_checks::validate_report_v4_reason).
+pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReportV4 {
     // Closed > minimized > live: collect the explicit-close set first so
     // both minimized rows and live membership defer to it. Flat ids are
     // the authority; no homing, no invented keys.
@@ -479,19 +419,21 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReport {
             .cloned()
             .unwrap_or_else(|| OutputId(String::new()))
     });
+    let _ = primary;
     // An unreadable Space fences its own scope (omitted members plus the
     // whole-report inventory fence, which the core publishes as a hold),
     // never its screen: the native order/current stay completely observed.
+    // v4 screens carry FULL rect + work area + scale 1 + neutral identity;
+    // gaps ride via settings and primary rides as host-designated only.
     let mut screens: Vec<ScreenReport> = output_order
         .iter()
         .map(|output| ScreenReport {
             output: output.clone(),
             full_rect: output_geometry.get(output).copied(),
             work_area: output_visible.get(output).copied(),
-            gap: input.gap,
-            outer_gap: input.outer_gap,
             complete: !input.coverage_gap && !input.incomplete_outputs.contains(output),
-            primary: *output == primary,
+            scale: 1.0,
+            identity: OutputIdentity::unknown(),
         })
         .collect();
     // Skipped displays stay reported (incomplete, never actuated) rather
@@ -510,10 +452,9 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReport {
                 output: OutputId(output),
                 full_rect: skipped.full_rect,
                 work_area: skipped.work_area,
-                gap: input.gap,
-                outer_gap: input.outer_gap,
                 complete: false,
-                primary: false,
+                scale: 1.0,
+                identity: OutputIdentity::unknown(),
             });
         }
     }
@@ -571,7 +512,15 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReport {
         }
         let mut domain_facts: Vec<WindowFact> = Vec::new();
         for (pid, observed) in &by_pid {
-            collect_window_facts(&mut domain_facts, *pid, observed, &key, input.memory);
+            let raw_of = |id: &str| input.raw.get(id).cloned().unwrap_or_default();
+            collect_window_facts(
+                &mut domain_facts,
+                *pid,
+                observed,
+                &key,
+                input.memory,
+                &raw_of,
+            );
         }
         domain_facts.sort_by(|a, b| a.window.0.cmp(&b.window.0));
         windows.extend(domain_facts);
@@ -610,33 +559,62 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReport {
             for (pid, observed) in &by_pid {
                 for w in observed {
                     let id = crate::runtime_types::window_id(*pid, w.wid);
-                    let known = crate::runtime_core::KnownState::of_reply(
-                        &input.memory.rows,
-                        &WindowId(id.clone()),
-                    );
+                    let raw: crate::runtime_types::WindowRawFacts =
+                        input.raw.get(&id).cloned().unwrap_or_default();
                     let rect = tiler_core::geometry::Rect {
                         x: w.x,
                         y: w.y,
                         w: w.w,
                         h: w.h,
                     };
-                    let (floating, fixed_auto) =
-                        crate::runtime_core::normalize_wire_flags(w.floating, w.fullscreen, &known);
+                    // Grounded unknown-home rows: output via geometry,
+                    // native workspace unknown (never guessed), truthful
+                    // fullscreen, null maximized/sticky per contract.
+                    // Neutral raw facts ride where known (null otherwise).
                     windows.push(WindowFact {
-                        window: WindowId(id),
-                        output: output.clone(),
+                        window: WindowId(id.clone()),
+                        output: Some(output.clone()),
                         rect: Some(rect),
-                        floating,
-                        fit_excluded: false,
-                        fullscreen: w.fullscreen,
-                        maximized: false,
-                        sticky: false,
-                        fixed_auto,
-                        fixed_suppress: false,
-                        hints: w.hints,
-                        minimized: false,
-                        observed_workspace: None,
-                        native_workspace: None,
+                        fullscreen: Some(w.fullscreen),
+                        maximized: None,
+                        sticky: None,
+                        minimized: Some(false),
+                        hints: Some(w.hints),
+                        native_workspace: NativeWorkspaceFact::Omitted,
+                        host_hidden: raw.host_hidden,
+                        privileged: None,
+                        managed: None,
+                        accepts_input: None,
+                        activation_inhibited: None,
+                        tool_window: None,
+                        owned: None,
+                        transient: None,
+                        modal: raw.modal,
+                        resizable: raw.resizable,
+                        above: None,
+                        below: None,
+                        owner: None,
+                        parent: None,
+                        role: raw.role.clone(),
+                        app_id: raw.app_id.clone(),
+                        executable: None,
+                        process_id: Some(pid.to_string()),
+                        class: None,
+                        title: None,
+                        window_type: crate::runtime_types::normalize_window_type(
+                            raw.role.as_deref(),
+                            raw.subrole.as_deref(),
+                        ),
+                        activation_policy: raw.activation_policy,
+                        layer: raw.layer,
+                        fullscreen_owner: None,
+                        fullscreen_exitable: None,
+                        suppression_available: None,
+                        visibility: tiler_core::world_report::VisibilityFact {
+                            visible: None,
+                            suppression_owned: None,
+                        },
+                        last_write: None,
                     });
                 }
             }
@@ -650,9 +628,8 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReport {
         && input.ctx.skipped.is_empty()
         && !input.roster_incomplete;
 
-    WorldReport {
-        contract_version: WORLD_CONTRACT_VERSION,
-        owner: input.owner.to_owned(),
+    WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: input.adapter_incarnation.to_owned(),
         core_generation: input.core_generation.to_owned(),
         observation_seq: input.observation_seq,
@@ -660,49 +637,35 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReport {
         request_id: input.request_id.to_owned(),
         command_seq: input.command_seq,
         command: input.command.clone(),
-        workspace_mode: WorkspaceMode::PerOutputLocal,
         screens,
+        held_screens: Vec::new(),
         windows,
-        // Stage 1 carries no independently observed logical views: empty
-        // means unknown and the core keeps its retained views. Native
-        // evidence (native[] plus native_workspace facts) proves arrival.
-        views: Vec::new(),
+        held_windows: Vec::new(),
         closed,
-        // The macOS adapter always opts into host-owned adoption: core
-        // owns the mapping, the adapter only observes.
-        host_owned_workspace_domains: true,
-        equal_workspace_count: false,
-        // The macOS adapter keeps the old path: no automatic birth clear
-        // (handover notes the lane for a later review; KDE opts in, Windows
-        // stays preamble-owned).
-        birth_clear: false,
         native,
-        fixed_size_predicate: input.predicate,
-        migration_source_refill: input.refill,
-        default_tiled: input.default_tiled,
-        focused_global: input.focused_global.to_owned(),
-        inventory_complete,
-        gesture_barrier: input.gesture_barrier,
-        gesture: input.gesture.clone(),
-        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-        no_space_result: tiler_core::admission::NoSpaceResult::default(),
-        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-        focus_follows_cursor: false,
-        cursor_warp: false,
+        held_native: Vec::new(),
         cursor: None,
         cursor_hit: None,
+        focused_global: input.focused_global.to_owned(),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
+        primary_output: input.primary_output.clone(),
+        inventory_complete,
+        gesture_barrier: input.gesture_barrier,
+        gesture: input.gesture.clone(),
         monotonic_ms: input.monotonic_ms,
         frames: input.frames.to_vec(),
         member_attempts: input.member_attempts.to_vec(),
         view_attempts: input.view_attempts.to_vec(),
         clear_attempts: input.clear_attempts.to_vec(),
         creation_attempts: input.creation_attempts.to_vec(),
-        presentation: input.presentation.clone(),
+        held_attempts: Vec::new(),
+        state_attempts: Vec::new(),
+        focus_feedback: Vec::new(),
+        presentation: PresentationRowV4::Valid(input.presentation.clone()),
+        intent_records: Vec::new(),
+        renderer_input: None,
     }
 }
 
@@ -713,11 +676,10 @@ mod tests {
     use tiler_core::geometry::Rect;
     use tiler_core::size_hints::WindowSizeHints;
     use tiler_core::world_engine::{WorldEngine, WorldOutcome};
-    use tiler_core::world_report::validate_report;
+    use tiler_core::world_report_v4_checks::validate_report_v4_reason;
 
     use crate::runtime_types::{NativeDomain, ObservedWindow, ScopedWindowMeta};
 
-    const OWNER: &str = "macos-phase-1";
     const GENERATION: &str = "gen-1";
     const INCARNATION: &str = "adapter-1";
 
@@ -791,10 +753,9 @@ mod tests {
         focused_global: &str,
         obs: u64,
         req: u64,
-    ) -> WorldReport {
+    ) -> WorldReportV4 {
         let owned_id = format!("req-{req}");
         let mut input = ReportInput::new(
-            OWNER,
             INCARNATION,
             GENERATION,
             ctx,
@@ -809,6 +770,8 @@ mod tests {
             focused_global,
             false,
         );
+        let raw = realistic_raw_for(members);
+        input.raw = &raw;
         let report = build_report(&mut input);
         assert_eq!(report.request_id, owned_id);
         report
@@ -830,10 +793,52 @@ mod tests {
         LifetimeMemory::empty()
     }
 
+    /// Real-engine binding for these fixtures: production macOS
+    /// capabilities (never the synthetic full-support test default, which
+    /// would hold every realistic row unreadable).
+    fn production_engine() -> WorldEngine {
+        WorldEngine::new_test_bound_with_capabilities(
+            GENERATION,
+            INCARNATION,
+            crate::world_connection::macos_capabilities(),
+        )
+        .expect("production capabilities bind")
+    }
+
+    /// Realistic macOS raw native facts for every member window: ordinary
+    /// `AXWindow`/`AXStandardWindow`, non-modal, resizable, base layer,
+    /// regular app, visible. Explicit synthetic fixture captures, never
+    /// policy derivations.
+    fn realistic_raw_for(
+        members: &BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
+    ) -> BTreeMap<String, crate::runtime_types::WindowRawFacts> {
+        let mut raw = BTreeMap::new();
+        for pairs in members.values() {
+            for (pid, window) in pairs {
+                raw.insert(
+                    crate::runtime_types::window_id(*pid, window.wid),
+                    crate::runtime_types::WindowRawFacts {
+                        role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                        subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                        modal: Some(false),
+                        resizable: Some(true),
+                        layer: Some(0),
+                        app_id: Some("com.example.app".to_owned()),
+                        activation_policy: Some(
+                            tiler_core::world_report::ActivationPolicy::Regular,
+                        ),
+                        host_hidden: Some(false),
+                    },
+                );
+            }
+        }
+        raw
+    }
+
     fn accepted(
-        report: &WorldReport,
+        report: &WorldReportV4,
         engine: &mut WorldEngine,
-    ) -> tiler_core::world_report::WorldReply {
+    ) -> tiler_core::world_report::WorldReplyV4 {
         match engine.handle_report(report) {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),
@@ -874,11 +879,11 @@ mod tests {
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
         let report = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
-        assert!(validate_report(&report), "builder output validates");
-        assert_eq!(report.workspace_mode, WorkspaceMode::PerOutputLocal);
-        assert!(report.host_owned_workspace_domains);
+        assert!(
+            validate_report_v4_reason(&report).is_none(),
+            "builder output validates"
+        );
         assert_eq!(report.screens.len(), 2);
-        assert_eq!(report.views, Vec::new(), "no logical views invented");
         // Native adoption rows: user Spaces in context order with the
         // native current, per output.
         assert_eq!(report.native.len(), 2);
@@ -890,10 +895,9 @@ mod tests {
         assert_eq!(report.native[1].current_native.as_deref(), Some("space-21"));
         assert!(report.screens[0].complete);
         assert!(
-            report.screens[0].primary,
-            "first output is primary by default"
+            report.primary_output.is_none(),
+            "no host-designated primary by default"
         );
-        assert!(!report.screens[1].primary);
         // Core-owned topology carries the FULL display rect, never the
         // visible work area; domain work areas ride separately per screen.
         assert_eq!(report.screens[0].full_rect, Some(rect(0, 0, 1440, 900)));
@@ -947,7 +951,7 @@ mod tests {
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
         let report = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
-        assert!(validate_report(&report));
+        assert!(validate_report_v4_reason(&report).is_none());
         assert_eq!(report.screens[0].full_rect, Some(rect(0, -900, 1440, 900)));
         assert_eq!(report.screens[1].full_rect, Some(rect(0, 0, 1440, 900)));
         // The visible pair demonstrably does NOT edge-touch: deriving
@@ -959,7 +963,7 @@ mod tests {
             second_work.y,
             "work areas are gapped; FULL is the adjacency authority"
         );
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut engine = production_engine();
         let reply = accepted(&report, &mut engine);
         assert!(reply.ready, "FULL-topology report is accepted");
         assert_eq!(engine.state_revision(), 1);
@@ -1028,7 +1032,7 @@ mod tests {
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
         let report = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
-        assert!(validate_report(&report));
+        assert!(validate_report_v4_reason(&report).is_none());
         assert_eq!(report.screens.len(), 2);
         // 1:1 rounding lands the fractional seam on the exact shared edge.
         assert_eq!(report.screens[0].full_rect, Some(rect(0, 0, 1512, 982)));
@@ -1046,8 +1050,12 @@ mod tests {
         );
         assert_eq!(report.native[0].current_native.as_deref(), Some("space-11"));
         assert_eq!(report.native[1].current_native.as_deref(), Some("space-21"));
-        assert!(report.screens[0].primary, "display order owns primary");
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        assert_eq!(report.screens[0].output.0, "macos-display-1");
+        assert_eq!(
+            report.primary_output, None,
+            "host primary stays null without designation"
+        );
+        let mut engine = production_engine();
         let reply = accepted(&report, &mut engine);
         assert!(reply.ready, "rounded FULL-topology report is accepted");
     }
@@ -1135,7 +1143,7 @@ mod tests {
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
         let report = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
-        assert!(validate_report(&report));
+        assert!(validate_report_v4_reason(&report).is_none());
         let geometry = |out: &str| {
             report
                 .screens
@@ -1192,7 +1200,7 @@ mod tests {
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
         let report = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
-        assert!(validate_report(&report));
+        assert!(validate_report_v4_reason(&report).is_none());
         // The skipped display stays reported as one incomplete screen
         // (last-observed geometry, never guessed homing) with no windows
         // and no native rows.
@@ -1209,9 +1217,12 @@ mod tests {
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
         let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
-        let bootstrap = engine.bootstrap_reply(INCARNATION, "req-0");
-        assert!(!bootstrap.ready, "bootstrap carries no desired state");
-        assert!(bootstrap.windows.is_empty());
+        // Genuine production handshake through the connection route mints the
+        // bound generation; no synthetic bootstrap reply is fabricated.
+        let generation = crate::world_connection::connect(&mut engine, INCARNATION, &[])
+            .expect("handshake binds generation")
+            .generation;
+        assert_eq!(generation, engine.core_generation());
 
         let first = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
         let reply = accepted(&first, &mut engine);
@@ -1236,7 +1247,8 @@ mod tests {
 
     #[test]
     fn maximized_never_inferred_and_fixed_newcomer_asserts() {
-        // Fullscreen natives still report maximized:false (fence inert);
+        // Fullscreen natives still report maximized:null (no native fact;
+        // the zoom fence stays renderer-local);
         // first-sight fixed hints ride plain on the wire and the core
         // admits the automatic float (membership only).
         let ctx = two_display_ctx();
@@ -1254,33 +1266,45 @@ mod tests {
         };
         members.insert(d1.clone(), vec![(1001, full), (1001, fixed)]);
         let report = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
-        assert!(validate_report(&report));
+        assert!(validate_report_v4_reason(&report).is_none());
         assert_eq!(report.windows.len(), 2);
-        assert!(report.windows.iter().all(|w| !w.maximized));
+        assert!(report.windows.iter().all(|w| w.maximized != Some(true)));
         let fullscreen = report
             .windows
             .iter()
             .find(|w| w.window.0 == "1001_1")
             .expect("live");
-        assert!(fullscreen.fullscreen, "fullscreen rides truthfully");
+        assert!(
+            fullscreen.fullscreen == Some(true),
+            "fullscreen rides truthfully"
+        );
         assert_eq!(
             fullscreen.native_workspace.as_deref(),
             Some("space-11"),
             "native membership rides the fact"
         );
-        assert!(fullscreen.observed_workspace.is_none());
         let fixed_row = report
             .windows
             .iter()
             .find(|w| w.window.0 == "1001_2")
             .expect("live");
+        assert_eq!(
+            fixed_row.hints,
+            Some(WindowSizeHints {
+                min_w: Some(640),
+                min_h: Some(480),
+                max_w: Some(640),
+                max_h: Some(480)
+            }),
+            "first-sight fixed hints ride carried"
+        );
         assert!(
-            !fixed_row.floating && !fixed_row.fixed_auto,
+            fixed_row.maximized != Some(true) && fixed_row.fullscreen != Some(true),
             "first-sight fixed rides plain; the core owns the automatic marker"
         );
         // Engine admits the fixed newcomer as an automatic float
         // (membership only) without any invented maximization.
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut engine = production_engine();
         let reply = accepted(&report, &mut engine);
         assert!(reply.ready);
         let desired = reply
@@ -1310,6 +1334,17 @@ mod tests {
             output: OutputId("macos-display-1".to_owned()),
             workspace: tiler_core::directional::WorkspaceId("space-11".to_owned()),
             sticky: false,
+            minimized: true,
+            host_hidden: false,
+            fullscreen: false,
+            process_id: None,
+            role: None,
+            subrole: None,
+            modal: None,
+            resizable: None,
+            layer: None,
+            app_id: None,
+            activation_policy: None,
         }];
         let report = assemble(
             &ctx,
@@ -1322,12 +1357,12 @@ mod tests {
             1,
             1,
         );
-        assert!(validate_report(&report));
+        assert!(validate_report_v4_reason(&report).is_none());
         assert!(
             report
                 .windows
                 .iter()
-                .filter(|w| !w.minimized)
+                .filter(|w| w.minimized != Some(true))
                 .all(|w| w.window.0 != "1001_9"),
             "minimized lifetimes are absent from live membership"
         );
@@ -1336,9 +1371,9 @@ mod tests {
             .iter()
             .find(|w| w.window.0 == "1001_9")
             .expect("explicit minimized row");
-        assert!(row.minimized && row.rect.is_none());
+        assert!(row.minimized == Some(true) && row.rect.is_none());
         assert_eq!(row.native_workspace.as_deref(), Some("space-11"));
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut engine = production_engine();
         let reply = accepted(&report, &mut engine);
         let desired = reply
             .windows
@@ -1350,6 +1385,93 @@ mod tests {
             tiler_core::world_report::ScopeAuthority::Hold(HoldReason::Minimized)
         );
         assert!(desired.allocation.is_none() && desired.effective_frame.is_none());
+    }
+
+    #[test]
+    fn hidden_app_row_reports_host_hidden_not_minimized() {
+        // Genuinely minimized vs owner-hidden rows carry separated truth:
+        // hidden-app reads minimized false plus host_hidden true (never a
+        // hidden-equals-minimized echo) with the available raw legs
+        // preserved and maximized/sticky null per contract. The report
+        // validates and the production-capability core accepts it.
+        let full_raw = |window: &str, minimized: bool, host_hidden: bool| MinimizedRecord {
+            window: WindowId(window.to_owned()),
+            output: OutputId("macos-display-1".to_owned()),
+            workspace: tiler_core::directional::WorkspaceId("space-11".to_owned()),
+            sticky: false,
+            minimized,
+            host_hidden,
+            fullscreen: false,
+            process_id: Some("1001".to_owned()),
+            role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+            subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+            modal: Some(false),
+            resizable: Some(true),
+            layer: Some(0),
+            app_id: Some("com.example.app".to_owned()),
+            activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+        };
+        for fact in [
+            minimized_fact(&full_raw("1001_9", true, false)),
+            minimized_fact(&full_raw("1001_8", false, true)),
+        ] {
+            assert_eq!(fact.maximized, None, "macOS declares no maximize fact");
+            assert_eq!(fact.sticky, None, "macOS declares no native sticky fact");
+            assert_eq!(fact.role.as_deref(), Some(crate::classifier::ROLE_WINDOW));
+            assert_eq!(fact.layer, Some(0));
+            assert_eq!(fact.app_id.as_deref(), Some("com.example.app"));
+            assert_eq!(
+                fact.activation_policy,
+                Some(tiler_core::world_report::ActivationPolicy::Regular)
+            );
+            assert_eq!(fact.process_id.as_deref(), Some("1001"));
+        }
+        let ctx = two_display_ctx();
+        let (members, closed, unreadable) = empty_maps();
+        let memory = empty_memory();
+        let minimized = vec![
+            full_raw("1001_9", true, false),
+            full_raw("1001_8", false, true),
+        ];
+        let report = assemble(
+            &ctx,
+            &members,
+            &memory,
+            &closed,
+            &unreadable,
+            &minimized,
+            "",
+            1,
+            1,
+        );
+        assert!(validate_report_v4_reason(&report).is_none());
+        let hidden: std::collections::BTreeMap<&str, &tiler_core::world_report::WindowFact> =
+            report
+                .windows
+                .iter()
+                .filter(|w| w.window.0 == "1001_9" || w.window.0 == "1001_8")
+                .map(|w| (w.window.0.as_str(), w))
+                .collect();
+        assert_eq!(hidden.len(), 2);
+        assert_eq!(hidden["1001_9"].minimized, Some(true));
+        assert_eq!(hidden["1001_9"].host_hidden, Some(false));
+        assert_eq!(hidden["1001_8"].minimized, Some(false));
+        assert_eq!(hidden["1001_8"].host_hidden, Some(true));
+        let mut engine = WorldEngine::new_test_bound_with_capabilities(
+            GENERATION,
+            INCARNATION,
+            crate::world_connection::macos_capabilities(),
+        )
+        .expect("production capabilities bind");
+        let reply = accepted(&report, &mut engine);
+        assert!(
+            reply.windows.iter().any(|w| w.lifetime.0 == "1001_9"),
+            "minimized lifetime survives the production-capability core"
+        );
+        assert!(
+            reply.windows.iter().any(|w| w.lifetime.0 == "1001_8"),
+            "hidden-app lifetime survives the production-capability core"
+        );
     }
 
     #[test]
@@ -1366,9 +1488,9 @@ mod tests {
         let hidden = key("macos-display-1", "space-12");
         let live = key("macos-display-1", "space-11");
         members.insert(live.clone(), vec![(1001, observed(3, 10, 10, 100, 100))]);
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut engine = production_engine();
         let first = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
-        assert!(validate_report(&first));
+        assert!(validate_report_v4_reason(&first).is_none());
         let reply = accepted(&first, &mut engine);
         assert!(reply.ready);
         let bound_12 = reply
@@ -1382,7 +1504,7 @@ mod tests {
         members.insert(hidden.clone(), vec![(1001, observed(3, 10, 10, 100, 100))]);
         unreadable.insert(hidden.clone(), HoldReason::Unreadable);
         let report = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 2, 2);
-        assert!(validate_report(&report));
+        assert!(validate_report_v4_reason(&report).is_none());
         assert!(!report.inventory_complete);
         assert!(
             report
@@ -1429,7 +1551,7 @@ mod tests {
             3,
             3,
         );
-        assert!(validate_report(&third));
+        assert!(validate_report_v4_reason(&third).is_none());
         assert!(
             third.inventory_complete,
             "readable return completes inventory"
@@ -1456,7 +1578,7 @@ mod tests {
         let ctx = two_display_ctx();
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut engine = production_engine();
         let first = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 5, 5);
         accepted(&first, &mut engine);
 
@@ -1495,6 +1617,17 @@ mod tests {
             output: OutputId("macos-display-1".to_owned()),
             workspace: tiler_core::directional::WorkspaceId("space-11".to_owned()),
             sticky: false,
+            minimized: true,
+            host_hidden: false,
+            fullscreen: false,
+            process_id: None,
+            role: None,
+            subrole: None,
+            modal: None,
+            resizable: None,
+            layer: None,
+            app_id: None,
+            activation_policy: None,
         }];
         let report = assemble(
             &ctx,
@@ -1509,13 +1642,13 @@ mod tests {
         );
         // Closed beats live (no closed-overlaps-live) and beats minimized
         // (no minimized row): the report validates.
-        assert!(validate_report(&report));
+        assert!(validate_report_v4_reason(&report).is_none());
         assert!(
             report.windows.iter().all(|w| w.window.0 != "1001_1"),
             "close drops live and minimized twins"
         );
         assert!(report.closed.iter().any(|id| id.0 == "1001_1"));
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut engine = production_engine();
         let reply = accepted(&report, &mut engine);
         assert!(
             reply.windows.iter().all(|w| w.lifetime.0 != "1001_1"),
@@ -1527,8 +1660,8 @@ mod tests {
     fn automatic_float_survives_hint_loss_until_explicit_tile() {
         // Production seam (no adapter cache): the core admits a first-sight
         // fixed window as an automatic float, keeps it floating across hint
-        // loss (D2), and tiles it only on an explicit suppress signal (D3).
-        // The adapter wire stays plain throughout (`fixed_auto` false).
+        // loss (D2), and tiles it only on an explicit core tile intent
+        // (D3 `ToggleFloat`). The adapter wire stays plain throughout.
         let ctx = two_display_ctx();
         let (mut members, closed, unreadable) = empty_maps();
         let d1 = key("macos-display-1", "space-11");
@@ -1551,17 +1684,17 @@ mod tests {
             1,
             1,
         );
-        assert!(validate_report(&first));
+        assert!(validate_report_v4_reason(&first).is_none());
         let wire = first
             .windows
             .iter()
             .find(|w| w.window.0 == "1001_1")
             .expect("live row");
         assert!(
-            !wire.floating && !wire.fixed_auto,
+            wire.maximized != Some(true) && wire.fullscreen != Some(true),
             "adapter sends no automatic echo"
         );
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut engine = production_engine();
         let reply = accepted(&first, &mut engine);
         assert!(reply.ready);
         let desired = reply
@@ -1579,14 +1712,14 @@ mod tests {
         members.insert(d1.clone(), vec![(1001, observed(1, 10, 10, 640, 480))]);
         let memory = LifetimeMemory::from_reply(&reply);
         let second = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 2, 2);
-        assert!(validate_report(&second));
+        assert!(validate_report_v4_reason(&second).is_none());
         let wire = second
             .windows
             .iter()
             .find(|w| w.window.0 == "1001_1")
             .expect("live row");
         assert!(
-            !wire.floating && !wire.fixed_auto,
+            wire.maximized != Some(true) && wire.hints == Some(WindowSizeHints::none()),
             "hintless wire stays plain without adapter echo"
         );
         let reply = accepted(&second, &mut engine);
@@ -1600,18 +1733,20 @@ mod tests {
             desired.floating,
             "hint loss keeps the automatic float core-side"
         );
-        // Explicit tile (D3): the same hintless observation carrying the
-        // suppress signal tiles instead of floating.
+        // Explicit tile (D3): the same hintless observation carrying an
+        // explicit core float intent tiles instead of floating. The wire
+        // stays plain (no adapter policy bit); the ToggleFloat command is
+        // the explicit tile authority.
+        use tiler_core::boundary::CoreCommand;
+        use tiler_core::world_report::WorldCommand;
         let memory = LifetimeMemory::from_reply(&reply);
         let mut third = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 3, 3);
-        assert!(validate_report(&third));
-        let suppressed = third
-            .windows
-            .iter_mut()
-            .find(|w| w.window.0 == "1001_1")
-            .expect("live row");
-        suppressed.fixed_suppress = true;
-        assert!(validate_report(&third), "suppressed row still validates");
+        third.command_seq = Some(3);
+        third.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: "1001_1".to_owned(),
+            float_rect: None,
+        }));
+        assert!(validate_report_v4_reason(&third).is_none());
         let reply = accepted(&third, &mut engine);
         assert!(reply.ready);
         let desired = reply
@@ -1642,9 +1777,9 @@ mod tests {
             1,
             1,
         );
-        assert!(validate_report(&report));
+        assert!(validate_report_v4_reason(&report).is_none());
         assert_eq!(report.focused_global, "4242_7");
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut engine = production_engine();
         let reply = accepted(&report, &mut engine);
         assert!(reply.ready);
         let _ = ScopedWindowMeta {
@@ -1653,6 +1788,15 @@ mod tests {
             fullscreen: false,
             minimized: false,
             hidden: false,
+
+            role: None,
+
+            subrole: None,
+            modal: None,
+            resizable: None,
+            layer: None,
+            app_id: None,
+            activation_policy: None,
         };
     }
 
@@ -1669,7 +1813,6 @@ mod tests {
         members.insert(d1.clone(), vec![(1001, observed(1, 10, 10, 800, 600))]);
         let owned_id = "req-1".to_owned();
         let mut input = ReportInput::new(
-            OWNER,
             INCARNATION,
             GENERATION,
             &ctx,
@@ -1703,8 +1846,6 @@ mod tests {
             setter: FrameSetter::Accepted,
             pre: None,
             post: None,
-            native_pre: None,
-            native_post: None,
             attempt_ms: 0,
         }];
         let view_attempts = [ViewAttempt {
@@ -1715,16 +1856,13 @@ mod tests {
             pre: None,
             post: None,
             baseline: None,
-            native_pre: None,
-            native_post: None,
-            native_baseline: None,
             attempt_ms: 0,
         }];
         input.frames = &frames;
         input.member_attempts = &member_attempts;
         input.view_attempts = &view_attempts;
         let report = build_report(&mut input);
-        assert!(validate_report(&report));
+        assert!(validate_report_v4_reason(&report).is_none());
         assert_eq!(report.frames.len(), 1);
         assert_eq!(report.member_attempts.len(), 1);
         assert_eq!(report.view_attempts.len(), 1);
@@ -1735,7 +1873,7 @@ mod tests {
                 .all(|a| a.dpi_before.is_none() && a.dpi_after.is_none()),
             "no per-window DPI basis is ever claimed"
         );
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut engine = production_engine();
         let reply = accepted(&report, &mut engine);
         assert!(reply.ready);
     }
@@ -1755,12 +1893,12 @@ mod tests {
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
         let report = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
-        assert!(validate_report(&report));
+        assert!(validate_report_v4_reason(&report).is_none());
         assert_eq!(
             report.native[0].current_native, None,
             "unknown native current reads null, never guessed"
         );
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut engine = production_engine();
         let reply = accepted(&report, &mut engine);
         assert!(reply.ready);
     }
@@ -1775,7 +1913,7 @@ mod tests {
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
         let report = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
-        assert!(validate_report(&report));
+        assert!(validate_report_v4_reason(&report).is_none());
         assert!(report.windows.is_empty() && report.screens.is_empty());
     }
 
@@ -1794,7 +1932,7 @@ mod tests {
         let members = BTreeMap::from([(d1.clone(), vec![(1002, observed(8, 10, 10, 800, 600))])]);
         // A: omission under complete inventory.
         let omitted = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
-        assert!(validate_report(&omitted));
+        assert!(validate_report_v4_reason(&omitted).is_none());
         assert!(
             omitted.windows.iter().all(|w| w.window.0 != "1001_7"),
             "omission carries no row for the hidden window"
@@ -1805,6 +1943,17 @@ mod tests {
             output: d1.output.clone(),
             workspace: d1.workspace.clone(),
             sticky: false,
+            minimized: true,
+            host_hidden: false,
+            fullscreen: false,
+            process_id: None,
+            role: None,
+            subrole: None,
+            modal: None,
+            resizable: None,
+            layer: None,
+            app_id: None,
+            activation_policy: None,
         }];
         let flagged = assemble(
             &ctx,
@@ -1817,13 +1966,13 @@ mod tests {
             2,
             2,
         );
-        assert!(validate_report(&flagged));
+        assert!(validate_report_v4_reason(&flagged).is_none());
         let row = flagged
             .windows
             .iter()
             .find(|w| w.window.0 == "1001_7")
             .expect("explicit minimized row");
-        assert!(row.minimized, "flagged row marks minimized");
+        assert!(row.minimized == Some(true), "flagged row marks minimized");
         assert!(row.rect.is_none(), "flagged row carries no frame");
     }
 
@@ -1855,8 +2004,19 @@ mod tests {
             output: d1.output.clone(),
             workspace: d1.workspace.clone(),
             sticky: false,
+            minimized: true,
+            host_hidden: false,
+            fullscreen: false,
+            process_id: Some("1001".to_owned()),
+            role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+            subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+            modal: Some(false),
+            resizable: Some(true),
+            layer: Some(0),
+            app_id: Some("com.example.app".to_owned()),
+            activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
         }];
-        let alloc = |reply: &tiler_core::world_report::WorldReply, id: &str| {
+        let alloc = |reply: &tiler_core::world_report::WorldReplyV4, id: &str| {
             reply
                 .windows
                 .iter()
@@ -1864,15 +2024,15 @@ mod tests {
                 .expect("tiled row")
                 .allocation
         };
-        let no_focus_for = |reply: &tiler_core::world_report::WorldReply| {
+        let no_focus_for = |reply: &tiler_core::world_report::WorldReplyV4| {
             reply
                 .effects
                 .iter()
                 .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7"))
         };
         // Bootstrap both engines identically.
-        let mut omit_engine = WorldEngine::new(GENERATION).expect("valid generation");
-        let mut flag_engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut omit_engine = production_engine();
+        let mut flag_engine = production_engine();
         let first = assemble(
             &ctx,
             &full,
@@ -1884,7 +2044,7 @@ mod tests {
             1,
             1,
         );
-        assert!(validate_report(&first));
+        assert!(validate_report_v4_reason(&first).is_none());
         let r1 = accepted(&first, &mut omit_engine);
         let first = assemble(
             &ctx,
@@ -1911,7 +2071,7 @@ mod tests {
             2,
             2,
         );
-        assert!(validate_report(&hide_omit));
+        assert!(validate_report_v4_reason(&hide_omit).is_none());
         let r2_omit = accepted(&hide_omit, &mut omit_engine);
         let hide_flag = assemble(
             &ctx,
@@ -1924,7 +2084,7 @@ mod tests {
             2,
             2,
         );
-        assert!(validate_report(&hide_flag));
+        assert!(validate_report_v4_reason(&hide_flag).is_none());
         let r2_flag = accepted(&hide_flag, &mut flag_engine);
         // The compared rows match in this sequence: omission converges into
         // the D23 slot and the sweep publishes it as a minimized hold, like
@@ -1972,7 +2132,7 @@ mod tests {
             3,
             3,
         );
-        assert!(validate_report(&back));
+        assert!(validate_report_v4_reason(&back).is_none());
         let r3_omit = accepted(&back, &mut omit_engine);
         let back = assemble(
             &ctx,
@@ -2078,7 +2238,7 @@ mod tests {
                 (1002, observed(8, 720, 35, 700, 800)),
             ],
         )]);
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut engine = production_engine();
         let first = assemble(
             &ctx,
             &full,
@@ -2090,7 +2250,7 @@ mod tests {
             1,
             1,
         );
-        assert!(validate_report(&first));
+        assert!(validate_report_v4_reason(&first).is_none());
         accepted(&first, &mut engine);
         let hide_snapshot = ScopedBackendSnapshot {
             windows: Vec::new(),
@@ -2128,19 +2288,17 @@ mod tests {
             2,
             2,
         );
-        assert!(validate_report(&hide));
+        assert!(validate_report_v4_reason(&hide).is_none());
         let row = hide
             .windows
             .iter()
             .find(|w| w.window.0 == "1001_7")
             .expect("hidden row");
         assert!(
-            row.minimized && row.rect.is_none(),
-            "frameless minimized fact"
+            row.minimized == Some(false) && row.host_hidden == Some(true) && row.rect.is_none(),
+            "frameless hidden-app fact (minimized false, host hidden)"
         );
         assert_eq!(row.native_workspace.as_deref(), Some("space-11"));
-        assert!(row.observed_workspace.is_none(), "no logical receipt");
-        assert!(hide.views.is_empty(), "no logical view receipts");
         assert!(!hide.native.is_empty(), "native order/current rides");
         let reply = accepted(&hide, &mut engine);
         let desired = reply
@@ -2199,7 +2357,7 @@ mod tests {
             4,
             4,
         );
-        assert!(validate_report(&gone));
+        assert!(validate_report_v4_reason(&gone).is_none());
         assert!(
             gone.windows.iter().all(|w| w.window.0 != "1001_7"),
             "closed rides no fact"
@@ -2219,7 +2377,11 @@ mod tests {
     /// route is the sibling ticket accepted by `dispatch_focus_effects` in
     /// `crates/tiler-macos/src/world_dispatch.rs:1377-1380`). Targeting the
     /// minimized-reported hidden lifetime must refuse `focus-unknown` with
-    /// no revision and no effect, and the minimized hold survives.
+    /// no focus effect, and the minimized hold survives. The refusal rides
+    /// either the top-level `Rejected` outcome (no revision) or, on an
+    /// accepted v4 report, `command_result: Rejected(focus-unknown)` (the
+    /// observations incorporate but the command is refused without
+    /// mutation); both shapes refuse, neither focuses the hidden lifetime.
     #[test]
     fn direct_target_focus_at_hidden_minimized_refuses_without_effect() {
         use tiler_core::world_report::{EffectKind, HoldReason, ScopeAuthority};
@@ -2241,8 +2403,19 @@ mod tests {
             output: d1.output.clone(),
             workspace: d1.workspace.clone(),
             sticky: false,
+            minimized: true,
+            host_hidden: false,
+            fullscreen: false,
+            process_id: None,
+            role: None,
+            subrole: None,
+            modal: None,
+            resizable: None,
+            layer: None,
+            app_id: None,
+            activation_policy: None,
         }];
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut engine = production_engine();
         let first = assemble(
             &ctx,
             &full,
@@ -2269,7 +2442,6 @@ mod tests {
         accepted(&hide, &mut engine);
         let owned_id = "req-3".to_owned();
         let mut input = ReportInput::new(
-            OWNER,
             INCARNATION,
             GENERATION,
             &ctx,
@@ -2290,12 +2462,29 @@ mod tests {
             direction: "left".to_owned(),
         });
         let report = build_report(&mut input);
-        assert!(validate_report(&report));
+        assert!(validate_report_v4_reason(&report).is_none());
         let revision_before = engine.state_revision();
         match engine.handle_report(&report) {
             WorldOutcome::Rejected { kind, .. } => {
                 assert_eq!(kind, "focus-unknown");
                 assert_eq!(engine.state_revision(), revision_before);
+            }
+            WorldOutcome::Accepted(reply) => {
+                use tiler_core::world_report::{CommandRejectKind, CommandResult};
+                assert_eq!(
+                    reply.command_result,
+                    Some(CommandResult::Rejected {
+                        kind: CommandRejectKind::FocusUnknown,
+                    }),
+                    "accepted report still refuses the hidden focus command"
+                );
+                assert!(
+                    reply
+                        .effects
+                        .iter()
+                        .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7")),
+                    "no focus effect for the hidden lifetime"
+                );
             }
             other => panic!("direct-target focus at hidden must refuse, got {other:?}"),
         }
@@ -2356,8 +2545,19 @@ mod tests {
             output: d1.output.clone(),
             workspace: d1.workspace.clone(),
             sticky: false,
+            minimized: true,
+            host_hidden: false,
+            fullscreen: false,
+            process_id: None,
+            role: None,
+            subrole: None,
+            modal: None,
+            resizable: None,
+            layer: None,
+            app_id: None,
+            activation_policy: None,
         }];
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut engine = production_engine();
         let first = assemble(
             &ctx,
             &full,
@@ -2384,7 +2584,6 @@ mod tests {
         accepted(&hide, &mut engine);
         let owned_id = "req-3".to_owned();
         let mut input = ReportInput::new(
-            OWNER,
             INCARNATION,
             GENERATION,
             &ctx,
@@ -2405,7 +2604,7 @@ mod tests {
             direction: "right".to_owned(),
         });
         let report = build_report(&mut input);
-        assert!(validate_report(&report));
+        assert!(validate_report_v4_reason(&report).is_none());
         match engine.handle_report(&report) {
             WorldOutcome::Accepted(reply) => {
                 assert!(
@@ -2468,6 +2667,17 @@ mod tests {
             output: d1.output.clone(),
             workspace: d1.workspace.clone(),
             sticky: false,
+            minimized: true,
+            host_hidden: false,
+            fullscreen: false,
+            process_id: Some("1001".to_owned()),
+            role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+            subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+            modal: Some(false),
+            resizable: Some(true),
+            layer: Some(0),
+            app_id: Some("com.example.app".to_owned()),
+            activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
         }];
         let complete_unreadable: BTreeMap<DomainKey, HoldReason> = BTreeMap::new();
         let mut partial_unreadable: BTreeMap<DomainKey, HoldReason> = BTreeMap::new();
@@ -2476,7 +2686,7 @@ mod tests {
             ("complete", &complete_unreadable),
             ("incomplete-transitional", &partial_unreadable),
         ] {
-            let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+            let mut engine = production_engine();
             let first = assemble(
                 &ctx,
                 &full,
@@ -2488,13 +2698,12 @@ mod tests {
                 1,
                 1,
             );
-            assert!(validate_report(&first));
+            assert!(validate_report_v4_reason(&first).is_none());
             accepted(&first, &mut engine);
             // Same report: first minimized transition plus direct-target
             // focus at the hidden lifetime.
             let owned_id = "req-2".to_owned();
             let mut input = ReportInput::new(
-                OWNER,
                 INCARNATION,
                 GENERATION,
                 &ctx,
@@ -2514,9 +2723,11 @@ mod tests {
                 window: WindowId("1001_7".to_owned()),
                 direction: "left".to_owned(),
             });
+            let raw = realistic_raw_for(&hidden_members);
+            input.raw = &raw;
             let report = build_report(&mut input);
             assert!(
-                validate_report(&report),
+                validate_report_v4_reason(&report).is_none(),
                 "{label}: transition report validates"
             );
             let hidden_row = report
@@ -2525,7 +2736,7 @@ mod tests {
                 .find(|w| w.window.0 == "1001_7")
                 .expect("hidden minimized fact rides");
             assert!(
-                hidden_row.minimized && hidden_row.rect.is_none(),
+                hidden_row.minimized == Some(true) && hidden_row.rect.is_none(),
                 "{label}: frameless fact"
             );
             assert_eq!(hidden_row.native_workspace.as_deref(), Some("space-11"));
@@ -2548,7 +2759,8 @@ mod tests {
                             .effects
                             .iter()
                             .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7")),
-                        "{label}: core-semantics blocker if this mints focus on hidden",
+                        "{label}: core-semantics blocker if this mints focus on hidden, effects={:?}",
+                        reply.effects,
                     );
                     let row = reply
                         .windows
@@ -2557,11 +2769,12 @@ mod tests {
                         .expect("hidden desired row");
                     assert!(
                         row.allocation.is_none() && row.effective_frame.is_none(),
-                        "{label}: no geometry restore for hidden"
+                        "{label}: no geometry restore for hidden, row={row:?}"
                     );
                     assert!(
                         row.frame_authority != ScopeAuthority::Controlled,
-                        "{label}: no controlled authority for hidden"
+                        "{label}: no controlled authority for hidden, authority={:?}",
+                        row.frame_authority,
                     );
                 }
                 other => panic!("{label}: unexpected outcome, got {other:?}"),
@@ -2579,7 +2792,7 @@ mod tests {
                 3,
                 3,
             );
-            assert!(validate_report(&still));
+            assert!(validate_report_v4_reason(&still).is_none());
             let reply = accepted(&still, &mut engine);
             let desired = reply
                 .windows
@@ -2620,12 +2833,14 @@ mod tests {
     fn collected(pid: u32, window: &ObservedWindow) -> WindowFact {
         let domain = key("macos-display-1", "space-11");
         let mut facts = Vec::new();
+        let raw_of = |_: &str| crate::runtime_types::WindowRawFacts::default();
         collect_window_facts(
             &mut facts,
             pid,
             std::slice::from_ref(window),
             &domain,
             &empty_memory(),
+            &raw_of,
         );
         assert_eq!(facts.len(), 1, "one admitted window yields one fact");
         facts.pop().expect("fact")
@@ -2635,39 +2850,56 @@ mod tests {
     fn native_ax_dispatch_seam_preserves_admission_shapes() {
         use crate::classifier::{AxFacts, ROLE_SHEET, SUBROLE_DIALOG, SUBROLE_UNKNOWN};
         // Ordinary standard window: plain tile, everything truthful.
-        let fact = collected(4242, &classified(1, AxFacts::standard()));
+        let observed_1 = classified(1, AxFacts::standard());
+        assert!(
+            !observed_1.floating && !observed_1.fullscreen,
+            "standard classifies tiled"
+        );
+        let fact = collected(4242, &observed_1);
         assert_eq!(fact.window.0, "4242_1");
-        assert!(!fact.floating && !fact.fullscreen && !fact.fixed_auto);
-        assert!(!fact.maximized && !fact.sticky && !fact.minimized);
-        assert_eq!(fact.hints, WindowSizeHints::none());
+        assert!(fact.fullscreen != Some(true));
+        assert!(
+            fact.maximized != Some(true)
+                && fact.sticky != Some(true)
+                && fact.minimized != Some(true)
+        );
+        assert_eq!(fact.hints, Some(WindowSizeHints::none()));
         assert_eq!(fact.native_workspace.as_deref(), Some("space-11"));
-        assert_eq!(fact.observed_workspace, None);
         // Transient dialog + modal: normalized float exceptions.
         let mut dialog = AxFacts::standard();
         dialog.subrole = Some(SUBROLE_DIALOG.to_owned());
-        let fact = collected(4242, &classified(2, dialog));
-        assert!(fact.floating, "dialog rides as float exception");
-        assert!(!fact.fullscreen && !fact.fixed_auto);
+        let observed_2 = classified(2, dialog);
+        assert!(observed_2.floating, "dialog rides as float exception");
+        let fact = collected(4242, &observed_2);
+        assert!(fact.fullscreen != Some(true));
         let mut modal = AxFacts::standard();
         modal.modal = true;
-        assert!(collected(4242, &classified(3, modal)).floating);
+        assert!(
+            classified(3, modal).floating,
+            "modal rides as float exception"
+        );
         // Sheet role: float exception with a standard subrole.
         let mut sheet = AxFacts::standard();
         sheet.role = Some(ROLE_SHEET.to_owned());
-        let fact = collected(4242, &classified(8, sheet));
-        assert!(fact.floating, "sheet rides as float exception");
-        assert!(!fact.fullscreen && !fact.fixed_auto);
+        let observed_sheet = classified(8, sheet);
+        assert!(observed_sheet.floating, "sheet rides as float exception");
+        let fact = collected(4242, &observed_sheet);
+        assert!(fact.fullscreen != Some(true));
         // Fullscreen standard: truthful overlay, no synthetic float.
         let mut fullscreen = AxFacts::standard();
         fullscreen.fullscreen = true;
-        let fact = collected(4242, &classified(4, fullscreen));
-        assert!(!fact.floating && fact.fullscreen && !fact.fixed_auto);
+        let observed_fs = classified(4, fullscreen);
+        assert!(!observed_fs.floating && observed_fs.fullscreen);
+        let fact = collected(4242, &observed_fs);
+        assert!(fact.fullscreen == Some(true));
         // Fullscreen transient: both flags truthful, origin kept.
         let mut overlay_dialog = AxFacts::standard();
         overlay_dialog.subrole = Some(SUBROLE_DIALOG.to_owned());
         overlay_dialog.fullscreen = true;
-        let fact = collected(4242, &classified(5, overlay_dialog));
-        assert!(fact.floating && fact.fullscreen);
+        let observed_ov = classified(5, overlay_dialog);
+        assert!(observed_ov.floating && observed_ov.fullscreen);
+        let fact = collected(4242, &observed_ov);
+        assert!(fact.fullscreen == Some(true));
         // Unknown subrole at a nonzero layer: excluded (never a fact).
         let mut unknown = AxFacts::standard();
         unknown.subrole = Some(SUBROLE_UNKNOWN.to_owned());
@@ -2698,9 +2930,13 @@ mod tests {
             max_w: Some(640),
             max_h: Some(480),
         };
-        let fact = collected(4242, &classified(7, fixed));
-        assert!(!fact.floating && !fact.fixed_auto);
-        assert_eq!(fact.hints.min_w, Some(640));
+        let observed_fixed = classified(7, fixed);
+        assert!(
+            !observed_fixed.floating,
+            "fixed hints classify tiled; core admits automatic float"
+        );
+        let fact = collected(4242, &observed_fixed);
+        assert_eq!(fact.hints.as_ref().expect("hints").min_w, Some(640));
     }
 
     #[test]
@@ -2749,9 +2985,20 @@ mod tests {
             output: OutputId("macos-display-1".to_owned()),
             workspace: WorkspaceId("space-11".to_owned()),
             sticky: false,
+            minimized: true,
+            host_hidden: false,
+            fullscreen: false,
+            process_id: None,
+            role: None,
+            subrole: None,
+            modal: None,
+            resizable: None,
+            layer: None,
+            app_id: None,
+            activation_policy: None,
         };
         let fact = minimized_fact(&record);
-        assert!(fact.minimized && !fact.floating && !fact.fullscreen);
+        assert!(fact.minimized == Some(true) && fact.fullscreen != Some(true));
         assert_eq!(fact.native_workspace.as_deref(), Some("space-11"));
     }
 
@@ -2780,14 +3027,18 @@ mod tests {
             1,
             1,
         );
-        assert!(validate_report(&first));
+        assert!(validate_report_v4_reason(&first).is_none());
         let wire = first
             .windows
             .iter()
             .find(|w| w.window.0 == "1001_1")
             .expect("live row");
-        assert!(!wire.floating && wire.fullscreen && !wire.fixed_auto);
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        assert!(
+            wire.fullscreen == Some(true)
+                && wire.maximized != Some(true)
+                && wire.hints == Some(WindowSizeHints::none())
+        );
+        let mut engine = production_engine();
         let reply = accepted(&first, &mut engine);
         assert!(reply.ready);
         let desired = reply
@@ -2806,7 +3057,7 @@ mod tests {
             .iter()
             .find(|w| w.window.0 == "1001_1")
             .expect("live row");
-        assert!(!wire.floating && wire.fullscreen, "repeat stays truthful");
+        assert!(wire.fullscreen == Some(true), "repeat stays truthful");
         let reply = accepted(&second, &mut engine);
         let desired = reply
             .windows
@@ -2864,8 +3115,8 @@ mod tests {
             1,
             1,
         );
-        assert!(validate_report(&first));
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        assert!(validate_report_v4_reason(&first).is_none());
+        let mut engine = production_engine();
         let reply = accepted(&first, &mut engine);
         let desired = reply
             .windows
@@ -2888,7 +3139,7 @@ mod tests {
             .iter()
             .find(|w| w.window.0 == "1001_2")
             .expect("live row");
-        assert!(!wire.floating && !wire.fixed_auto);
+        assert!(wire.maximized != Some(true) && wire.fullscreen != Some(true));
         let reply = accepted(&second, &mut engine);
         let desired = reply
             .windows
@@ -2921,8 +3172,8 @@ mod tests {
             1,
             1,
         );
-        assert!(validate_report(&first));
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        assert!(validate_report_v4_reason(&first).is_none());
+        let mut engine = production_engine();
         let reply = accepted(&first, &mut engine);
         let desired = reply
             .windows
@@ -2938,7 +3189,7 @@ mod tests {
             window: "1001_3".to_owned(),
             float_rect: None,
         }));
-        assert!(validate_report(&second));
+        assert!(validate_report_v4_reason(&second).is_none());
         let reply = accepted(&second, &mut engine);
         assert!(reply.ready);
         let desired = reply
@@ -2960,8 +3211,8 @@ mod tests {
             .find(|w| w.window.0 == "1001_3")
             .expect("live row");
         assert!(
-            wire.floating && !wire.fixed_auto,
-            "placed echo re-asserts without provenance"
+            wire.maximized != Some(true),
+            "placed echo stays plain on the wire; persistence lives core-side"
         );
         let reply = accepted(&third, &mut engine);
         let desired = reply
@@ -2996,15 +3247,10 @@ mod tests {
         )
     }
 
-    /// Grounded eligible focus: homed on a current Space, an ordinary
-    /// retained frame inside the work area, no engine placement (floats and
-    /// unplaced windows read zoom when work-area-sized).
+    /// Eligible focus: homed on a current Space (fail closed otherwise).
     fn eligible() -> FocusEligibilityFacts {
         FocusEligibilityFacts {
             home_current: Some(true),
-            visibles: vec![rect(0, 25, 1440, 875)],
-            full_displays: vec![rect(0, 0, 1440, 900)],
-            engine_placed: false,
         }
     }
 
@@ -3031,31 +3277,37 @@ mod tests {
                 h: 600,
             })
         );
-        assert!(!ingress.foreground_minimized && !ingress.foreground_fullscreen);
-        assert!(!ingress.foreground_maximized);
+        assert!(
+            ingress.foreground_minimized != Some(true)
+                && ingress.foreground_fullscreen != Some(true)
+        );
+        assert!(ingress.foreground_maximized != Some(true));
         // Shell is grounded false: admitted focused members passed the
         // classifier, so excluded shell shapes can never name the focus.
         // Hidden-workspace is grounded false here (homed current); cloaked
         // stays false with no roster fact, and the renderer vetoes fail
         // closed instead.
-        assert!(!ingress.foreground_shell);
-        assert!(!ingress.foreground_cloaked && !ingress.foreground_hidden_workspace);
-        assert!(ingress.border_enabled);
         assert!(
-            !ingress.underlay_enabled,
-            "underlay stays parked off: no production loop consumes it"
+            ingress.foreground_hidden_workspace != Some(true),
+            "homed current focus never hides as hidden-workspace"
         );
-        assert_eq!(
-            (
-                ingress.border_gap_px,
-                ingress.border_width_px,
-                ingress.underlay_extension_px
-            ),
-            (0, 3, 3),
-            "default style resolves verbatim"
+        assert!(
+            ingress.foreground_host_hidden != Some(true)
+                && ingress.foreground_hidden_workspace != Some(true)
+        );
+        assert!(
+            ingress.foreground.is_empty() || ingress.foreground_frame.is_some(),
+            "V4 ingress carries focus truthfully; border is reply-side"
+        );
+        assert!(
+            ingress.move_window.is_empty(),
+            "no move intent on observation-only ingress"
+        );
+        assert!(
+            ingress.pager_frames.len() == 1,
+            "default style still publishes live pager row"
         );
         assert!(!ingress.chord_held && ingress.move_window.is_empty());
-        assert!(!ingress.paused);
         assert!(ingress.pager_order.is_empty());
         assert_eq!(ingress.pager_frames.len(), 1);
         assert_eq!(ingress.pager_frames[0].window.0, "1001_1");
@@ -3087,6 +3339,17 @@ mod tests {
             output: OutputId("macos-display-1".to_owned()),
             workspace: tiler_core::directional::WorkspaceId("space-11".to_owned()),
             sticky: false,
+            minimized: true,
+            host_hidden: false,
+            fullscreen: false,
+            process_id: None,
+            role: None,
+            subrole: None,
+            modal: None,
+            resizable: None,
+            layer: None,
+            app_id: None,
+            activation_policy: None,
         }];
         let ingress = build_presentation_ingress(
             "1001_1",
@@ -3097,7 +3360,56 @@ mod tests {
             &eligible(),
             &style(),
         );
-        assert!(ingress.foreground_minimized);
+        assert!(ingress.foreground_minimized == Some(true));
+        assert!(ingress.foreground_host_hidden == Some(false));
+        assert!(
+            ingress.foreground_maximized.is_none(),
+            "no guessed maximize"
+        );
+        assert!(ingress.witness.is_none(), "no fabricated witness");
+        assert!(ingress.foreground_frame.is_none());
+    }
+
+    #[test]
+    fn presentation_ingress_hidden_only_focus_reports_host_hidden_not_minimized() {
+        // Separated retained legs: owner-hidden-only focus reads
+        // minimized false plus host_hidden true (never a
+        // hidden-equals-minimized echo), hides the frame, and still
+        // carries no guessed maximize and no fabricated witness.
+        let members = ingress_members();
+        let minimized = vec![MinimizedRecord {
+            window: tiler_core::directional::WindowId("1001_1".to_owned()),
+            output: OutputId("macos-display-1".to_owned()),
+            workspace: tiler_core::directional::WorkspaceId("space-11".to_owned()),
+            sticky: false,
+            minimized: false,
+            host_hidden: true,
+            fullscreen: false,
+            process_id: None,
+            role: None,
+            subrole: None,
+            modal: None,
+            resizable: None,
+            layer: None,
+            app_id: None,
+            activation_policy: None,
+        }];
+        let ingress = build_presentation_ingress(
+            "1001_1",
+            &members,
+            &[],
+            &minimized,
+            false,
+            &eligible(),
+            &style(),
+        );
+        assert!(ingress.foreground_minimized == Some(false));
+        assert!(ingress.foreground_host_hidden == Some(true));
+        assert!(
+            ingress.foreground_maximized.is_none(),
+            "no guessed maximize"
+        );
+        assert!(ingress.witness.is_none(), "no fabricated witness");
         assert!(ingress.foreground_frame.is_none());
     }
 
@@ -3109,8 +3421,7 @@ mod tests {
         let members = ingress_members();
         let ingress =
             build_presentation_ingress("1001_1", &members, &[], &[], true, &eligible(), &style());
-        assert!(ingress.foreground_fullscreen);
-        assert!(!ingress.paused);
+        assert!(ingress.foreground_fullscreen == Some(true));
     }
 
     #[test]
@@ -3136,7 +3447,6 @@ mod tests {
             );
             let owned_id = "req-1".to_owned();
             let mut input = ReportInput::new(
-                OWNER,
                 INCARNATION,
                 GENERATION,
                 &ctx,
@@ -3161,9 +3471,11 @@ mod tests {
                 &style(),
             );
             let report = build_report(&mut input);
-            assert!(validate_report(&report));
-            assert!(report.presentation.foreground_hidden_workspace);
-            let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+            assert!(validate_report_v4_reason(&report).is_none());
+            assert!(
+                matches!(&report.presentation, tiler_core::world_report::PresentationRowV4::Valid(ingress) if ingress.foreground_hidden_workspace == Some(true))
+            );
+            let mut engine = production_engine();
             let reply = accepted(&report, &mut engine);
             assert!(
                 !reply.presentation.border.visible,
@@ -3171,17 +3483,18 @@ mod tests {
             );
             assert_eq!(
                 reply.presentation.border.reason,
-                Some(tiler_core::visual::BorderHideReason::HiddenWorkspace)
+                Some(tiler_core::world_report::BorderHideReasonV4::HiddenWorkspace)
             );
         }
     }
 
     #[test]
-    fn presentation_ingress_work_area_sized_focus_reads_maximized() {
-        // Grounded zoom eligibility: a retained frame exactly matching the
-        // visible work area reads maximized (the renderer's own 1pt
-        // heuristic over the same snapshot), so the core owns the zoom
-        // hide. End to end through the real engine.
+    fn presentation_ingress_work_area_sized_focus_leaves_maximize_unknown() {
+        // Contract M4: macOS never asserts a native maximize fact, so a
+        // retained frame exactly matching the visible work area still reads
+        // maximized null (unknown, never guessed). The zoom heuristic stays
+        // renderer-local. End to end through the real engine: the border
+        // fails closed with no reason and no guessed geometry.
         let ctx = two_display_ctx();
         let (closed, unreadable) = (Vec::new(), BTreeMap::new());
         let memory = empty_memory();
@@ -3192,7 +3505,6 @@ mod tests {
         );
         let owned_id = "req-1".to_owned();
         let mut input = ReportInput::new(
-            OWNER,
             INCARNATION,
             GENERATION,
             &ctx,
@@ -3209,24 +3521,32 @@ mod tests {
         );
         input.presentation =
             build_presentation_ingress("1001_1", &members, &[], &[], false, &eligible(), &style());
+        let raw = realistic_raw_for(&members);
+        input.raw = &raw;
         let report = build_report(&mut input);
-        assert!(validate_report(&report));
-        assert!(report.presentation.foreground_maximized);
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        assert!(validate_report_v4_reason(&report).is_none());
+        assert!(
+            matches!(&report.presentation, tiler_core::world_report::PresentationRowV4::Valid(ingress) if ingress.foreground_maximized.is_none() && ingress.witness.is_none() && ingress.foreground_out.is_none())
+        );
+        let mut engine = production_engine();
         let reply = accepted(&report, &mut engine);
         assert!(!reply.presentation.border.visible);
         assert_eq!(
-            reply.presentation.border.reason,
-            Some(tiler_core::visual::BorderHideReason::Maximized)
+            reply.presentation.border.reason, None,
+            "no witness means fail-closed without a guessed reason"
+        );
+        assert!(
+            reply.presentation.border.outsets.is_none()
+                && reply.presentation.border.width.is_none(),
+            "no guessed geometry without a witness"
         );
     }
 
     #[test]
-    fn presentation_ingress_engine_placed_window_exempts_zoom() {
-        // Tiling truth exempts the zoom heuristic: the same work-area-sized
-        // frame with a last-applied planned geometry reads placed, so the
-        // core shows the ring exactly like the renderer's placement join.
-        // End to end through the real engine.
+    fn presentation_ingress_engine_placed_window_leaves_maximize_unknown() {
+        // Contract M4: no native maximize fact exists, so the report
+        // maximize lane stays null and the border fails closed without a
+        // witness. End to end through the real engine.
         let ctx = two_display_ctx();
         let (closed, unreadable) = (Vec::new(), BTreeMap::new());
         let memory = empty_memory();
@@ -3237,7 +3557,6 @@ mod tests {
         );
         let owned_id = "req-1".to_owned();
         let mut input = ReportInput::new(
-            OWNER,
             INCARNATION,
             GENERATION,
             &ctx,
@@ -3252,39 +3571,31 @@ mod tests {
             "1001_1",
             false,
         );
-        input.presentation = build_presentation_ingress(
-            "1001_1",
-            &members,
-            &[],
-            &[],
-            false,
-            &FocusEligibilityFacts {
-                engine_placed: true,
-                ..eligible()
-            },
-            &style(),
-        );
+        input.presentation =
+            build_presentation_ingress("1001_1", &members, &[], &[], false, &eligible(), &style());
+        let raw = realistic_raw_for(&members);
+        input.raw = &raw;
         let report = build_report(&mut input);
-        assert!(validate_report(&report));
+        assert!(validate_report_v4_reason(&report).is_none());
         assert!(
-            !report.presentation.foreground_maximized,
-            "placed tiling truth is never zoom"
+            matches!(&report.presentation, tiler_core::world_report::PresentationRowV4::Valid(ingress) if ingress.foreground_maximized.is_none() && ingress.witness.is_none()),
+            "no guessed maximize and no fabricated witness"
         );
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut engine = production_engine();
         let reply = accepted(&report, &mut engine);
         assert!(
-            reply.presentation.border.visible,
-            "eligible placed focus shows"
+            !reply.presentation.border.visible,
+            "no witness means the border fails closed"
         );
+        assert_eq!(reply.presentation.border.reason, None);
     }
 
     #[test]
-    fn presentation_ingress_full_display_frame_fences_maximized() {
-        // Borderless full-display fence: a frame covering the entire FULL
-        // display reads maximized regardless of engine placement (safety
-        // wins — tiling truth only ever fills work areas, and a borderless
-        // game must never gain a ring from tiled provenance). Mirrors the
-        // renderer fence exactly.
+    fn presentation_ingress_full_display_frame_leaves_maximize_unknown() {
+        // Contract M4: a frame covering the entire FULL display still reads
+        // maximized null (no native fact, never guessed). The border fails
+        // closed without a witness. Mirrors the renderer fence staying
+        // renderer-local.
         let ctx = two_display_ctx();
         let (closed, unreadable) = (Vec::new(), BTreeMap::new());
         let memory = empty_memory();
@@ -3295,7 +3606,6 @@ mod tests {
         );
         let owned_id = "req-1".to_owned();
         let mut input = ReportInput::new(
-            OWNER,
             INCARNATION,
             GENERATION,
             &ctx,
@@ -3310,26 +3620,36 @@ mod tests {
             "1001_1",
             false,
         );
-        for engine_placed in [false, true] {
+        let raw = realistic_raw_for(&members);
+        input.raw = &raw;
+        for _engine_placed in [false, true] {
             input.presentation = build_presentation_ingress(
                 "1001_1",
                 &members,
                 &[],
                 &[],
                 false,
-                &FocusEligibilityFacts {
-                    engine_placed,
-                    ..eligible()
-                },
+                &eligible(),
                 &style(),
             );
             let report = build_report(&mut input);
-            assert!(validate_report(&report));
+            assert!(validate_report_v4_reason(&report).is_none());
             assert!(
-                report.presentation.foreground_maximized,
-                "full-display coverage fences even when placed"
+                matches!(&report.presentation, tiler_core::world_report::PresentationRowV4::Valid(ingress) if ingress.foreground_maximized.is_none() && ingress.witness.is_none()),
+                "full-display coverage still reads unknown without a native fact"
             );
         }
+        // Fail-closed reply: no witness means no visible border and no
+        // guessed geometry, even for full-display coverage.
+        input.presentation =
+            build_presentation_ingress("1001_1", &members, &[], &[], false, &eligible(), &style());
+        let report = build_report(&mut input);
+        assert!(validate_report_v4_reason(&report).is_none());
+        let mut engine = production_engine();
+        let reply = accepted(&report, &mut engine);
+        assert!(!reply.presentation.border.visible);
+        assert_eq!(reply.presentation.border.reason, None);
+        assert!(reply.presentation.border.outsets.is_none());
     }
 
     #[test]
@@ -3346,22 +3666,22 @@ mod tests {
             &eligible(),
             &styled(5.0, 2.0),
         );
-        assert_eq!(
-            (
-                ingress.border_gap_px,
-                ingress.border_width_px,
-                ingress.underlay_extension_px
-            ),
-            (2, 5, 5)
+        assert!(
+            ingress.pager_frames.len() == 1,
+            "configured style still publishes live pager row"
         );
-        assert!(ingress.border_enabled);
+        assert!(
+            ingress.foreground.is_empty() || ingress.foreground_frame.is_some(),
+            "V4 ingress carries focus truthfully; border is reply-side"
+        );
     }
 
     #[test]
-    fn nondefault_style_report_through_core_reply_matches_renderer() {
-        // End to end: configured width 5/gap 2 over a 100x80 frame at
-        // (10,20) publishes core outer (3,13,114,94) through a real engine
-        // reply, and the renderer shows exactly that flipped shape.
+    fn nondefault_style_report_through_core_reply_hides_without_witness() {
+        // End to end: the ingress still carries the live focus frame and
+        // pager row, but with no witness the core reply fails closed: no
+        // visible border and no guessed geometry. The configured style no
+        // longer publishes a renderer outer through the reply.
         let report_members: BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> = {
             let mut map = BTreeMap::new();
             map.insert(
@@ -3375,7 +3695,6 @@ mod tests {
         let memory = empty_memory();
         let owned_id = "req-1".to_owned();
         let mut input = ReportInput::new(
-            OWNER,
             INCARNATION,
             GENERATION,
             &ctx,
@@ -3390,6 +3709,8 @@ mod tests {
             "1001_1",
             false,
         );
+        let raw = realistic_raw_for(&report_members);
+        input.raw = &raw;
         input.presentation = build_presentation_ingress(
             "1001_1",
             &report_members,
@@ -3400,90 +3721,23 @@ mod tests {
             &styled(5.0, 2.0),
         );
         let report = build_report(&mut input);
-        assert!(validate_report(&report));
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        assert!(validate_report_v4_reason(&report).is_none());
+        // Frame/pager controls stay useful without a witness: the ingress
+        // still names the live focus frame and pager row truthfully.
+        assert!(
+            matches!(&report.presentation, tiler_core::world_report::PresentationRowV4::Valid(ingress) if ingress.foreground == "1001_1" && ingress.foreground_frame == Some(tiler_core::geometry::Rect { x: 10, y: 20, w: 100, h: 80 }) && ingress.pager_frames.len() == 1)
+        );
+        let mut engine = production_engine();
         let reply = accepted(&report, &mut engine);
         let border = &reply.presentation.border;
-        assert!(border.visible, "eligible focus shows");
-        // Gap 2 expands the frame to inner (8,18,104,84); width 5 expands
-        // to outer (3,13,114,94): the configured outset, never the default.
-        assert_eq!(
-            border.outer,
-            Some(tiler_core::geometry::Rect {
-                x: 3,
-                y: 13,
-                w: 114,
-                h: 94
-            })
+        assert!(!border.visible, "no witness means no visible border");
+        assert_eq!(border.reason, None, "fail-closed without a guessed reason");
+        assert!(
+            border.outsets.is_none(),
+            "no guessed geometry without a witness"
         );
-        // Renderer equality over the real reply: matching fresh native
-        // joins show exactly the published outer flipped to AppKit points
-        // on a 900pt primary: (3,793,114,94).
-        let record = crate::border_runtime::BorderAppRecord {
-            pid: 1001,
-            bundle: Some("com.apple.TextEdit".to_owned()),
-            focused_wid: Some(1),
-            selected: Some((1001, Some(1))),
-            window: Some(crate::border_runtime::BorderWindowFacts {
-                wid: 1,
-                frame: crate::ffi::AxFrame {
-                    x: 10.0,
-                    y: 20.0,
-                    w: 100.0,
-                    h: 80.0,
-                },
-                ax: crate::classifier::AxFacts::standard(),
-                cg: crate::classifier::CgFacts::normal(),
-                app: crate::classifier::AppFacts::regular(),
-                spaces: vec![11],
-            }),
-            revision: 9,
-            updated_ms: 10_000,
-        };
-        let tick = crate::border_runtime::BorderReplyTick {
-            enabled: true,
-            style: crate::active_border::ActiveBorderStyle::default(),
-            accent: None,
-            session_unlocked: true,
-            frontmost_pid: Some(1001),
-            frontmost_bundle: Some("com.apple.TextEdit".to_owned()),
-            scope_allowed: true,
-            record: Some(record),
-            context_currents: vec![11],
-            context_revision: 9,
-            engine_placed: true,
-            native_frame_cg: tiler_core::visual::VisualRect {
-                x: 10.0,
-                y: 20.0,
-                w: 100.0,
-                h: 80.0,
-            },
-            visibles: vec![tiler_core::visual::VisualRect {
-                x: 0.0,
-                y: 25.0,
-                w: 1440.0,
-                h: 875.0,
-            }],
-            full_displays: vec![tiler_core::visual::VisualRect {
-                x: 0.0,
-                y: 0.0,
-                w: 1440.0,
-                h: 900.0,
-            }],
-            primary_h: Some(900.0),
-            now_ms: 10_000,
-            presentation: &reply.presentation,
-        };
-        let shown = crate::border_runtime::decide_border_reply(&tick).expect("shows");
-        assert_eq!(
-            shown.outer,
-            tiler_core::visual::VisualRect {
-                x: 3.0,
-                y: 793.0,
-                w: 114.0,
-                h: 94.0,
-            }
-        );
+        assert!(border.width.is_none(), "no guessed width without a witness");
+        assert!(border.witness.is_none(), "no fabricated witness");
     }
 
     #[test]
@@ -3498,7 +3752,6 @@ mod tests {
         );
         let owned_id = "req-1".to_owned();
         let mut input = ReportInput::new(
-            OWNER,
             INCARNATION,
             GENERATION,
             &ctx,
@@ -3516,10 +3769,11 @@ mod tests {
         input.presentation =
             build_presentation_ingress("1001_1", &members, &[], &[], false, &eligible(), &style());
         let report = build_report(&mut input);
-        assert!(validate_report(&report));
-        assert_eq!(report.presentation.foreground, "1001_1");
-        assert!(report.presentation.foreground_frame.is_some());
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        assert!(validate_report_v4_reason(&report).is_none());
+        assert!(
+            matches!(&report.presentation, tiler_core::world_report::PresentationRowV4::Valid(ingress) if ingress.foreground == "1001_1" && ingress.foreground_frame.is_some())
+        );
+        let mut engine = production_engine();
         let reply = accepted(&report, &mut engine);
         assert_eq!(reply.presentation.foreground, "1001_1");
     }

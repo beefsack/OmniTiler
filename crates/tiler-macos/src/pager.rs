@@ -16,9 +16,9 @@
 //! The live indicator tick consumes one applied reply presentation plus its
 //! workspace bindings through [`indicator_miniatures`] per native Space and
 //! draws the returned [`MiniatureDraw`] rects in the segment miniature
-//! band. It never invents authority: a report with `paused` set
-//! (focused-fullscreen-game lane) publishes no pager screens, so nothing
-//! paints under the game; an empty or stale foreground token marks no
+//! band. It never invents authority: a focused-fullscreen presentation
+//! suspension publishes no pager screens for the suspended output, so
+//! nothing paints on it; an empty or stale foreground token marks no
 //! miniature; a focused mark needs BOTH the reply token equality and the
 //! core `contains_focused` workspace flag, never the token alone (a stale
 //! token over reordered content marks nothing until native observation
@@ -28,7 +28,7 @@
 //! content plus the native surface, never relaxed here. No underlay work
 //! rides this path.
 
-use tiler_core::world_presentation::WorldPresentation;
+use tiler_core::world_report::WorldPresentationV4;
 
 use crate::pager_highlight::{PagerHighlightStyle, dim_accent, effective_color};
 
@@ -182,11 +182,11 @@ pub fn layout_miniatures(
 /// Indicator miniature lookup by CORE workspace id (core-order rows):
 /// the same highlight/layout path as [`indicator_miniatures`], keyed
 /// directly on the pager workspace id instead of the inferred native
-/// slot. Unmapped ids, empty workspaces, and the paused game lane (no
+/// slot. Unmapped ids, empty workspaces, and the suspended output (no
 /// pager screens) all paint nothing.
 #[must_use]
 pub fn indicator_miniatures_for_id(
-    presentation: &WorldPresentation,
+    presentation: &WorldPresentationV4,
     workspace_id: &str,
     highlight: (u8, u8, u8),
     band_w: f64,
@@ -219,12 +219,12 @@ pub fn indicator_miniatures_for_id(
 /// indicator tick calls per segment (same highlight resolution, same
 /// mapping, same layout): the offline wiring test calls it with
 /// production-built inputs, so disconnecting the tick from this path fails
-/// that test. Unmapped natives, empty workspaces, and the paused game lane
+/// that test. Unmapped natives, empty workspaces, and the suspended output
 /// (no pager screens) all paint nothing.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn indicator_miniatures(
-    presentation: &WorldPresentation,
+    presentation: &WorldPresentationV4,
     bindings: &[PagerWorkspaceBinding],
     native_sid: u64,
     highlight: (u8, u8, u8),
@@ -267,8 +267,9 @@ mod tests {
     use tiler_core::geometry::Rect;
     use tiler_core::world_engine::{WorldEngine, WorldOutcome};
     use tiler_core::world_report::{
-        PresentationIngress, ScreenReport, WORLD_CONTRACT_VERSION, WindowFact, WorldReply,
-        WorldReport,
+        BorderHideReasonV4, NativeWorkspaceFact, PresentationIngressV4, PresentationPagerFrameV4,
+        PresentationRowV4, ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact,
+        WorldPresentationV4, WorldReplyV4, WorldReportV4,
     };
 
     fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -280,56 +281,83 @@ mod tests {
             output: OutputId(output.to_owned()),
             full_rect: Some(rect(x, 0, 800, 600)),
             work_area: Some(rect(x, 0, 800, 560)),
-            gap: 0,
-            outer_gap: 0,
             complete: true,
-            primary: x == 0,
+            scale: 1.0,
+            identity: tiler_core::world_report::OutputIdentity::unknown(),
         }
     }
 
     fn fact(window: &str, output: &str, x: i32) -> WindowFact {
         WindowFact {
             window: WindowId(window.to_owned()),
-            output: OutputId(output.to_owned()),
+            output: Some(OutputId(output.to_owned())),
             rect: Some(rect(x, 0, 40, 90)),
-            floating: false,
-            fit_excluded: false,
-            fullscreen: false,
-            maximized: false,
-            sticky: false,
-            fixed_auto: false,
-            fixed_suppress: false,
-            hints: tiler_core::size_hints::WindowSizeHints::none(),
-            minimized: false,
-            observed_workspace: None,
-            native_workspace: None,
+            fullscreen: Some(false),
+            maximized: Some(false),
+            sticky: Some(false),
+            hints: Some(tiler_core::size_hints::WindowSizeHints::none()),
+            minimized: Some(false),
+            native_workspace: NativeWorkspaceFact::Omitted,
+            host_hidden: Some(false),
+            privileged: Some(false),
+            managed: Some(true),
+            accepts_input: Some(true),
+            activation_inhibited: Some(false),
+            tool_window: Some(false),
+            owned: Some(false),
+            transient: Some(false),
+            modal: Some(false),
+            resizable: Some(true),
+            above: Some(false),
+            below: Some(false),
+            owner: None,
+            parent: None,
+            role: None,
+            app_id: None,
+            executable: Some("synthetic.exe".to_owned()),
+            process_id: Some("foreign-pid".to_owned()),
+            class: Some("Synthetic".to_owned()),
+            title: None,
+            window_type: Some(tiler_core::world_report::WindowType::Normal),
+            activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+            layer: Some(0),
+            fullscreen_owner: None,
+            fullscreen_exitable: None,
+            suppression_available: None,
+            visibility: tiler_core::world_report::VisibilityFact {
+                visible: Some(true),
+                suppression_owned: None,
+            },
+            last_write: None,
         }
     }
 
-    fn ingress(token: &str) -> PresentationIngress {
-        PresentationIngress {
+    fn ingress(token: &str) -> PresentationIngressV4 {
+        PresentationIngressV4 {
             foreground: token.to_owned(),
+            foreground_minimized: Some(false),
+            foreground_maximized: Some(false),
+            foreground_fullscreen: Some(false),
+            foreground_host_hidden: Some(false),
+            foreground_hidden_workspace: Some(false),
             foreground_frame: if token.is_empty() {
                 None
             } else {
                 Some(rect(0, 0, 40, 90))
             },
-            border_enabled: true,
-            underlay_enabled: false,
-            border_gap_px: 0,
-            border_width_px: 3,
-            underlay_extension_px: 3,
             chord_held: false,
-            ..PresentationIngress::disabled()
+            move_window: String::new(),
+            pager_order: Vec::new(),
+            pager_frames: Vec::new(),
+            witness: None,
+            foreground_out: None,
         }
     }
 
-    fn live_frame(window: &str) -> tiler_core::world_report::PresentationPagerFrame {
-        tiler_core::world_report::PresentationPagerFrame {
+    fn live_frame(window: &str) -> PresentationPagerFrameV4 {
+        PresentationPagerFrameV4 {
             window: WindowId(window.to_owned()),
             live: Some(rect(0, 0, 40, 90)),
-            float_frame: None,
-            tile_frame: None,
         }
     }
 
@@ -338,17 +366,16 @@ mod tests {
         observation_seq: u64,
         windows: Vec<WindowFact>,
         focused: &str,
-        ingress: PresentationIngress,
-    ) -> WorldReport {
+        ingress: PresentationIngressV4,
+    ) -> WorldReportV4 {
         let mut ingress = ingress;
         ingress.pager_frames = windows
             .iter()
             .filter_map(|w| w.rect.map(|_| live_frame(&w.window.0)))
             .collect();
         ingress.pager_order = windows.iter().map(|w| w.window.clone()).collect();
-        WorldReport {
-            contract_version: WORLD_CONTRACT_VERSION,
-            owner: "owner-a".to_owned(),
+        WorldReportV4 {
+            contract_version: WORLD_CONTRACT_VERSION_V4,
             adapter_incarnation: "adapter-1".to_owned(),
             core_generation: "gen-1".to_owned(),
             observation_seq,
@@ -356,31 +383,20 @@ mod tests {
             request_id: format!("req-{request_seq}"),
             command_seq: None,
             command: None,
-            workspace_mode: tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
             screens: vec![screen("out-a", 0)],
+            held_screens: Vec::new(),
             windows,
-            views: Vec::new(),
+            held_windows: Vec::new(),
             closed: vec![],
-            host_owned_workspace_domains: false,
-            equal_workspace_count: false,
-            birth_clear: false,
             native: Vec::new(),
-            fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-            migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::default(),
-            anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-            no_space_result: tiler_core::admission::NoSpaceResult::default(),
-            born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-            switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-            fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-            focus_follows_cursor: false,
-            cursor_warp: false,
+            held_native: Vec::new(),
             cursor: None,
             cursor_hit: None,
             focused_global: focused.to_owned(),
             action_foreground: None,
             action_cached: None,
             action_outputs: Vec::new(),
-            default_tiled: true,
+            primary_output: None,
             inventory_complete: true,
             gesture_barrier: false,
             gesture: None,
@@ -390,19 +406,26 @@ mod tests {
             view_attempts: Vec::new(),
             clear_attempts: Vec::new(),
             creation_attempts: Vec::new(),
-            presentation: ingress,
+            held_attempts: Vec::new(),
+            state_attempts: Vec::new(),
+            focus_feedback: Vec::new(),
+            presentation: PresentationRowV4::Valid(ingress),
+            intent_records: Vec::new(),
+            renderer_input: None,
         }
     }
 
-    fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> WorldPresentation {
+    fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldPresentationV4 {
         match engine.handle_report(report) {
             WorldOutcome::Accepted(reply) => reply.presentation,
+            WorldOutcome::Duplicate(reply) => reply.presentation,
             other => panic!("expected accepted, got {other:?}"),
         }
     }
 
-    fn admitted_pair() -> (WorldEngine, WorldPresentation) {
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+    fn admitted_pair() -> (WorldEngine, WorldPresentationV4) {
+        let mut engine =
+            WorldEngine::new_test_bound("gen-1", "adapter-1").expect("bound test engine");
         let members = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
         accepted(
             &mut engine,
@@ -590,38 +613,50 @@ mod tests {
     }
 
     #[test]
-    fn paused_game_lane_paints_no_screens() {
-        // The focused-fullscreen-game lane publishes no pager screens, so no
-        // miniature (and no highlight cost) runs under the game. A real
-        // report with `paused` through the core proves the empty content.
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
-        let members = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
+    fn suspended_output_paints_no_screens() {
+        // V4 has no `paused` ingress: the focused-fullscreen presentation
+        // suspension publishes no pager screens for the suspended output,
+        // so no miniature (and no highlight cost) paints on it. A real
+        // fullscreen report through the core proves the empty content.
+        // Neutral suspension from truthful fullscreen facts, never app or
+        // game detection.
+        let mut engine =
+            WorldEngine::new_test_bound("gen-1", "adapter-1").expect("bound test engine");
+        let mut members = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
+        members[0].fullscreen = Some(true);
         let mut pausing = ingress("win-a");
-        pausing.paused = true;
+        pausing.foreground_fullscreen = Some(true);
         let presentation = accepted(&mut engine, &report(1, 1, members, "win-a", pausing));
-        assert!(presentation.pager.is_empty(), "paused publishes no screens");
+        assert!(
+            presentation.pager.is_empty(),
+            "suspended output publishes no screens"
+        );
         // No pager screens means the tick resolves no miniatures for any
-        // Space: nothing draws under the game.
+        // Space: nothing paints on the suspended output.
         assert!(
             indicator_miniatures(&presentation, &[], 1, (0xbd, 0x93, 0xf9), 26.0, 8.0).is_empty()
         );
     }
 
     #[test]
-    fn fullscreen_focus_hides_border_but_keeps_truthful_miniature() {
-        // Eligibility contrast: a focused native fullscreen window hides the
-        // active border (core fullscreen veto) while the pager still paints
-        // its truthful member miniature. No positively grounded game
-        // classification exists, so `paused` stays false and the game-lane
-        // hide never fires for ordinary fullscreen.
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+    fn fullscreen_focus_suspends_border_and_pager() {
+        // Unconditional focused-fullscreen presentation suspension: a
+        // focused native fullscreen window hides the active border with
+        // the `Suspended` token and publishes no pager screens, so no
+        // miniature paints on the suspended output. Single-output reports
+        // suspend unconditionally; the old
+        // border-hides-but-miniature-survives contrast no longer holds
+        // and is not re-asserted here. Neutral suspension from truthful
+        // fullscreen facts, never app or game detection.
+        let mut engine =
+            WorldEngine::new_test_bound("gen-1", "adapter-1").expect("bound test engine");
         let mut members = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
-        members[0].fullscreen = true;
+        members[0].fullscreen = Some(true);
         let presentation = accepted(
             &mut engine,
             &report(1, 1, members, "win-a", {
                 let mut styled = ingress("win-a");
-                styled.foreground_fullscreen = true;
+                styled.foreground_fullscreen = Some(true);
                 styled
             }),
         );
@@ -629,20 +664,81 @@ mod tests {
             !presentation.border.visible,
             "fullscreen focus hides the ring"
         );
-        assert!(!presentation.pager.is_empty(), "pager keeps member content");
+        assert_eq!(
+            presentation.border.reason,
+            Some(BorderHideReasonV4::Suspended),
+            "suspension hides the ring"
+        );
+        assert_eq!(
+            presentation.suspended_output,
+            Some(OutputId("out-a".to_owned())),
+            "single output suspends"
+        );
         assert!(
-            presentation
-                .pager
+            presentation.pager.is_empty(),
+            "suspended output paints no miniatures on it"
+        );
+    }
+
+    #[test]
+    fn suspended_output_absent_but_other_output_pager_preserved() {
+        // Two outputs, focus fullscreen on out-a: the suspended output
+        // publishes no pager screens while the unaffected output keeps its
+        // pager content. Neutral presentation suspension, never app or
+        // game detection; no all-output `paused` interpretation.
+        let mut engine =
+            WorldEngine::new_test_bound("gen-1", "adapter-1").expect("bound test engine");
+        let ingress_full = || {
+            let mut full = ingress("win-a");
+            full.foreground_fullscreen = Some(true);
+            full
+        };
+        let two_screen = |seq: u64, members: Vec<WindowFact>| {
+            let mut rep = report(seq, seq, members, "win-a", ingress_full());
+            rep.screens = vec![screen("out-a", 0), screen("out-b", 800)];
+            rep
+        };
+        let mut focused = vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)];
+        focused[0].fullscreen = Some(true);
+        accepted(&mut engine, &two_screen(1, focused.clone()));
+        accepted(&mut engine, &two_screen(2, focused.clone()));
+        let presentation = accepted(&mut engine, &two_screen(3, focused));
+        assert!(
+            !presentation.border.visible,
+            "fullscreen focus hides the ring"
+        );
+        assert_eq!(
+            presentation.border.reason,
+            Some(BorderHideReasonV4::Suspended),
+            "suspension hides the ring"
+        );
+        assert_eq!(
+            presentation.suspended_output,
+            Some(OutputId("out-a".to_owned())),
+            "only the focused output suspends"
+        );
+        assert_eq!(
+            presentation.pager.len(),
+            1,
+            "suspended screen omitted, other screen retained"
+        );
+        assert_eq!(
+            presentation.pager[0].output, "out-b",
+            "unaffected output keeps its pager content"
+        );
+        assert!(
+            presentation.pager[0]
+                .workspaces
                 .iter()
-                .flat_map(|s| &s.workspaces)
-                .any(|w| w.contains_focused),
-            "focused workspace still marks focused"
+                .flat_map(|w| &w.windows)
+                .any(|w| w.window.0 == "win-b"),
+            "retained screen keeps its member"
         );
     }
 
     fn native_fact(window: &str, native_ws: &str, x: i32) -> WindowFact {
         let mut row = fact(window, "out-a", x);
-        row.native_workspace = Some(native_ws.to_owned());
+        row.native_workspace = NativeWorkspaceFact::Value(native_ws.to_owned());
         row
     }
 
@@ -651,10 +747,9 @@ mod tests {
         observation_seq: u64,
         windows: Vec<WindowFact>,
         focused: &str,
-        ingress: PresentationIngress,
-    ) -> WorldReport {
+        ingress: PresentationIngressV4,
+    ) -> WorldReportV4 {
         let mut base = report(request_seq, observation_seq, windows, focused, ingress);
-        base.host_owned_workspace_domains = true;
         base.native = vec![tiler_core::world_report::NativeObservation {
             output: OutputId("out-a".to_owned()),
             native_order: vec!["space-1".to_owned(), "space-2".to_owned()],
@@ -673,9 +768,10 @@ mod tests {
         base
     }
 
-    fn accepted_reply(engine: &mut WorldEngine, report: &WorldReport) -> WorldReply {
+    fn accepted_reply(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
         match engine.handle_report(report) {
             WorldOutcome::Accepted(reply) => reply,
+            WorldOutcome::Duplicate(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),
         }
     }
@@ -690,7 +786,8 @@ mod tests {
         // output and fails this test.
         use crate::dev_selection::{PagerHighlightCli, resolve_pager_highlight_config};
         use crate::workspace_indicator::segment_column_width;
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine =
+            WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("bound host engine");
         let members = || {
             vec![
                 native_fact("win-a", "space-1", 0),

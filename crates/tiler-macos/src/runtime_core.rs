@@ -12,7 +12,7 @@ use tiler_core::{
     geometry::Rect,
     session::{DomainKey, OutputDomain},
     size_hints::WindowSizeHints,
-    world_report::WindowFact,
+    world_report::{NativeWorkspaceFact, VisibilityFact, WindowFact},
 };
 
 use crate::runtime_types::{
@@ -25,6 +25,7 @@ use crate::runtime_types::{
 /// Core-session lifetime for one observed window, read from the last
 /// applied world reply's desired rows by lifetime (never an adapter map).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg(test)]
 pub(crate) struct KnownState {
     pub exception: bool,
     /// Session holds a floating placement for this window (intentional
@@ -32,35 +33,6 @@ pub(crate) struct KnownState {
     /// fresh-admitted floats carry no placement — this is what lets the
     /// wire echo tell a user float (persist) from a hold exit (tile).
     pub placed: bool,
-}
-
-impl KnownState {
-    /// Core-delivery lifetime memory for one window: the adapter-side
-    /// replacement for direct core-session reads (the retired
-    /// `WorldEngine::engine()` boundary). `rows` carries the last applied
-    /// world reply's desired rows by lifetime; unknown lifetimes read
-    /// first-sight. No native-to-logical home map is kept: the
-    /// member/slot/lifetime derivation that fed the retired born-hold
-    /// gate duplicated core-owned policy. The core holds truthful
-    /// fullscreen arrivals slotless itself (D5); the adapter keeps only
-    /// the float echo below.
-    ///
-    /// Field mapping from the core's own delivery:
-    /// - `exception`/`placed`: the row's float echo and effective frame
-    ///   (the retained target or session placement the core publishes
-    ///   for floats).
-    pub(crate) fn of_reply(
-        rows: &BTreeMap<String, tiler_core::world_report::WindowDesire>,
-        id: &WindowId,
-    ) -> Self {
-        let Some(row) = rows.get(&id.0) else {
-            return Self::default();
-        };
-        Self {
-            exception: row.floating,
-            placed: row.floating && row.effective_frame.is_some(),
-        }
-    }
 }
 
 /// Wire flags for one observed window: the truthful classifier facts plus
@@ -83,6 +55,7 @@ impl KnownState {
 /// - Classified floats ride truthfully; first-sight fixed hints ride as
 ///   plain tiles on the wire and the core admits them automatic (D1/D8).
 #[must_use]
+#[cfg(test)]
 pub(crate) fn normalize_wire_flags(
     floating_cls: bool,
     fullscreen: bool,
@@ -128,21 +101,85 @@ pub(crate) struct RosterEntry {
     /// Classifier exclusion cause when omitted (minimized/hidden sources
     /// mint minimized lifetimes; other causes hold without homing).
     pub(crate) excluded: Option<crate::classifier::ExcludeReason>,
+    /// Raw neutral facts for v4 core classification (never policy echoes,
+    /// never inferred from the disposition): raw `AXRole`, raw `AXModal`,
+    /// raw `AXSize` settability, raw `kCGWindowLayer`, owner bundle ID, and
+    /// neutral activation policy. `None` is honest unknown.
+    pub(crate) role: Option<String>,
+    pub(crate) subrole: Option<String>,
+    pub(crate) modal: Option<bool>,
+    pub(crate) resizable: Option<bool>,
+    pub(crate) layer: Option<i32>,
+    pub(crate) app_id: Option<String>,
+    pub(crate) activation_policy: Option<tiler_core::world_report::ActivationPolicy>,
+}
+
+impl RosterEntry {
+    /// Neutral raw facts for one roster row, keyed lookup for the v4
+    /// report builder. Minimized/hidden-app exclusions carry their
+    /// retained raw legs (never a fabricated row: only actually read legs,
+    /// null when unknown); all other exclusions carry no facts (omission).
+    /// Unobserved rows carry whatever raw legs are known.
+    pub(crate) fn raw_facts(&self) -> crate::runtime_types::WindowRawFacts {
+        use crate::classifier::ExcludeReason;
+        match self.excluded {
+            Some(ExcludeReason::Minimized | ExcludeReason::HiddenApp) => {
+                crate::runtime_types::WindowRawFacts {
+                    role: self.role.clone(),
+                    subrole: self.subrole.clone(),
+                    modal: self.modal,
+                    resizable: self.resizable,
+                    layer: self.layer,
+                    app_id: self.app_id.clone(),
+                    activation_policy: self.activation_policy,
+                    host_hidden: Some(self.hidden_meta),
+                }
+            }
+            Some(_) => crate::runtime_types::WindowRawFacts::default(),
+            None => crate::runtime_types::WindowRawFacts {
+                role: self.role.clone(),
+                subrole: self.subrole.clone(),
+                modal: self.modal,
+                resizable: self.resizable,
+                layer: self.layer,
+                app_id: self.app_id.clone(),
+                activation_policy: self.activation_policy,
+                host_hidden: Some(self.hidden_meta),
+            },
+        }
+    }
 }
 
 /// Native-mode explicit minimized lifetime from classifier exclusions,
 /// keyed by runtime window id (`"<pid>_<wid>"`). Refreshed per scoped
-/// observation from last-known homing; reported as an explicit minimized
+/// observation from last-known homing; reported as an explicit hidden-lane
 /// [`WindowFact`] (never silent absence, never inferred close).
-/// Replaces the retired shared `MinimizedEntry`: the minimized home is
-/// native vocabulary (output plus native Space id); the core derives the
-/// logical homing from its own adoption mapping.
+/// `minimized` is the truthful `AXMinimized` leg and `host_hidden` the
+/// truthful owner-hidden leg (a hidden-app row reads `minimized: false`,
+/// `host_hidden: true` — never a hidden-equals-minimized echo). The
+/// remaining raw legs ride as actually read (null when unknown; never a
+/// default role, never a policy classification). `maximized`/`sticky`
+/// stay null per contract in the emitted fact. Replaces the retired
+/// shared `MinimizedEntry`: the minimized home is native vocabulary
+/// (output plus native Space id); the core derives the logical homing
+/// from its own adoption mapping.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MinimizedRecord {
     pub window: WindowId,
     pub output: OutputId,
     pub workspace: WorkspaceId,
     pub sticky: bool,
+    pub minimized: bool,
+    pub host_hidden: bool,
+    pub fullscreen: bool,
+    pub process_id: Option<String>,
+    pub role: Option<String>,
+    pub subrole: Option<String>,
+    pub modal: Option<bool>,
+    pub resizable: Option<bool>,
+    pub layer: Option<i32>,
+    pub app_id: Option<String>,
+    pub activation_policy: Option<tiler_core::world_report::ActivationPolicy>,
 }
 
 #[derive(Default)]
@@ -264,7 +301,7 @@ impl LifetimeMemory {
     }
 
     /// Rebuild from one applied reply: desired rows by lifetime.
-    pub(crate) fn from_reply(reply: &tiler_core::world_report::WorldReply) -> Self {
+    pub(crate) fn from_reply(reply: &tiler_core::world_report::WorldReplyV4) -> Self {
         let mut memory = Self::default();
         for row in &reply.windows {
             memory.rows.insert(row.lifetime.0.clone(), row.clone());
@@ -273,76 +310,142 @@ impl LifetimeMemory {
     }
 }
 
-/// Collect one app's retained windows into v2 [`WindowFact`] rows for a
-/// single native domain. Wire flags reuse [`normalize_wire_flags`] over
-/// the adapter-side [`LifetimeMemory`] (last applied reply rows).
-/// `fixed_auto` is always false: the core owns
-/// the automatic marker from admission hints, never the adapter echo.
-/// Fullscreen, hints, and the minimized flag ride truthfully; maximized is
-/// never inferred; sticky needs positive all-Spaces proof (stage 2) and
-/// stays false. Logical receipts stay unknown (`observed_workspace:
-/// None`): the core derives logical homing from its own adoption mapping
-/// over `native_workspace`.
+/// Build one truthful v4 [`WindowFact`] for a live homed member.
+///
+/// Contract (world-contract M4/W3): macOS declares `maximize=false` and
+/// `nativeSticky=false`, so `maximized`/`sticky` stay null (non-null is a
+/// conflicting-fact row hold). Fullscreen rides truthfully, minimized rides
+/// explicitly, hints ride truthfully, native workspace carries the
+/// host-owned Space id, output/rect ride when known. Supported neutral facts
+/// (`role`/`appId`/`processId`/`modal`/`resizable`/`activationPolicy`/`layer`)
+/// ride raw from the native readers (null only when honestly unknown; never
+/// a policy echo, never inferred from legacy classification). Every other
+/// fact stays null per the `unavailable_facts` declaration (including
+/// `class`/`title`, which have no truthful macOS source here).
+fn v4_fact(
+    window: WindowId,
+    output: Option<OutputId>,
+    rect: Option<Rect>,
+    fullscreen: Option<bool>,
+    minimized: Option<bool>,
+    hints: Option<WindowSizeHints>,
+    native_workspace: NativeWorkspaceFact,
+    process_id: Option<String>,
+    raw: &crate::runtime_types::WindowRawFacts,
+) -> WindowFact {
+    WindowFact {
+        window,
+        output,
+        rect,
+        fullscreen,
+        maximized: None,
+        sticky: None,
+        minimized,
+        hints,
+        native_workspace,
+        host_hidden: raw.host_hidden,
+        privileged: None,
+        managed: None,
+        accepts_input: None,
+        activation_inhibited: None,
+        tool_window: None,
+        owned: None,
+        transient: None,
+        modal: raw.modal,
+        resizable: raw.resizable,
+        above: None,
+        below: None,
+        owner: None,
+        parent: None,
+        role: raw.role.clone(),
+        app_id: raw.app_id.clone(),
+        executable: None,
+        process_id,
+        class: None,
+        title: None,
+        window_type: crate::runtime_types::normalize_window_type(
+            raw.role.as_deref(),
+            raw.subrole.as_deref(),
+        ),
+        activation_policy: raw.activation_policy,
+        layer: raw.layer,
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: VisibilityFact {
+            visible: None,
+            suppression_owned: None,
+        },
+        last_write: None,
+    }
+}
+
+/// Collect one app's retained windows into v4 [`WindowFact`] rows for a
+/// single native domain. Fullscreen and hints ride truthfully; maximized
+/// and sticky stay null per contract (M4/W3). Native workspace carries the
+/// host-owned Space id; logical receipts stay unknown (the core derives
+/// logical homing from its own adoption mapping over `native_workspace`).
+/// `raw_of` resolves the neutral raw facts per runtime window id
+/// (`"<pid>_<wid>"`); missing entries mean unknown (null, never a default).
 pub(crate) fn collect_window_facts(
     facts: &mut Vec<WindowFact>,
     pid: u32,
     observed: &[ObservedWindow],
     domain: &DomainKey,
-    memory: &LifetimeMemory,
+    _memory: &LifetimeMemory,
+    raw_of: &dyn Fn(&str) -> crate::runtime_types::WindowRawFacts,
 ) {
     for w in observed {
         let id = window_id(pid, w.wid);
-        let known = KnownState::of_reply(&memory.rows, &WindowId(id.clone()));
         let rect = Rect {
             x: w.x,
             y: w.y,
             w: w.w,
             h: w.h,
         };
-        // Wire normalization over core-delivery lifetime: fullscreen and
-        // hints ride truthfully; floating carries the intentional placed
-        // echo only. The macOS adapter performs no maximized
-        // inference and asserts no automatic origin.
-        let (floating, fixed_auto) = normalize_wire_flags(w.floating, w.fullscreen, &known);
-        facts.push(WindowFact {
-            window: WindowId(id),
-            output: domain.output.clone(),
-            rect: Some(rect),
-            floating,
-            fit_excluded: false,
-            fullscreen: w.fullscreen,
-            maximized: false,
-            sticky: false,
-            fixed_auto,
-            fixed_suppress: false,
-            hints: w.hints,
-            minimized: false,
-            observed_workspace: None,
-            native_workspace: Some(domain.workspace.0.clone()),
-        });
+        let raw = raw_of(&id);
+        facts.push(v4_fact(
+            WindowId(id),
+            Some(domain.output.clone()),
+            Some(rect),
+            Some(w.fullscreen),
+            Some(false),
+            Some(w.hints),
+            NativeWorkspaceFact::Value(domain.workspace.0.clone()),
+            Some(pid.to_string()),
+            &raw,
+        ));
     }
 }
 
-/// One explicit minimized [`WindowFact`]: no frame, minimized homing, the
-/// native Space as capability-gated membership evidence, no logical
-/// receipt. Never silent absence, never an inferred close.
+/// One explicit hidden-lane [`WindowFact`]: no frame, minimized/hidden
+/// homing, the native Space as capability-gated membership evidence, no
+/// logical receipt. Never silent absence, never an inferred close.
+/// `minimized`/`host_hidden` ride the truthful native legs (a hidden-app
+/// row reads `minimized: false`, `host_hidden: true`); the remaining raw
+/// legs ride as actually read (null when unknown). `maximized`/`sticky`
+/// stay null per contract.
 pub(crate) fn minimized_fact(entry: &MinimizedRecord) -> WindowFact {
-    WindowFact {
-        window: entry.window.clone(),
-        output: entry.output.clone(),
-        rect: None,
-        floating: false,
-        fit_excluded: false,
-        fullscreen: false,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: WindowSizeHints::none(),
-        minimized: true,
-        observed_workspace: None,
-        native_workspace: Some(entry.workspace.0.clone()),
-    }
+    v4_fact(
+        entry.window.clone(),
+        Some(entry.output.clone()),
+        None,
+        Some(entry.fullscreen),
+        Some(entry.minimized),
+        Some(WindowSizeHints::none()),
+        NativeWorkspaceFact::Value(entry.workspace.0.clone()),
+        entry.process_id.clone(),
+        &crate::runtime_types::WindowRawFacts {
+            role: entry.role.clone(),
+            subrole: entry.subrole.clone(),
+            modal: entry.modal,
+            resizable: entry.resizable,
+            layer: entry.layer,
+            app_id: entry.app_id.clone(),
+            activation_policy: entry.activation_policy,
+            host_hidden: Some(entry.host_hidden),
+        },
+    )
 }
 
 /// Native-mode member partition for one scoped observation: each observed
@@ -842,10 +945,25 @@ pub(crate) fn apply_roster_covering(
                     minimized_meta: meta.is_some_and(|m| m.minimized),
                     hidden_meta: meta.is_some_and(|m| m.hidden),
                     excluded: None,
+                    // Raw neutral facts ride the roster for the v4 report
+                    // (never policy echoes, null when unknown).
+                    role: meta.and_then(|m| m.role.clone()),
+                    subrole: meta.and_then(|m| m.subrole.clone()),
+                    modal: meta.and_then(|m| m.modal),
+                    resizable: meta.and_then(|m| m.resizable),
+                    layer: meta.and_then(|m| m.layer),
+                    app_id: meta.and_then(|m| m.app_id.clone()),
+                    activation_policy: meta.and_then(|m| m.activation_policy),
                 },
             );
         }
         for o in &snapshot.excluded_reasons {
+            use crate::classifier::ExcludeReason;
+            let meta = snapshot.meta.iter().find(|m| m.wid == o.wid);
+            let minimized_source = matches!(
+                o.reason,
+                ExcludeReason::Minimized | ExcludeReason::HiddenApp
+            );
             let entry = app.roster.entry(o.wid).or_insert(RosterEntry {
                 observed: None,
                 spaces: Vec::new(),
@@ -853,10 +971,50 @@ pub(crate) fn apply_roster_covering(
                 minimized_meta: false,
                 hidden_meta: false,
                 excluded: Some(o.reason),
+                role: None,
+                subrole: None,
+                modal: None,
+                resizable: None,
+                layer: None,
+                app_id: None,
+                activation_policy: None,
             });
             entry.excluded = Some(o.reason);
-            entry.minimized_meta = false;
-            entry.hidden_meta = false;
+            if minimized_source {
+                // Minimized/hidden-app exclusions retain their truthful
+                // show-state and actually read raw legs (null when unknown)
+                // for the hidden-lane report. Unknown detail in a
+                // hand-built snapshot (no meta row) falls back to the
+                // reason-derived show-state with null raw legs — never a
+                // fabricated role or policy. All other exclusions stay
+                // fact-free (omission, never a fabricated row).
+                entry.fullscreen_meta = meta.is_some_and(|m| m.fullscreen);
+                entry.minimized_meta = meta
+                    .map(|m| m.minimized)
+                    .unwrap_or(o.reason == ExcludeReason::Minimized);
+                entry.hidden_meta = meta
+                    .map(|m| m.hidden)
+                    .unwrap_or(o.reason == ExcludeReason::HiddenApp);
+                entry.role = meta.and_then(|m| m.role.clone());
+                entry.subrole = meta.and_then(|m| m.subrole.clone());
+                entry.modal = meta.and_then(|m| m.modal);
+                entry.resizable = meta.and_then(|m| m.resizable);
+                entry.layer = meta.and_then(|m| m.layer);
+                entry.app_id = meta.and_then(|m| m.app_id.clone());
+                entry.activation_policy = meta.and_then(|m| m.activation_policy);
+            } else {
+                entry.minimized_meta = false;
+                entry.hidden_meta = false;
+                // Excluded rows carry no classification facts (omission, never
+                // a fabricated row).
+                entry.role = None;
+                entry.subrole = None;
+                entry.modal = None;
+                entry.resizable = None;
+                entry.layer = None;
+                entry.app_id = None;
+                entry.activation_policy = None;
+            }
         }
         // Roster entries excluded then live again clear the exclusion.
         for wid in &live {
@@ -1357,6 +1515,15 @@ mod tests {
             fullscreen: false,
             minimized: false,
             hidden: false,
+
+            role: None,
+
+            subrole: None,
+            modal: None,
+            resizable: None,
+            layer: None,
+            app_id: None,
+            activation_policy: None,
         }
     }
 
@@ -1546,6 +1713,116 @@ mod tests {
     }
 
     #[test]
+    fn excluded_minimized_and_hidden_rows_retain_truthful_raw_facts() {
+        use crate::classifier::ExcludeReason;
+        use crate::runtime_types::ScopedBackendSnapshot;
+        let ctx = native_ctx();
+        let mut retained = RetainedCore::default();
+        retained.apps.insert(
+            1001,
+            RetainedApp {
+                generation: 1,
+                seq_last: 1,
+                cmd_counter: 0,
+                windows: Vec::new(),
+                focused_wid: None,
+                roster: std::collections::BTreeMap::new(),
+                roster_incomplete: false,
+                roster_cause: String::new(),
+            },
+        );
+        let meta_row = |wid: u32, minimized: bool, hidden: bool| ScopedWindowMeta {
+            wid,
+            spaces: Vec::new(),
+            fullscreen: false,
+            minimized,
+            hidden,
+            role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+            subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+            modal: Some(false),
+            resizable: Some(true),
+            layer: Some(0),
+            app_id: Some("com.example.app".to_owned()),
+            activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+        };
+        let snapshot = ScopedBackendSnapshot {
+            windows: Vec::new(),
+            focused_wid: None,
+            focus_cg_owned: false,
+            focus_evidence: None,
+            sys_focus: None,
+            global_focus: None,
+            meta: vec![meta_row(1, true, false), meta_row(2, false, true)],
+            excluded: 3,
+            excluded_reasons: vec![
+                crate::runtime_types::ExcludedOmission {
+                    wid: 1,
+                    reason: ExcludeReason::Minimized,
+                },
+                crate::runtime_types::ExcludedOmission {
+                    wid: 2,
+                    reason: ExcludeReason::HiddenApp,
+                },
+                crate::runtime_types::ExcludedOmission {
+                    wid: 3,
+                    reason: ExcludeReason::OwnBundle,
+                },
+            ],
+            cg_complete: true,
+            cg_owner_wids: Vec::new(),
+            cg_alive: Vec::new(),
+            revision: 7,
+        };
+        let closed = apply_roster_covering(&mut retained, 1001, &snapshot, &ctx);
+        assert!(closed.is_empty(), "exclusions never mint closes");
+        let app = retained
+            .apps
+            .get(&1001)
+            .expect("covering snapshot owns roster");
+        let min = app.roster.get(&1).expect("minimized row retained");
+        assert!(min.minimized_meta);
+        assert!(!min.hidden_meta);
+        let hid = app.roster.get(&2).expect("hidden-app row retained");
+        assert!(!hid.minimized_meta);
+        assert!(hid.hidden_meta);
+        for (wid, entry) in [(1u32, min), (2u32, hid)] {
+            let raw = entry.raw_facts();
+            assert_eq!(
+                raw.role.as_deref(),
+                Some(crate::classifier::ROLE_WINDOW),
+                "wid {wid} keeps its read role"
+            );
+            assert_eq!(raw.layer, Some(0), "wid {wid} keeps its read layer");
+            assert_eq!(
+                raw.app_id.as_deref(),
+                Some("com.example.app"),
+                "wid {wid} keeps its owner bundle"
+            );
+            assert_eq!(
+                raw.activation_policy,
+                Some(tiler_core::world_report::ActivationPolicy::Regular),
+                "wid {wid} keeps its neutral policy"
+            );
+        }
+        assert_eq!(
+            min.raw_facts().host_hidden,
+            Some(false),
+            "genuinely minimized is not host-hidden"
+        );
+        assert_eq!(
+            hid.raw_facts().host_hidden,
+            Some(true),
+            "hidden-app reads host-hidden"
+        );
+        let own = app.roster.get(&3).expect("own-bundle row retained");
+        assert_eq!(
+            own.raw_facts(),
+            crate::runtime_types::WindowRawFacts::default(),
+            "policy/own exclusions stay fact-free"
+        );
+    }
+
+    #[test]
     fn member_mapping_tracks_and_prunes_per_pid() {
         let mut retained = RetainedCore::default();
         let d1 = DomainKey {
@@ -1644,6 +1921,17 @@ mod tests {
                 output: OutputId("macos-display-1".to_owned()),
                 workspace: WorkspaceId("space-11".to_owned()),
                 sticky: false,
+                minimized: true,
+                host_hidden: false,
+                fullscreen: false,
+                process_id: None,
+                role: None,
+                subrole: None,
+                modal: None,
+                resizable: None,
+                layer: None,
+                app_id: None,
+                activation_policy: None,
             },
         );
         let ctx = native_ctx();

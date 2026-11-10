@@ -976,10 +976,17 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 write_refused(&reason);
                 (2, reason)
             })?;
+            // Raw core-owned border settings ride verbatim to the revisioned
+            // settings route: core owns validation/defaulting with per-field
+            // diagnostics, so invalid values never refuse startup here.
+            // Collected BEFORE `border` shadows the CLI struct below.
+            let core_settings = tiler_macos::dev_selection::collect_raw_core_settings(
+                &border,
+                file.active_border.as_ref(),
+            );
             let border = tiler_macos::dev_selection::resolve_border_config(
                 &border,
                 file.active_border.as_ref(),
-                tiler_macos::ffi::macos_major(),
             )
             .map_err(|reason| {
                 write_refused(&reason);
@@ -1026,6 +1033,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 pager_highlight,
                 drag,
                 indicator,
+                core_settings,
             };
             tiler_macos::tile::run_tile(request).map_err(|(code, body)| {
                 // Validation refusals carry plain text (not JSON): persist

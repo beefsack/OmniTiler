@@ -23,7 +23,14 @@ use tiler_core::directional::WindowId;
 use tiler_core::geometry::Rect;
 use tiler_core::gesture::{GestureIngress, GestureSettled};
 use tiler_core::world_engine::WorldOutcome;
-use tiler_core::world_report::{OneShotEffect, ScopeAuthority, WorldCommand, WorldReply};
+use tiler_core::world_report::{
+    OneShotEffect, ScopeAuthority, WorldCommand, WorldReplyV4, WorldReportV4,
+};
+use tiler_protocol::world_protocol::{
+    CreationReceiptWire, CursorHitWire, DecodedReplyV4, DecodedReportV4, GestureIngressWire,
+    ReplyWireOptionals, ReportWireOptionals, decode_reply_v4_for_host, decode_report_v4,
+    encode_reply_v4, encode_report_v4,
+};
 
 use crate::focus_route::FocusRoute;
 use crate::runtime::{
@@ -92,6 +99,131 @@ fn is_retained_fullscreen(retained: &RetainedCore, window: &str) -> bool {
         .is_some_and(|w| w.fullscreen)
 }
 
+/// Production byte-codec transact: the typed report encodes through the
+/// genuine v4 codec ([`encode_report_v4`]), decodes back to the wire-typed
+/// report ([`decode_report_v4`]), runs the real engine, then the typed reply
+/// encodes ([`encode_reply_v4`]) and decodes ([`decode_reply_v4_for_host`]
+/// against the production [`macos_capabilities`](crate::world_connection::macos_capabilities))
+/// before the sequencer ever sees it. Any codec leg failure returns its
+/// static kind; callers refuse explicitly and never fall back to a direct
+/// typed call. A wrong-capability row (above/warp/sticky, all false on
+/// macOS) refuses here as `snapshot-invalid` with its fixed rule token,
+/// before sequencer acceptance or any actuation. Wire metadata is inferred canonically: absent cursor-hit/gesture
+/// stay absent, `monotonic_ms` rides iff nonzero (attempt stamps preserved),
+/// attempt lanes ride iff non-empty, and creation receipts keep
+/// `created` null unless the row carries causal proof (`Some`).
+fn codec_transact(
+    session: &mut WorldSession,
+    report: &WorldReportV4,
+) -> Result<WorldOutcome, &'static str> {
+    let decoded_report = DecodedReportV4 {
+        report: report.clone(),
+        wire: ReportWireOptionals {
+            cursor_hit: match &report.cursor_hit {
+                None => CursorHitWire::Absent,
+                Some(_) => CursorHitWire::Id,
+            },
+            monotonic_ms_present: report.monotonic_ms != 0,
+            frame_attempts_present: !report.frames.is_empty(),
+            member_attempts_present: !report.member_attempts.is_empty(),
+            view_attempts_present: !report.view_attempts.is_empty(),
+            clear_attempts_present: !report.clear_attempts.is_empty(),
+            creation_attempts_present: !report.creation_attempts.is_empty(),
+            gesture_ingress: match &report.gesture {
+                None => GestureIngressWire::Absent,
+                Some(_) => GestureIngressWire::Present,
+            },
+        },
+        creation_receipts: report
+            .creation_attempts
+            .iter()
+            .map(|row| match &row.created_native {
+                // No causal proof: `created` stays explicit null (never
+                // absent, which would claim no creation was attempted).
+                None => CreationReceiptWire::Null,
+                Some(_) => CreationReceiptWire::Id,
+            })
+            .collect(),
+    };
+    let report_wire = encode_report_v4(&decoded_report).map_err(|_| "codec-report-encode")?;
+    let admitted = decode_report_v4(&report_wire).map_err(|_| "codec-report-decode")?;
+    let outcome = session.engine_mut().handle_report(&admitted.report);
+    // Capability truth at reply decode: the production macOS host declares
+    // above/warp/native-sticky false, and the engine gates all three rows
+    // on those caps — so an honest reply never carries them and this gate
+    // only fires on a dishonest/corrupt row, before sequencer/apply.
+    let host = crate::world_connection::macos_capabilities();
+    match outcome {
+        WorldOutcome::Accepted(reply) => {
+            let suspended = reply.presentation.suspended_output.is_some();
+            let decoded = DecodedReplyV4 {
+                reply,
+                wire: ReplyWireOptionals {
+                    suspended_output_present: suspended,
+                },
+            };
+            let reply_wire = encode_reply_v4(&decoded).map_err(|_| "codec-reply-encode")?;
+            let back =
+                decode_reply_v4_for_host(&reply_wire, &host).map_err(|_| "codec-reply-decode")?;
+            Ok(WorldOutcome::Accepted(back.reply))
+        }
+        WorldOutcome::CommandConsumed(reply) => {
+            let suspended = reply.presentation.suspended_output.is_some();
+            let decoded = DecodedReplyV4 {
+                reply,
+                wire: ReplyWireOptionals {
+                    suspended_output_present: suspended,
+                },
+            };
+            let reply_wire = encode_reply_v4(&decoded).map_err(|_| "codec-reply-encode")?;
+            let back =
+                decode_reply_v4_for_host(&reply_wire, &host).map_err(|_| "codec-reply-decode")?;
+            Ok(WorldOutcome::CommandConsumed(back.reply))
+        }
+        WorldOutcome::Duplicate(reply) => {
+            let suspended = reply.presentation.suspended_output.is_some();
+            let decoded = DecodedReplyV4 {
+                reply,
+                wire: ReplyWireOptionals {
+                    suspended_output_present: suspended,
+                },
+            };
+            let reply_wire = encode_reply_v4(&decoded).map_err(|_| "codec-reply-encode")?;
+            let back =
+                decode_reply_v4_for_host(&reply_wire, &host).map_err(|_| "codec-reply-decode")?;
+            Ok(WorldOutcome::Duplicate(back.reply))
+        }
+        WorldOutcome::Rejected { kind, message } => Ok(WorldOutcome::Rejected { kind, message }),
+    }
+}
+
+/// Adapter-side fail-closed gate for unpersisted intent writes: the core has
+/// no durable backend yet, so any nonempty `intent_writes` refuses before
+/// any dependent native apply (no effect spend, no slot/outbox write).
+/// Ordinary admission/reflow emits none, so this never fires honestly.
+fn intent_writes_hold(reply: &WorldReplyV4) -> bool {
+    !reply.intent_writes.is_empty()
+}
+
+/// Session-lifetime fail-closed latch over [`intent_writes_hold`]: the
+/// first applied reply carrying nonempty `intent_writes` latches
+/// [`WorldSession`] for its whole lifetime, so a later reply without
+/// writes stays held (a bare per-reply check would wrongly release it).
+/// Never clears: no filesystem storage/backend or recovery exists, so no
+/// later empty reply can prove persistence, and nothing here claims
+/// durability. Call at every real apply route after acceptance and before
+/// any effect spend, slot/outbox write, or presentation publish.
+fn unpersisted_hold(session: &mut WorldSession, reply: &WorldReplyV4) -> bool {
+    if session.unpersisted_intent_hold() {
+        return true;
+    }
+    if intent_writes_hold(reply) {
+        session.mark_unpersisted_intent_writes();
+        return true;
+    }
+    false
+}
+
 /// Dispatch outcome for one engine job: what the caller counts and whether
 /// a select claim may be stored.
 #[derive(Debug)]
@@ -140,6 +272,25 @@ pub(crate) fn dispatch_report(
     generation: u64,
     seq: u64,
 ) -> DispatchVerdict {
+    // Genuine-connection gate: reports never run before the one-time
+    // handshake minted a generation and bound the sequencer to it. No
+    // flight opens, no engine call, no writes.
+    if !session.connection_bound() {
+        count_token(shared, &format!("{op}-refused-no-connection"));
+        emit(
+            shared,
+            pid,
+            generation,
+            seq,
+            "core-reply",
+            "refused-no-connection",
+            0,
+        );
+        return DispatchVerdict::Refused {
+            token: "refused-no-connection".to_owned(),
+            select_operation: None,
+        };
+    }
     // Retained dispatch context (known domains, topology revision)
     // refreshes here, so teardown paths converge without an observation.
     // The watermark is NOT advanced here: only actually-submitted input
@@ -269,6 +420,28 @@ pub(crate) fn dispatch_gesture_report(
     Option<GestureSettled>,
 ) {
     use crate::drag_drop::PreviewOutcome;
+    if !session.connection_bound() {
+        count_token(shared, &format!("{op}-refused-no-connection"));
+        emit(
+            shared,
+            pid,
+            generation,
+            seq,
+            "core-reply",
+            "refused-no-connection",
+            0,
+        );
+        return (
+            DispatchVerdict::Refused {
+                token: "refused-no-connection".to_owned(),
+                select_operation: None,
+            },
+            PreviewOutcome::CancelDead {
+                reason: "no-connection",
+            },
+            None,
+        );
+    }
     session.sync_presentation_style(lock_shared(shared).presentation_style);
     if let DispatchContext::Native(ctx) = &dispatch
         && crate::runtime_core::note_dispatch_context(retained, ctx)
@@ -345,9 +518,45 @@ pub(crate) fn dispatch_gesture_report(
             None,
         );
     };
-    match session.engine_mut().handle_report(&report) {
+    let outcome = match codec_transact(session, &report) {
+        Ok(outcome) => outcome,
+        Err(kind) => {
+            session.sequencer().clear_flight();
+            count_token(shared, &format!("{op}-rejected-{kind}"));
+            emit(shared, pid, generation, seq, "core-reply", kind, 0);
+            return (
+                DispatchVerdict::Refused {
+                    token: format!("rejected-{kind}"),
+                    select_operation: None,
+                },
+                PreviewOutcome::HideTransient { reason: "held" },
+                None,
+            );
+        }
+    };
+    match outcome {
         WorldOutcome::Accepted(reply) => match session.sequencer().accept_reply(&reply) {
             ReplyVerdict::Applied(applied) => {
+                if unpersisted_hold(session, &applied) {
+                    count_token(shared, &format!("{op}-refused-intent-write-unpersisted"));
+                    emit(
+                        shared,
+                        pid,
+                        generation,
+                        seq,
+                        "core-reply",
+                        "intent-write-unpersisted",
+                        0,
+                    );
+                    return (
+                        DispatchVerdict::Refused {
+                            token: "intent-write-unpersisted".to_owned(),
+                            select_operation: None,
+                        },
+                        PreviewOutcome::HideTransient { reason: "held" },
+                        None,
+                    );
+                }
                 let Some(effects) = spend_if_coherent(
                     session, retained, shared, inbox, &dispatch, &applied, op, pid, generation, seq,
                 ) else {
@@ -412,6 +621,26 @@ pub(crate) fn dispatch_gesture_report(
         },
         WorldOutcome::CommandConsumed(reply) => match session.sequencer().accept_reply(&reply) {
             ReplyVerdict::Applied(applied) => {
+                if unpersisted_hold(session, &applied) {
+                    count_token(shared, &format!("{op}-refused-intent-write-unpersisted"));
+                    emit(
+                        shared,
+                        pid,
+                        generation,
+                        seq,
+                        "core-reply",
+                        "intent-write-unpersisted",
+                        0,
+                    );
+                    return (
+                        DispatchVerdict::Refused {
+                            token: "intent-write-unpersisted".to_owned(),
+                            select_operation: None,
+                        },
+                        PreviewOutcome::HideTransient { reason: "held" },
+                        None,
+                    );
+                }
                 let Some(effects) = spend_if_coherent(
                     session, retained, shared, inbox, &dispatch, &applied, op, pid, generation, seq,
                 ) else {
@@ -553,12 +782,42 @@ fn dispatch_ticket(
         );
         return DispatchVerdict::NoReport;
     };
-    // One core transaction per dispatch (bounded 4 MiB request AND reply
-    // inside `handle_report`; staged overflow rejects without mutation).
-    match session.engine_mut().handle_report(&report) {
+    // One core transaction per dispatch through the genuine v4 byte codec
+    // (bounded 4 MiB request AND reply inside the codec; staged overflow
+    // rejects without mutation; codec failure refuses explicitly, never a
+    // direct typed fallback).
+    let outcome = match codec_transact(session, &report) {
+        Ok(outcome) => outcome,
+        Err(kind) => {
+            session.sequencer().clear_flight();
+            count_token(shared, &format!("{op}-rejected-{kind}"));
+            emit(shared, pid, generation, seq, "core-reply", kind, 0);
+            return DispatchVerdict::Refused {
+                token: format!("rejected-{kind}"),
+                select_operation: None,
+            };
+        }
+    };
+    match outcome {
         WorldOutcome::Accepted(reply) => {
             match session.sequencer().accept_reply(&reply) {
                 ReplyVerdict::Applied(applied) => {
+                    if unpersisted_hold(session, &applied) {
+                        count_token(shared, &format!("{op}-refused-intent-write-unpersisted"));
+                        emit(
+                            shared,
+                            pid,
+                            generation,
+                            seq,
+                            "core-reply",
+                            "intent-write-unpersisted",
+                            0,
+                        );
+                        return DispatchVerdict::Refused {
+                            token: "intent-write-unpersisted".to_owned(),
+                            select_operation: None,
+                        };
+                    }
                     let Some(effects) = spend_if_coherent(
                         session, retained, shared, inbox, &dispatch, &applied, op, pid, generation,
                         seq,
@@ -666,6 +925,22 @@ fn dispatch_ticket(
             // reapply).
             match session.sequencer().accept_reply(&reply) {
                 ReplyVerdict::Applied(applied) => {
+                    if unpersisted_hold(session, &applied) {
+                        count_token(shared, &format!("{op}-refused-intent-write-unpersisted"));
+                        emit(
+                            shared,
+                            pid,
+                            generation,
+                            seq,
+                            "core-reply",
+                            "intent-write-unpersisted",
+                            0,
+                        );
+                        return DispatchVerdict::Refused {
+                            token: "intent-write-unpersisted".to_owned(),
+                            select_operation: None,
+                        };
+                    }
                     let Some(effects) = spend_if_coherent(
                         session, retained, shared, inbox, &dispatch, &applied, op, pid, generation,
                         seq,
@@ -938,7 +1213,7 @@ fn emission_coherent(
     shared: &Arc<Mutex<Shared>>,
     inbox: &Arc<Inbox>,
     dispatch: &DispatchContext,
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     retained: &RetainedCore,
 ) -> bool {
     // Snapshot the queue first (reads only, lock released before the
@@ -1033,7 +1308,7 @@ fn spend_if_coherent(
     shared: &Arc<Mutex<Shared>>,
     inbox: &Arc<Inbox>,
     dispatch: &DispatchContext,
-    applied: &WorldReply,
+    applied: &WorldReplyV4,
     op: &'static str,
     pid: u32,
     generation: u64,
@@ -1151,7 +1426,7 @@ fn retain_stable_geometry(
     prior_key: Option<&AppliedGeometryKey>,
     current: &BTreeSet<(String, String)>,
     workareas: &BTreeMap<(String, String), (Rect, Rect)>,
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     fresh_desired: Vec<DesiredFrame>,
 ) -> (Vec<DesiredFrame>, AppliedGeometryKey) {
     use tiler_core::world_report::HoldReason;
@@ -1232,7 +1507,7 @@ fn consume_world_reply(
     shared: &Arc<Mutex<Shared>>,
     focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
     focus_capacity: usize,
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     effects: &[OneShotEffect],
     ticket_command: Option<&WorldCommand>,
     ticket_command_seq: Option<u64>,
@@ -1369,11 +1644,11 @@ fn consume_world_reply(
         if !current.contains(&(row.output.0.clone(), row.workspace.clone())) {
             continue;
         }
-        if let Some(operation) = row.frame_operation.clone() {
+        if let Some(operation) = row.frame_operation.clone().as_deref() {
             if !session.spend_frame_op(&operation) {
                 continue;
             }
-            frame_ops.push((row.lifetime.0.clone(), operation));
+            frame_ops.push((row.lifetime.0.clone(), operation.to_string()));
         }
         frames.push((row.lifetime.0.clone(), frame));
     }
@@ -1684,7 +1959,7 @@ fn drop_selection_focus_locked(shared: &Arc<Mutex<Shared>>, token: &'static str)
 fn bind_selection_focus(
     session: &mut WorldSession,
     shared: &Arc<Mutex<Shared>>,
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     effects: &[OneShotEffect],
     command_seq: u64,
     observed_focus: Option<WindowId>,
@@ -1958,7 +2233,7 @@ fn dispatch_focus_effects(
     shared: &Arc<Mutex<Shared>>,
     focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
     focus_capacity: usize,
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     effects: &[OneShotEffect],
     ticket_command: Option<&WorldCommand>,
     ticket_command_seq: Option<u64>,
@@ -2126,7 +2401,7 @@ fn dispatch_focus_effects(
 fn settle_select_transfers(
     session: &mut WorldSession,
     shared: &Arc<Mutex<Shared>>,
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     pid: u32,
     generation: u64,
     seq: u64,
@@ -2244,9 +2519,9 @@ mod tests {
         OutputId("macos-display-1".to_owned())
     }
 
-    fn empty_reply() -> WorldReply {
-        WorldReply {
-            contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
+    fn empty_reply() -> tiler_core::world_report::WorldReplyV4 {
+        tiler_core::world_report::WorldReplyV4 {
+            contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_V4,
             adapter_incarnation: "adapter-1".to_owned(),
             core_generation: "gen-1".to_owned(),
             request_id: "req-0".to_owned(),
@@ -2265,8 +2540,229 @@ mod tests {
             operation_settled: Vec::new(),
             native_creations: Vec::new(),
             cursor_warp: None,
-            presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            presentation: crate::runtime::empty_world_presentation_v4(),
+            intent_writes: Vec::new(),
+            switch_settled: Vec::new(),
+            diagnostics: Vec::new(),
         }
+    }
+
+    #[test]
+    fn unpersisted_writes_latch_holds_later_empty_reply() {
+        use tiler_core::directional::WindowId;
+        // Fail-closed latch through the production gate (the same
+        // `unpersisted_hold` the four real apply sites call, after
+        // acceptance and before any effect spend or slot/outbox write):
+        // the first applied reply carries an opaque save, the next
+        // carries none, yet both hold.
+        let mut session = focus_session();
+        let shared = focus_shared();
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let mut first = empty_reply();
+        first
+            .intent_writes
+            .push(tiler_core::world_report::IntentWrite {
+                win: WindowId("4242_7".to_owned()),
+                data: Some("opaque-save".to_owned()),
+            });
+        first.effects.push(focus_effect(5));
+        assert!(
+            unpersisted_hold(&mut session, &first),
+            "write reply must hold"
+        );
+        assert!(
+            session.unpersisted_intent_hold(),
+            "latch sets on the write reply"
+        );
+        // No dependent effect spent at gate time: the held reply's effect
+        // is still unspent (production never reached `spend_if_coherent`).
+        assert_eq!(
+            session.sequencer().take_unspent_effects(&first).len(),
+            1,
+            "held reply spends no effects"
+        );
+        // Later reply without writes stays held: never clears simply
+        // because the later reply has no writes.
+        let mut second = empty_reply();
+        second.effects.push(focus_effect(6));
+        assert!(
+            unpersisted_hold(&mut session, &second),
+            "latch must hold the later empty reply"
+        );
+        assert!(
+            session.unpersisted_intent_hold(),
+            "latch persists across dispatches"
+        );
+        assert_eq!(
+            session.sequencer().take_unspent_effects(&second).len(),
+            1,
+            "latched hold still spends no effects"
+        );
+        // No dependent native write/presentation queued either route:
+        // neither gate call touched slots, outbox, or retained presentation.
+        assert!(lock_shared(&shared).last_desired.is_empty());
+        assert!(lock_focus(&focus_queue).is_empty());
+    }
+
+    #[test]
+    fn ordinary_save_free_reply_not_held_and_dispatches() {
+        // Ordinary admission/reflow emits no saves, so the production gate
+        // stays open — and the real production dispatch still applies.
+        let mut session = focus_session();
+        assert!(
+            !unpersisted_hold(&mut session, &empty_reply()),
+            "save-free reply must not hold"
+        );
+        assert!(!session.unpersisted_intent_hold());
+        let mut retained = crate::runtime_core::RetainedCore::default();
+        let shared = focus_shared();
+        let inbox = Arc::new(Inbox::new(16));
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        match dispatch_report(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            DispatchContext::Synthetic,
+            Vec::new(),
+            None,
+            None,
+            false,
+            crate::world_command_map::OP_RECONCILE,
+            0,
+            0,
+            0,
+        ) {
+            DispatchVerdict::Applied { .. } => {}
+            other => panic!("save-free synthetic dispatch must apply, got {other:?}"),
+        }
+        assert!(
+            !session.unpersisted_intent_hold(),
+            "save-free dispatch must not latch"
+        );
+    }
+
+    #[test]
+    fn capability_truth_at_reply_decode_refuses_host_unsupported_rows() {
+        use tiler_core::world_report::{ScopeAuthority, StateProperty, StateTarget};
+        use tiler_protocol::world_protocol::{
+            DecodedReplyV4, ReplyWireOptionals, decode_reply_v4, encode_reply_v4,
+        };
+        // Capability truth at reply decode: production `codec_transact`
+        // decodes through `decode_reply_v4_for_host` against the actual
+        // production `macos_capabilities` (above/warp/native-sticky all
+        // false, engine-gated so honest replies never carry them). Each
+        // host-unsupported row is shape-valid wire but refuses here as
+        // `snapshot-invalid` with its fixed rule token — before any
+        // sequencer acceptance or actuation.
+        let host = crate::world_connection::macos_capabilities();
+        assert!(!host.above && !host.warp && !host.native_sticky);
+        let mut tainted = empty_reply();
+        tainted
+            .windows
+            .push(tiler_core::world_report::WindowDesire {
+                lifetime: tiler_core::directional::WindowId("4242_7".to_owned()),
+                output: output(),
+                workspace: "ws-a".to_owned(),
+                allocation: None,
+                effective_frame: None,
+                frame_authority: ScopeAuthority::Untouched,
+                membership_authority: ScopeAuthority::Untouched,
+                floating: false,
+                float_origin: None,
+                frame_operation: None,
+                clear_operation: None,
+                command_seq: None,
+                visibility: None,
+                visibility_authority: ScopeAuthority::Untouched,
+                state: vec![StateTarget {
+                    property: StateProperty::Above,
+                    value: true,
+                    authority: ScopeAuthority::Untouched,
+                    command_seq: None,
+                }],
+            });
+        tainted.cursor_warp = Some((4, 4));
+        let wire = encode_reply_v4(&DecodedReplyV4 {
+            reply: tainted,
+            wire: ReplyWireOptionals {
+                suspended_output_present: false,
+            },
+        })
+        .expect("tainted reply encodes");
+        // Shape decode accepts the rows; the host-gated decode refuses on
+        // the first gate (above runs before warp/sticky).
+        decode_reply_v4(&wire).expect("shape decode accepts host-unsupported rows");
+        let error = super::decode_reply_v4_for_host(&wire, &host)
+            .expect_err("macOS host must refuse above/warp rows");
+        assert_eq!(error.kind, "snapshot-invalid");
+        assert_eq!(error.message, "above-capability-false");
+        // Each gate fires independently: warp-only and sticky-only rows
+        // refuse with their own fixed tokens.
+        let mut warp_only = empty_reply();
+        warp_only.cursor_warp = Some((4, 4));
+        let warp_wire = encode_reply_v4(&DecodedReplyV4 {
+            reply: warp_only,
+            wire: ReplyWireOptionals {
+                suspended_output_present: false,
+            },
+        })
+        .expect("warp-only reply encodes");
+        let error = super::decode_reply_v4_for_host(&warp_wire, &host)
+            .expect_err("macOS host must refuse warp point");
+        assert_eq!(error.kind, "snapshot-invalid");
+        assert_eq!(error.message, "warp-capability-false");
+        let mut sticky_only = empty_reply();
+        sticky_only
+            .windows
+            .push(tiler_core::world_report::WindowDesire {
+                lifetime: tiler_core::directional::WindowId("4242_7".to_owned()),
+                output: output(),
+                workspace: "ws-a".to_owned(),
+                allocation: None,
+                effective_frame: None,
+                frame_authority: ScopeAuthority::Untouched,
+                membership_authority: ScopeAuthority::Untouched,
+                floating: false,
+                float_origin: None,
+                frame_operation: None,
+                clear_operation: None,
+                command_seq: None,
+                visibility: None,
+                visibility_authority: ScopeAuthority::Untouched,
+                state: vec![StateTarget {
+                    property: StateProperty::Sticky,
+                    value: true,
+                    authority: ScopeAuthority::Untouched,
+                    command_seq: None,
+                }],
+            });
+        let sticky_wire = encode_reply_v4(&DecodedReplyV4 {
+            reply: sticky_only,
+            wire: ReplyWireOptionals {
+                suspended_output_present: false,
+            },
+        })
+        .expect("sticky-only reply encodes");
+        let error = super::decode_reply_v4_for_host(&sticky_wire, &host)
+            .expect_err("macOS host must refuse sticky target");
+        assert_eq!(error.kind, "snapshot-invalid");
+        assert_eq!(error.message, "sticky-capability-false");
+        // Ordinary save-free replies stay accepted under the same gate
+        // (success leg pinned end-to-end by
+        // `ordinary_save_free_reply_not_held_and_dispatches` dispatching
+        // through the real `codec_transact`).
+        let clean_wire = encode_reply_v4(&DecodedReplyV4 {
+            reply: empty_reply(),
+            wire: ReplyWireOptionals {
+                suspended_output_present: false,
+            },
+        })
+        .expect("ordinary reply encodes");
+        super::decode_reply_v4_for_host(&clean_wire, &host)
+            .expect("ordinary reply must decode under macOS caps");
     }
 
     #[test]
@@ -2368,7 +2864,7 @@ mod tests {
             test_wake: None,
             test_seq: 0,
             last_geometry_key: None,
-            last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            last_presentation: crate::runtime::empty_world_presentation_v4(),
             last_pager_bindings: Vec::new(),
             last_workspace_desires: Vec::new(),
             last_core_generation: String::new(),
@@ -2396,10 +2892,10 @@ mod tests {
 
     fn focus_session() -> WorldSession {
         WorldSession::new(
-            tiler_core::size_hints::FixedSizePredicate::BothAxes,
             true,
             crate::focus_route::FocusRoute::Slps,
             Arc::new(crate::world_sequencer::ObservationClock::new()),
+            &[],
         )
     }
 
@@ -2925,8 +3421,8 @@ mod tests {
     #[test]
     fn held_same_view_reply_preserves_stable_presentation_and_desired() {
         fn unmarked_presentation(
-            presentation: &tiler_core::world_presentation::WorldPresentation,
-        ) -> tiler_core::world_presentation::WorldPresentation {
+            presentation: &tiler_core::world_report::WorldPresentationV4,
+        ) -> tiler_core::world_report::WorldPresentationV4 {
             // The explicit trailing marker is report-dependent (incomplete
             // inventory clears it fail-closed); every other shape is
             // retained-state stable across the hold.
@@ -2949,8 +3445,9 @@ mod tests {
         use tiler_core::geometry::Rect;
         use tiler_core::world_engine::{WorldEngine, WorldOutcome};
         use tiler_core::world_report::{
-            HoldReason, PresentationIngress, ScopeAuthority, ScreenReport, WORLD_CONTRACT_VERSION,
-            WindowFact, WorldReport,
+            HoldReason, NativeWorkspaceFact, PresentationIngressV4, PresentationPagerFrameV4,
+            PresentationRowV4, ScopeAuthority, ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact,
+            WorldReportV4,
         };
 
         fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -2961,56 +3458,82 @@ mod tests {
                 output: OutputId("out-a".to_owned()),
                 full_rect: Some(rect(0, 0, 800, 600)),
                 work_area: Some(rect(0, 0, 800, 560)),
-                gap: 0,
-                outer_gap: 0,
                 complete,
-                primary: true,
+                scale: 1.0,
+                identity: tiler_core::world_report::OutputIdentity::unknown(),
             }
         }
         fn fact() -> WindowFact {
             WindowFact {
                 window: WindowId("4242_7".to_owned()),
-                output: OutputId("out-a".to_owned()),
+                output: Some(OutputId("out-a".to_owned())),
                 rect: Some(rect(0, 0, 400, 300)),
-                floating: false,
-                fit_excluded: false,
-                fullscreen: false,
-                maximized: false,
-                sticky: false,
-                fixed_auto: false,
-                fixed_suppress: false,
-                hints: tiler_core::size_hints::WindowSizeHints::none(),
-                minimized: false,
-                observed_workspace: None,
-                native_workspace: None,
+                fullscreen: Some(false),
+                maximized: Some(false),
+                sticky: Some(false),
+                hints: Some(tiler_core::size_hints::WindowSizeHints::none()),
+                minimized: Some(false),
+                native_workspace: NativeWorkspaceFact::Omitted,
+                host_hidden: Some(false),
+                privileged: Some(false),
+                managed: Some(true),
+                accepts_input: Some(true),
+                activation_inhibited: Some(false),
+                tool_window: Some(false),
+                owned: Some(false),
+                transient: Some(false),
+                modal: Some(false),
+                resizable: Some(true),
+                above: Some(false),
+                below: Some(false),
+                owner: None,
+                parent: None,
+                role: None,
+                app_id: None,
+                executable: Some("synthetic.exe".to_owned()),
+                process_id: Some("foreign-pid".to_owned()),
+                class: Some("Synthetic".to_owned()),
+                title: None,
+                window_type: Some(tiler_core::world_report::WindowType::Normal),
+                activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+                layer: Some(0),
+                fullscreen_owner: None,
+                fullscreen_exitable: None,
+                suppression_available: None,
+                visibility: tiler_core::world_report::VisibilityFact {
+                    visible: Some(true),
+                    suppression_owned: None,
+                },
+                last_write: None,
             }
         }
-        fn ingress() -> PresentationIngress {
-            PresentationIngress {
+        fn ingress() -> PresentationIngressV4 {
+            PresentationIngressV4 {
                 foreground: "4242_7".to_owned(),
+                foreground_minimized: Some(false),
+                foreground_maximized: Some(false),
+                foreground_fullscreen: Some(false),
+                foreground_host_hidden: Some(false),
+                foreground_hidden_workspace: Some(false),
                 foreground_frame: Some(rect(0, 0, 400, 300)),
-                border_enabled: true,
-                underlay_enabled: false,
-                border_gap_px: 0,
-                border_width_px: 3,
-                underlay_extension_px: 3,
                 chord_held: false,
-                ..PresentationIngress::disabled()
+                move_window: String::new(),
+                pager_order: Vec::new(),
+                pager_frames: Vec::new(),
+                witness: None,
+                foreground_out: None,
             }
         }
-        fn report(seq: u64, complete: bool) -> WorldReport {
+        fn report(seq: u64, complete: bool) -> WorldReportV4 {
             let windows = vec![fact()];
             let mut presentation = ingress();
-            presentation.pager_frames = vec![tiler_core::world_report::PresentationPagerFrame {
+            presentation.pager_frames = vec![PresentationPagerFrameV4 {
                 window: WindowId("4242_7".to_owned()),
                 live: Some(rect(0, 0, 400, 300)),
-                float_frame: None,
-                tile_frame: None,
             }];
             presentation.pager_order = vec![WindowId("4242_7".to_owned())];
-            WorldReport {
-                contract_version: WORLD_CONTRACT_VERSION,
-                owner: "owner-a".to_owned(),
+            WorldReportV4 {
+                contract_version: WORLD_CONTRACT_VERSION_V4,
                 adapter_incarnation: "adapter-1".to_owned(),
                 core_generation: "gen-1".to_owned(),
                 observation_seq: seq,
@@ -3018,32 +3541,20 @@ mod tests {
                 request_id: format!("req-{seq}"),
                 command_seq: None,
                 command: None,
-                workspace_mode: tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
                 screens: vec![screen(complete)],
+                held_screens: Vec::new(),
                 windows,
-                views: Vec::new(),
+                held_windows: Vec::new(),
                 closed: vec![],
-                host_owned_workspace_domains: false,
-                equal_workspace_count: false,
-                birth_clear: false,
                 native: Vec::new(),
-                fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-                migration_source_refill:
-                    tiler_core::output_selection::MigrationSourceRefill::default(),
-                anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-                no_space_result: tiler_core::admission::NoSpaceResult::default(),
-                born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-                switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-                fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-                focus_follows_cursor: false,
-                cursor_warp: false,
+                held_native: Vec::new(),
                 cursor: None,
                 cursor_hit: None,
                 focused_global: "4242_7".to_owned(),
                 action_foreground: None,
                 action_cached: None,
                 action_outputs: Vec::new(),
-                default_tiled: true,
+                primary_output: None,
                 inventory_complete: true,
                 gesture_barrier: false,
                 gesture: None,
@@ -3053,11 +3564,16 @@ mod tests {
                 view_attempts: Vec::new(),
                 clear_attempts: Vec::new(),
                 creation_attempts: Vec::new(),
-                presentation,
+                held_attempts: Vec::new(),
+                state_attempts: Vec::new(),
+                focus_feedback: Vec::new(),
+                presentation: PresentationRowV4::Valid(presentation),
+                intent_records: Vec::new(),
+                renderer_input: None,
             }
         }
 
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         let controlled = match engine.handle_report(&report(1, true)) {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("controlled report must accept, got {other:?}"),
@@ -3094,7 +3610,7 @@ mod tests {
             "held rows carry no geometry (core publish): {held:?}"
         );
         // Same view (same homing, same bindings): only the hold differs.
-        let homing = |reply: &tiler_core::world_report::WorldReply| {
+        let homing = |reply: &tiler_core::world_report::WorldReplyV4| {
             reply
                 .windows
                 .iter()
@@ -3118,9 +3634,10 @@ mod tests {
         // cache - only the desired plan truth needs retention. The
         // explicit trailing marker is the one report-dependent exception:
         // incomplete inventory clears it fail-closed.
+        let mut expected = unmarked_presentation(&controlled.presentation);
+        expected.rev = held.presentation.rev;
         assert_eq!(
-            held.presentation,
-            unmarked_presentation(&controlled.presentation),
+            held.presentation, expected,
             "same-view hold carries stable presentation with the marker cleared"
         );
 
@@ -3131,7 +3648,7 @@ mod tests {
         let focus_queue = Arc::new(Mutex::new(Vec::new()));
         let dispatch = |session: &mut WorldSession,
                         retained: &mut RetainedCore,
-                        reply: &tiler_core::world_report::WorldReply| {
+                        reply: &tiler_core::world_report::WorldReplyV4| {
             consume_world_reply(
                 session,
                 retained,
@@ -3224,6 +3741,10 @@ mod tests {
             clear_operation: None,
             floating: false,
             float_origin: None,
+            command_seq: None,
+            visibility: None,
+            visibility_authority: ScopeAuthority::Hold(reason),
+            state: Vec::new(),
         }
     }
 
@@ -3269,7 +3790,7 @@ mod tests {
     /// same-state held reply, its current scopes, and its workareas.
     type StableHoldFixture = (
         AppliedGeometryKey,
-        WorldReply,
+        WorldReplyV4,
         BTreeSet<(String, String)>,
         BTreeMap<(String, String), (Rect, Rect)>,
     );
@@ -3303,6 +3824,10 @@ mod tests {
             clear_operation: None,
             floating: false,
             float_origin: None,
+            command_seq: None,
+            visibility: None,
+            visibility_authority: tiler_core::world_report::ScopeAuthority::Controlled,
+            state: Vec::new(),
         }];
         let (desired, key) = retain_stable_geometry(
             &[],
@@ -3482,6 +4007,10 @@ mod tests {
             clear_operation: None,
             floating: false,
             float_origin: None,
+            command_seq: None,
+            visibility: None,
+            visibility_authority: tiler_core::world_report::ScopeAuthority::Controlled,
+            state: Vec::new(),
         }];
         let (desired, _) = retain_stable_geometry(
             &[prior],
@@ -3523,7 +4052,7 @@ mod tests {
         })
     }
 
-    fn workarea_reply(controlled: bool) -> tiler_core::world_report::WorldReply {
+    fn workarea_reply(controlled: bool) -> tiler_core::world_report::WorldReplyV4 {
         use tiler_core::directional::{OutputId, WindowId};
         use tiler_core::world_report::{ScopeAuthority, TilingMode};
         let mut reply = empty_reply();
@@ -3531,7 +4060,7 @@ mod tests {
             id: "ws-a".to_owned(),
             output: OutputId("out-a".to_owned()),
             native_binding: Some("space-7".to_owned()),
-            scope: "out-a".to_owned(),
+            scope: tiler_core::world_report::AuthorityScope::Output(OutputId("out-a".to_owned())),
             order: 0,
             tiling_mode: TilingMode::Tiled,
             existence: true,
@@ -3561,6 +4090,10 @@ mod tests {
             clear_operation: None,
             floating: false,
             float_origin: None,
+            command_seq: None,
+            visibility: None,
+            visibility_authority: authority,
+            state: Vec::new(),
         }];
         reply
     }
@@ -3580,7 +4113,7 @@ mod tests {
         lock_shared(&shared).native_context = Some(workarea_ctx(560));
         let dispatch = |session: &mut WorldSession,
                         retained: &mut RetainedCore,
-                        reply: &tiler_core::world_report::WorldReply| {
+                        reply: &tiler_core::world_report::WorldReplyV4| {
             consume_world_reply(
                 session,
                 retained,
@@ -3692,13 +4225,14 @@ mod tests {
         let mut reply = empty_reply();
         reply
             .transfers
-            .push(tiler_core::world_report::TransferTarget {
+            .push(tiler_core::world_report::TransferTargetV4 {
                 operation_id: "op-1".to_owned(),
                 kind: tiler_core::world_report::TransferKind::View,
                 target_output: output(),
                 target_workspace: "ws".to_owned(),
                 follow: false,
                 held: true,
+                command_seq: None,
             });
         settle_select_transfers(&mut session, &shared, &reply, 0, 0, 0);
         let guard = lock_shared(&shared);

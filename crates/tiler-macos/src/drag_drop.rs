@@ -1571,7 +1571,8 @@ mod tests {
     use tiler_core::gesture::{GestureIngress, GestureKind, GesturePhase};
     use tiler_core::world_engine::WorldOutcome;
     use tiler_core::world_report::{
-        NativeObservation, NativeOccupancy, ScreenReport, WindowFact, WorldReport,
+        NativeObservation, NativeOccupancy, NativeWorkspaceFact, PresentationIngressV4,
+        PresentationRowV4, ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldReportV4,
     };
 
     /// Offline world drag harness: one screen, two tiled windows on one
@@ -1589,7 +1590,11 @@ mod tests {
     impl WorldDrag {
         fn new() -> Self {
             Self {
-                engine: tiler_core::world_engine::WorldEngine::new("drag-gen").expect("generation"),
+                engine: tiler_core::world_engine::WorldEngine::new_test_host_owned(
+                    "drag-gen",
+                    "drag-fixture-1",
+                )
+                .expect("bound drag engine"),
                 obs: 0,
                 req: 0,
             }
@@ -1598,28 +1603,53 @@ mod tests {
         fn fact(window: &str, rect: Rect) -> WindowFact {
             WindowFact {
                 window: WindowId(window.to_owned()),
-                output: OutputId("macos-display-1".to_owned()),
+                output: Some(OutputId("macos-display-1".to_owned())),
                 rect: Some(rect),
-                floating: false,
-                fit_excluded: false,
-                fullscreen: false,
-                maximized: false,
-                sticky: false,
-                fixed_auto: false,
-                fixed_suppress: false,
-                hints: tiler_core::size_hints::WindowSizeHints::none(),
-                minimized: false,
-                observed_workspace: None,
-                native_workspace: Some("space-11".to_owned()),
+                fullscreen: Some(false),
+                maximized: Some(false),
+                sticky: Some(false),
+                hints: Some(tiler_core::size_hints::WindowSizeHints::none()),
+                minimized: Some(false),
+                native_workspace: NativeWorkspaceFact::Value("space-11".to_owned()),
+                host_hidden: Some(false),
+                privileged: Some(false),
+                managed: Some(true),
+                accepts_input: Some(true),
+                activation_inhibited: Some(false),
+                tool_window: Some(false),
+                owned: Some(false),
+                transient: Some(false),
+                modal: Some(false),
+                resizable: Some(true),
+                above: Some(false),
+                below: Some(false),
+                owner: None,
+                parent: None,
+                role: None,
+                app_id: None,
+                executable: Some("synthetic.exe".to_owned()),
+                process_id: Some("foreign-pid".to_owned()),
+                class: Some("Synthetic".to_owned()),
+                title: None,
+                window_type: Some(tiler_core::world_report::WindowType::Normal),
+                activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+                layer: Some(0),
+                fullscreen_owner: None,
+                fullscreen_exitable: None,
+                suppression_available: None,
+                visibility: tiler_core::world_report::VisibilityFact {
+                    visible: Some(true),
+                    suppression_owned: None,
+                },
+                last_write: None,
             }
         }
 
-        fn report(&mut self, w1: Rect, gesture: Option<GestureIngress>) -> WorldReport {
+        fn report(&mut self, w1: Rect, gesture: Option<GestureIngress>) -> WorldReportV4 {
             self.obs += 1;
             self.req += 1;
-            WorldReport {
-                contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
-                owner: "macos-drag-test".to_owned(),
+            WorldReportV4 {
+                contract_version: WORLD_CONTRACT_VERSION_V4,
                 adapter_incarnation: "drag-fixture-1".to_owned(),
                 core_generation: "drag-gen".to_owned(),
                 observation_seq: self.obs,
@@ -1627,7 +1657,6 @@ mod tests {
                 request_id: format!("req-{}", self.req),
                 command_seq: None,
                 command: None,
-                workspace_mode: tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
                 screens: vec![ScreenReport {
                     output: OutputId("macos-display-1".to_owned()),
                     full_rect: Some(Rect {
@@ -1642,11 +1671,11 @@ mod tests {
                         w: 800,
                         h: 600,
                     }),
-                    gap: 8,
-                    outer_gap: 8,
                     complete: true,
-                    primary: true,
+                    scale: 1.0,
+                    identity: tiler_core::world_report::OutputIdentity::unknown(),
                 }],
+                held_screens: Vec::new(),
                 windows: vec![
                     Self::fact("w1", w1),
                     Self::fact(
@@ -1659,11 +1688,8 @@ mod tests {
                         },
                     ),
                 ],
-                views: vec![],
+                held_windows: Vec::new(),
                 closed: vec![],
-                host_owned_workspace_domains: true,
-                equal_workspace_count: false,
-                birth_clear: false,
                 native: vec![NativeObservation {
                     output: OutputId("macos-display-1".to_owned()),
                     native_order: vec!["space-11".to_owned()],
@@ -1673,33 +1699,29 @@ mod tests {
                         count: None,
                     }],
                 }],
-                fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-                migration_source_refill:
-                    tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-                anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-                no_space_result: tiler_core::admission::NoSpaceResult::default(),
-                born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-                default_tiled: true,
+                held_native: Vec::new(),
+                cursor: None,
+                cursor_hit: None,
                 focused_global: "w1".to_owned(),
                 action_foreground: None,
                 action_cached: None,
                 action_outputs: Vec::new(),
+                primary_output: None,
                 inventory_complete: true,
                 gesture_barrier: false,
                 gesture,
-                switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
-                fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
-                focus_follows_cursor: false,
-                cursor_warp: false,
-                cursor: None,
-                cursor_hit: None,
                 monotonic_ms: 0,
                 frames: Vec::new(),
                 member_attempts: Vec::new(),
                 view_attempts: Vec::new(),
                 clear_attempts: Vec::new(),
                 creation_attempts: Vec::new(),
-                presentation: tiler_core::world_report::PresentationIngress::disabled(),
+                held_attempts: Vec::new(),
+                state_attempts: Vec::new(),
+                focus_feedback: Vec::new(),
+                presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
+                intent_records: Vec::new(),
+                renderer_input: None,
             }
         }
 
@@ -1707,10 +1729,12 @@ mod tests {
             &mut self,
             w1: Rect,
             gesture: Option<GestureIngress>,
-        ) -> tiler_core::world_report::WorldReply {
+        ) -> tiler_core::world_report::WorldReplyV4 {
             let report = self.report(w1, gesture);
             match self.engine.handle_report(&report) {
-                WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => reply,
+                WorldOutcome::Accepted(reply)
+                | WorldOutcome::Duplicate(reply)
+                | WorldOutcome::CommandConsumed(reply) => reply,
                 other => panic!("world drag report must apply, got {other:?}"),
             }
         }
@@ -1734,7 +1758,7 @@ mod tests {
             }
         }
 
-        fn to_preview(reply: &tiler_core::world_report::WorldReply) -> PreviewOutcome {
+        fn to_preview(reply: &tiler_core::world_report::WorldReplyV4) -> PreviewOutcome {
             match &reply.command_result {
                 Some(tiler_core::world_report::CommandResult::DragPreview {
                     rect,

@@ -14,11 +14,10 @@ use std::sync::Arc;
 
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::session::DomainKey;
-use tiler_core::size_hints::{FixedSizePredicate, WindowSizeHints};
+use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
-use tiler_core::world_report::{
-    FrameSetter, HoldReason, ScopeAuthority, WorldCommand, validate_report,
-};
+use tiler_core::world_report::{FrameSetter, HoldReason, ScopeAuthority, WorldCommand};
+use tiler_core::world_report_v4_checks::validate_report_v4_reason;
 
 use crate::ffi::{SlsDisplayRow, SlsSpaceType};
 use crate::focus_route::FocusRoute;
@@ -29,8 +28,7 @@ use crate::runtime_core::{
     rehydrate_cg_alive, snapshot_is_covering,
 };
 use crate::runtime_types::{
-    CgAliveDetail, NativeContext, ObservedWindow, PHASE1_GENERATION, ScopedBackendSnapshot,
-    ScopedWindowMeta,
+    CgAliveDetail, NativeContext, ObservedWindow, ScopedBackendSnapshot, ScopedWindowMeta,
 };
 use crate::topology::{PointsRect, TopologySnapshot};
 use crate::world_builder::{ReportInput, build_report};
@@ -1329,7 +1327,7 @@ fn refused_line_pins_shape_and_correlated_ids() {
     use tiler_core::world_report::SendSource;
     let command = WorldCommand::SendNumbered {
         window: WindowId("4242_8".to_owned()),
-        source: SendSource::HomeThenCachedLive,
+        source: SendSource::HomeThenAction,
         index: 2,
         follow: true,
     };
@@ -1348,7 +1346,7 @@ fn refused_line_pins_shape_and_correlated_ids() {
             Some(5),
             "roster:4242:cg-alive",
         ),
-        "tiler-macos send refused op=send kind=scope-held subject=4242_8 index=2 follow=true source=home-cached-live obs=5 req=5 req_id=req-5 command_seq=Some(5) held=roster:4242:cg-alive",
+        "tiler-macos send refused op=send kind=scope-held subject=4242_8 index=2 follow=true source=home-action obs=5 req=5 req_id=req-5 command_seq=Some(5) held=roster:4242:cg-alive",
     );
     // Explicit sources render the output id; unreadable scopes join the
     // held detail verbatim (never titles, content, or paths).
@@ -1430,7 +1428,6 @@ fn admitted_line_pins_subject_target_source_and_op() {
 /// never a live machine value (separate-Spaces homing only needs the row
 /// identifier to equal the display UUID exactly).
 const REPRO_UUID: &str = "deadbeef-dead-4000-8000-deadbeefdead";
-const REPRO_OWNER: &str = "macos-phase-1";
 const REPRO_GENERATION: &str = "gen-1";
 const REPRO_INCARNATION: &str = "adapter-1";
 
@@ -1509,6 +1506,42 @@ fn repro_global(_space: u64, pid: u32, wid: u32) -> String {
     format!("{pid}_{wid}")
 }
 
+fn repro_engine() -> WorldEngine {
+    WorldEngine::new_test_bound_with_capabilities(
+        REPRO_GENERATION,
+        REPRO_INCARNATION,
+        crate::world_connection::macos_capabilities(),
+    )
+    .expect("production capabilities bind")
+}
+
+/// Explicit synthetic captures for every repro member window: ordinary
+/// `AXWindow`/`AXStandardWindow`, non-modal, resizable, base layer,
+/// regular app, visible. Never a policy derivation.
+fn repro_raw_for(
+    members: &BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
+) -> BTreeMap<String, crate::runtime_types::WindowRawFacts> {
+    let mut raw = BTreeMap::new();
+    for pairs in members.values() {
+        for (pid, window) in pairs {
+            raw.insert(
+                crate::runtime_types::window_id(*pid, window.wid),
+                crate::runtime_types::WindowRawFacts {
+                    role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                    subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                    modal: Some(false),
+                    resizable: Some(true),
+                    layer: Some(0),
+                    app_id: Some("com.example.app".to_owned()),
+                    activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+                    host_hidden: Some(false),
+                },
+            );
+        }
+    }
+    raw
+}
+
 #[allow(clippy::too_many_arguments)]
 fn repro_report(
     ctx: &NativeContext,
@@ -1522,9 +1555,8 @@ fn repro_report(
     req_id: &str,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> tiler_core::world_report::WorldReport {
+) -> tiler_core::world_report::WorldReportV4 {
     let mut input = ReportInput::new(
-        REPRO_OWNER,
         REPRO_INCARNATION,
         REPRO_GENERATION,
         ctx,
@@ -1541,6 +1573,8 @@ fn repro_report(
     );
     input.command_seq = command_seq;
     input.command = command;
+    let raw = repro_raw_for(members);
+    input.raw = &raw;
     build_report(&mut input)
 }
 
@@ -1556,9 +1590,9 @@ fn repro_empty_maps() -> (
 /// runtime started on a non-first Space still sends by native ordinal. A
 /// startup on 277 with the subject there sends Desktop-1 (positional index
 /// 1 over the adopted native-order ring), and a startup on 1 keeps the
-/// proven Desktop-2 path. Same-Space targets refuse as honest `unchanged`
-/// no-ops (shared-core `RefusalKind::Unchanged`); unknown logical targets
-/// keep their honest `send-target-unknown` refusals.
+/// proven Desktop-2 path. Same-Space targets are honest no-ops
+/// (shared-core internal unchanged maps to `operation-refused`); unknown
+/// logical targets keep their honest `send-target-unknown` refusals.
 #[test]
 fn explicit_send_resolves_native_ordinal_once_at_admission() {
     use crate::world_command_map::send_command;
@@ -1596,7 +1630,7 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
 
     // The admitted transfer retains under the adopted logical for native
     // Desktop-1 (ring position 1 in native order), never a guessed id.
-    let mut engine = WorldEngine::new(REPRO_GENERATION).expect("generation parses");
+    let mut engine = repro_engine();
     let members = repro_members(277, 4242, 7);
     let global = repro_global(277, 4242, 7);
     let (memory, closed, unreadable) = repro_empty_maps();
@@ -1613,7 +1647,10 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
         None,
         None,
     );
-    assert!(validate_report(&first), "producer report validates");
+    assert!(
+        validate_report_v4_reason(&first).is_none(),
+        "producer report validates"
+    );
     assert!(matches!(
         engine.handle_report(&first),
         WorldOutcome::Accepted(_)
@@ -1632,7 +1669,7 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
         Some(2),
         Some(command),
     );
-    assert!(validate_report(&second));
+    assert!(validate_report_v4_reason(&second).is_none());
     assert!(
         matches!(engine.handle_report(&second), WorldOutcome::Accepted(_)),
         "Desktop-1 from a 277-started runtime admits"
@@ -1654,7 +1691,7 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
     let ctx = repro_ctx(1);
     let sid = context_target_sid(&ctx, &output, 2).expect("Desktop-2 binds");
     assert_eq!(sid, 277);
-    let mut engine = WorldEngine::new(REPRO_GENERATION).expect("generation parses");
+    let mut engine = repro_engine();
     let members = repro_members(1, 4242, 8);
     let global = repro_global(1, 4242, 8);
     let (memory, closed, unreadable) = repro_empty_maps();
@@ -1671,7 +1708,7 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
         None,
         None,
     );
-    assert!(validate_report(&first));
+    assert!(validate_report_v4_reason(&first).is_none());
     assert!(matches!(
         engine.handle_report(&first),
         WorldOutcome::Accepted(_)
@@ -1690,7 +1727,7 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
         Some(2),
         Some(command),
     );
-    assert!(validate_report(&second));
+    assert!(validate_report_v4_reason(&second).is_none());
     assert!(
         matches!(engine.handle_report(&second), WorldOutcome::Accepted(_)),
         "Desktop-2 from a 1-started runtime admits"
@@ -1708,11 +1745,12 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
     assert_eq!(windowed.len(), 1);
     assert_eq!(windowed[0].target_workspace, "ws-2");
 
-    // Same-Space target is an honest `unchanged` no-op (shared-core
-    // `RefusalKind::Unchanged`): the current ordinal resolves to the
-    // source home itself. No transfer, no native effect.
+    // Same-Space target is an honest no-op (shared-core internal
+    // `Unchanged` maps to the existing v4 `operation-refused` command
+    // result): the current ordinal resolves to the source home itself.
+    // No transfer, no native effect.
     let ctx = repro_ctx(277);
-    let mut engine = WorldEngine::new(REPRO_GENERATION).expect("generation parses");
+    let mut engine = repro_engine();
     let members = repro_members(277, 4242, 7);
     let global = repro_global(277, 4242, 7);
     let (memory, closed, unreadable) = repro_empty_maps();
@@ -1747,15 +1785,31 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
         Some(2),
         Some(command),
     );
-    assert!(matches!(
-        engine.handle_report(&second),
-        WorldOutcome::Rejected {
-            kind: "unchanged",
-            ..
+    match engine.handle_report(&second) {
+        WorldOutcome::Accepted(reply) => {
+            assert_eq!(
+                reply.command_result,
+                Some(tiler_core::world_report::CommandResult::Rejected {
+                    kind: tiler_core::world_report::CommandRejectKind::OperationRefused
+                }),
+                "same-current send refuses operation-refused without mutation"
+            );
+            assert!(!reply.command_consumed, "refused command consumes nothing");
+            assert!(
+                reply.transfers.is_empty(),
+                "no transfer on same-current no-op"
+            );
+            assert!(reply.effects.is_empty(), "no effect on same-current no-op");
         }
-    ));
+        other => panic!("same-current send refuses operation-refused, got {other:?}"),
+    }
+    assert!(
+        engine.retained_transfers().is_empty(),
+        "refused same-current send retains no transfer"
+    );
 
-    // Unknown logical target keeps its honest refusal.
+    // Unknown logical target keeps its honest refusal (v4 command
+    // result, same closed kind).
     let command = WorldCommand::Send {
         window: WindowId("4242_7".to_owned()),
         target_output: output,
@@ -1770,33 +1824,40 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
         &unreadable,
         &global,
         3,
-        2,
-        "req-2b",
-        Some(2),
+        3,
+        "req-3",
+        Some(3),
         Some(command),
     );
-    assert!(matches!(
-        engine.handle_report(&third),
-        WorldOutcome::Rejected {
-            kind: "send-target-unknown",
-            ..
+    match engine.handle_report(&third) {
+        WorldOutcome::Accepted(reply) => {
+            assert_eq!(
+                reply.command_result,
+                Some(tiler_core::world_report::CommandResult::Rejected {
+                    kind: tiler_core::world_report::CommandRejectKind::SendTargetUnknown
+                }),
+                "unknown logical target keeps send-target-unknown"
+            );
+            assert!(!reply.command_consumed, "refused command consumes nothing");
+            assert!(reply.transfers.is_empty(), "no transfer on unknown target");
+            assert!(reply.effects.is_empty(), "no effect on unknown target");
         }
-    ));
+        other => panic!("unknown target keeps send-target-unknown, got {other:?}"),
+    }
 }
 
-/// Same-current numbered send is an honest unchanged no-op aligned with the
+/// Same-current numbered send is an honest no-op aligned with the
 /// shared core: the producer ordinal that resolves to the current home
 /// (Desktop-2 while started on 277) dispatches the positional
-/// `SendNumbered` against the source home itself, and the world refuses it
-/// as `unchanged` - the
-/// [`tiler_core::session::RefusalKind::Unchanged`] verdict the core returns
+/// `SendNumbered` against the source home itself, and the world accepts
+/// the report with an `operation-refused` command result - the v4 mapping
+/// of the internal [`tiler_core::session::RefusalKind::Unchanged`] verdict
 /// for same-domain sends - retaining no transfer, binding no claim (so the
 /// drain never submits to the effect owner and posts nothing native), and
 /// repeating identically without replay. Stale/unmanaged fences stay
 /// intact: an unknown subject still refuses `send-window-unknown`.
 #[test]
 fn same_current_numbered_send_is_honest_unchanged_noop() {
-    use tiler_core::session::RefusalKind;
     let ctx = repro_ctx(277);
     let output = OutputId(crate::topology::output_key(1));
     // The honest producer path: Desktop-2 resolves to SID 277, the current
@@ -1808,7 +1869,7 @@ fn same_current_numbered_send_is_honest_unchanged_noop() {
     let members = repro_members(277, 4242, 7);
     let global = repro_global(277, 4242, 7);
     let (memory, closed, unreadable) = repro_empty_maps();
-    let mut engine = WorldEngine::new(REPRO_GENERATION).expect("generation parses");
+    let mut engine = repro_engine();
     let first = repro_report(
         &ctx,
         &members,
@@ -1822,13 +1883,14 @@ fn same_current_numbered_send_is_honest_unchanged_noop() {
         None,
         None,
     );
-    assert!(validate_report(&first));
+    assert!(validate_report_v4_reason(&first).is_none());
     assert!(matches!(
         engine.handle_report(&first),
         WorldOutcome::Accepted(_)
     ));
-    // Same-current refuses as `unchanged` with the shared-core wording -
-    // never a native transfer, never a mistargeted failure.
+    // Same-current accepts the report with an `operation-refused`
+    // command result (internal unchanged mapping) - never a native
+    // transfer, never a mistargeted failure.
     let second = repro_report(
         &ctx,
         &members,
@@ -1842,13 +1904,24 @@ fn same_current_numbered_send_is_honest_unchanged_noop() {
         Some(2),
         Some(command.clone()),
     );
-    assert!(validate_report(&second));
+    assert!(validate_report_v4_reason(&second).is_none());
     match engine.handle_report(&second) {
-        WorldOutcome::Rejected { kind, message } => {
-            assert_eq!(kind, RefusalKind::Unchanged.as_str());
-            assert_eq!(message, RefusalKind::Unchanged.message());
+        WorldOutcome::Accepted(reply) => {
+            assert_eq!(
+                reply.command_result,
+                Some(tiler_core::world_report::CommandResult::Rejected {
+                    kind: tiler_core::world_report::CommandRejectKind::OperationRefused
+                }),
+                "same-current send refuses operation-refused without mutation"
+            );
+            assert!(!reply.command_consumed, "refused command consumes nothing");
+            assert!(
+                reply.transfers.is_empty(),
+                "no transfer on same-current no-op"
+            );
+            assert!(reply.effects.is_empty(), "no effect on same-current no-op");
         }
-        other => panic!("same-current send refuses unchanged, got {other:?}"),
+        other => panic!("same-current send refuses operation-refused, got {other:?}"),
     }
     assert!(
         engine.retained_transfers().is_empty(),
@@ -1868,19 +1941,25 @@ fn same_current_numbered_send_is_honest_unchanged_noop() {
         Some(3),
         Some(command),
     );
-    assert!(validate_report(&third));
-    assert!(
-        matches!(
-            engine.handle_report(&third),
-            WorldOutcome::Rejected {
-                kind: "unchanged",
-                ..
-            }
-        ),
-        "repeat same-current send still refuses without replay"
-    );
+    assert!(validate_report_v4_reason(&third).is_none());
+    match engine.handle_report(&third) {
+        WorldOutcome::Accepted(reply) => {
+            assert_eq!(
+                reply.command_result,
+                Some(tiler_core::world_report::CommandResult::Rejected {
+                    kind: tiler_core::world_report::CommandRejectKind::OperationRefused
+                }),
+                "repeat same-current send still refuses without replay"
+            );
+            assert!(!reply.command_consumed, "refused command consumes nothing");
+            assert!(reply.transfers.is_empty(), "no transfer on repeat no-op");
+            assert!(reply.effects.is_empty(), "no effect on repeat no-op");
+        }
+        other => panic!("repeat same-current send still refuses without replay, got {other:?}"),
+    }
     assert!(engine.retained_transfers().is_empty());
-    // Unmanaged-subject fence is untouched by the unchanged path.
+    // Unmanaged-subject fence is untouched by the no-op path (v4 command
+    // result, same closed kind).
     let unknown = WorldCommand::Send {
         window: WindowId("4242_9".to_owned()),
         target_output: output,
@@ -1900,13 +1979,21 @@ fn same_current_numbered_send_is_honest_unchanged_noop() {
         Some(4),
         Some(unknown),
     );
-    assert!(matches!(
-        engine.handle_report(&fourth),
-        WorldOutcome::Rejected {
-            kind: "send-window-unknown",
-            ..
+    match engine.handle_report(&fourth) {
+        WorldOutcome::Accepted(reply) => {
+            assert_eq!(
+                reply.command_result,
+                Some(tiler_core::world_report::CommandResult::Rejected {
+                    kind: tiler_core::world_report::CommandRejectKind::SendWindowUnknown
+                }),
+                "unknown subject keeps send-window-unknown"
+            );
+            assert!(!reply.command_consumed, "refused command consumes nothing");
+            assert!(reply.transfers.is_empty(), "no transfer on unknown subject");
+            assert!(reply.effects.is_empty(), "no effect on unknown subject");
         }
-    ));
+        other => panic!("unknown subject keeps send-window-unknown, got {other:?}"),
+    }
 }
 
 /// Positional sends resolve native order under adoption: on a 277-started
@@ -1930,7 +2017,7 @@ fn positional_send_resolves_native_order_under_adoption() {
     // Positional path: SendNumbered index 1 resolves through the adopted
     // send ring in native order, so it names Desktop-1 and admits with a
     // retained window transfer.
-    let mut engine = WorldEngine::new(REPRO_GENERATION).expect("generation parses");
+    let mut engine = repro_engine();
     let first = repro_report(
         &ctx,
         &members,
@@ -1944,7 +2031,7 @@ fn positional_send_resolves_native_order_under_adoption() {
         None,
         None,
     );
-    assert!(validate_report(&first));
+    assert!(validate_report_v4_reason(&first).is_none());
     assert!(matches!(
         engine.handle_report(&first),
         WorldOutcome::Accepted(_)
@@ -1969,7 +2056,7 @@ fn positional_send_resolves_native_order_under_adoption() {
         Some(legacy_command),
     );
     assert!(
-        validate_report(&legacy_second),
+        validate_report_v4_reason(&legacy_second).is_none(),
         "positional report is well-formed wire input"
     );
     let reply = match engine.handle_report(&legacy_second) {
@@ -1995,7 +2082,7 @@ fn positional_send_resolves_native_order_under_adoption() {
     // Production admission path: identical context/report shape, but the
     // command comes from the admission mapping and admits with stable
     // follow + operation identity.
-    let mut fixed = WorldEngine::new(REPRO_GENERATION).expect("generation parses");
+    let mut fixed = repro_engine();
     let first = repro_report(
         &ctx,
         &members,
@@ -2009,7 +2096,7 @@ fn positional_send_resolves_native_order_under_adoption() {
         None,
         None,
     );
-    assert!(validate_report(&first));
+    assert!(validate_report_v4_reason(&first).is_none());
     assert!(matches!(
         fixed.handle_report(&first),
         WorldOutcome::Accepted(_)
@@ -2029,7 +2116,7 @@ fn positional_send_resolves_native_order_under_adoption() {
         Some(fixed_command),
     );
     assert!(
-        validate_report(&fixed_second),
+        validate_report_v4_reason(&fixed_second).is_none(),
         "positional report is well-formed wire input"
     );
     assert!(
@@ -2301,6 +2388,13 @@ fn live_snapshot(
                 fullscreen: false,
                 minimized: false,
                 hidden: false,
+                role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                modal: Some(false),
+                resizable: Some(true),
+                layer: Some(0),
+                app_id: Some("com.example.app".to_owned()),
+                activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
             })
             .collect(),
         excluded: 0,
@@ -2419,7 +2513,7 @@ fn dispatch_join(
     req: u64,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-) -> tiler_core::world_report::WorldReport {
+) -> tiler_core::world_report::WorldReportV4 {
     build_dispatch_report(
         session,
         retained,
@@ -2470,12 +2564,17 @@ fn joined_home_send_arrival() -> (RetainedCore, WorldSession, WorldEngine) {
         },
     );
     let mut session = WorldSession::new(
-        FixedSizePredicate::BothAxes,
         true,
         FocusRoute::Slps,
         Arc::new(ObservationClock::new()),
+        &[],
     );
-    let mut engine = WorldEngine::new(PHASE1_GENERATION).expect("phase-1 generation parses");
+    let mut engine = WorldEngine::new_test_bound_with_capabilities(
+        &session.sequencer().bound_generation(),
+        session.incarnation(),
+        crate::world_connection::macos_capabilities(),
+    )
+    .expect("joined engine binds to session incarnation/generation with production caps");
     let w7 = repro_observed(7);
     let w8 = repro_observed(8);
 
@@ -2498,7 +2597,7 @@ fn joined_home_send_arrival() -> (RetainedCore, WorldSession, WorldEngine) {
         "home read holds nothing"
     );
     let first = dispatch_join(&mut session, &retained, &ctx, 1, 1, None, None);
-    assert!(validate_report(&first));
+    assert!(validate_report_v4_reason(&first).is_none());
     assert!(first.inventory_complete, "home inventory is complete");
     assert!(matches!(
         engine.handle_report(&first),
@@ -2511,7 +2610,7 @@ fn joined_home_send_arrival() -> (RetainedCore, WorldSession, WorldEngine) {
     retained.observed_focus = Some(WindowId("4242_7".to_owned()));
     let send2 = send_command_implicit(&send(2), "4242_7").expect("production send route");
     let second = dispatch_join(&mut session, &retained, &ctx, 2, 2, Some(2), Some(send2));
-    assert!(validate_report(&second));
+    assert!(validate_report_v4_reason(&second).is_none());
     match engine.handle_report(&second) {
         WorldOutcome::Accepted(_) => {}
         other => panic!("first send-2 follow admits, got {other:?}"),
@@ -2543,7 +2642,7 @@ fn joined_home_send_arrival() -> (RetainedCore, WorldSession, WorldEngine) {
         "arrival read holds nothing"
     );
     let third = dispatch_join(&mut session, &retained, &ctx277, 3, 3, None, None);
-    assert!(validate_report(&third));
+    assert!(validate_report_v4_reason(&third).is_none());
     assert!(third.inventory_complete, "arrival inventory is complete");
     assert!(
         matches!(engine.handle_report(&third), WorldOutcome::Accepted(_)),
@@ -2608,7 +2707,7 @@ fn send_to_occupied_existing_keeps_spare_logical_without_native_desire() {
         &ctx277,
     );
     let stable = dispatch_join(&mut session, &retained, &ctx277, 4, 4, None, None);
-    assert!(validate_report(&stable));
+    assert!(validate_report_v4_reason(&stable).is_none());
     assert!(stable.inventory_complete, "stable inventory is complete");
     let reply = match engine.handle_report(&stable) {
         WorldOutcome::Accepted(reply) => reply,
@@ -2767,7 +2866,7 @@ fn send_numbered_3_to_spare_executes_through_desire_backed_lane() {
         &ctx1,
     );
     let first = dispatch_join(&mut session, &retained, &ctx1, 1, 1, None, None);
-    assert!(validate_report(&first));
+    assert!(validate_report_v4_reason(&first).is_none());
     assert!(matches!(
         session.engine_mut().handle_report(&first),
         WorldOutcome::Accepted(_)
@@ -2775,7 +2874,7 @@ fn send_numbered_3_to_spare_executes_through_desire_backed_lane() {
     retained.observed_focus = Some(WindowId("4242_7".to_owned()));
     let send2 = send_command_implicit(&send(2), "4242_7").expect("send-2 maps");
     let second = dispatch_join(&mut session, &retained, &ctx277, 2, 2, Some(2), Some(send2));
-    assert!(validate_report(&second));
+    assert!(validate_report_v4_reason(&second).is_none());
     assert!(matches!(
         session.engine_mut().handle_report(&second),
         WorldOutcome::Accepted(_)
@@ -2806,7 +2905,7 @@ fn send_numbered_3_to_spare_executes_through_desire_backed_lane() {
         &ctx277,
     );
     let third = dispatch_join(&mut session, &retained, &ctx277, 3, 3, None, None);
-    assert!(validate_report(&third));
+    assert!(validate_report_v4_reason(&third).is_none());
     assert!(matches!(
         session.engine_mut().handle_report(&third),
         WorldOutcome::Accepted(_)
@@ -2816,7 +2915,7 @@ fn send_numbered_3_to_spare_executes_through_desire_backed_lane() {
         "arrival settles the send-2 transfer"
     );
     let fourth = dispatch_join(&mut session, &retained, &ctx277, 4, 4, None, None);
-    assert!(validate_report(&fourth));
+    assert!(validate_report_v4_reason(&fourth).is_none());
     let stable_reply = match session.engine_mut().handle_report(&fourth) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("stable observation applies, got {other:?}"),
@@ -2860,7 +2959,7 @@ fn send_numbered_3_to_spare_executes_through_desire_backed_lane() {
         Some(5),
         Some(cmd3),
     );
-    assert!(validate_report(&fifth));
+    assert!(validate_report_v4_reason(&fifth).is_none());
     let reply = match session.engine_mut().handle_report(&fifth) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("send-3 report applies, got {other:?}"),
@@ -3713,7 +3812,7 @@ fn return_after_send_follow_with_ax_partial_omit_recovers_target_scope() {
         "omitted subject keeps its off-current home on fresh facts"
     );
     let fourth = dispatch_join(&mut session, &retained, &ctx1, 4, 4, None, None);
-    assert!(validate_report(&fourth));
+    assert!(validate_report_v4_reason(&fourth).is_none());
     assert!(fourth.inventory_complete, "re-homed inventory is complete");
     let space277 = ctx1
         .domains
@@ -3760,7 +3859,7 @@ fn return_after_send_follow_with_ax_partial_omit_recovers_target_scope() {
         Some(5),
         Some(to_off_current),
     );
-    assert!(validate_report(&fifth));
+    assert!(validate_report_v4_reason(&fifth).is_none());
     assert!(fifth.inventory_complete, "send report is complete");
     match engine.handle_report(&fifth) {
         WorldOutcome::Accepted(_) => {}
@@ -3794,7 +3893,7 @@ fn return_after_send_follow_with_ax_partial_omit_recovers_target_scope() {
         "arrival read holds nothing"
     );
     let sixth = dispatch_join(&mut session, &retained, &ctx277b, 6, 6, None, None);
-    assert!(validate_report(&sixth));
+    assert!(validate_report_v4_reason(&sixth).is_none());
     assert!(sixth.inventory_complete, "arrival inventory is complete");
     assert!(
         matches!(engine.handle_report(&sixth), WorldOutcome::Accepted(_)),
@@ -3844,7 +3943,7 @@ fn cg_alive_unreadable_membership_holds_target_scope() {
         "unknown subject loses homing"
     );
     let fourth = dispatch_join(&mut session, &retained, &ctx1, 4, 4, None, None);
-    assert!(validate_report(&fourth));
+    assert!(validate_report_v4_reason(&fourth).is_none());
     assert!(
         !fourth.inventory_complete,
         "unknown hold fences the whole report"
@@ -3855,14 +3954,18 @@ fn cg_alive_unreadable_membership_holds_target_scope() {
         .find(|w| w.window.0 == "4242_7")
         .expect("unknown-home fact retained, never dropped");
     assert_eq!(
-        fact7.native_workspace, None,
+        fact7.native_workspace.as_deref(),
+        None,
         "unknown home carries no native receipt"
     );
     match engine.handle_report(&fourth) {
         WorldOutcome::Accepted(reply) => {
             assert!(
-                reply.scopes.iter().any(|s| s.scope.contains("ws-2")
-                    && s.authority == ScopeAuthority::Hold(HoldReason::IncompleteInventory)),
+                reply.scopes.iter().any(|s| s.scope.covers_workspace(
+                    &tiler_core::directional::OutputId(crate::topology::output_key(1)),
+                    "ws-2"
+                ) && s.authority
+                    == ScopeAuthority::Hold(HoldReason::IncompleteInventory)),
                 "adoption fence holds the existing off-current target scope, scopes={:?}",
                 reply.scopes,
             );
@@ -3884,16 +3987,24 @@ fn cg_alive_unreadable_membership_holds_target_scope() {
         Some(5),
         Some(to_off_current),
     );
-    assert!(validate_report(&fifth));
+    assert!(validate_report_v4_reason(&fifth).is_none());
     assert!(
         !fifth.inventory_complete,
         "hold persists across the send report"
     );
     match engine.handle_report(&fifth) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(
-            kind, "scope-held",
-            "send to the genuinely unknown off-current target fences on the held scope"
-        ),
+        WorldOutcome::Accepted(reply) => {
+            assert_eq!(
+                reply.command_result,
+                Some(tiler_core::world_report::CommandResult::Rejected {
+                    kind: tiler_core::world_report::CommandRejectKind::ScopeHeld
+                }),
+                "send to the genuinely unknown off-current target fences on the held scope"
+            );
+            assert!(!reply.command_consumed, "held send consumes nothing");
+            assert!(reply.transfers.is_empty(), "held send transfers nothing");
+            assert!(reply.effects.is_empty(), "held send effects nothing");
+        }
         other => panic!("send to held off-current target refuses scope-held, got {other:?}"),
     }
 }
@@ -3934,13 +4045,16 @@ fn cg_unreadable_oracle_holds_target_scope() {
         "unknown subject loses homing"
     );
     let fourth = dispatch_join(&mut session, &retained, &ctx1, 4, 4, None, None);
-    assert!(validate_report(&fourth));
+    assert!(validate_report_v4_reason(&fourth).is_none());
     assert!(!fourth.inventory_complete, "hold fences the report");
     match engine.handle_report(&fourth) {
         WorldOutcome::Accepted(reply) => {
             assert!(
-                reply.scopes.iter().any(|s| s.scope.contains("ws-2")
-                    && s.authority == ScopeAuthority::Hold(HoldReason::IncompleteInventory)),
+                reply.scopes.iter().any(|s| s.scope.covers_workspace(
+                    &tiler_core::directional::OutputId(crate::topology::output_key(1)),
+                    "ws-2"
+                ) && s.authority
+                    == ScopeAuthority::Hold(HoldReason::IncompleteInventory)),
                 "adoption fence holds the target scope, scopes={:?}",
                 reply.scopes,
             );
@@ -3958,12 +4072,20 @@ fn cg_unreadable_oracle_holds_target_scope() {
         Some(5),
         Some(to_off_current),
     );
-    assert!(validate_report(&fifth));
+    assert!(validate_report_v4_reason(&fifth).is_none());
     match engine.handle_report(&fifth) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(
-            kind, "scope-held",
-            "send to the unreadable-oracle target fences on the held scope"
-        ),
+        WorldOutcome::Accepted(reply) => {
+            assert_eq!(
+                reply.command_result,
+                Some(tiler_core::world_report::CommandResult::Rejected {
+                    kind: tiler_core::world_report::CommandRejectKind::ScopeHeld
+                }),
+                "send to the unreadable-oracle target fences on the held scope"
+            );
+            assert!(!reply.command_consumed, "held send consumes nothing");
+            assert!(reply.transfers.is_empty(), "held send transfers nothing");
+            assert!(reply.effects.is_empty(), "held send effects nothing");
+        }
         other => panic!("send to held target refuses scope-held, got {other:?}"),
     }
 }
@@ -3975,18 +4097,23 @@ fn cg_unreadable_oracle_holds_target_scope() {
 #[test]
 fn actual_close_prunes_and_releases_hold() {
     let mut session = WorldSession::new(
-        FixedSizePredicate::BothAxes,
         true,
         FocusRoute::Slps,
         Arc::new(ObservationClock::new()),
+        &[],
     );
-    let mut engine = WorldEngine::new(PHASE1_GENERATION).expect("phase-1 generation parses");
+    let mut engine = WorldEngine::new_test_bound_with_capabilities(
+        &session.sequencer().bound_generation(),
+        session.incarnation(),
+        crate::world_connection::macos_capabilities(),
+    )
+    .expect("close engine binds to session incarnation/generation with production caps");
     let w8 = repro_observed(8);
 
     // Converge the home leg through the joined report path first.
     let (mut retained, ctx1) = home_both_on_1();
     let first = dispatch_join(&mut session, &retained, &ctx1, 1, 1, None, None);
-    assert!(validate_report(&first));
+    assert!(validate_report_v4_reason(&first).is_none());
     assert!(first.inventory_complete, "home inventory is complete");
     assert!(matches!(
         engine.handle_report(&first),
@@ -4014,7 +4141,7 @@ fn actual_close_prunes_and_releases_hold() {
         session.pending_closes.insert(id.clone());
     }
     let second = dispatch_join(&mut session, &retained, &ctx1, 2, 2, None, None);
-    assert!(validate_report(&second));
+    assert!(validate_report_v4_reason(&second).is_none());
     assert!(second.inventory_complete, "close report is complete");
     assert!(
         second.closed.iter().any(|id| id.0 == "4242_7"),
@@ -4060,13 +4187,13 @@ fn cg_alive_current_target_holds_pending_ax_then_recovers() {
         "stale home drops instead of promoting to current"
     );
     let mut session = WorldSession::new(
-        FixedSizePredicate::BothAxes,
         true,
         FocusRoute::Slps,
         Arc::new(ObservationClock::new()),
+        &[],
     );
     let held = dispatch_join(&mut session, &retained, &ctx, 2, 2, None, None);
-    assert!(validate_report(&held));
+    assert!(validate_report_v4_reason(&held).is_none());
     assert!(!held.inventory_complete, "hold fences inventory");
     // Fresh AX observes 7 on the current Space: authoritative truth clears.
     drive_covering_snapshot(
@@ -4091,7 +4218,7 @@ fn cg_alive_current_target_holds_pending_ax_then_recovers() {
         "fresh AX re-homes current"
     );
     let recovered = dispatch_join(&mut session, &retained, &ctx, 3, 3, None, None);
-    assert!(validate_report(&recovered));
+    assert!(validate_report_v4_reason(&recovered).is_none());
     assert!(recovered.inventory_complete, "inventory is complete");
 }
 
@@ -4151,6 +4278,15 @@ fn cg_alive_skips_excluded_and_foreign_lifetimes() {
             minimized_meta: false,
             hidden_meta: false,
             excluded: Some(ExcludeReason::Minimized),
+
+            role: None,
+
+            subrole: None,
+            modal: None,
+            resizable: None,
+            layer: None,
+            app_id: None,
+            activation_policy: None,
         },
     );
     let mut snap = live_snapshot(
@@ -4247,10 +4383,10 @@ fn recovering_pid_does_not_release_other_pid_hold() {
         "other PID's hold survives a sibling recovery"
     );
     let mut session = WorldSession::new(
-        FixedSizePredicate::BothAxes,
         true,
         FocusRoute::Slps,
         Arc::new(ObservationClock::new()),
+        &[],
     );
     let report = dispatch_join(&mut session, &retained, &ctx, 2, 2, None, None);
     assert!(
@@ -4328,13 +4464,13 @@ fn non_covering_empty_ax_with_cg_alive_rehomes_hidden() {
         "hidden home follows fresh facts"
     );
     let mut session = WorldSession::new(
-        FixedSizePredicate::BothAxes,
         true,
         FocusRoute::Slps,
         Arc::new(ObservationClock::new()),
+        &[],
     );
     let report = dispatch_join(&mut session, &retained, &ctx277, 2, 2, None, None);
-    assert!(validate_report(&report));
+    assert!(validate_report_v4_reason(&report).is_none());
     assert!(report.inventory_complete, "inventory is complete");
 }
 

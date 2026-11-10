@@ -8,12 +8,14 @@
 //! plus `launchDate` — a missing launch date refuses, never falls back) and
 //! creates the [`ScopedAxBackend`] that runs on the owning per-app AX
 //! thread. The backend reads with [`crate::native_facts::read_app_window_facts`]
-//! plus [`classify_all`](crate::native_facts::NativeReadOutcome::classify_all)
-//! (whole-snapshot refusal on the first gap — an incomplete read never
-//! publishes as a complete replacement), classifies through the existing
-//! [`crate::classifier`], attaches per-window Space membership, and actuates
-//! through fenced setters. Observer notifications trigger rereads (same
-//! [`crate::ffi::Phase1Observer`] shape as the Phase 1 backend).
+//! (whole-snapshot refusal on the first incomplete leg — an incomplete read
+//! never publishes as a complete replacement), publishes live rows with raw
+//! nullable facts for every in-scope safely observed window (the core owns
+//! classification; the producer never pre-omits accessory/prohibited,
+//! nonordinary-layer, or unknown-role shapes), attaches per-window Space
+//! membership, and actuates through fenced setters. Observer notifications
+//! trigger rereads (same [`crate::ffi::Phase1Observer`] shape as the Phase 1
+//! backend).
 //!
 //! Safety contract (every AX setter and every focus dispatch):
 //! 1. Revalidate the bound [`crate::scope::ProcessIdentity`] (bundle plus
@@ -467,15 +469,20 @@ pub fn validate_identity_triple(
     if pid <= 1 || pid > i32::MAX as u32 {
         return Err(format!("refusing out-of-range pid {pid}"));
     }
+    // M1 own-process-only suppression: the current process never binds,
+    // even unscoped. Same bundle in a different process stays eligible.
+    if pid == std::process::id() {
+        return Err("refusing own-process identity".to_owned());
+    }
     match bundle {
         Some(id) if scope.allows_effect(Some(id)) => {}
-        Some(id) if is_ghostty_bundle(id) => {
+        Some(id) if is_ghostty_bundle(id) && !scope.is_unscoped() => {
             return Err("refusing Ghostty identity".to_owned());
         }
-        Some(id) if id == crate::BUNDLE_ID => {
+        Some(id) if id == crate::BUNDLE_ID && !scope.is_unscoped() => {
             return Err("refusing own-bundle identity".to_owned());
         }
-        Some(id) if TileScope::is_product_bundle(id) => {
+        Some(id) if TileScope::is_product_bundle(id) && !scope.is_unscoped() => {
             return Err(
                 "refusing own helper-bundle identity (unscoped product run; scoped fixtures list it explicitly)"
                     .to_owned(),
@@ -503,12 +510,12 @@ pub fn validate_identity_triple(
 
 /// Build one scoped snapshot from a complete native read (pure over
 /// injected readers, so offline tests drive the exact admission shape):
-/// whole-snapshot classification refusal on the first gap, classifier
-/// mapping per window (omitted shapes counted, never published), and
-/// per-window Space membership. A failed membership read refuses the whole
-/// snapshot; empty (unknown-home), multi-Space, and other-Space lists admit
-/// with metadata (the roster retains every observed window and unknown
-/// membership surfaces explicitly downstream, never omission-as-close).
+/// whole-snapshot refusal on the first incomplete leg, per-window Space
+/// membership, and raw nullable facts for every in-scope safely observed
+/// window (the core classifies; the producer never pre-omits
+/// accessory/prohibited/nonordinary-layer/unknown-role shapes). Only
+/// genuinely incomplete captures refuse whole, own-process rows omit, and
+/// minimized/hidden-app rows omit into the retained minimized path.
 /// `focused_wid` plus `focus_cg_owned` ride for the worker-stamped evidence
 /// gate.
 #[allow(clippy::too_many_arguments)]
@@ -520,56 +527,117 @@ pub fn build_scoped_snapshot(
     spaces_of: &dyn Fn(u32) -> Result<Vec<u64>, String>,
     focused_wid: Option<u32>,
     focus_cg_owned: bool,
-    modal_fallback: bool,
+    _modal_fallback: bool,
 ) -> Result<ScopedBackendSnapshot, String> {
-    use crate::classifier::{WindowFrame, classify_window};
+    use crate::classifier::ExcludeReason;
 
-    let classified = outcome.classify_all(modal_fallback).map_err(|gap| {
-        format!(
-            "pid {pid}: refusing whole snapshot (wid {}: {} unknown)",
-            gap.wid, gap.missing
-        )
-    })?;
-    let app = app_facts.to_app_facts();
-    let mut windows = Vec::with_capacity(classified.len());
-    let mut meta = Vec::with_capacity(classified.len());
+    // Whole-snapshot completeness fence (no classifier policy here): an
+    // incomplete native read never publishes as a complete replacement
+    // (which would invent destruction). Frame, fullscreen, minimized, and
+    // the CG layer/onscreen join must all read; a missing CG join never
+    // defaults to layer 0.
+    for facts in &outcome.windows {
+        let missing = if facts.frame.is_none() {
+            Some("frame")
+        } else if facts.fullscreen.is_none() {
+            Some("fullscreen")
+        } else if facts.minimized.is_none() {
+            Some("minimized")
+        } else if facts.cg_layer.is_none() || facts.cg_onscreen.is_none() {
+            Some("cg-layer/onscreen")
+        } else {
+            None
+        };
+        if let Some(missing) = missing {
+            return Err(format!(
+                "pid {pid}: refusing whole snapshot (wid {}: {} unknown)",
+                facts.wid, missing
+            ));
+        }
+    }
+    let mut windows = Vec::with_capacity(outcome.windows.len());
+    let mut meta = Vec::with_capacity(outcome.windows.len());
     let mut excluded_reasons =
-        Vec::<crate::runtime_types::ExcludedOmission>::with_capacity(classified.len());
-    for read in &classified {
-        let frame = read.facts.frame.ok_or_else(|| {
-            format!(
-                "pid {pid}: refusing whole snapshot (wid {}: frame unknown)",
-                read.facts.wid
-            )
-        })?;
-        let classified_window = classify_window(
-            WindowFrame {
-                wid: read.facts.wid,
-                x: frame.x as i32,
-                y: frame.y as i32,
-                w: frame.w as i32,
-                h: frame.h as i32,
-            },
-            &read.ax,
-            &read.cg,
-            &app,
-        );
-        // Exclusion reasons ride the snapshot as diagnostic detail (wid
-        // plus status name, never titles/content): the engine still sees
-        // only the omitted count, so omission here stays omission.
-        if let crate::classifier::Disposition::Excluded(reason) = classified_window.disposition {
+        Vec::<crate::runtime_types::ExcludedOmission>::with_capacity(outcome.windows.len());
+    for facts in &outcome.windows {
+        // Own-process-only suppression stays at the producer: the current
+        // process never binds, even under its own bundle in another process.
+        if app_facts.is_own_bundle {
             excluded_reasons.push(crate::runtime_types::ExcludedOmission {
-                wid: read.facts.wid,
-                reason,
+                wid: facts.wid,
+                reason: ExcludeReason::OwnBundle,
             });
             continue;
         }
-        let observed = classified_window.to_observed().unwrap_or_else(|| {
-            unreachable!(
-                "pid {pid}: non-excluded disposition must observe (wid {})",
-                read.facts.wid
-            )
-        });
+        // Minimized / hidden-app windows stay omitted here and mint
+        // retained minimized lifetimes downstream (never live facts, never
+        // an inferred close). The omission still carries a metadata row
+        // with truthful neutral raw facts (never policy echoes, null when
+        // unknown): the roster retains them for the minimized report so a
+        // hidden-app row never reads as minimized and no available leg is
+        // dropped. All other shapes publish live with raw nullable facts;
+        // the core excludes/holds (accessory/prohibited policy, nonordinary
+        // layers, unknown roles are core-owned now, never pre-core policy
+        // omissions).
+        if facts.minimized == Some(true) {
+            excluded_reasons.push(crate::runtime_types::ExcludedOmission {
+                wid: facts.wid,
+                reason: ExcludeReason::Minimized,
+            });
+            meta.push(ScopedWindowMeta {
+                wid: facts.wid,
+                // Unknown home by construction here: minimized homing
+                // reuses the last-known retained home downstream, never a
+                // fresh guess from this snapshot.
+                spaces: Vec::new(),
+                fullscreen: facts.fullscreen.unwrap_or(false),
+                minimized: true,
+                hidden: app_facts.hidden,
+                role: facts.role.clone(),
+                subrole: facts.subrole.clone(),
+                modal: facts.modal,
+                resizable: facts.size_settable,
+                layer: facts.cg_layer,
+                app_id: app_facts.app_id.clone(),
+                activation_policy: app_facts.core_activation_policy(),
+            });
+            continue;
+        }
+        if app_facts.hidden {
+            excluded_reasons.push(crate::runtime_types::ExcludedOmission {
+                wid: facts.wid,
+                reason: ExcludeReason::HiddenApp,
+            });
+            meta.push(ScopedWindowMeta {
+                wid: facts.wid,
+                spaces: Vec::new(),
+                fullscreen: facts.fullscreen.unwrap_or(false),
+                minimized: false,
+                hidden: true,
+                role: facts.role.clone(),
+                subrole: facts.subrole.clone(),
+                modal: facts.modal,
+                resizable: facts.size_settable,
+                layer: facts.cg_layer,
+                app_id: app_facts.app_id.clone(),
+                activation_policy: app_facts.core_activation_policy(),
+            });
+            continue;
+        }
+        let frame = facts.frame.expect("frame proven above");
+        let observed = ObservedWindow {
+            wid: facts.wid,
+            x: frame.x as i32,
+            y: frame.y as i32,
+            w: frame.w as i32,
+            h: frame.h as i32,
+            // Legacy v1 float flag: unused on the v4 fact path (the core
+            // derives float from window type / modal / transient). Always
+            // neutral false, never a classifier echo.
+            floating: false,
+            fullscreen: facts.fullscreen.unwrap_or(false),
+            hints: facts.size_hints(),
+        };
         // Membership is homing evidence: a failed membership read still
         // refuses the whole snapshot (transient read error, never a
         // partial publish). Known, multi-Space, and empty (unknown-home)
@@ -585,16 +653,25 @@ pub fn build_scoped_snapshot(
         meta.push(ScopedWindowMeta {
             wid: observed.wid,
             spaces,
-            fullscreen: read.facts.fullscreen.unwrap_or(false),
-            minimized: read.facts.minimized.unwrap_or(false),
+            fullscreen: facts.fullscreen.unwrap_or(false),
+            minimized: facts.minimized.unwrap_or(false),
             hidden: app_facts.hidden,
+            // Raw neutral facts for core classification (never policy
+            // echoes, never inferred from a disposition).
+            role: facts.role.clone(),
+            subrole: facts.subrole.clone(),
+            modal: facts.modal,
+            resizable: facts.size_settable,
+            layer: facts.cg_layer,
+            app_id: app_facts.app_id.clone(),
+            activation_policy: app_facts.core_activation_policy(),
         });
         windows.push(observed);
     }
     // Fresh CG-alive evidence for AX-absent CG-owner wids (owning worker
     // only, alongside the AX legs): a fresh live SLS membership read plus
     // the fresh CG entry (layer, on-screen, integer bounds) for the same
-    // wid and PID. AX-observed and classifier-excluded wids never ride
+    // wid and PID. AX-observed and excluded wids never ride
     // here. A failed membership read records empty (unknown, never a
     // refused snapshot: the roster holds unknown instead). Sorted by wid.
     let live_wids: std::collections::BTreeSet<u32> = windows
@@ -1999,6 +2076,7 @@ mod tests {
             hidden: false,
             activation_policy: crate::classifier::ActivationPolicy::Regular,
             is_own_bundle: false,
+            app_id: None,
         }
     }
 
@@ -2020,7 +2098,6 @@ mod tests {
         )
         .expect("complete facts snapshot");
         assert!(snap.windows.is_empty());
-        assert!(snap.meta.is_empty());
         assert_eq!(snap.excluded, 1);
         assert_eq!(snap.excluded_reasons.len(), 1);
         assert_eq!(snap.excluded_reasons[0].wid, 7);
@@ -2029,9 +2106,60 @@ mod tests {
             snap.excluded_reasons[0].reason.log_token(),
             "classifier-omitted-minimized"
         );
+        // The omission still carries one metadata row with truthful raw
+        // legs: genuinely minimized reads minimized true, hidden false.
+        assert_eq!(snap.meta.len(), 1);
+        assert_eq!(snap.meta[0].wid, 7);
+        assert!(snap.meta[0].minimized);
+        assert!(!snap.meta[0].hidden);
+        assert!(!snap.meta[0].fullscreen);
+        assert_eq!(
+            snap.meta[0].role.as_deref(),
+            Some(crate::classifier::ROLE_WINDOW)
+        );
+        assert_eq!(
+            snap.meta[0].subrole.as_deref(),
+            Some(crate::classifier::SUBROLE_STANDARD)
+        );
+        assert_eq!(snap.meta[0].modal, Some(false));
+        assert_eq!(snap.meta[0].resizable, Some(true));
+        assert_eq!(snap.meta[0].layer, Some(0));
 
-        // An unreadable subrole omits as UnknownRole (the same shape a
-        // transient background-thread AX gap would take), not as a close.
+        // A hidden-app window omits under its own reason with separated
+        // truth: minimized false, hidden true (never hidden-as-minimized),
+        // same raw legs preserved.
+        let mut hidden_app = reason_app();
+        hidden_app.hidden = true;
+        let snap = build_scoped_snapshot(
+            4242,
+            9,
+            &reason_fixture(7, false, Some(crate::classifier::SUBROLE_STANDARD)),
+            &hidden_app,
+            &|_| Ok(vec![11u64]),
+            None,
+            false,
+            false,
+        )
+        .expect("complete facts snapshot");
+        assert!(snap.windows.is_empty());
+        assert_eq!(snap.excluded, 1);
+        assert_eq!(snap.excluded_reasons[0].reason, ExcludeReason::HiddenApp);
+        assert_eq!(
+            snap.excluded_reasons[0].reason.log_token(),
+            "classifier-omitted-hidden-app"
+        );
+        assert_eq!(snap.meta.len(), 1);
+        assert!(!snap.meta[0].minimized);
+        assert!(snap.meta[0].hidden);
+        assert_eq!(
+            snap.meta[0].role.as_deref(),
+            Some(crate::classifier::ROLE_WINDOW)
+        );
+        assert_eq!(snap.meta[0].layer, Some(0));
+
+        // An unreadable subrole admits as a live row with raw nullable
+        // facts (never a pre-core UnknownRole omission): the core holds
+        // the null window type narrowly instead of tiling or closing.
         let snap = build_scoped_snapshot(
             4242,
             9,
@@ -2043,10 +2171,16 @@ mod tests {
             false,
         )
         .expect("complete facts snapshot");
-        assert!(snap.windows.is_empty());
-        assert_eq!(snap.excluded, 1);
-        assert_eq!(snap.excluded_reasons[0].wid, 9);
-        assert_eq!(snap.excluded_reasons[0].reason, ExcludeReason::UnknownRole);
+        assert_eq!(snap.windows.len(), 1);
+        assert_eq!(snap.excluded, 0);
+        assert!(snap.excluded_reasons.is_empty());
+        assert_eq!(snap.meta.len(), 1);
+        assert_eq!(snap.meta[0].wid, 9);
+        assert_eq!(
+            snap.meta[0].role.as_deref(),
+            Some(crate::classifier::ROLE_WINDOW)
+        );
+        assert_eq!(snap.meta[0].subrole, None);
 
         // An ordinary standard window still admits with no reasons.
         let snap = build_scoped_snapshot(

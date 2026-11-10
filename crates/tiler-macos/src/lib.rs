@@ -158,6 +158,7 @@ mod workspace_send_native_tests;
 mod workspace_send_tests;
 pub(crate) mod world_builder;
 pub(crate) mod world_command_map;
+pub(crate) mod world_connection;
 pub(crate) mod world_dispatch;
 pub(crate) mod world_runtime;
 #[cfg(test)]

@@ -1409,7 +1409,6 @@ pub(crate) fn describe_send_source(source: &SendSource) -> String {
     match source {
         SendSource::Explicit(output) => output.0.clone(),
         SendSource::HomeThenAction => "home-action".to_owned(),
-        SendSource::HomeThenCachedLive => "home-cached-live".to_owned(),
     }
 }
 

@@ -404,7 +404,7 @@ pub(crate) struct Shared {
     /// applied reply's presentation here; the tile main thread renders only
     /// these shapes through the existing native carriers, revalidating the
     /// live foreground against the token before painting.
-    pub(crate) last_presentation: tiler_core::world_presentation::WorldPresentation,
+    pub(crate) last_presentation: tiler_core::world_report::WorldPresentationV4,
     /// Latest applied reply workspace bindings for the menu-bar pager: the
     /// stable core logical workspace id per native desktop, translated
     /// through the reply's `native_binding` rows (current AND hidden

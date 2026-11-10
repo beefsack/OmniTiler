@@ -8,9 +8,9 @@
 //! replace the legacy per-domain `Engine.handle` / `CoreReply`
 //! aggregation and cursors. Retired paths are deleted, not dual-run: every
 //! observation and every command converges through one complete
-//! [`WorldReport`](tiler_core::world_report::WorldReport) and actuates
+//! [`WorldReportV4`](tiler_core::world_report::WorldReportV4) and actuates
 //! from one complete
-//! [`WorldReply`](tiler_core::world_report::WorldReply).
+//! [`WorldReplyV4`](tiler_core::world_report::WorldReplyV4).
 //!
 //! Threading: the engine thread owns the [`WorldSession`] (never shared).
 //! Observation truth still lives in
@@ -38,7 +38,7 @@
 //!   mode with no derived context refuses instead of reporting.
 //!
 //! Geometry: screen rows carry FULL display bounds plus the RAW visible work
-//! area with [`PHASE1_OUTER_GAP`] separately; core applies the inset once.
+//! area with [`PHASE1_OUTER_GAP`](crate::runtime_types::PHASE1_OUTER_GAP) separately; core applies the inset once.
 //! The synthetic skeleton carries zero outer gap and raw [`PHASE1_BOUNDS`].
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -47,32 +47,55 @@ use std::sync::Arc;
 use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::gesture::GestureIngress;
-use tiler_core::output_selection::MigrationSourceRefill;
 use tiler_core::session::DomainKey;
-use tiler_core::size_hints::FixedSizePredicate;
 use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
     FrameAttempt, FrameSetter, HoldReason, MemberAttempt, NativeCreationAttempt, ViewAttempt,
-    WorldCommand, WorldReport,
+    WorldCommand, WorldReportV4,
 };
 
 use crate::focus_route::FocusRoute;
 use crate::runtime::{NativeContext, ObservedWindow, parse_window_id, window_id};
 use crate::runtime_core::{LifetimeMemory, MinimizedRecord, RetainedCore, clear_focus_into};
 use crate::runtime_types::{
-    AxCompletion, NativeDomain, PHASE1_BOUNDS, PHASE1_GAP, PHASE1_GENERATION, PHASE1_OUTER_GAP,
-    PHASE1_OUTPUT, PHASE1_OWNER, PHASE1_WORKSPACE, ScopedBackendSnapshot,
+    AxCompletion, NativeDomain, PHASE1_BOUNDS, PHASE1_GENERATION, PHASE1_OUTPUT, PHASE1_WORKSPACE,
+    ScopedBackendSnapshot,
 };
 use crate::world_builder::{ReportInput, build_report};
 use crate::world_sequencer::{ObservationClock, WorldSequencer};
 
-/// Adapter incarnation for this engine lifetime: stable within the process
-/// (one engine owner per runtime), so the core never resets ordering
-/// mid-lifetime. A fresh engine (restart) re-derives the same token, which
-/// is safe: reports never cross processes.
-fn adapter_incarnation() -> String {
-    format!("macos-{}", std::process::id())
+/// Fresh identity pair for one engine lifetime, minted from the OS CSPRNG
+/// via [`crate::probe_target::mint_nonce`] (one 128-bit nonce per session
+/// construction, never a PID/sequence counter: PID reuse across process
+/// restarts could otherwise reproduce the pair). Stable within the session;
+/// a fresh engine (restart) mints a new pair, so the core never confuses
+/// reports across restarts, even in the same process under PID reuse.
+/// Returns `(adapter_incarnation, core_generation_seed)`.
+///
+/// - incarnation `macos-<nonce>`: valid opaque id (`[A-Za-z0-9-_.]`,
+///   bounded), so the genuine handshake accepts it as the adapter binding.
+/// - seed `phase-1-<nonce>`: lowercase/digits/dashes within the generation
+///   bound, so the genuine handshake mints exactly this seed as the bound
+///   generation on first bind. The pair fences old traffic even on paths
+///   that check only one half.
+///
+/// `None` when entropy is unavailable: the caller builds a fail-closed
+/// unbound session that never binds, never reports, never actuates.
+fn session_tokens() -> Option<(String, String)> {
+    let nonce = crate::probe_target::mint_nonce().ok()?;
+    Some((
+        format!("macos-{nonce}"),
+        format!("{PHASE1_GENERATION}-{nonce}"),
+    ))
 }
+
+/// Sentinel tokens for an entropy-failure session: valid-shaped but never
+/// bound (no handshake runs, `connection_bound` stays false, and the
+/// dispatch route refuses before building any report). The engine half is a
+/// pristine unbound `WorldEngine` (no connection owner), so even a directly
+/// built report is rejected owner-side: nothing admits, nothing actuates.
+const UNBOUND_INCARNATION: &str = "unbound";
+const UNBOUND_GENERATION: &str = "unbound";
 
 /// Engine-thread-owned world session: the retained [`WorldEngine`], the
 /// adapter-side [`WorldSequencer`], pending attempt feedback, and the
@@ -82,7 +105,6 @@ pub(crate) struct WorldSession {
     engine: WorldEngine,
     sequencer: WorldSequencer,
     incarnation: String,
-    predicate: FixedSizePredicate,
     native_mode: bool,
     focus_route: FocusRoute,
     /// Staged raw view attempts drained into the next dispatched report,
@@ -120,31 +142,106 @@ pub(crate) struct WorldSession {
     /// Synced from shared state on every dispatch (the engine thread owns
     /// this copy; the main thread publishes it once at startup).
     presentation_style: crate::active_border::PresentationStylePx,
+    /// True once the one-time connection handshake minted a generation and
+    /// bound the sequencer to it. Reports gate on this; the handshake never
+    /// repeats on a bound session.
+    connection_bound: bool,
+    /// Accepted core reply for the initial revisioned settings exchange
+    /// (status plus per-field diagnostics). `None` when the handshake
+    /// refused and no settings rode. Invalid supplied values diagnose per
+    /// field here with last-good retained core-side while valid siblings
+    /// still apply; omitted keys diagnose `Missing` with core defaults.
+    initial_settings: Option<tiler_core::connection::SettingsReply>,
+    /// Session-lifetime fail-closed latch for unpersisted opaque intent
+    /// saves: set when an applied reply carries nonempty `intent_writes`
+    /// (no durable backend exists, so nothing is persisted). Once set it
+    /// never clears — later replies without writes stay held. Ordinary
+    /// admission/reflow emits no saves, so this never fires honestly.
+    unpersisted_intent_writes: bool,
 }
 
 impl WorldSession {
     pub(crate) fn new(
-        predicate: FixedSizePredicate,
         native_mode: bool,
         route: FocusRoute,
         clock: Arc<ObservationClock>,
+        initial_settings: &[(String, tiler_core::connection::RawSettingValue)],
     ) -> Self {
-        let incarnation = adapter_incarnation();
-        // `phase-1` is a valid generation token; the maximized-focus fence
+        Self::new_with_tokens(
+            session_tokens(),
+            native_mode,
+            route,
+            clock,
+            initial_settings,
+        )
+    }
+
+    /// Session construction over an explicit token source: `Some` pair runs
+    /// the genuine one-time handshake and binds the sequencer; `None`
+    /// (CSPRNG failure) builds the fail-closed unbound session (no
+    /// handshake, no bind, no reports, no actuation — see
+    /// [`UNBOUND_INCARNATION`]). `WorldSession::new` supplies the live
+    /// [`session_tokens`]; tests supply fixed pairs (deterministic distinct
+    /// sessions) or `None` (entropy-failure shape) without touching global
+    /// entropy state.
+    pub(crate) fn new_with_tokens(
+        tokens: Option<(String, String)>,
+        native_mode: bool,
+        route: FocusRoute,
+        clock: Arc<ObservationClock>,
+        initial_settings: &[(String, tiler_core::connection::RawSettingValue)],
+    ) -> Self {
+        let Some((incarnation, seed)) = tokens else {
+            // Entropy unavailable: pristine unbound engine (no connection
+            // owner, so `handle_report` rejects everything) plus sentinel
+            // sequencer binding and `connection_bound = false` (so the
+            // dispatch route refuses before building any report). No
+            // handshake runs, so the sentinel pair can never bind.
+            let engine =
+                WorldEngine::new(PHASE1_GENERATION).expect("phase-1 generation token is valid");
+            let sequencer =
+                WorldSequencer::with_clock(UNBOUND_INCARNATION, UNBOUND_GENERATION, clock);
+            return Self {
+                engine,
+                sequencer,
+                incarnation: UNBOUND_INCARNATION.to_owned(),
+                native_mode,
+                focus_route: route,
+                pending_views: BTreeMap::new(),
+                pending_members: BTreeMap::new(),
+                pending_creations: BTreeMap::new(),
+                pending_frames: BTreeMap::new(),
+                pending_writes: BTreeMap::new(),
+                spent_frame_ops: BTreeSet::new(),
+                coverage_gap: false,
+                pending_closes: BTreeSet::new(),
+                presentation_style: crate::active_border::PresentationStylePx::default(),
+                connection_bound: false,
+                initial_settings: None,
+                unpersisted_intent_writes: false,
+            };
+        };
+        // `seed` mints the bound generation below, so the constructor always
+        // holds a valid generation token; the genuine one-time handshake
+        // through the protocol connection route binds the sequencer to it
+        // (first connection re-mints the seed). The maximized-focus fence
         // the constructor enables stays inert because the builder reports
-        // `maximized: false` unconditionally (no native inference). The
+        // `maximized` as null unconditionally (no native inference). The
         // watermark clock is shared with every invalidating input
         // submitter (see `Shared::clock`): only submitted input moves it,
         // never a dispatch, so tickets stamp actually-submitted input and
         // mid-flight arrivals refuse as stale.
-        let engine =
-            WorldEngine::new(PHASE1_GENERATION).expect("phase-1 generation token is valid");
-        let sequencer = WorldSequencer::with_clock(&incarnation, PHASE1_GENERATION, clock);
+        let mut engine = WorldEngine::new(&seed).expect("session generation seed is valid");
+        let (bound_generation, connection_bound, initial_settings) =
+            match crate::world_connection::connect(&mut engine, &incarnation, initial_settings) {
+                Some(outcome) => (outcome.generation, true, Some(outcome.settings)),
+                None => (seed, false, None),
+            };
+        let sequencer = WorldSequencer::with_clock(&incarnation, &bound_generation, clock);
         Self {
             engine,
             sequencer,
             incarnation,
-            predicate,
             native_mode,
             focus_route: route,
             pending_views: BTreeMap::new(),
@@ -156,12 +253,72 @@ impl WorldSession {
             coverage_gap: false,
             pending_closes: BTreeSet::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),
+            connection_bound,
+            initial_settings,
+            unpersisted_intent_writes: false,
         }
+    }
+
+    /// True once the one-time handshake minted a generation and bound the
+    /// sequencer to it. Reports gate on this; the handshake never repeats
+    /// on a bound session.
+    pub(crate) fn connection_bound(&self) -> bool {
+        self.connection_bound
+    }
+
+    /// Accepted core reply for the initial revisioned settings exchange, if
+    /// the handshake bound. Per-field diagnostics live here: invalid
+    /// supplied values diagnose with last-good retained while valid
+    /// siblings still apply; omitted keys diagnose `Missing` on defaults.
+    pub(crate) fn initial_settings_reply(&self) -> Option<&tiler_core::connection::SettingsReply> {
+        self.initial_settings.as_ref()
+    }
+
+    /// Whether the session already holds unpersisted intent writes
+    /// (fail-closed latch, session lifetime).
+    pub(crate) fn unpersisted_intent_hold(&self) -> bool {
+        self.unpersisted_intent_writes
+    }
+
+    /// Latch unpersisted intent writes for the session lifetime. Never
+    /// cleared: no durability backend exists, so no later reply can prove
+    /// persistence.
+    pub(crate) fn mark_unpersisted_intent_writes(&mut self) {
+        self.unpersisted_intent_writes = true;
     }
 
     /// Adapter incarnation bound into every report.
     pub(crate) fn incarnation(&self) -> &str {
         &self.incarnation
+    }
+
+    /// Effective core-owned border numbers as the report presentation style.
+    /// Reads the engine's effective settings (post-handshake, defaults for
+    /// omitted keys); unreachable type shapes fall back to zeroed numbers
+    /// with the switch on (effective state always carries validated types).
+    pub(crate) fn core_border_presentation(&self) -> crate::active_border::PresentationStylePx {
+        use tiler_core::settings_catalog as catalog;
+        use tiler_core::settings_state::EffectiveSetting as Eff;
+        let effective = &self.engine.settings().effective;
+        let enabled = match effective.get(catalog::FIELD_BORDER_ENABLED) {
+            Some(Eff::Bool(b)) => *b,
+            _ => true,
+        };
+        let width = match effective.get(catalog::FIELD_BORDER_WIDTH) {
+            Some(Eff::Float(v)) => *v,
+            _ => 0.0,
+        };
+        let gap = match effective.get(catalog::FIELD_BORDER_GAP) {
+            Some(Eff::Float(v)) => *v,
+            _ => 0.0,
+        };
+        let width_px = width.round() as i32;
+        crate::active_border::PresentationStylePx {
+            border_enabled: enabled,
+            gap_px: gap.round() as i32,
+            width_px,
+            extension_px: width_px,
+        }
     }
 
     /// Sync the startup-resolved presentation style numbers from shared
@@ -205,17 +362,21 @@ impl WorldSession {
         };
         let target_output = transfer.target_output.clone();
         let target_workspace = transfer.target_workspace.clone();
+        let to_native = |sid: u64| tiler_core::world_report::WorkspaceRef::Native {
+            output: target_output.clone(),
+            workspace: tiler_core::ids::NativeWorkspaceId::parse(&crate::topology::workspace_key(
+                sid,
+            ))
+            .expect("valid native workspace"),
+        };
         let attempt = ViewAttempt {
             operation_id: operation_id.to_owned(),
-            target_output,
+            target_output: target_output.clone(),
             target_workspace,
             setter,
-            pre: None,
-            post: None,
-            baseline: None,
-            native_pre: pre_sid.map(crate::topology::workspace_key),
-            native_post: post_sid.map(crate::topology::workspace_key),
-            native_baseline: baseline_sid.map(crate::topology::workspace_key),
+            pre: pre_sid.map(&to_native),
+            post: post_sid.map(&to_native),
+            baseline: baseline_sid.map(&to_native),
             attempt_ms: 0,
         };
         self.pending_views.insert(operation_id.to_owned(), attempt);
@@ -251,16 +412,21 @@ impl WorldSession {
         };
         let target_output = transfer.target_output.clone();
         let target_workspace = transfer.target_workspace.clone();
+        let to_native = |sid: u64| tiler_core::world_report::WorkspaceRef::Native {
+            output: target_output.clone(),
+            workspace: tiler_core::ids::NativeWorkspaceId::parse(&crate::topology::workspace_key(
+                sid,
+            ))
+            .expect("valid native workspace"),
+        };
         let attempt = MemberAttempt {
             operation_id: operation_id.to_owned(),
             window: window.clone(),
-            target_output,
+            target_output: target_output.clone(),
             target_workspace,
             setter,
-            pre: None,
-            post: None,
-            native_pre: pre_sid.map(crate::topology::workspace_key),
-            native_post: post_sid.map(crate::topology::workspace_key),
+            pre: pre_sid.map(&to_native),
+            post: post_sid.map(&to_native),
             attempt_ms: 0,
         };
         self.pending_members
@@ -275,8 +441,11 @@ impl WorldSession {
     /// workspace keys here; logical ids are never minted adapter-side):
     /// `order_after` is a genuine full post-order, including a genuinely
     /// observed unchanged order; unreadable post-orders stay local. The
-    /// `created_native` names the drain-verified appended desktop only
-    /// (`None` on refusal/unknown, never guessed). The drain reports
+    /// `created_native` is always `None`: an observed appended order alone
+    /// is not causal proof of what the create leg made (M5), so the
+    /// production v4 attempt never claims a created identity even when the
+    /// legacy drain exposes an appended candidate. The codec keeps
+    /// `created` explicit null on this row. The drain reports
     /// exactly one attempt per creation desire. Latest-wins per op.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn stage_native_creation(
@@ -293,6 +462,10 @@ impl WorldSession {
         if operation_id.is_empty() || logical_workspace.is_empty() {
             return;
         }
+        // M5: no native addition-count proof is accepted as causal proof.
+        // Discard any appended-SID candidate from the legacy drain; the
+        // genuine orders/setter/identity below still ride verbatim.
+        let _ = created_sid;
         let attempt = NativeCreationAttempt {
             operation_id: operation_id.to_owned(),
             logical_workspace: logical_workspace.to_owned(),
@@ -306,7 +479,7 @@ impl WorldSession {
                 .iter()
                 .map(|sid| crate::topology::workspace_key(*sid))
                 .collect(),
-            created_native: created_sid.map(crate::topology::workspace_key),
+            created_native: None,
             attempt_ms,
         };
         self.pending_creations
@@ -396,16 +569,14 @@ pub(crate) fn minimized_entries(retained: &RetainedCore) -> Vec<MinimizedRecord>
     entries
 }
 
-/// Grounded focus eligibility facts for one presentation ingress: the
+/// Grounded focus home-current verdict for one presentation ingress: the
 /// retained home-current verdict (homed-but-not-current and unhomed both
-/// fail closed to hidden-workspace), the current work areas and full
-/// display bounds in adapter units, and the engine-placement truth from
-/// the last applied reply rows. Pure over retained truth plus the dispatch
-/// context; both the native and synthetic branches share it.
+/// fail closed to hidden-workspace). Pure over retained truth plus the
+/// dispatch context; both the native and synthetic branches share it.
 pub(crate) fn focus_eligibility_facts(
     retained: &RetainedCore,
     ctx: &NativeContext,
-    memory: &LifetimeMemory,
+    _memory: &LifetimeMemory,
     focused_global: &str,
 ) -> crate::world_builder::FocusEligibilityFacts {
     let home_current = retained
@@ -417,16 +588,7 @@ pub(crate) fn focus_eligibility_facts(
                 .find(|domain| domain.output == home.output && domain.workspace == home.workspace)
         })
         .map(|domain| domain.current);
-    let engine_placed = memory
-        .rows
-        .get(focused_global)
-        .is_some_and(|row| row.effective_frame.or(row.allocation).is_some());
-    crate::world_builder::FocusEligibilityFacts {
-        home_current,
-        visibles: ctx.domains.iter().map(|domain| domain.visible).collect(),
-        full_displays: ctx.domains.iter().map(|domain| domain.bounds).collect(),
-        engine_placed,
-    }
+    crate::world_builder::FocusEligibilityFacts { home_current }
 }
 
 /// Whether the retained observed-focus window currently reports native
@@ -446,11 +608,13 @@ fn is_focused_fullscreen(retained: &RetainedCore, focused_global: &str) -> bool 
         .is_some_and(|w| w.fullscreen)
 }
 
-/// Whether a classifier exclusion mints a retained minimized lifetime
+/// Whether a classifier exclusion mints a retained hidden-lane lifetime
 /// (option B): genuine `Minimized` plus owner-hidden `HiddenApp` (Cmd+H).
-/// Both report as explicit `minimized: true` facts through the existing
-/// retained-lifetime path; the true native cause stays in diagnostics via
-/// `ExcludeReason::log_token` (`classifier-omitted-minimized` vs
+/// Both ride the retained-lifetime path (never silent absence, never
+/// inferred close); the emitted fact keeps the truthful `minimized` /
+/// `host_hidden` legs apart (a hidden-app row reads `minimized: false`,
+/// `host_hidden: true`), and the true native cause stays in diagnostics
+/// via `ExcludeReason::log_token` (`classifier-omitted-minimized` vs
 /// `classifier-omitted-hidden-app`), never in the fact itself.
 fn is_minimized_source(reason: crate::classifier::ExcludeReason) -> bool {
     use crate::classifier::ExcludeReason;
@@ -503,6 +667,21 @@ pub(crate) fn refresh_minimized(
         if live.contains(&id) {
             continue;
         }
+        // Truthful hidden-lane legs from the just-applied roster (covering
+        // snapshots refresh it above; otherwise the retained row stands):
+        // show-state plus actually read raw legs, null when unknown. A
+        // hand-built snapshot without roster detail falls back to the
+        // reason-derived show-state with null raw legs.
+        let roster = retained
+            .apps
+            .get(&pid)
+            .and_then(|app| app.roster.get(&omission.wid));
+        let minimized = roster
+            .map(|e| e.minimized_meta)
+            .unwrap_or(omission.reason == crate::classifier::ExcludeReason::Minimized);
+        let host_hidden = roster
+            .map(|e| e.hidden_meta)
+            .unwrap_or(omission.reason == crate::classifier::ExcludeReason::HiddenApp);
         match retained.window_domains.get(&id).cloned() {
             Some(key) => {
                 retained.minimized.insert(
@@ -512,6 +691,17 @@ pub(crate) fn refresh_minimized(
                         output: key.output,
                         workspace: key.workspace,
                         sticky: false,
+                        minimized,
+                        host_hidden,
+                        fullscreen: roster.map(|e| e.fullscreen_meta).unwrap_or(false),
+                        process_id: Some(pid.to_string()),
+                        role: roster.and_then(|e| e.role.clone()),
+                        subrole: roster.and_then(|e| e.subrole.clone()),
+                        modal: roster.and_then(|e| e.modal),
+                        resizable: roster.and_then(|e| e.resizable),
+                        layer: roster.and_then(|e| e.layer),
+                        app_id: roster.and_then(|e| e.app_id.clone()),
+                        activation_policy: roster.and_then(|e| e.activation_policy),
                     },
                 );
             }
@@ -588,7 +778,7 @@ pub(crate) fn build_dispatch_report(
     ticket_command: Option<WorldCommand>,
     gesture: Option<GestureIngress>,
     request_id: &str,
-) -> Option<WorldReport> {
+) -> Option<WorldReportV4> {
     // No-context guard BEFORE any drain: an empty native context reports
     // nothing (KDE null parity), and the staged rows must survive for the
     // next real dispatch — attempts describe attempted actuation and must
@@ -690,10 +880,26 @@ pub(crate) fn build_dispatch_report(
                 &eligibility,
                 &style,
             );
+            // Neutral raw facts per runtime window id for v4 core
+            // classification (admitted rows only; excluded rows carry
+            // default/null via `raw_facts`). Unknown-home grounded rows
+            // resolve through the same map.
+            let raw: BTreeMap<String, crate::runtime_types::WindowRawFacts> = retained
+                .apps
+                .iter()
+                .flat_map(|(pid, app)| {
+                    app.roster.iter().map(|(wid, entry)| {
+                        (
+                            crate::runtime_types::window_id(*pid, *wid),
+                            entry.raw_facts(),
+                        )
+                    })
+                })
+                .collect();
+            let bound_generation = session.sequencer().bound_generation();
             let mut input = ReportInput {
-                owner: PHASE1_OWNER,
                 adapter_incarnation: session.incarnation(),
-                core_generation: PHASE1_GENERATION,
+                core_generation: &bound_generation,
                 observation_seq: ticket_observation,
                 request_seq: ticket_request,
                 request_id: &owned_request,
@@ -704,6 +910,7 @@ pub(crate) fn build_dispatch_report(
                 memory: &memory,
                 closed: &closed_flat,
                 unknown: &unknown,
+                raw: &raw,
                 roster_incomplete,
                 minimized: &minimized,
                 unreadable: &unreadable,
@@ -718,12 +925,7 @@ pub(crate) fn build_dispatch_report(
                 coverage_gap: session.coverage_gap,
                 incomplete_outputs: &[],
                 gesture_barrier: false,
-                predicate: session.predicate,
-                refill: MigrationSourceRefill::LastRemaining,
-                default_tiled: true,
                 primary_output: None,
-                gap: PHASE1_GAP,
-                outer_gap: PHASE1_OUTER_GAP,
                 monotonic_ms: crate::input_eligibility::now_ms(),
                 presentation,
             };
@@ -775,10 +977,10 @@ pub(crate) fn build_dispatch_report(
             let focused_fullscreen = is_focused_fullscreen(retained, &focused_global);
             let eligibility = focus_eligibility_facts(retained, &ctx, &memory, &focused_global);
             let style = session.presentation_style;
+            let bound_generation = session.sequencer().bound_generation();
             let mut input = ReportInput {
-                owner: PHASE1_OWNER,
                 adapter_incarnation: session.incarnation(),
-                core_generation: PHASE1_GENERATION,
+                core_generation: &bound_generation,
                 observation_seq: ticket_observation,
                 request_seq: ticket_request,
                 request_id: &owned_request,
@@ -789,6 +991,7 @@ pub(crate) fn build_dispatch_report(
                 memory: &memory,
                 closed: &closed_flat,
                 unknown: &[],
+                raw: &*crate::runtime_types::EMPTY_RAW_FACTS,
                 roster_incomplete: false,
                 minimized: &minimized,
                 unreadable: &empty_unreadable,
@@ -803,14 +1006,7 @@ pub(crate) fn build_dispatch_report(
                 coverage_gap: session.coverage_gap,
                 incomplete_outputs: &[],
                 gesture_barrier: false,
-                predicate: session.predicate,
-                refill: MigrationSourceRefill::LastRemaining,
-                default_tiled: true,
                 primary_output: None,
-                // Edge-to-edge legacy skeleton parity (the world engine
-                // insets by the carried gap; 0 preserves exact geometry).
-                gap: PHASE1_GAP,
-                outer_gap: 0,
                 monotonic_ms: crate::input_eligibility::now_ms(),
                 presentation: crate::world_builder::build_presentation_ingress(
                     &focused_global,
@@ -837,7 +1033,7 @@ pub(crate) fn build_dispatch_report(
 /// evidence parity with the offline harness, but production never feeds
 /// it back into the next ingress.
 pub(crate) fn map_gesture_preview(
-    reply: &tiler_core::world_report::WorldReply,
+    reply: &tiler_core::world_report::WorldReplyV4,
 ) -> crate::drag_drop::PreviewOutcome {
     use crate::drag_drop::PreviewOutcome;
     use tiler_core::world_report::CommandResult;

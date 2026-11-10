@@ -1179,24 +1179,35 @@ pub(crate) fn engine_main(
     stop: Arc<AtomicBool>,
     ready_tx: mpsc::Sender<()>,
 ) -> EngineExit {
-    // The world engine carries the shared fixed-size admission opt-in
-    // (D1-D8) via its constructor; the configured predicate rides every
-    // report ingress and applies to subsequent admissions only, never
-    // reclassifying retained windows. The watermark clock is the shared
+    // The watermark clock is the shared
     // input mark (submitters advance it; dispatches only stamp it).
-    let (predicate, native_mode, focus_route, clock) = {
+    let (native_mode, focus_route, clock, core_settings) = {
         let guard = lock_shared(&shared);
         (
-            guard.config.fixed_size_predicate,
             matches!(
                 guard.config.topology_mode,
                 crate::runtime_types::TopologyMode::Native
             ),
             guard.config.focus_route,
             Arc::clone(&guard.clock),
+            guard.config.core_settings.clone(),
         )
     };
-    let mut session = WorldSession::new(predicate, native_mode, focus_route, clock);
+    let mut session = WorldSession::new(native_mode, focus_route, clock, &core_settings);
+    let reported = session
+        .initial_settings_reply()
+        .map(crate::world_connection::format_setting_errors)
+        .unwrap_or_default();
+    if !reported.is_empty() {
+        eprintln!("settings: core diagnostics: {reported}");
+    }
+    // Publish the effective core-owned border numbers to the shared
+    // presentation carrier before signalling readiness, so every dispatch
+    // sync reads core-effective values (never the adapter-resolved style).
+    {
+        let style = session.core_border_presentation();
+        lock_shared(&shared).presentation_style = style;
+    }
     let mut retained = RetainedCore::default();
     let _ = ready_tx.send(());
     loop {
@@ -2603,7 +2614,7 @@ mod trailing_join_tests {
 
     use crate::focus_route::FocusRoute;
     use crate::runtime::{Shared, lock_shared};
-    use crate::runtime_core::{RetainedApp, RetainedCore};
+    use crate::runtime_core::{RetainedApp, RetainedCore, RosterEntry};
     use crate::runtime_types::{
         ClaimedSelect, InputSemanticAction, NativeContext, NativeDomain, ObservedWindow,
     };
@@ -2691,7 +2702,7 @@ mod trailing_join_tests {
             test_wake: None,
             test_seq: 0,
             last_geometry_key: None,
-            last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            last_presentation: crate::runtime::empty_world_presentation_v4(),
             last_pager_bindings: Vec::new(),
             last_workspace_desires: Vec::new(),
             last_core_generation: String::new(),
@@ -2744,10 +2755,10 @@ mod trailing_join_tests {
 
     fn session() -> WorldSession {
         WorldSession::new(
-            tiler_core::size_hints::FixedSizePredicate::BothAxes,
             true,
             FocusRoute::Slps,
             Arc::new(ObservationClock::new()),
+            &[],
         )
     }
 
@@ -2766,18 +2777,41 @@ mod trailing_join_tests {
 
     /// Retained truth with window B homed to space-277 (occupied
     /// trailing) so the core mints a pending token on the trailing
-    /// command.
+    /// command. The roster carries the genuine neutral raw capture
+    /// (ordinary AXWindow/AXStandardWindow, non-modal, resizable, base
+    /// layer, regular app) so the v4 builder emits a classifiable live
+    /// fact; a missing raw entry would report nulls and the core would
+    /// refuse `send-window-unknown`.
+    fn roster_entry(window: ObservedWindow, spaces: Vec<u64>) -> RosterEntry {
+        RosterEntry {
+            observed: Some(window),
+            spaces,
+            fullscreen_meta: false,
+            minimized_meta: false,
+            hidden_meta: false,
+            excluded: None,
+            role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+            subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+            modal: Some(false),
+            resizable: Some(true),
+            layer: Some(0),
+            app_id: Some("com.example.app".to_owned()),
+            activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+        }
+    }
+
     fn retained_occupied_trailing() -> RetainedCore {
         let mut retained = RetainedCore::default();
+        let window = observed(9);
         retained.apps.insert(
             4243,
             RetainedApp {
                 generation: 1,
                 seq_last: 1,
                 cmd_counter: 0,
-                windows: vec![observed(9)],
+                windows: vec![window],
                 focused_wid: None,
-                roster: std::collections::BTreeMap::new(),
+                roster: std::collections::BTreeMap::from([(9, roster_entry(window, vec![277]))]),
                 roster_incomplete: false,
                 roster_cause: String::new(),
             },
@@ -2810,6 +2844,47 @@ mod trailing_join_tests {
             Arc::new(Inbox::new(16)),
             Arc::new(Mutex::new(Vec::new())),
         )
+    }
+
+    /// Fixture admission gate: the genuine handshake binds the session
+    /// (adapter-native incarnation, production macOS caps, minted
+    /// generation) and the handbuilt roster carries explicit native-shaped
+    /// ordinary raw facts homed to the test context. A report `Accepted`
+    /// alone never proves admission; the caller must also observe the
+    /// Controlled row (desired window, retained transfer, or preview slot).
+    fn assert_fixture_admitted(session: &WorldSession, retained: &RetainedCore) {
+        assert!(session.connection_bound(), "genuine handshake binds");
+        assert!(
+            session.incarnation().starts_with("macos-"),
+            "bound incarnation is adapter-native"
+        );
+        assert!(
+            crate::world_connection::macos_capabilities().host_owned,
+            "macOS Spaces stay host-owned"
+        );
+        assert!(
+            !session.sequencer().bound_generation().is_empty(),
+            "handshake mints a bound generation"
+        );
+        for (pid, wid, sid) in [(4243u32, 9u32, 277u64)] {
+            let app = retained.apps.get(&pid).expect("fixture app retained");
+            let entry = app.roster.get(&wid).expect("fixture roster row retained");
+            assert_eq!(entry.spaces, vec![sid], "fixture row homed to its Space");
+            assert_eq!(entry.role.as_deref(), Some(crate::classifier::ROLE_WINDOW));
+            assert_eq!(
+                entry.subrole.as_deref(),
+                Some(crate::classifier::SUBROLE_STANDARD)
+            );
+            assert!(!app.roster_incomplete, "fixture holds nothing");
+        }
+        if let Some(app) = retained.apps.get(&4242) {
+            let entry = app
+                .roster
+                .get(&7)
+                .expect("send subject roster row retained");
+            assert_eq!(entry.spaces, vec![1], "send subject homed current");
+            assert_eq!(entry.role.as_deref(), Some(crate::classifier::ROLE_WINDOW));
+        }
     }
 
     #[test]
@@ -3391,6 +3466,10 @@ mod trailing_join_tests {
             &focus_queue,
             &ctx,
         );
+        // Fixture admission precedes commands: report Accepted is not
+        // enough, the Controlled row below (retained View transfer plus
+        // live native binding) proves the core admitted the fixture.
+        assert_fixture_admitted(&session, &retained);
         // Away: numbered 2 moves the view to the other adopted workspace.
         // Its sole window is remembered there, so the reply mints the
         // away outcome and the dispatch binds the away intent with the
@@ -4005,12 +4084,9 @@ mod trailing_join_tests {
                 target_output: output(),
                 target_workspace: "ws-9".to_owned(),
                 setter: FrameSetter::Accepted,
-                pre: Some("ws-1".to_owned()),
+                pre: None,
                 post: None,
                 baseline: None,
-                native_pre: None,
-                native_post: None,
-                native_baseline: None,
                 attempt_ms: 0,
             },
         );
@@ -4024,8 +4100,6 @@ mod trailing_join_tests {
                 setter: FrameSetter::Threw,
                 pre: None,
                 post: None,
-                native_pre: None,
-                native_post: None,
                 attempt_ms: 0,
             },
         );
@@ -4148,10 +4222,47 @@ mod trailing_join_tests {
             .iter()
             .find(|w| w.window.0 == "4242_7")
             .expect("homed window rides");
-        assert!(
-            !wire.floating && !wire.fixed_auto,
+        // V4 carries no adapter float verdict: the fixed-hint fact rides
+        // plain (exact geometry + hints, no float claim) and the core owns
+        // admission. Prove the neutral input plus the core desired-row
+        // membership over that same input.
+        assert_eq!(
+            wire.hints,
+            Some(tiler_core::size_hints::WindowSizeHints {
+                min_w: Some(640),
+                min_h: Some(480),
+                max_w: Some(640),
+                max_h: Some(480),
+            }),
             "fixed hints ride plain; the core owns admission"
         );
+        // The prove engine binds to this session's actual
+        // incarnation/generation with production macOS caps, so the wire
+        // tokens admit core-side.
+        let bound_generation = session.sequencer().bound_generation();
+        let incarnation = session.incarnation().to_owned();
+        let mut prove_engine =
+            tiler_core::world_engine::WorldEngine::new_test_bound_with_capabilities(
+                &bound_generation,
+                &incarnation,
+                crate::world_connection::macos_capabilities(),
+            )
+            .expect("bound test engine");
+        match prove_engine.handle_report(&report) {
+            tiler_core::world_engine::WorldOutcome::Accepted(reply)
+            | tiler_core::world_engine::WorldOutcome::Duplicate(reply) => {
+                let desired = reply
+                    .windows
+                    .iter()
+                    .find(|w| w.lifetime.0 == "4242_7")
+                    .expect("core desires the homed window");
+                assert!(
+                    !desired.floating,
+                    "fixed hints do not force float; the core owns admission"
+                );
+            }
+            other => panic!("fixed-hint report must accept, got {other:?}"),
+        }
     }
 
     /// Fresh Launch drops the old lifetime's pending closes through the
@@ -4200,6 +4311,15 @@ mod trailing_join_tests {
                         minimized_meta: false,
                         hidden_meta: false,
                         excluded: None,
+
+                        role: None,
+
+                        subrole: None,
+                        modal: None,
+                        resizable: None,
+                        layer: None,
+                        app_id: None,
+                        activation_policy: None,
                     },
                 )]),
                 roster_incomplete: false,
@@ -4263,6 +4383,15 @@ mod trailing_join_tests {
                 fullscreen: false,
                 minimized: false,
                 hidden: false,
+
+                role: None,
+
+                subrole: None,
+                modal: None,
+                resizable: None,
+                layer: None,
+                app_id: None,
+                activation_policy: None,
             }],
             excluded: 0,
             excluded_reasons: Vec::new(),
@@ -4321,6 +4450,15 @@ mod trailing_join_tests {
                 fullscreen: false,
                 minimized: false,
                 hidden: false,
+
+                role: None,
+
+                subrole: None,
+                modal: None,
+                resizable: None,
+                layer: None,
+                app_id: None,
+                activation_policy: None,
             }],
             excluded: 0,
             excluded_reasons: Vec::new(),
@@ -4396,6 +4534,15 @@ mod trailing_join_tests {
                             minimized_meta: false,
                             hidden_meta: false,
                             excluded: None,
+
+                            role: None,
+
+                            subrole: None,
+                            modal: None,
+                            resizable: None,
+                            layer: None,
+                            app_id: None,
+                            activation_policy: None,
                         },
                     )]),
                     roster_incomplete: false,
@@ -4488,18 +4635,21 @@ mod trailing_join_tests {
 
     /// Retained truth for the trailing send lane: subject window A on the
     /// current Space (observed focus) plus an occupied trailing, so the
-    /// core pends the send under a fresh token.
+    /// core pends the send under a fresh token. Both rosters carry the
+    /// genuine neutral raw capture (see `retained_occupied_trailing`) so
+    /// the send subject admits instead of refusing `send-window-unknown`.
     fn retained_send_subject() -> RetainedCore {
         let mut retained = retained_occupied_trailing();
+        let subject = observed(7);
         retained.apps.insert(
             4242,
             RetainedApp {
                 generation: 7,
                 seq_last: 1,
                 cmd_counter: 0,
-                windows: vec![observed(7)],
+                windows: vec![subject],
                 focused_wid: Some(7),
-                roster: std::collections::BTreeMap::new(),
+                roster: std::collections::BTreeMap::from([(7, roster_entry(subject, vec![1]))]),
                 roster_incomplete: false,
                 roster_cause: String::new(),
             },
@@ -4635,6 +4785,908 @@ mod trailing_join_tests {
         assert!(
             !lock_shared(&shared).select_pending.is_empty(),
             "armed production stores the trailing send claim"
+        );
+    }
+
+    /// Slice-1 ordinary admission regression through the production path:
+    /// injected native read (three explicit synthetic ordinary captures)
+    /// -> production `build_scoped_snapshot` -> retained roster/raw ->
+    /// genuine `WorldSession` handshake -> `process_job` scoped
+    /// observation (real `dispatch_report`: production `codec_transact`
+    /// report encode/decode, real core plus reply encode/decode,
+    /// sequencer, mock frame-sink apply) — then an incomplete-read hold
+    /// with complete recovery, then close-with-reflow. No live AX.
+    #[test]
+    fn ordinary_three_window_admission_close_reflow_through_production_dispatch() {
+        use crate::classifier::{ActivationPolicy, ROLE_WINDOW, SUBROLE_STANDARD};
+        use crate::ffi::{AxFrame, CgBounds};
+        use crate::native_facts::{
+            CgWindowEntry, NativeAppFacts, NativeReadOutcome, NativeWindowFacts,
+        };
+        use crate::native_tile_backend::build_scoped_snapshot;
+        use crate::runtime_shared::AppRecord;
+        use tiler_protocol::world_protocol::{
+            CreationReceiptWire, CursorHitWire, DecodedReportV4, GestureIngressWire,
+            ReportWireOptionals, decode_report_v4, encode_report_v4,
+        };
+
+        const PID: u32 = 4242;
+        const GENERATION: u64 = 1;
+
+        fn ax_frame(x: i32, y: i32, w: i32, h: i32) -> AxFrame {
+            AxFrame {
+                x: x as f64,
+                y: y as f64,
+                w: w as f64,
+                h: h as f64,
+            }
+        }
+        // Explicit synthetic ordinary capture: AXWindow/AXStandardWindow,
+        // non-modal, resizable, base layer, regular app. `minimized` stays
+        // a parameter so the incomplete leg can poison exactly one leg.
+        fn window_facts(wid: u32, frame: AxFrame, minimized: Option<bool>) -> NativeWindowFacts {
+            NativeWindowFacts {
+                wid,
+                role: Some(ROLE_WINDOW.to_owned()),
+                subrole: Some(SUBROLE_STANDARD.to_owned()),
+                fullscreen: Some(false),
+                minimized,
+                modal: Some(false),
+                size_settable: Some(true),
+                min_size: None,
+                max_size: None,
+                frame: Some(frame),
+                cg_layer: Some(0),
+                cg_onscreen: Some(true),
+            }
+        }
+        fn cg_entry(wid: u32, frame: &AxFrame) -> CgWindowEntry {
+            CgWindowEntry {
+                wid,
+                layer: 0,
+                onscreen: true,
+                bounds: CgBounds {
+                    x: frame.x,
+                    y: frame.y,
+                    w: frame.w,
+                    h: frame.h,
+                },
+            }
+        }
+        // Three nonoverlapping ordinary windows inside the 1440x900
+        // display, all homed to the current Space (sid 1).
+        fn three_frames() -> [AxFrame; 3] {
+            [
+                ax_frame(10, 30, 450, 800),
+                ax_frame(470, 30, 450, 800),
+                ax_frame(930, 30, 450, 800),
+            ]
+        }
+        fn complete_outcome() -> NativeReadOutcome {
+            let frames = three_frames();
+            NativeReadOutcome {
+                pid: PID,
+                requested: 3,
+                observed: 3,
+                failed: 0,
+                first_cause: String::new(),
+                windows: vec![
+                    window_facts(1, frames[0], Some(false)),
+                    window_facts(2, frames[1], Some(false)),
+                    window_facts(3, frames[2], Some(false)),
+                ],
+                cg_complete: true,
+                cg_owner_wids: vec![1, 2, 3],
+                cg_entries: vec![
+                    cg_entry(1, &frames[0]),
+                    cg_entry(2, &frames[1]),
+                    cg_entry(3, &frames[2]),
+                ],
+            }
+        }
+        fn app_facts() -> NativeAppFacts {
+            NativeAppFacts {
+                pid: PID,
+                hidden: false,
+                activation_policy: ActivationPolicy::Regular,
+                is_own_bundle: false,
+                app_id: Some("com.example.app".to_owned()),
+            }
+        }
+        fn snapshot_of(outcome: &NativeReadOutcome) -> crate::runtime_types::ScopedBackendSnapshot {
+            build_scoped_snapshot(
+                PID,
+                9,
+                outcome,
+                &app_facts(),
+                &|_| Ok(vec![1u64]),
+                None,
+                false,
+                false,
+            )
+            .expect("complete ordinary read snapshots")
+        }
+        fn assert_nonoverlapping(desired: &[crate::runtime_types::DesiredFrame]) {
+            for (i, a) in desired.iter().enumerate() {
+                assert!(
+                    a.w > 0 && a.h > 0,
+                    "positive plan geometry for {}",
+                    a.window
+                );
+                for b in &desired[i + 1..] {
+                    let disjoint = a.x + a.w <= b.x
+                        || b.x + b.w <= a.x
+                        || a.y + a.h <= b.y
+                        || b.y + b.h <= a.y;
+                    assert!(
+                        disjoint,
+                        "plan geometry overlaps: {} vs {}",
+                        a.window, b.window
+                    );
+                }
+            }
+        }
+        fn desired_ids(desired: &[crate::runtime_types::DesiredFrame]) -> Vec<String> {
+            let mut ids: Vec<String> = desired.iter().map(|d| d.window.clone()).collect();
+            ids.sort();
+            ids
+        }
+        fn covering_closes(shared: &Arc<Mutex<Shared>>) -> usize {
+            lock_shared(shared)
+                .log
+                .iter()
+                .filter(|entry| entry.outcome == "covering-close")
+                .count()
+        }
+
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), RetainedCore::default());
+        // Genuine handshake plus initial settings through the protocol
+        // connection route with production macOS capabilities (never a
+        // test-host-owned all-supported engine).
+        assert!(
+            session.connection_bound(),
+            "genuine handshake binds the session"
+        );
+        assert!(
+            session.incarnation().starts_with("macos-"),
+            "bound incarnation is adapter-native"
+        );
+        assert!(
+            crate::world_connection::macos_capabilities().host_owned,
+            "macOS Spaces stay host-owned"
+        );
+        let bound = session.sequencer().bound_generation();
+        assert!(!bound.is_empty(), "handshake mints a bound generation");
+        let settings = session
+            .initial_settings_reply()
+            .expect("initial settings ride the handshake");
+        assert_eq!(settings.revision, 1);
+        assert_eq!(
+            settings.status,
+            tiler_core::connection::SettingsStatus::Accepted
+        );
+        assert!(
+            crate::world_connection::hard_setting_errors(settings).is_empty(),
+            "empty acquisition rides core defaults"
+        );
+        let frames = Arc::new(FrameSlot::new());
+        lock_shared(&shared).apps.insert(
+            PID,
+            AppRecord {
+                generation: GENERATION,
+                terminated: false,
+                stop: Arc::new(AtomicBool::new(false)),
+                frames: Arc::clone(&frames),
+                focus: Arc::new(FocusSlot::new()),
+                ready: Arc::new(Mutex::new(Some(Ok::<(), String>(())))),
+                worker: None,
+                worker_name: "test-4242".to_owned(),
+            },
+        );
+
+        // Leg A: admit windows 1->2->3 as sequential captured snapshots
+        // through the exact production read -> snapshot -> roster ->
+        // dispatch -> apply path: each leg captures its own complete
+        // `NativeReadOutcome`, snapshots via production
+        // `build_scoped_snapshot`, and dispatches through `process_job`
+        // (real `dispatch_report`: production `codec_transact` report
+        // encode/decode, real core plus reply encode/decode, sequencer,
+        // mock frame-sink apply).
+        fn outcome_of(wids: &[u32]) -> NativeReadOutcome {
+            let frames = three_frames();
+            NativeReadOutcome {
+                pid: PID,
+                requested: wids.len(),
+                observed: wids.len(),
+                failed: 0,
+                first_cause: String::new(),
+                windows: wids
+                    .iter()
+                    .copied()
+                    .map(|wid| window_facts(wid, frames[(wid - 1) as usize], Some(false)))
+                    .collect(),
+                cg_complete: true,
+                cg_owner_wids: wids.to_vec(),
+                cg_entries: wids
+                    .iter()
+                    .copied()
+                    .map(|wid| cg_entry(wid, &frames[(wid - 1) as usize]))
+                    .collect(),
+            }
+        }
+        let mut seq = 0u64;
+        let mut admitted: Vec<u32> = Vec::new();
+        let mut rev_prev = frames.current_rev();
+        for wid in [1u32, 2, 3] {
+            admitted.push(wid);
+            seq += 1;
+            let outcome = outcome_of(&admitted);
+            let snap = snapshot_of(&outcome);
+            assert_eq!(
+                snap.windows.len(),
+                admitted.len(),
+                "leg admits exactly {admitted:?}"
+            );
+            assert_eq!(snap.excluded, 0);
+            assert!(snap.cg_alive.is_empty());
+            for meta in &snap.meta {
+                assert_eq!(meta.role.as_deref(), Some(ROLE_WINDOW));
+                assert_eq!(meta.subrole.as_deref(), Some(SUBROLE_STANDARD));
+                assert_eq!(meta.modal, Some(false));
+                assert_eq!(meta.resizable, Some(true));
+                assert_eq!(meta.layer, Some(0));
+                assert_eq!(meta.app_id.as_deref(), Some("com.example.app"));
+                assert_eq!(
+                    meta.activation_policy,
+                    Some(tiler_core::world_report::ActivationPolicy::Regular)
+                );
+                assert_eq!(meta.spaces, vec![1u64]);
+            }
+            process_job(
+                EngineJob::ScopedObservation {
+                    pid: PID,
+                    generation: GENERATION,
+                    seq,
+                    snapshot: snap,
+                },
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                8,
+            );
+            let app = retained.apps.get(&PID).expect("roster owner");
+            assert_eq!(app.generation, GENERATION);
+            assert_eq!(app.roster.len(), admitted.len(), "roster grows by capture");
+            assert!(!app.roster_incomplete, "complete capture holds nothing");
+            for w in &admitted {
+                assert!(app.roster.contains_key(w), "wid {w} retained");
+                assert!(
+                    retained
+                        .window_domains
+                        .contains_key(&crate::runtime::window_id(PID, *w)),
+                    "wid {w} homed"
+                );
+            }
+            assert!(session.pending_closes.is_empty());
+            let desired = lock_shared(&shared).last_desired.clone();
+            assert_eq!(
+                desired.len(),
+                admitted.len(),
+                "publication carries {admitted:?}"
+            );
+            let mut expected: Vec<String> = admitted.iter().map(|w| format!("4242_{w}")).collect();
+            expected.sort();
+            assert_eq!(desired_ids(&desired), expected);
+            assert_nonoverlapping(&desired);
+            assert_eq!(
+                lock_shared(&shared).last_core_generation,
+                bound,
+                "publication binds the handshake generation"
+            );
+            assert!(
+                frames.current_rev() > rev_prev,
+                "capture {admitted:?} emits a fresh frame"
+            );
+            rev_prev = frames.current_rev();
+            assert_eq!(covering_closes(&shared), 0);
+        }
+        let desired_a = lock_shared(&shared).last_desired.clone();
+        assert_eq!(
+            desired_ids(&desired_a),
+            vec![
+                "4242_1".to_owned(),
+                "4242_2".to_owned(),
+                "4242_3".to_owned()
+            ]
+        );
+        let rev_a = frames.current_rev();
+
+        // Producer-bytes pin: the same retained truth rebuilds through the
+        // production builder and round-trips the genuine v4 codec (wire
+        // optionals inferred canonically, exactly like `codec_transact`).
+        let ticket = session
+            .sequencer()
+            .try_begin_request(None)
+            .expect("sequencer flight free after apply");
+        let verify = build_dispatch_report(
+            &mut session,
+            &retained,
+            &crate::world_runtime::DispatchContext::Native(Arc::clone(&ctx)),
+            &[],
+            ticket.observation_seq,
+            ticket.request_seq,
+            ticket.command_seq,
+            ticket.command.clone(),
+            None,
+            &ticket.request_id,
+        )
+        .expect("verification report builds from admitted truth");
+        session.sequencer().clear_flight();
+        let mono_present = verify.monotonic_ms != 0;
+        let decoded_input = DecodedReportV4 {
+            report: verify,
+            wire: ReportWireOptionals {
+                cursor_hit: CursorHitWire::Absent,
+                monotonic_ms_present: mono_present,
+                frame_attempts_present: false,
+                member_attempts_present: false,
+                view_attempts_present: false,
+                clear_attempts_present: false,
+                creation_attempts_present: false,
+                gesture_ingress: GestureIngressWire::Absent,
+            },
+            creation_receipts: Vec::<CreationReceiptWire>::new(),
+        };
+        let wire = encode_report_v4(&decoded_input).expect("producer bytes encode");
+        let back = decode_report_v4(&wire).expect("producer bytes decode");
+        assert_eq!(back.report.windows.len(), 3);
+        for row in &back.report.windows {
+            assert_eq!(row.role.as_deref(), Some("AXWindow"));
+            assert_eq!(
+                row.window_type,
+                Some(tiler_core::world_report::WindowType::Normal)
+            );
+            assert_eq!(row.modal, Some(false));
+            assert_eq!(row.resizable, Some(true));
+            assert_eq!(row.layer, Some(0));
+            assert_eq!(row.app_id.as_deref(), Some("com.example.app"));
+            assert_eq!(
+                row.activation_policy,
+                Some(tiler_core::world_report::ActivationPolicy::Regular)
+            );
+            assert_eq!(row.process_id.as_deref(), Some("4242"));
+            assert_eq!(row.host_hidden, Some(false));
+        }
+        assert_eq!(back.report.adapter_incarnation, session.incarnation());
+        assert_eq!(back.report.core_generation, bound);
+
+        // Leg B1: native read fence proof only — an incomplete read
+        // (wid 2 minimized unknown) refuses the whole snapshot at the
+        // producer, so no snapshot exists and nothing dispatches. The
+        // assertions below only prove the refusal path constructs
+        // nothing (vacuous for dispatch readiness: no call stages no
+        // hold — the real hold proof is Leg B2 below).
+        let mut bad = complete_outcome();
+        bad.windows[1].minimized = None;
+        let err = build_scoped_snapshot(
+            PID,
+            9,
+            &bad,
+            &app_facts(),
+            &|_| Ok(vec![1u64]),
+            None,
+            false,
+            false,
+        )
+        .expect_err("incomplete read refuses whole snapshot");
+        assert!(err.contains("refusing whole snapshot"), "{err}");
+        assert!(
+            session.connection_bound(),
+            "refusal path never unbinds (fence only)"
+        );
+        assert_eq!(
+            session.sequencer().bound_generation(),
+            bound,
+            "refusal mints nothing"
+        );
+        let app = retained.apps.get(&PID).expect("roster owner");
+        assert_eq!(app.generation, GENERATION, "refusal touches no lifetime");
+        assert_eq!(app.roster.len(), 3, "refusal retains lifetimes");
+        assert!(
+            !app.roster_incomplete,
+            "refusal stages no hold (it dispatches nothing)"
+        );
+        assert!(
+            session.pending_closes.is_empty(),
+            "nothing dispatched, nothing staged"
+        );
+        assert_eq!(
+            lock_shared(&shared).last_desired,
+            desired_a,
+            "no dispatch writes no geometry"
+        );
+        assert_eq!(frames.current_rev(), rev_a, "no dispatch emits no frame");
+        // Leg B2: actual incomplete inventory through the production
+        // dispatch — AX captures wids 1,2 while the window-server oracle
+        // is unreadable, so the covering absence of wid 3 proves
+        // nothing: `process_job` retains wid 3 under a narrow
+        // `cg-unreadable` hold, stages no close, emits no covering
+        // close, authorizes no native writes, and never re-handshakes.
+        // The whole-report hold (every scope `IncompleteInventory` until
+        // complete truth lands) authorizes no native writes and preserves
+        // the last stable plan truth — never a guessed close or write.
+        let mut partial = outcome_of(&[1, 2]);
+        partial.cg_complete = false;
+        partial.cg_owner_wids = Vec::new();
+        partial.cg_entries = Vec::new();
+        let snap_b = snapshot_of(&partial);
+        assert!(!snap_b.cg_complete, "unreadable oracle rides the snapshot");
+        assert_eq!(snap_b.windows.len(), 2);
+        seq += 1;
+        let frames_emitted_before = lock_shared(&shared).diagnostics.frames_emitted;
+        process_job(
+            EngineJob::ScopedObservation {
+                pid: PID,
+                generation: GENERATION,
+                seq,
+                snapshot: snap_b,
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        let app = retained.apps.get(&PID).expect("roster owner");
+        assert_eq!(app.generation, GENERATION, "hold changes no lifetime");
+        assert_eq!(app.roster.len(), 3, "hold retains every lifetime");
+        for wid in [1u32, 2, 3] {
+            assert!(app.roster.contains_key(&wid), "hold retains wid {wid}");
+        }
+        assert!(app.roster_incomplete, "unreadable absence stages the hold");
+        assert_eq!(app.roster_cause, "cg-unreadable");
+        assert!(session.pending_closes.is_empty(), "hold stages no close");
+        assert_eq!(
+            session.sequencer().bound_generation(),
+            bound,
+            "hold never re-handshakes"
+        );
+        assert_eq!(covering_closes(&shared), 0, "hold closes nothing");
+        assert!(
+            lock_shared(&shared).log.iter().any(|entry| {
+                entry.kind == "scope" && entry.outcome == "held-incomplete-inventory"
+            }),
+            "incomplete inventory dispatches as a whole-report hold"
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.frames_emitted,
+            frames_emitted_before,
+            "hold authorizes no native writes"
+        );
+        assert_eq!(
+            lock_shared(&shared).last_desired,
+            desired_a,
+            "hold preserves stable plan truth (no geometry churn)"
+        );
+        // Complete recovery re-admits the same lifetimes, unchanged.
+        seq += 1;
+        process_job(
+            EngineJob::ScopedObservation {
+                pid: PID,
+                generation: GENERATION,
+                seq,
+                snapshot: snapshot_of(&complete_outcome()),
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        let app = retained.apps.get(&PID).expect("roster owner");
+        assert_eq!(app.generation, GENERATION);
+        assert_eq!(app.roster.len(), 3, "recovery keeps the same lifetimes");
+        assert_eq!(
+            session.sequencer().bound_generation(),
+            bound,
+            "recovery never re-handshakes"
+        );
+        assert_eq!(covering_closes(&shared), 0, "recovery closes nothing");
+        assert_eq!(
+            desired_ids(&lock_shared(&shared).last_desired),
+            vec![
+                "4242_1".to_owned(),
+                "4242_2".to_owned(),
+                "4242_3".to_owned()
+            ]
+        );
+
+        // Leg C: wid 3 vanishes with a complete oracle proving absence
+        // (positive capture proof) — close stages, survivors reflow.
+        let mut gone = complete_outcome();
+        gone.requested = 2;
+        gone.observed = 2;
+        gone.windows.remove(2);
+        gone.cg_owner_wids = vec![1, 2];
+        gone.cg_entries.remove(2);
+        let snap_c = snapshot_of(&gone);
+        assert!(snap_c.cg_complete, "close needs a complete capture oracle");
+        assert!(
+            !snap_c.cg_owner_wids.contains(&3),
+            "positive capture proof: oracle complete without wid 3"
+        );
+        seq += 1;
+        process_job(
+            EngineJob::ScopedObservation {
+                pid: PID,
+                generation: GENERATION,
+                seq,
+                snapshot: snap_c,
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        let app = retained.apps.get(&PID).expect("roster owner");
+        assert!(!app.roster.contains_key(&3), "proven-gone window drops");
+        assert!(
+            !retained
+                .window_domains
+                .contains_key(&crate::runtime::window_id(PID, 3)),
+            "proven-gone homing drops"
+        );
+        assert_eq!(covering_closes(&shared), 1, "exactly one covering close");
+        let desired_c = lock_shared(&shared).last_desired.clone();
+        assert_eq!(
+            desired_ids(&desired_c),
+            vec!["4242_1".to_owned(), "4242_2".to_owned()]
+        );
+        assert_nonoverlapping(&desired_c);
+        assert!(
+            frames.current_rev() > rev_a,
+            "close/reflow emits a fresh frame"
+        );
+        let area = |d: &[crate::runtime_types::DesiredFrame]| -> i64 {
+            d.iter().map(|f| f.w as i64 * f.h as i64).sum()
+        };
+        assert!(
+            area(&desired_c) > area(&desired_a),
+            "reflow grows total tiled area into freed space"
+        );
+        assert!(
+            ["4242_1", "4242_2"].iter().any(|id| {
+                desired_a.iter().find(|d| &d.window == id)
+                    != desired_c.iter().find(|d| &d.window == id)
+            }),
+            "at least one survivor takes new geometry after the close"
+        );
+    }
+
+    /// Slice-1 pending-unpersisted-intent hold through the production
+    /// dispatch: explicit synthetic ordinary captures (production caps) admit
+    /// three windows, then a real `ToggleFloat` core command dispatches
+    /// through genuine `dispatch_report`/`codec_transact`. The first
+    /// intent-write reply holds native-dependent effects, geometry,
+    /// presentation, and outbox; a later empty-writes reply still cannot
+    /// bypass the session latch. A separate save-free control still applies.
+    #[test]
+    fn unpersisted_intent_hold_through_production_dispatch() {
+        use crate::classifier::{ActivationPolicy, ROLE_WINDOW, SUBROLE_STANDARD};
+        use crate::ffi::{AxFrame, CgBounds};
+        use crate::native_facts::{NativeAppFacts, NativeReadOutcome, NativeWindowFacts};
+        use crate::native_tile_backend::build_scoped_snapshot;
+        use crate::runtime_shared::AppRecord;
+
+        const PID: u32 = 4242;
+        const GENERATION: u64 = 1;
+
+        fn ax_frame(x: i32, y: i32, w: i32, h: i32) -> AxFrame {
+            AxFrame {
+                x: x as f64,
+                y: y as f64,
+                w: w as f64,
+                h: h as f64,
+            }
+        }
+        fn window_facts(wid: u32, frame: AxFrame) -> NativeWindowFacts {
+            NativeWindowFacts {
+                wid,
+                role: Some(ROLE_WINDOW.to_owned()),
+                subrole: Some(SUBROLE_STANDARD.to_owned()),
+                fullscreen: Some(false),
+                minimized: Some(false),
+                modal: Some(false),
+                size_settable: Some(true),
+                min_size: None,
+                max_size: None,
+                frame: Some(frame),
+                cg_layer: Some(0),
+                cg_onscreen: Some(true),
+            }
+        }
+        fn cg_entry(wid: u32, frame: &AxFrame) -> crate::native_facts::CgWindowEntry {
+            crate::native_facts::CgWindowEntry {
+                wid,
+                layer: 0,
+                onscreen: true,
+                bounds: CgBounds {
+                    x: frame.x,
+                    y: frame.y,
+                    w: frame.w,
+                    h: frame.h,
+                },
+            }
+        }
+        fn three_frames() -> [AxFrame; 3] {
+            [
+                ax_frame(10, 30, 450, 800),
+                ax_frame(470, 30, 450, 800),
+                ax_frame(930, 30, 450, 800),
+            ]
+        }
+        fn outcome_of(wids: &[u32]) -> NativeReadOutcome {
+            let frames = three_frames();
+            NativeReadOutcome {
+                pid: PID,
+                requested: wids.len(),
+                observed: wids.len(),
+                failed: 0,
+                first_cause: String::new(),
+                windows: wids
+                    .iter()
+                    .copied()
+                    .map(|wid| window_facts(wid, frames[(wid - 1) as usize]))
+                    .collect(),
+                cg_complete: true,
+                cg_owner_wids: wids.to_vec(),
+                cg_entries: wids
+                    .iter()
+                    .copied()
+                    .map(|wid| cg_entry(wid, &frames[(wid - 1) as usize]))
+                    .collect(),
+            }
+        }
+        fn app_facts() -> NativeAppFacts {
+            NativeAppFacts {
+                pid: PID,
+                hidden: false,
+                activation_policy: ActivationPolicy::Regular,
+                is_own_bundle: false,
+                app_id: Some("com.example.app".to_owned()),
+            }
+        }
+        fn snapshot_of(outcome: &NativeReadOutcome) -> crate::runtime_types::ScopedBackendSnapshot {
+            build_scoped_snapshot(
+                PID,
+                9,
+                outcome,
+                &app_facts(),
+                &|_| Ok(vec![1u64]),
+                None,
+                false,
+                false,
+            )
+            .expect("complete ordinary read snapshots")
+        }
+
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), RetainedCore::default());
+        assert!(
+            session.connection_bound(),
+            "genuine handshake binds the session"
+        );
+        let bound = session.sequencer().bound_generation();
+        assert!(!bound.is_empty());
+        let frames = Arc::new(FrameSlot::new());
+        lock_shared(&shared).apps.insert(
+            PID,
+            AppRecord {
+                generation: GENERATION,
+                terminated: false,
+                stop: Arc::new(AtomicBool::new(false)),
+                frames: Arc::clone(&frames),
+                focus: Arc::new(FocusSlot::new()),
+                ready: Arc::new(Mutex::new(Some(Ok::<(), String>(())))),
+                worker: None,
+                worker_name: "test-4242".to_owned(),
+            },
+        );
+        // Admit three explicit synthetic ordinary captures through the real
+        // scoped observation path (production snapshot + dispatch + codec).
+        let mut seq = 0u64;
+        for wid in [1u32, 2, 3] {
+            seq += 1;
+            let outcome = outcome_of(&[1, 2, 3][..wid as usize]);
+            process_job(
+                EngineJob::ScopedObservation {
+                    pid: PID,
+                    generation: GENERATION,
+                    seq,
+                    snapshot: snapshot_of(&outcome),
+                },
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                8,
+            );
+        }
+        assert!(
+            !session.unpersisted_intent_hold(),
+            "save-free admission must not latch"
+        );
+        let desired_base = lock_shared(&shared).last_desired.clone();
+        assert_eq!(desired_base.len(), 3, "admission publishes plan truth");
+        let presentation_base = lock_shared(&shared).last_presentation.clone();
+        let workspaces_base = lock_shared(&shared).last_workspace_desires.clone();
+        let generation_base = lock_shared(&shared).last_core_generation.clone();
+        assert_eq!(generation_base, bound);
+        let rev_base = frames.current_rev();
+        let emitted_base = lock_shared(&shared).diagnostics.frames_emitted;
+        assert!(
+            focus_queue.lock().expect("focus queue").is_empty(),
+            "admission moves no focus"
+        );
+
+        // First production intent-write reply: real ToggleFloat command for
+        // an admitted window through genuine dispatch_report/codec_transact.
+        seq += 1;
+        let toggle = tiler_core::world_report::WorldCommand::Operation(
+            tiler_core::boundary::CoreCommand::ToggleFloat {
+                window: "4242_1".to_owned(),
+                float_rect: None,
+            },
+        );
+        match dispatch_report(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            crate::world_runtime::DispatchContext::Native(Arc::clone(&ctx)),
+            Vec::new(),
+            Some(toggle),
+            None,
+            false,
+            crate::world_command_map::OP_TOGGLE_FLOAT,
+            PID,
+            GENERATION,
+            seq,
+        ) {
+            DispatchVerdict::Refused { token, .. } => assert_eq!(
+                token, "intent-write-unpersisted",
+                "first intent-write reply must hold"
+            ),
+            other => panic!("toggle-float dispatch must hold, got {other:?}"),
+        }
+        assert!(
+            session.unpersisted_intent_hold(),
+            "write reply latches the session"
+        );
+        assert_eq!(
+            lock_shared(&shared).last_desired,
+            desired_base,
+            "held reply publishes no geometry"
+        );
+        assert_eq!(
+            lock_shared(&shared).last_presentation,
+            presentation_base,
+            "held reply publishes no presentation"
+        );
+        assert_eq!(
+            lock_shared(&shared).last_workspace_desires,
+            workspaces_base,
+            "held reply publishes no workspace desires"
+        );
+        assert_eq!(
+            lock_shared(&shared).last_core_generation,
+            generation_base,
+            "held reply publishes no generation"
+        );
+        assert!(
+            focus_queue.lock().expect("focus queue").is_empty(),
+            "held reply enqueues no focus outbox"
+        );
+        assert_eq!(
+            frames.current_rev(),
+            rev_base,
+            "held reply emits no frame slot write"
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.frames_emitted,
+            emitted_base,
+            "held reply spends no native effect"
+        );
+
+        // Later empty-writes reply still cannot bypass the latch.
+        seq += 1;
+        match dispatch_report(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            crate::world_runtime::DispatchContext::Native(Arc::clone(&ctx)),
+            Vec::new(),
+            None,
+            None,
+            false,
+            crate::world_command_map::OP_RECONCILE,
+            PID,
+            GENERATION,
+            seq,
+        ) {
+            DispatchVerdict::Refused { token, .. } => assert_eq!(
+                token, "intent-write-unpersisted",
+                "latched session must hold the later empty reply"
+            ),
+            other => panic!("latched dispatch must still hold, got {other:?}"),
+        }
+        assert!(
+            session.unpersisted_intent_hold(),
+            "latch persists across dispatches"
+        );
+        assert_eq!(
+            lock_shared(&shared).last_desired,
+            desired_base,
+            "latched hold still publishes no geometry"
+        );
+        assert_eq!(
+            lock_shared(&shared).last_presentation,
+            presentation_base,
+            "latched hold still publishes no presentation"
+        );
+        assert!(
+            focus_queue.lock().expect("focus queue").is_empty(),
+            "latched hold still enqueues no focus"
+        );
+        assert_eq!(frames.current_rev(), rev_base);
+        assert_eq!(
+            lock_shared(&shared).diagnostics.frames_emitted,
+            emitted_base,
+            "latched hold still spends nothing"
+        );
+
+        // Separate save-free control: ordinary observation stays open.
+        let (mut c_session, mut c_retained, c_shared, c_inbox, c_focus) =
+            harness(Arc::clone(&ctx), RetainedCore::default());
+        assert!(!c_session.unpersisted_intent_hold());
+        match dispatch_report(
+            &mut c_session,
+            &mut c_retained,
+            &c_shared,
+            &c_inbox,
+            &c_focus,
+            8,
+            crate::world_runtime::DispatchContext::Synthetic,
+            Vec::new(),
+            None,
+            None,
+            false,
+            crate::world_command_map::OP_RECONCILE,
+            0,
+            0,
+            0,
+        ) {
+            DispatchVerdict::Applied { .. } => {}
+            other => panic!("save-free control must apply, got {other:?}"),
+        }
+        assert!(
+            !c_session.unpersisted_intent_hold(),
+            "save-free dispatch must not latch"
         );
     }
 
@@ -4775,6 +5827,10 @@ mod trailing_join_tests {
             let ctx = ctx();
             let (mut session, mut retained, shared, inbox, focus_queue) =
                 harness(Arc::clone(&ctx), retained_occupied_trailing());
+            // Fixture admission precedes commands: Accepted alone never
+            // proves admission; the Controlled row (retained View transfer
+            // plus creation desire below) does.
+            assert_fixture_admitted(&session, &retained);
             handle_select_action_with(
                 &mut session,
                 &mut retained,
@@ -4894,7 +5950,10 @@ mod trailing_join_tests {
             .expect("nonempty context reports");
             // The drain's creation report rides the creation row: exactly
             // one exact-correlated receipt for the pending authorization
-            // (operation plus logical plus output, named created desktop).
+            // (operation plus logical plus output). M5: the observed
+            // appended order alone is not causal proof, so the production
+            // v4 attempt keeps `created` null even though the legacy drain
+            // exposed the appended candidate.
             assert_eq!(
                 report.creation_attempts.len(),
                 1,
@@ -4910,8 +5969,8 @@ mod trailing_join_tests {
             );
             assert_eq!(
                 report.creation_attempts[0].created_native.as_deref(),
-                Some(workspace_key(success.effect.target).as_str()),
-                "receipt names the verified appended desktop"
+                None,
+                "appended observed SID never claims causal created identity"
             );
             assert_eq!(
                 report.creation_attempts[0].order_before,
@@ -4930,22 +5989,20 @@ mod trailing_join_tests {
             );
             assert_eq!(report.view_attempts.len(), 1, "report carries the attempt");
             assert_eq!(report.view_attempts[0].operation_id, op);
-            assert_eq!(
-                report.view_attempts[0].pre, None,
-                "logical pre stays absent, never translated adapter-side"
-            );
-            assert_eq!(
-                report.view_attempts[0].post, None,
-                "logical post stays absent, never guessed adapter-side"
-            );
-            assert_eq!(
-                report.view_attempts[0].native_pre.as_deref(),
-                Some(workspace_key(success.pre.expect("pre read")).as_str()),
+            assert!(
+                matches!(
+                    report.view_attempts[0].pre.as_ref(),
+                    Some(tiler_core::world_report::WorkspaceRef::Native { workspace, .. })
+                        if workspace.as_str() == workspace_key(success.pre.expect("pre read"))
+                ),
                 "drain-verified before read rides the native pre key"
             );
-            assert_eq!(
-                report.view_attempts[0].native_post.as_deref(),
-                Some(workspace_key(success.post.expect("post read")).as_str()),
+            assert!(
+                matches!(
+                    report.view_attempts[0].post.as_ref(),
+                    Some(tiler_core::world_report::WorkspaceRef::Native { workspace, .. })
+                        if workspace.as_str() == workspace_key(success.post.expect("post read"))
+                ),
                 "drain-verified after read rides the native post key"
             );
             let reply = match session.engine_mut().handle_report(&report) {
@@ -5011,6 +6068,10 @@ mod trailing_join_tests {
                 &focus_queue,
                 &ctx,
             );
+            // Fixture admission precedes the send: Accepted alone never
+            // proves it; the Controlled row (retained Window transfer
+            // below) does.
+            assert_fixture_admitted(&session, &retained);
             handle_send_action_with(
                 &mut session,
                 &mut retained,
@@ -5133,13 +6194,12 @@ mod trailing_join_tests {
                 "report carries the attempt"
             );
             assert_eq!(report.member_attempts[0].operation_id, op);
-            assert_eq!(
-                report.member_attempts[0].post, None,
-                "logical post stays absent, never guessed adapter-side"
-            );
-            assert_eq!(
-                report.member_attempts[0].native_post.as_deref(),
-                Some(workspace_key(prep.target_sid).as_str()),
+            assert!(
+                matches!(
+                    report.member_attempts[0].post.as_ref(),
+                    Some(tiler_core::world_report::WorkspaceRef::Native { workspace, .. })
+                        if workspace.as_str() == workspace_key(prep.target_sid)
+                ),
                 "drain-verified arrival rides the native post key"
             );
             let reply = match session.engine_mut().handle_report(&report) {
@@ -5293,6 +6353,8 @@ mod drag_gesture_handoff_tests {
     }
 
     fn retained_two_windows() -> RetainedCore {
+        let window_a = observed_a();
+        let window_b = observed_b();
         let mut retained = RetainedCore::default();
         retained.apps.insert(
             4242,
@@ -5300,9 +6362,28 @@ mod drag_gesture_handoff_tests {
                 generation: 1,
                 seq_last: 1,
                 cmd_counter: 0,
-                windows: vec![observed_a()],
+                windows: vec![window_a],
                 focused_wid: Some(7),
-                roster: std::collections::BTreeMap::new(),
+                roster: std::collections::BTreeMap::from([(
+                    7,
+                    crate::runtime_core::RosterEntry {
+                        observed: Some(window_a),
+                        spaces: vec![11],
+                        fullscreen_meta: false,
+                        minimized_meta: false,
+                        hidden_meta: false,
+                        excluded: None,
+                        role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                        subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                        modal: Some(false),
+                        resizable: Some(true),
+                        layer: Some(0),
+                        app_id: Some("com.example.app".to_owned()),
+                        activation_policy: Some(
+                            tiler_core::world_report::ActivationPolicy::Regular,
+                        ),
+                    },
+                )]),
                 roster_incomplete: false,
                 roster_cause: String::new(),
             },
@@ -5313,9 +6394,28 @@ mod drag_gesture_handoff_tests {
                 generation: 1,
                 seq_last: 1,
                 cmd_counter: 0,
-                windows: vec![observed_b()],
+                windows: vec![window_b],
                 focused_wid: None,
-                roster: std::collections::BTreeMap::new(),
+                roster: std::collections::BTreeMap::from([(
+                    9,
+                    crate::runtime_core::RosterEntry {
+                        observed: Some(window_b),
+                        spaces: vec![11],
+                        fullscreen_meta: false,
+                        minimized_meta: false,
+                        hidden_meta: false,
+                        excluded: None,
+                        role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                        subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                        modal: Some(false),
+                        resizable: Some(true),
+                        layer: Some(0),
+                        app_id: Some("com.example.app".to_owned()),
+                        activation_policy: Some(
+                            tiler_core::world_report::ActivationPolicy::Regular,
+                        ),
+                    },
+                )]),
                 roster_incomplete: false,
                 roster_cause: String::new(),
             },
@@ -5372,7 +6472,7 @@ mod drag_gesture_handoff_tests {
             test_wake: None,
             test_seq: 0,
             last_geometry_key: None,
-            last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            last_presentation: crate::runtime::empty_world_presentation_v4(),
             last_pager_bindings: Vec::new(),
             last_workspace_desires: Vec::new(),
             last_core_generation: String::new(),
@@ -5396,17 +6496,45 @@ mod drag_gesture_handoff_tests {
         // stamp the SAME current mark, or every reply refuses as stale.
         let clock = Arc::clone(&lock_shared(&shared).clock);
         (
-            WorldSession::new(
-                tiler_core::size_hints::FixedSizePredicate::BothAxes,
-                true,
-                FocusRoute::Slps,
-                clock,
-            ),
+            WorldSession::new(true, FocusRoute::Slps, clock, &[]),
             retained_two_windows(),
             shared,
             Arc::new(Inbox::new(16)),
             Arc::new(Mutex::new(Vec::new())),
         )
+    }
+
+    /// Fixture admission gate: the genuine handshake binds the session
+    /// (adapter-native incarnation, production macOS caps, minted
+    /// generation) and both handbuilt rosters carry explicit native-shaped
+    /// ordinary raw facts homed to space-11. A report `Accepted` alone
+    /// never proves admission; the caller must also observe the Controlled
+    /// row (preview `Show` slot or committed terminal below).
+    fn assert_fixture_admitted(session: &WorldSession, retained: &RetainedCore) {
+        assert!(session.connection_bound(), "genuine handshake binds");
+        assert!(
+            session.incarnation().starts_with("macos-"),
+            "bound incarnation is adapter-native"
+        );
+        assert!(
+            crate::world_connection::macos_capabilities().host_owned,
+            "macOS Spaces stay host-owned"
+        );
+        assert!(
+            !session.sequencer().bound_generation().is_empty(),
+            "handshake mints a bound generation"
+        );
+        for (pid, wid) in [(4242u32, 7u32), (4243u32, 9u32)] {
+            let app = retained.apps.get(&pid).expect("fixture app retained");
+            let entry = app.roster.get(&wid).expect("fixture roster row retained");
+            assert_eq!(entry.spaces, vec![11], "fixture row homed to space-11");
+            assert_eq!(entry.role.as_deref(), Some(crate::classifier::ROLE_WINDOW));
+            assert_eq!(
+                entry.subrole.as_deref(),
+                Some(crate::classifier::SUBROLE_STANDARD)
+            );
+            assert!(!app.roster_incomplete, "fixture holds nothing");
+        }
     }
 
     fn fences_ok() -> DragFences {
@@ -5486,6 +6614,9 @@ mod drag_gesture_handoff_tests {
     #[test]
     fn gesture_start_binds_then_update_previews_core_slot() {
         let (mut session, mut retained, shared, inbox, focus_queue) = harness();
+        // Fixture admission precedes the gesture: Accepted alone never
+        // proves it; the Controlled row (preview Show slot below) does.
+        assert_fixture_admitted(&session, &retained);
         let drag = DragSession::new(DragOptions::default(), ProbeModifier::Ctrl);
         arm(&drag);
         // Started binds only: no overlay at the down point itself.
@@ -5557,6 +6688,7 @@ mod drag_gesture_handoff_tests {
     #[test]
     fn gesture_release_commits_once_and_replay_stays_dead() {
         let (mut session, mut retained, shared, inbox, focus_queue) = harness();
+        assert_fixture_admitted(&session, &retained);
         let drag = DragSession::new(DragOptions::default(), ProbeModifier::Ctrl);
         arm(&drag);
         let started = drag.start_ingress().expect("Started");
@@ -5818,6 +6950,7 @@ mod drag_gesture_handoff_tests {
     #[test]
     fn orphan_cancelled_consumes_without_influence_and_new_gesture_binds_clean() {
         let (mut session, mut retained, shared, inbox, focus_queue) = harness();
+        assert_fixture_admitted(&session, &retained);
         let frame = Rect {
             x: 100,
             y: 100,
@@ -5923,6 +7056,7 @@ mod drag_gesture_handoff_tests {
     #[test]
     fn late_old_terminal_cannot_mutate_newer_gesture_and_capture_releases() {
         let (mut session, mut retained, shared, inbox, focus_queue) = harness();
+        assert_fixture_admitted(&session, &retained);
         let frame = Rect {
             x: 100,
             y: 100,

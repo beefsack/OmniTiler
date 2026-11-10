@@ -24,6 +24,7 @@ signal-hook = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tiler-core = { path = "../tiler-core" }
+tiler-protocol = { path = "../tiler-protocol" }
 
 # Test-only pin of the actual Windows portable policy: comparing real
 # `tiler_windows::tiling` predicates against `tiler-core::window_policy`

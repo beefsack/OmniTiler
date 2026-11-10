@@ -16,7 +16,7 @@
   The KDE reconnect (RC) leg-2 fix and merge decision
   must land before this port reaches its reconnect/rehome slice and before 0.1. Other KDE acceptance remains separate, not implicitly
   cleared by opening this port.
-- **Started under the amended gate (2026-11-10); slice 1 implementation pending.**
+- **Started under the amended gate (2026-11-10); slice 1 implementation in progress.**
   Under the [migration decision](../decisions/contract.md#contract-authority-and-v4-migration),
   KDE phase 2 offline completion including v3 removal is done. macOS may start
   while KDE ST/RC work continues. Neither slice 5 (state targets) nor slice 7
@@ -149,6 +149,93 @@
   dogfoodability is not conformance across all adapters or release acceptance;
   unsupported behavioral outcomes stay TBD in the existing
   [minimal discriminators](../spec/reference-outcomes.md#v4-macos-platform-fit-discriminators).
+
+## Slice 1 implementation and evidence
+
+- Scope: replace the retired production boundary with real v4 handshake,
+  revisioned raw settings, neutral reports, decoded replies and fenced apply.
+  Ordinary signed-fixture admission/reflow is the native acceptance floor;
+  later slice behavior and M3 restart survival are not inferred from it.
+- Separate signed-fixture recovery leg: retain identified fixture windows on
+  an off-current or unreadable native Space through the held interval, with no
+  inferred close or writes while held. Switch to that owned Space, obtain a
+  fresh complete capture, and prove those same lifetimes are picked up and
+  tiled normally using independent AX/CG frame readback. Report this outcome
+  separately from first admission and close/reflow; callback or switch receipts
+  alone do not pass it.
+- Implementation units: restore the macOS-owned production boundary and its
+  affected tests; remove approved self-exclusion policy; separately remove
+  automatic startup shortcut Apply; exercise genuine producer/core/protocol
+  journeys; then run allowlisted gates and signed-fixture native acceptance.
+- Storage ordering: incorporate opaque intent writes before dependent native
+  writes, returning only exact-live-lifetime records. A nondurable or failed
+  store cannot authorize dependent writes. The shared contract already supplies
+  these lanes; ordinary observation-only admission/reflow emits no intent save
+  (`world_publish.rs::drain_intent_saves`). M3 storage survival and re-identification
+  remain separate acceptance work.
+- The macOS-owned boundary now contains handshake/settings and report/reply
+  codec dispatch; this is code presence, not native acceptance.
+- Offline checkpoint (2026-11-10): allowlisted locked/offline build and macOS
+  all-target test compilation pass without warnings. The last full library run
+  reported 1443 passed and 30 failed before subsequent fixture repairs. Affected
+  suites now have focused passing evidence, including 239 tests after dead-code
+  removal; this is not a fresh full-suite result. Modified-source formatting
+  and diff checks pass. Full gates and native acceptance remain pending.
+- Raw settings checkpoint: focused acquisition/connection tests pass for CLI
+  precedence, explicit null versus omission, invalid-field diagnostics with
+  valid siblings retained, and revision/generation refusals. Core-effective
+  values supply the existing presentation carrier; no hot reload is claimed.
+- Explicit Apply: the automatic Authentic startup Desktop-N holder mutation
+  was removed. The focused startup no-mutation regression passed; explicit
+  Apply CLI and per-drain refusal preservation also passed focused checks.
+  Native first-run cost and holder refusal readback remain unrun.
+- Native readback, physical/visual proof, signed-fixture admission/reflow
+  and independent migration review remain unrun. Slice 1 is
+  incomplete; no usable native surface or conformance acceptance is claimed.
+- Neutral-fact follow-up: hidden-app and minimized rows now preserve available
+  raw facts separately (`minimized` versus `host_hidden`), including process
+  identity. Focused regressions passed during implementation. Test captures
+  now supply explicit ordinary native facts and production macOS capabilities;
+  this restored genuine admission and hide/restore geometry assertions instead
+  of accidentally exercising all-null classification holds.
+- Unpersisted-save safety: a session-lifetime latch now prevents a later reply
+  without writes from bypassing an earlier unpersisted intent write. Two focused
+  tests passed during implementation. This is fail-closed plumbing, not a
+  durable store or M3 restart acceptance. A production-dispatch regression now
+  proves the initial save refusal and a later observation-only reply remain
+  no-write, while a save-free control applies.
+- **Shared focus correction implemented:** direct focus now refuses the staged
+  minimized/host-hidden target before retained membership can authorize it;
+  directional focus also refuses a hidden source. Existing refusal vocabulary,
+  observations, held layout and separate minimized restoration are preserved.
+  The genuine macOS producer regression passes both complete and incomplete
+  inventory contrasts:
+  `mise exec -- cargo test --locked --offline -p tiler-macos --lib world_builder::tests::first_transition_same_report_focus_never_restores_hidden`
+  Independent source review accepted the narrow guard; focused core tests pass.
+   Core/protocol build and behavioral targets pass. The workspace unsafe
+   allowlist test fails on three unchanged fixture attributes; protocol strict
+   clippy fails on two unchanged single-element loops. Core strict all-target
+   clippy passes. Attribution to the base is source comparison only. Full gate
+   closure remains pending. See the
+  [original blocker](macos-core-trailing-pager.md#core-blocker-same-report-minimized-target-during-an-inventory-gap).
+- M5: an observed appended native Space is no longer claimed as causal creation
+  identity. The staged attempt preserves native orders and setter evidence with
+  `created:null`; its focused stage/codec regression and the repaired native
+  attempt lifetime suite pass. No causal native creation proof is claimed.
+- Genuine producer journey: native-shaped captures admit 1, then 2, then 3
+  ordinary windows through production dispatch/codecs/core and a mocked frame
+  sink. An incomplete inventory retains all lifetimes without native writes;
+  complete recovery and positive-absence close/reflow pass. A rebuilt-report
+  codec check is supplemental, not an internal transaction transcript.
+- Restart fences: sessions obtain a fresh OS-random nonce for incarnation and
+  generation seed; entropy failure remains unbound. Focused tests pass old
+  traffic rejection, reused-PID-shaped isolation and entropy failure. These
+  fences do not establish M3 durable intent recovery.
+- Reply decoding uses actual macOS capabilities before sequencing/apply.
+  Dead pre-v4 report/session policy plumbing is removed; normalization with
+  remaining test readers is test-only. No compatibility report is retained.
+- Latest verification limits: a fresh full suite and post-integration gates
+  remain pending. Focused passes do not establish a usable native surface.
 
 ## Transferable KDE lessons
 

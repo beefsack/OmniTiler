@@ -1074,7 +1074,14 @@ mod live {
                 self.runtime
                     .as_ref()
                     .map(|handle| handle.last_indicator_snapshot())
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| {
+                        (
+                            crate::runtime::empty_world_presentation_v4(),
+                            Vec::new(),
+                            Vec::new(),
+                            String::new(),
+                        )
+                    });
             self.indicator.tick(
                 &rows,
                 revision,
