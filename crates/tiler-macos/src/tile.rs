@@ -2088,43 +2088,6 @@ mod native {
             catalogue.push(binding);
         }
         let active_chords = catalogue.len();
-        // Authentic Desktop-N holder ensure (enable-only with owned durable
-        // preimages; explicit `spaces-desktop-revert` restores; no
-        // automatic revert on shutdown). Runs once at startup, before any
-        // send could dispatch: Desktops 1-9 coverage with preimage
-        // published before the first write, resume-safe, external edits
-        // preserved. A refusal logs and proceeds - the per-drain holder
-        // leg still refuses disabled/unreadable holders before any post.
-        // Compatible performs zero store touch here (no read, no write).
-        if request.preset == InputPreset::Authentic {
-            match crate::desktop_shortcuts::canonical_preimage_path() {
-                Some(path) => {
-                    let mut store = crate::desktop_shortcuts::LiveStore::new();
-                    match crate::workspace_send::ensure_holders_for_preset(
-                        request.preset,
-                        &mut store,
-                        &path,
-                    ) {
-                        Ok(Some(outcome)) => eprintln!(
-                            "tiler-macos desktop holders ensured: {} applied, {} failed, resumed={} path={}",
-                            outcome.results.len(),
-                            outcome.failures.len(),
-                            outcome.resumed,
-                            path.display(),
-                        ),
-                        Ok(None) => {
-                            eprintln!("tiler-macos desktop holders ensure skipped by preset gate")
-                        }
-                        Err(reason) => eprintln!(
-                            "tiler-macos desktop holders ensure refused: {reason} (sends refuse at the holder leg)"
-                        ),
-                    }
-                }
-                None => eprintln!(
-                    "tiler-macos desktop holders ensure skipped: no $HOME (sends refuse at the holder leg)"
-                ),
-            }
-        }
         // Shared per-PID eligibility facts: each per-app AX owner publishes
         // only its own PID from snapshot data it already read; the input
         // owner consults plain snapshots (no AX crosses threads). Built
@@ -2388,9 +2351,8 @@ mod native {
         // Dispatch-ready boundary: the runtime (engine plus input-tap
         // owner) started, the display observer installed, and the drag arm
         // resolved (armed, or parked with its reason above). Only now may a
-        // live operator gate dispatch on this line instead of sleeping; the
-        // holder-ensure outcome keeps its own earlier line. One static line
-        // while the run lives; streams live under `--stream`.
+        // live operator gate dispatch on this line instead of sleeping. One
+        // static line while the run lives; streams live under `--stream`.
         eprintln!(
             "{}",
             crate::workspace_send::format_send_readiness_line(
@@ -4692,6 +4654,33 @@ mod tests {
             request(&["com.apple.TextEdit", "com.apple.Calculator"])
                 .validate()
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn startup_performs_no_desktop_holder_mutation() {
+        // Explicit Apply only: startup must not ensure, read, or write
+        // Desktop-N holders under any preset. Holder mutation lives
+        // behind the explicit `spaces-desktop-apply` CLI; sends still
+        // refuse at the per-drain holder leg. Scope to the production
+        // section so this test's own literals cannot self-match.
+        let source = include_str!("tile.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        for forbidden in [
+            "ensure_holders_for_preset",
+            "canonical_preimage_path",
+            "LiveStore",
+            "desktop holders ensure",
+        ] {
+            assert!(
+                !production.contains(forbidden),
+                "startup must not touch desktop holders ({forbidden})"
+            );
+        }
+        assert!(
+            production.contains("LiveSendController")
+                && production.contains("format_send_readiness_line"),
+            "per-drain send path and readiness line stay"
         );
     }
 
