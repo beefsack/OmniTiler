@@ -195,8 +195,13 @@
   pinned. Identical desired frames may be rewritten on reconciliation, so this
   proves no frame change, not zero native setter calls. All four focus/gap
   integrations and the two affected scoped focus/move tests pass. The library
-  passed 1475 tests before adding the final edge proof; a fresh full rerun is
-  still required after this unit.
+  passed 1475 tests before adding the final edge proof. After absorbing the
+  dynamic-workspace lifecycle change, the fresh full library result is 1473
+  passed / 3 failed; those three tests assert superseded spare-backing/native
+  minimum expectations. Core library passes 2100 tests, allowlisted build and
+  macOS all-target compilation pass. Fresh integration result: 86 passed / 64
+  failed. Most failures still use rawless synthetic fixtures; three genuine
+  close/focus-loss failures are isolated below.
 - Raw settings checkpoint: focused acquisition/connection tests pass for CLI
   precedence, explicit null versus omission, invalid-field diagnostics with
   valid siblings retained, and revision/generation refusals. Core-effective
@@ -205,8 +210,9 @@
   was removed. The focused startup no-mutation regression passed; explicit
   Apply CLI and per-drain refusal preservation also passed focused checks.
   Native first-run cost and holder refusal readback remain unrun.
-- Native readback, physical/visual proof, signed-fixture admission/reflow
-  and independent migration review remain unrun. Slice 1 is
+- Native readback, physical/visual proof and signed-fixture admission/reflow
+  remain unrun. Independent migration review identified the close/focus-loss
+  blocker below; its source checks are not native acceptance. Slice 1 is
   incomplete; no usable native surface or conformance acceptance is claimed.
 - Neutral-fact follow-up: hidden-app and minimized rows now preserve available
   raw facts separately (`minimized` versus `host_hidden`), including process
@@ -253,8 +259,31 @@
   Dead pre-v4 report/session policy plumbing is removed; normalization with
   remaining test readers is test-only. No compatibility report is retained.
 - Latest verification limits: the integration suite remains red; a fresh full
-  library rerun after the latest upstream integration and complete gate closure
-  remain pending. Focused passes do not establish a usable native surface.
+  gate closure remains pending. Focused passes do not establish a usable native
+  surface.
+
+### Blocker: positive close with no observed focus
+
+- Minimal case: admit A/B in separate app lifetimes, focus A, positively close
+  A while its app remains alive, and report complete AX/CG absence plus B's
+  ordinary facts with no new observed focus. Three scoped close/reflow tests
+  fail: survivor desires have no frames and the occupied scope holds Unreadable.
+  The existing covering close journey remains a distinct passing case.
+- Independent offline review instrumented an isolated source copy and reported
+  the exact complete close report and shared sweep refusal: `focus-mismatch`,
+  followed by `Hold(Unreadable)`, zero frames. No repository source was changed
+  for that probe. Direct source inspection confirms the focusless Reconcile
+  escape in `tiler-core/src/engine.rs` excludes reports with staged closes;
+  `world_publish.rs::classify_sweep_hold` maps the refusal to Unreadable.
+- The adapter must not fabricate survivor focus to bypass this gate. Whether
+  shared reconciliation should project the survivor layout with focus none, or
+  retain the hold until independently observed focus arrives, remains unresolved.
+  Native close/reflow and held-Space recovery acceptance are not established.
+- Other reviewed boundaries, source-only: ambiguous creation retains
+  `created:null`; native retirement is guarded by core `exist:false` and fresh
+  occupancy proof (currently unknown occupancy prevents removal); unsupported
+  capabilities and unpersisted intent writes remain fail-closed. These checks
+  do not close native M3/M5/M6 or FIFO/render acceptance.
 
 ## Transferable KDE lessons
 
