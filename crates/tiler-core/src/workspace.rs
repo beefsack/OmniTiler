@@ -1,6 +1,11 @@
 //! Pure per-output-local ordinal/trailing/cleanup policy.
+//!
+//! Portable core policy: no minimum-two floor. Every scope keeps exactly one
+//! trailing empty spare (occupied finals supply the next spare); ordinary
+//! empty rows prune once unshown, keeping the trailing spare. A host
+//! native-desktop floor, if desired, lives in the adapter, never here.
 
-pub const MIN_WORKSPACES: usize = 2;
+pub const MIN_WORKSPACES: usize = 1;
 pub const MAX_ORDERED: usize = 32;
 
 #[must_use]
@@ -210,12 +215,17 @@ mod tests {
 
     #[test]
     fn floors_empty_zero_singleton_retained() {
+        // Portable core policy: no minimum-two floor. A single trailing
+        // empty is sufficient; only an occupied final or an empty set
+        // requests an append. A host native-desktop floor lives in the
+        // adapter, never here.
         assert!(plan_trailing(&[]).need_append);
         let plan = plan_trailing(&[empty_visible(false)]);
-        assert!(plan.remove.is_empty() && plan.need_append);
+        assert!(plan.remove.is_empty() && !plan.need_append);
         let plan = plan_trailing(&[occupied()]);
         assert!(plan.remove.is_empty() && plan.need_append);
         let plan = plan_trailing(&[empty_visible(false), empty_visible(false)]);
+        assert_eq!(plan.remove, vec![0]);
         assert!(!plan.need_append);
         let plan = plan_trailing(&[
             WorkspaceFacts {
@@ -228,7 +238,7 @@ mod tests {
         ]);
         assert!(plan.remove.is_empty() && !plan.need_append);
         let plan = plan_trailing(&[empty_visible(true)]);
-        assert!(plan.remove.is_empty() && plan.need_append);
+        assert!(plan.remove.is_empty() && !plan.need_append);
     }
 
     #[test]

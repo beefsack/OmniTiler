@@ -364,12 +364,16 @@ impl WorldEngine {
         // current outside a complete enumeration is contradictory adapter
         // evidence (hold, never mint rows for it). Listed-but-unmapped
         // desktops adopt at order position through the ordinary rule,
-        // selected or not.
+        // selected or not. Settled arrival-gated adoption clears any
+        // locally retired marker first so the ordinary rule still mints a
+        // fresh id (settled behavior preserved).
         let mut adopted: Vec<(String, String)> = Vec::new();
         for native in vacated {
             if !order.iter().any(|id| id == &native) {
                 continue;
             }
+            self.retired_natives
+                .remove(&(source_output.0.clone(), native.clone()));
             if let Some(fresh) = self.adopt_single_native(&source_output.0, &native) {
                 adopted.push((native, fresh));
             }

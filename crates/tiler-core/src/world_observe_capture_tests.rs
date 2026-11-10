@@ -11199,11 +11199,25 @@ fn host_newcomer_admits_survivor_unit_and_pending_policy_still_returns() {
         },
         "survivor home preserved"
     );
+    let live_trailing = engine
+        .mapping
+        .get("out-a")
+        .and_then(|ring| ring.last().cloned())
+        .expect("live trailing spare");
+    assert_eq!(
+        settled.native_creations.len(),
+        1,
+        "live trailing spare requests backing: {:?}",
+        settled.native_creations
+    );
+    assert_eq!(
+        settled.native_creations[0].logical_workspace, live_trailing,
+        "creation targets the live trailing spare: {:?}",
+        settled.native_creations
+    );
     assert!(
-        settled.native_creations.is_empty()
-            && engine.retained_creations.iter().all(|c| !c.ambiguous),
-        "no leaked native creations: {:?} {:?}",
-        settled.native_creations,
+        engine.retained_creations.iter().all(|c| !c.ambiguous),
+        "retained creation stays non-ambiguous: {:?}",
         engine.retained_creations
     );
 }

@@ -399,9 +399,7 @@ fn consumed_report_refreshes_prior_focus_and_empty_set() {
             let row = reply
                 .workspaces
                 .iter()
-                .find(|workspace| {
-                    workspace.output == OutputId("out-a".to_owned()) && !workspace.trailing
-                })
+                .find(|workspace| workspace.output == OutputId("out-a".to_owned()))
                 .expect("published workspace row");
             assert!(engine.prior_context.empty_controlled.contains(&DomainKey {
                 output: OutputId("out-a".to_owned()),

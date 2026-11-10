@@ -532,6 +532,11 @@ export async function recordStage5V4Chain(options: Stage5V4RecordOptions): Promi
     for (const name of ["windowAdded", "windowRemoved", "windowActivated", "desktopsChanged", "screensChanged", "currentDesktopChanged", "activeScreenChanged"] as const) {
         signals[name] = makeSignal();
     }
+    // Live native inventory: the entry's same-turn id-delta readback
+    // proves creation against this exact list, so it must grow on a
+    // fulfilled createDesktop (a static list would fake an ambiguous
+    // no-delta receipt forever).
+    const nativeDesktops: Array<{ id: string; name: string }> = [desk];
 
     const calls: InterceptedCall[] = [];
     const effectCalls: InterceptedCall[] = [];
@@ -558,7 +563,7 @@ export async function recordStage5V4Chain(options: Stage5V4RecordOptions): Promi
     const surface: Record<string, unknown> = {
         windowList: (): unknown[] => wins,
         screens: [{ name: "DP-1", geometry: { x: 0, y: 0, width: 1920, height: 1080 } }],
-        desktops: [desk],
+        desktops: nativeDesktops,
         activeScreen: { ...outName },
         cursorPos: { x: 150, y: 50 },
         windowAdded: (signals["windowAdded"] as FakeSignal).signal,
@@ -576,7 +581,26 @@ export async function recordStage5V4Chain(options: Stage5V4RecordOptions): Promi
         currentDesktopForScreen: (): unknown => ({ ...desk }),
         setCurrentDesktopForScreen: (): void => undefined,
         sendClientToScreen: (): void => undefined,
-        createDesktop: (): void => undefined,
+        // Truthful fulfilling fake (host fidelity, not product/oracle
+        // behavior): KWin's void `createDesktop(position, name)` makes one
+        // synchronously visible desktop carrying the passed name and fires
+        // `desktopsChanged` in the same turn. The entry's post-call
+        // id-delta readback then proves the created id (deterministic
+        // `native-N` over the live list) and the later rename to the
+        // friendly position name lands through the writable `name`
+        // property, so the correctly issued eager spare desire settles
+        // instead of riding forever ambiguous with epoch stamps.
+        createDesktop: (...args: ReadonlyArray<unknown>): void => {
+            if (args.length !== 2 || typeof args[0] !== "number" || typeof args[1] !== "string" || (args[1] as string) === "") {
+                throw new Error("Insufficient arguments");
+            }
+            const at = Math.max(0, Math.min(args[0] as number, nativeDesktops.length));
+            const id = `native-${nativeDesktops.length + 1}`;
+            nativeDesktops.splice(at, 0, { id, name: args[1] as string });
+            for (const handler of [...((signals["desktopsChanged"] as FakeSignal).handlers)]) {
+                handler();
+            }
+        },
         removeDesktop: (): boolean => false,
     };
 

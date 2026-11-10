@@ -819,13 +819,26 @@ describe("world split-edge selection through the production entry (real Engine)"
         // Mover centre x=150 falls in out-bottom's shared edge [0,640): a
         // windowed rank would pick the left candidate, but migration ranks
         // by largest shared edge (1280 vs 640) and must still pick right.
-        // The migrated logical rides with fresh backing on both the target
+        // The migrated logical rides with fresh backing on the target
         // (correlated creation; the existing ws-a desktop keeps backing
-        // its own cell, never cannibalized) and the source refill.
+        // its own cell, never cannibalized) while the source refill adopts
+        // the already-bound eager spare (no redundant re-creation).
         const h = await makeHarness(100);
         try {
             await discover(h);
             const nativeOrderBefore = ([...(h.workspace["desktops"] as Array<{ id: string }>)].map((d) => d.id));
+            const liveRows = (): Array<Record<string, unknown>> => {
+                const indices = [...h.replies.keys()].filter((at) => (h.calls[at] as CapturedCall).method === "DescribeWorld");
+                const raw = h.replies.get(Math.max(...indices) as number) as string;
+                return (JSON.parse(raw) as Record<string, unknown>)["workspaces"] as Array<Record<string, unknown>>;
+            };
+            // Eager spare is already bound before migration (dynamic
+            // lifecycle): the source trailing logical carries its backing
+            // here, so the refill must adopt that same binding rather than
+            // mint a redundant desktop. Snapshot the pre-migration rows to
+            // prove ownership below (D5 last-remaining refill, surviving
+            // empties qualify).
+            const preRows = liveRows();
             h.handle.requestWorkspaceMigrate("down");
             await h.settle();
             const migrates = h.commandPayloads("migrate-directional");
@@ -849,18 +862,16 @@ describe("world split-edge selection through the production entry (real Engine)"
                 ["w-move", "w-stay"],
                 "the whole workspace migrates together",
             );
-            // Fresh backing for both ends, resolved from the settled
-            // core-owned rows (never by ordinal or native reuse): the
-            // migrated logical binds a created desktop on the target, the
-            // core-chosen refill logical binds a created desktop on the
-            // source. Both created ids are genuinely fresh (absent from
-            // the live pre-migration native inventory snapshotted above).
-            const settledRows = (): Array<Record<string, unknown>> => {
-                const indices = [...h.replies.keys()].filter((at) => (h.calls[at] as CapturedCall).method === "DescribeWorld");
-                const raw = h.replies.get(Math.max(...indices) as number) as string;
-                return (JSON.parse(raw) as Record<string, unknown>)["workspaces"] as Array<Record<string, unknown>>;
-            };
-            const rows = settledRows();
+            // Target backing stays genuinely fresh, resolved from the
+            // settled core-owned rows (never by ordinal or native reuse):
+            // the migrated logical binds a created desktop on the target.
+            // The existing ws-a desktop keeps backing its own cell, never
+            // cannibalized. The source refill is proven separately below:
+            // the eager spare already backs it before migration, so no
+            // settled invariant requires re-creating an already correctly
+            // bound spare (D5: refill uses last remaining workspace,
+            // surviving empties qualify).
+            const rows = liveRows();
             const targetBacking = rows.find((b) => b["out"] === "out-bottom-right" && b["id"] === migratedLogical)?.["bind"] as string ?? "";
             assert.ok(targetBacking !== "" && !nativeOrderBefore.includes(targetBacking), `target binds fresh backing (got ${targetBacking})`);
             const target = h.screens.bottomRight;
@@ -871,7 +882,17 @@ describe("world split-edge selection through the production entry (real Engine)"
             assert.deepEqual(companion.desktops.map((desk) => desk.id), [targetBacking], "companion homed on the fresh backing");
             assert.equal(h.currentByOutput.get(target.name)?.id, targetBacking, "target view shows the fresh backing");
             // The refill logical rides the paired refill transfer (never a
-            // guessed ordinal); its backing is fresh as well.
+            // guessed ordinal). Ownership proof (replaces the old
+            // post-command-fresh assertion, which predates the eager spare):
+            // the refill logical must already belong to the source ring
+            // before migration as its trailing spare; when that spare was
+            // already backed, the post backing must equal the SAME logical's
+            // pre-migration backing (re-creating it would be redundant, not
+            // a freshness proof), otherwise the post backing must be
+            // genuinely fresh. Cross-logical reuse on the source output
+            // stays forbidden: a pre-existing backing belonging to a
+            // DIFFERENT source logical would be a genuine bug, not an
+            // accepted spare.
             const refillTransfer = ((): Record<string, unknown> | undefined => {
                 for (const raw of h.replies.values()) {
                     const reply = JSON.parse(raw) as Record<string, unknown>;
@@ -885,11 +906,32 @@ describe("world split-edge selection through the production entry (real Engine)"
             assert.ok(refillTransfer !== undefined, "explicit core refill retained");
             const refillLogical = refillTransfer["ws"] as string;
             assert.ok(refillLogical !== "" && refillLogical !== migratedLogical, "refill excludes the migrated logical");
+            const preRefill = preRows.find((b) => b["out"] === "out-top" && b["id"] === refillLogical);
+            assert.ok(preRefill !== undefined, "refill logical already belongs to the source ring before migration");
+            assert.equal(preRefill["trailing"], true, "refill logical is the source trailing spare before migration");
+            const preRefillBacking = preRefill["bind"] as string ?? "";
             const refillBacking = rows.find((b) => b["out"] === "out-top" && b["id"] === refillLogical)?.["bind"] as string ?? "";
-            assert.ok(refillBacking !== "" && !nativeOrderBefore.includes(refillBacking), `refill binds fresh backing (got ${refillBacking})`);
+            assert.ok(refillBacking !== "", "refill binds a backing after migration");
+            for (const other of preRows) {
+                if (other["out"] === "out-top" && other["id"] !== refillLogical) {
+                    assert.notEqual(other["bind"], refillBacking, "refill backing is not cannibalized from another source logical");
+                }
+            }
+            if (preRefillBacking !== "") {
+                assert.equal(refillBacking, preRefillBacking, "already-bound spare keeps its pre-migration backing");
+                assert.ok(nativeOrderBefore.includes(refillBacking), "retained refill backing is the pre-existing eager spare");
+            } else {
+                assert.ok(!nativeOrderBefore.includes(refillBacking), `unbound refill binds fresh backing (got ${refillBacking})`);
+            }
             const topView = h.currentByOutput.get(h.screens.top.name);
-            assert.equal(topView?.id, refillBacking, "source refills to the created backing");
-            assert.equal(topView?.name, "Desktop 4", "the proven spare carries its friendly position name, not the token");
+            assert.equal(topView?.id, refillBacking, "source refills to the refill backing");
+            // Friendly position name derives from the proven native order
+            // (never hardcoded): the refill backing's 1-based index among
+            // the live natives names its Desktop label, not the token.
+            const nativeOrderPost = ([...(h.workspace["desktops"] as Array<{ id: string }>)].map((d) => d.id));
+            const refillOrdinal = nativeOrderPost.indexOf(refillBacking) + 1;
+            assert.ok(refillOrdinal > 0, "refill backing is a live native after migration");
+            assert.equal(topView?.name, `Desktop ${refillOrdinal}`, "the proven spare carries its friendly position name, not the token");
             // The existing ws-a desktop still backs its own cells (never
             // cannibalized for the migration).
             const wsARows = rows.filter((b) => b["bind"] === "ws-a");

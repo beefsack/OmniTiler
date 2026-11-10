@@ -1042,9 +1042,16 @@ fn inventory_gap_recovery_restores_echo_without_duplication() {
         ids0,
         "recovery duplicates nothing"
     );
-    assert!(
-        settled.native_creations.is_empty(),
-        "recovery mints no creations: {:?}",
+    assert_eq!(
+        settled.native_creations.len(),
+        1,
+        "recovery re-publishes the trailing-spare backing desire: {:?}",
+        settled.native_creations
+    );
+    assert_eq!(
+        settled.native_creations[0].logical_workspace,
+        ids0.last().expect("live trailing spare").clone(),
+        "creation targets the live trailing spare: {:?}",
         settled.native_creations
     );
 }

@@ -127,6 +127,8 @@ mod world_coverage_gaps_tests;
 #[cfg(test)]
 mod world_cursor_tests;
 #[cfg(test)]
+mod world_dynamic_lifecycle_tests;
+#[cfg(test)]
 mod world_float_boundary_tests;
 #[cfg(test)]
 mod world_float_membership_tests;

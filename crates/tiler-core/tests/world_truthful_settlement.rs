@@ -73,6 +73,18 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
     }
 }
 
+fn mfact(window: &str, output: &str) -> WindowFact {
+    // Minimized occupant: occupies for ring purposes (mints the trailing
+    // spare under the single-spare policy) but takes no per-window switch
+    // target, so empty-view selections still complete at issuing and
+    // migration issuing shapes stay single-flight.
+    WindowFact {
+        minimized: Some(true),
+        rect: None,
+        ..fact(window, output, 0)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn report(
     request_seq: u64,
@@ -229,13 +241,17 @@ fn contradictory_receipt_never_proves_send_arrival() {
 
 #[test]
 fn migration_contradictory_receipt_does_not_settle() {
+    // Single-spare fixture: minimized stayer on out-b mints the second
+    // target workspace (occupied final supplies the trailing spare) while
+    // staying outside the migrating workspace, preserving the genuine
+    // one-member issuing shape and the wrong-workspace contradiction.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![fact("win-a", "out-a", 0)],
+            vec![fact("win-a", "out-a", 0), mfact("win-stay", "out-b")],
             vec![],
             None,
             None,
@@ -249,7 +265,7 @@ fn migration_contradictory_receipt_does_not_settle() {
         &report(
             2,
             2,
-            vec![fact("win-a", "out-a", 0)],
+            vec![fact("win-a", "out-a", 0), mfact("win-stay", "out-b")],
             vec![],
             Some(11),
             Some(WorldCommand::MigrateWorkspace {
@@ -295,7 +311,7 @@ fn migration_contradictory_receipt_does_not_settle() {
         &report(
             3,
             3,
-            vec![fact("win-a", "out-a", 0)],
+            vec![fact("win-a", "out-a", 0), mfact("win-stay", "out-b")],
             vec![],
             None,
             None,
@@ -320,7 +336,7 @@ fn migration_contradictory_receipt_does_not_settle() {
         &report(
             4,
             4,
-            vec![fact("win-a", "out-a", 0)],
+            vec![fact("win-a", "out-a", 0), mfact("win-stay", "out-b")],
             vec![],
             None,
             None,
@@ -354,7 +370,7 @@ fn migration_contradictory_receipt_does_not_settle() {
         &report(
             5,
             5,
-            vec![fact("win-a", "out-b", 800)],
+            vec![fact("win-a", "out-b", 800), mfact("win-stay", "out-b")],
             vec![],
             None,
             None,
@@ -551,17 +567,30 @@ fn host_owned_unknown_holds_exact_settles() {
 
 #[test]
 fn empty_focusless_issues_terminal_without_echo_resurrection() {
+    // Single-spare fixture: minimized source stayer mints the second
+    // numbered slot (occupied final supplies the trailing spare) while
+    // taking no per-window switch target, preserving zero-obligation
+    // terminal completion and the no-resurrection expectations.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
-        &report(1, 1, vec![], vec![], None, None, vec![], true),
+        &report(
+            1,
+            1,
+            vec![mfact("win-stay", "out-a")],
+            vec![],
+            None,
+            None,
+            vec![],
+            true,
+        ),
     );
     let reply = accepted(
         &mut engine,
         &report(
             2,
             2,
-            vec![],
+            vec![mfact("win-stay", "out-a")],
             vec![],
             Some(11),
             Some(WorldCommand::SelectNumbered {
@@ -572,9 +601,11 @@ fn empty_focusless_issues_terminal_without_echo_resurrection() {
             true,
         ),
     );
-    // Empty native-free focusless selection completes in the issuing
+    // Minimized-stayer focusless selection completes in the issuing
     // reply: one terminal on the existing op, no focus effect, no view
-    // flight (the actual view parent retires at once).
+    // flight (the actual view parent retires at once). The stayer mints
+    // the numbered slot under single-spare but takes no switch target,
+    // so obligations stay zero.
     assert!(
         reply.transfers.is_empty(),
         "empty focusless issues no flight: {:?}",
@@ -606,7 +637,16 @@ fn empty_focusless_issues_terminal_without_echo_resurrection() {
     // Missing observation: settled parent stays retired, no duplicate.
     let held = accepted(
         &mut engine,
-        &report(3, 3, vec![], vec![], None, None, vec![], true),
+        &report(
+            3,
+            3,
+            vec![mfact("win-stay", "out-a")],
+            vec![],
+            None,
+            None,
+            vec![],
+            true,
+        ),
     );
     assert!(
         held.transfers.is_empty(),
@@ -621,7 +661,16 @@ fn empty_focusless_issues_terminal_without_echo_resurrection() {
     // Empty observation: settled parent stays retired, no duplicate.
     let held = accepted(
         &mut engine,
-        &report(4, 4, vec![], vec![], None, None, vec![], true),
+        &report(
+            4,
+            4,
+            vec![mfact("win-stay", "out-a")],
+            vec![],
+            None,
+            None,
+            vec![],
+            true,
+        ),
     );
     assert!(
         held.transfers.is_empty(),
@@ -636,7 +685,16 @@ fn empty_focusless_issues_terminal_without_echo_resurrection() {
     // Stale observation: settled parent stays retired, no duplicate.
     let held = accepted(
         &mut engine,
-        &report(5, 5, vec![], vec![], None, None, vec![], true),
+        &report(
+            5,
+            5,
+            vec![mfact("win-stay", "out-a")],
+            vec![],
+            None,
+            None,
+            vec![],
+            true,
+        ),
     );
     assert!(
         held.transfers.is_empty(),
@@ -651,7 +709,16 @@ fn empty_focusless_issues_terminal_without_echo_resurrection() {
     // External unknown observation: settled parent stays retired, no duplicate.
     let held = accepted(
         &mut engine,
-        &report(6, 6, vec![], vec![], None, None, vec![], true),
+        &report(
+            6,
+            6,
+            vec![mfact("win-stay", "out-a")],
+            vec![],
+            None,
+            None,
+            vec![],
+            true,
+        ),
     );
     assert!(
         held.transfers.is_empty(),
@@ -666,7 +733,16 @@ fn empty_focusless_issues_terminal_without_echo_resurrection() {
     // Exact observation: settled parent stays retired, no duplicate.
     let settled = accepted(
         &mut engine,
-        &report(7, 7, vec![], vec![], None, None, vec![], true),
+        &report(
+            7,
+            7,
+            vec![mfact("win-stay", "out-a")],
+            vec![],
+            None,
+            None,
+            vec![],
+            true,
+        ),
     );
     assert!(
         settled.transfers.is_empty(),

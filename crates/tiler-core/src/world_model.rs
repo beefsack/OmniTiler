@@ -181,19 +181,58 @@ impl WorldEngine {
                         visible: visible == *id,
                         occupied: occupied_ids.contains(id),
                         retained: retained_ids.contains(id)
-                            || self.is_native_bound(id)
+                            || self.retained.iter().any(|r| {
+                                r.target.target_workspace == *id
+                                    || r.source_workspace == *id
+                                    || r.migration_refill.as_deref() == Some(id.as_str())
+                            })
                             || self
-                                .retained
+                                .pending_source_releases
                                 .iter()
-                                .any(|r| r.target.target_workspace == *id),
+                                .any(|(_, workspace)| workspace == id)
+                            || self
+                                .retained_creations
+                                .iter()
+                                .any(|retained| retained.logical_workspace == *id),
                     })
                     .collect();
                 let plan = plan_trailing(&facts);
                 let remove: BTreeSet<usize> = plan.remove.into_iter().collect();
                 if !remove.is_empty() {
+                    // Absence-intent tombstone path: prune the ring row now
+                    // and publish an `existence:false` row from the marker
+                    // (see `plan_workspaces`). The old native-first
+                    // keep-the-ring behavior is removed: no ring row is
+                    // retained pending native deletion.
                     let mut kept: Vec<String> = Vec::new();
                     for (index, id) in ring.iter().enumerate() {
                         if remove.contains(&index) {
+                            // Locally retire: prune the ring row while the
+                            // native desktop survives. Record every live
+                            // `(output, native)` pair for this logical so
+                            // ordinary re-adoption suppresses until
+                            // positive evidence clears it. No binding is
+                            // retained outside rings. Unknown native
+                            // occupancy fails closed: retain the row, never
+                            // retire on unreadable counts.
+                            let pairs: Vec<(String, String)> = self
+                                .native_map
+                                .iter()
+                                .filter(|(_, logical)| *logical == id)
+                                .map(|((output, native), _)| (output.clone(), native.clone()))
+                                .collect();
+                            if !pairs.is_empty()
+                                && pairs
+                                    .iter()
+                                    .any(|(_, native)| !self.native_occupancy_known(native))
+                            {
+                                kept.push(id.clone());
+                                continue;
+                            }
+                            for pair in pairs {
+                                self.native_map.remove(&pair);
+                                self.retired_natives.insert(pair, id.clone());
+                            }
                             for output in &live {
                                 let key = DomainKey {
                                     output: OutputId(output.clone()),
@@ -258,10 +297,20 @@ impl WorldEngine {
                             occupied: occupied.contains(&scoped),
                             retained: sticky_homed.contains(&scoped)
                                 || hosted.contains(&scoped)
-                                || self.is_native_bound(id)
                                 || self.retained.iter().any(|r| {
-                                    r.target.target_output.0 == *output
-                                        && r.target.target_workspace == *id
+                                    (r.target.target_output.0 == *output
+                                        && r.target.target_workspace == *id)
+                                        || (r.source_output.0 == *output
+                                            && r.source_workspace == *id)
+                                        || r.migration_refill.as_deref() == Some(id.as_str())
+                                })
+                                || self
+                                    .pending_source_releases
+                                    .iter()
+                                    .any(|(out, workspace)| out == output && workspace == id)
+                                || self.retained_creations.iter().any(|retained| {
+                                    retained.target_output.0 == *output
+                                        && retained.logical_workspace == *id
                                 }),
                         }
                     })
@@ -292,9 +341,23 @@ impl WorldEngine {
             for (output, (ring, plan)) in plans {
                 let remove: BTreeSet<usize> = plan.remove.into_iter().collect();
                 if !remove.is_empty() {
+                    // Absence-intent tombstone path (see shared branch):
+                    // prune now, publish `existence:false` from the marker.
                     let mut kept: Vec<String> = Vec::new();
                     for (index, id) in ring.iter().enumerate() {
                         if remove.contains(&index) {
+                            // Locally retire bound rows while the native
+                            // survives; unbound rows prune directly. Unknown
+                            // native occupancy fails closed: retain the row.
+                            if let Some(native) = self.native_binding_for(&output, id) {
+                                if !self.native_occupancy_known(&native) {
+                                    kept.push(id.clone());
+                                    continue;
+                                }
+                                self.retired_natives
+                                    .insert((output.clone(), native.clone()), id.clone());
+                                self.native_map.remove(&(output.clone(), native));
+                            }
                             let key = DomainKey {
                                 output: OutputId(output.clone()),
                                 workspace: WorkspaceId(id.clone()),

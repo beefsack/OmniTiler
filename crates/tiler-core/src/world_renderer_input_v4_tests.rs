@@ -767,7 +767,8 @@ fn ring_reorder_changes_ordinal_and_label_but_accepts_same_workspace() {
             screens_pair(),
             facts_pair(),
             Vec::new(),
-            "win-a",
+            // Mover must be the observed focus so the Send passes the focus gate.
+            "win-b",
             Some(11),
             Some(WorldCommand::Send {
                 window: WindowId("win-b".to_owned()),

@@ -262,9 +262,17 @@ fn kde_four_desktops_preserve_spare_and_mint_no_creation() {
         total.last().is_some_and(|row| row.native_binding.is_none()),
         "spare stays unbound"
     );
-    assert!(
-        reply.native_creations.is_empty(),
-        "no backing missing, no creation desired"
+    let spare_id = total.last().expect("spare").id.clone();
+    assert_eq!(
+        reply.native_creations.len(),
+        1,
+        "spare requests backing: {:?}",
+        reply.native_creations
+    );
+    assert_eq!(
+        reply.native_creations[0].logical_workspace, spare_id,
+        "creation targets the live trailing spare: {:?}",
+        reply.native_creations
     );
     assert!(reply.transfers.is_empty());
 }
@@ -1228,9 +1236,21 @@ fn reset_readopts_and_vanished_complete_removal_without_rename() {
         remaining.iter().any(|(_, n)| n == D1),
         "survivor keeps its binding, never renamed: {remaining:?}"
     );
-    assert!(
-        removed.native_creations.is_empty(),
-        "removal mints no creation"
+    let spare_id = remaining
+        .iter()
+        .find(|(_, n)| n.is_empty())
+        .map(|(id, _)| id.clone())
+        .expect("live trailing spare");
+    assert_eq!(
+        removed.native_creations.len(),
+        1,
+        "removal keeps the spare backing desire: {:?}",
+        removed.native_creations
+    );
+    assert_eq!(
+        removed.native_creations[0].logical_workspace, spare_id,
+        "creation targets the live trailing spare: {:?}",
+        removed.native_creations
     );
 }
 
@@ -1251,12 +1271,17 @@ fn replaced_desktop_is_deletion_plus_outside_creation_never_rename() {
                 fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(D1)),
                 fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(D2)),
             ],
-            vec![native_obs("out-a", &[D1, D2], Some(D2))],
+            vec![native_obs("out-a", &[D1, D2, D3], Some(D2))],
             vec![],
             None,
             None,
             true,
         ),
+    );
+    assert!(
+        first.native_creations.is_empty(),
+        "empty bound trailing native takes no creation route: {:?}",
+        first.native_creations
     );
     let retired: String = bound_ids(&first, "out-a")
         .into_iter()
@@ -1274,7 +1299,7 @@ fn replaced_desktop_is_deletion_plus_outside_creation_never_rename() {
                 fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(D1)),
                 fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(X)),
             ],
-            vec![native_obs("out-a", &[D1, X], Some(D1))],
+            vec![native_obs("out-a", &[D1, X, D3], Some(D1))],
             vec![],
             None,
             None,
@@ -1294,9 +1319,35 @@ fn replaced_desktop_is_deletion_plus_outside_creation_never_rename() {
         fresh, &retired,
         "outside creation mints fresh, never renames the vanished id"
     );
+    // Outside X adoption runs no creation route of its own: the fresh
+    // X-backed logical desires nothing. The single outstanding desire
+    // belongs to the independent spare lifecycle: the currently live
+    // unbound trailing row is immediately backed as approved.
     assert!(
-        rebound.native_creations.is_empty(),
-        "outside adoption runs no creation route"
+        rebound
+            .native_creations
+            .iter()
+            .all(|d| d.logical_workspace != *fresh),
+        "fresh X logical desires no creation: {:?}",
+        rebound.native_creations
+    );
+    let live_trailing = rebound
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .find(|row| row.trailing && row.native_binding.is_none())
+        .map(|row| row.id.clone())
+        .expect("live unbound trailing row");
+    assert_eq!(
+        rebound.native_creations.len(),
+        1,
+        "one spare backing desire: {:?}",
+        rebound.native_creations
+    );
+    assert_eq!(
+        rebound.native_creations[0].logical_workspace, live_trailing,
+        "creation targets the live trailing spare, not the X adoption: {:?}",
+        rebound.native_creations
     );
     let row_b = rebound
         .windows
@@ -1414,7 +1465,22 @@ fn migrated_workspace_desires_creation_then_binds_late_desktop() {
             .any(|(id, bind)| id == &view_a && bind.as_deref() == Some(LATE)),
         "late desktop backs the migrated logical: {rebound:?}"
     );
-    assert!(settled.native_creations.is_empty());
+    let spare_b = rebound
+        .iter()
+        .find(|(_, bind)| bind.is_none())
+        .map(|(id, _)| id.clone())
+        .expect("live trailing spare");
+    assert_eq!(
+        settled.native_creations.len(),
+        1,
+        "bound migration leaves the spare backing desire: {:?}",
+        settled.native_creations
+    );
+    assert_eq!(
+        settled.native_creations[0].logical_workspace, spare_b,
+        "creation targets the live trailing spare: {:?}",
+        settled.native_creations
+    );
     assert!(
         !settled
             .transfers
@@ -1907,9 +1973,21 @@ fn vanished_selected_and_absent_window_remove_without_recreation() {
         remaining.iter().any(|(_, n)| n == D1),
         "survivor keeps its binding: {remaining:?}"
     );
-    assert!(
-        removed.native_creations.is_empty(),
-        "removal mints no creation"
+    let spare_id = remaining
+        .iter()
+        .find(|(_, n)| n.is_empty())
+        .map(|(id, _)| id.clone())
+        .expect("live trailing spare");
+    assert_eq!(
+        removed.native_creations.len(),
+        1,
+        "removal keeps the spare backing desire: {:?}",
+        removed.native_creations
+    );
+    assert_eq!(
+        removed.native_creations[0].logical_workspace, spare_id,
+        "creation targets the live trailing spare: {:?}",
+        removed.native_creations
     );
     // Absent window with no explicit close on a complete snapshot: the
     // emptied logical is removed, never backed by a fresh creation.
@@ -1965,9 +2043,21 @@ fn vanished_selected_and_absent_window_remove_without_recreation() {
         remaining.iter().all(|(_, n)| n != D2),
         "absent window empties the logical: {remaining:?}"
     );
-    assert!(
-        removed.native_creations.is_empty(),
-        "no recreation from stale member"
+    let spare_id = remaining
+        .iter()
+        .find(|(_, n)| n.is_empty())
+        .map(|(id, _)| id.clone())
+        .expect("live trailing spare");
+    assert_eq!(
+        removed.native_creations.len(),
+        1,
+        "stale member retires but the spare backing desire stands: {:?}",
+        removed.native_creations
+    );
+    assert_eq!(
+        removed.native_creations[0].logical_workspace, spare_id,
+        "creation targets the live trailing spare: {:?}",
+        removed.native_creations
     );
     assert!(removed.transfers.is_empty());
 }

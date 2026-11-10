@@ -9,7 +9,7 @@
   },
   "chain": "s2",
   "adapter": "kwin-stage5-v4",
-  "gen": "w-1794048326430076860-2519572-0",
+  "gen": "w-1794292158849581191-3057381-0",
   "volatile": [
     "gen",
     "source",
@@ -17,7 +17,7 @@
     "nativeInvalid",
     "req"
   ],
-  "internalReads": 9,
+  "internalReads": 10,
   "parkedWaits": 1,
   "steps": [
     {
@@ -110,6 +110,7 @@
   ],
   "genesisEnvelopes": [
     "envelope-genesis-0.json",
-    "envelope-genesis-1.json"
+    "envelope-genesis-1.json",
+    "envelope-genesis-2.json"
   ]
 }

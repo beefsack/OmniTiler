@@ -640,17 +640,15 @@ verb inventory); selected intent and doc assertions are never evidence.
 - Then paneru: retained at shipped defaults (`reap_empty_workspaces`
   defaults off and index 0 is never reaped; enabling it despawns empty
   non-active rows). `S(S-pan-ws)`.
-- Then Ours KDE: **User 2026-10-29: decided, implementation pending.** Restore
-  core-directed removal of eligible managed native desktops, including adopted
-  desktops, matching Tier 1 empty non-viewed cleanup. Preserve global native
-  occupancy/view/trailing/protection checks, readable facts only, required
-  equal-count padding and minimum-two floor; unmapped desktops outside management.
-  Current v2 core retains native-bound empties
-  (`crates/tiler-core/src/world_native.rs:77-81`,
-  `world_model.rs:98-112,172-192`) and publishes only existence=true
-  (`world_publish.rs:1050-1099`); KDE's guarded native removal actuator therefore
-  receives no eligibility; this is not the newly selected policy
-  ([investigation](../../changes/kde-world-v2-port.md#empty-native-workspace-lifecycle-investigation-2026-10-29)).
+- Then Ours KDE: **User 2026-11-10: selected and covered offline; native TBD.**
+  Prune ordinary empty/unshown logical rows, retaining trailing spares,
+  held/displaced units and required equal-count padding. Eligible padding prunes
+  when the longest ring shrinks. Back each trailing spare eagerly. Existing
+  `exist:false` rows express core-only native retirement intent; adapters delete
+  only with fresh global-empty/unshown, readability and protection checks.
+  Minimum two belongs to KDE alone; no occupant moves for compaction.
+  [Decision](../../decisions/workspaces.md#dynamic-workspace-lifecycle-and-kde-pager-backing),
+  [offline evidence](../../changes/kde-dynamic-workspaces.md).
   User physical 2026-10-28 reports no
   removals on two outputs, mode(s) unspecified; this exact send-then-select
   native sequence remains TBD. The historical
@@ -2159,6 +2157,56 @@ baseline above is unchanged. Record:
   physical multi-candidate journey TBD.
   [Record](../../changes/archive/windows-workspace-output-migration.md).
 - Variant hook: NORMATIVE workspace-output migration (User decision 2026-10-09).
+
+## Dynamic-lifecycle discriminators (2026-11-10, source-only)
+
+These bounded Tier 1 comparisons supplement R-WS-10 and R-WS-18. Ordinary
+non-sticky windows, no persistent/pinned workspace rules or activation-token
+holds. Workspace numbers below name the original identities, not compacted
+positions. Reference cells are source-only; Ours cells distinguish the selected
+2026-11-10 policy from offline evidence and unrun native outcomes. Other reference
+profiles and exact native timing remain TBD.
+
+| Discriminator | Minimal action sequence | COSMIC | Hyprland/Dwindle | i3 | sway | Ours KDE |
+|---|---|---|---|---|---|---|---|
+| Leading empty, after leaving | WS1 holds A, WS2 holds B; show WS1, close A, select WS2; inspect original WS1 | Removes eligible non-active non-last WS1; indices compact | Unheld ordinary WS1 is destroyed; numbered IDs do not compact | Empty old WS1 closes after it becomes non-visible | Empty WS1 is removable once neither output-active nor seat-held | Selected: prune ordinary empty/unshown rows, retaining trailing/held/displaced units and required equal-count padding (discriminator below). Offline covered; native TBD |
+| Shown empty, then leave | WS1 holds A, WS2 holds B; show WS2, close B; inspect; select WS1; inspect again | Active empty retained; after leaving, eligible empties coalesce, preserving required trailing empty | Active monitor hold retains WS2; after leaving, unheld WS2 is destroyed | Visible empty retained; closes on switch-away | Output-active empty retained; after leaving, seat/output guards still apply | Selected and covered offline: retain while shown, prune eligible non-trailing row after leave. Exact native close/leave outcome TBD |
+| Middle empty | Occupy WS1/WS2/WS3; show WS2, send its sole B to WS1, select WS3 | Removes eligible WS2, compacts indices | Removes unheld WS2, no numeric renumber | Removes non-visible empty old WS2, no name renumber | Removes eligible WS2, no name renumber | Selected: ordinary empty/unshown WS2 leaves its ring unless required for equal-count padding; native-only absence intent permits globally safe deletion, never occupant compaction. Offline covered; native TBD |
+| Fill the last workspace | Occupy the current final workspace with an ordinary window; observe inventory without another selection | Supplies another trailing empty | No automatic trailing-spare lifecycle | No automatic trailing-spare lifecycle | No automatic trailing-spare lifecycle | Selected and covered offline: append next logical spare and immediately desire its native backing without selection. Repeated settled readbacks have zero create/delete/member churn; native TBD |
+| Minimum two | Start with two ordinary workspaces; empty one and leave it; then empty the remaining shown one; inspect count | Active/trailing rules apply; no explicit two-workspace floor found | Active holds apply; no explicit two-workspace floor found | Visible-workspace guard applies; no explicit two-workspace floor found | Output/seat guards apply; no explicit two-workspace floor found | Selected and covered offline: core single-spare invariant (`MIN_WORKSPACES=1`); KDE adapter alone bootstraps and preserves `minDesktops:2`. Floor-only proof has no core creation desires/attempts. Native pager outcome TBD |
+| Shared native backing | L's logical row binds D and becomes empty/unshown; D still hosts B on R; request scoped retirement on L | OutputBound has separate objects; Global keeps an index occupied in any set. Neither is KDE's independent-view/shared-desktop shape | One monitor owns each workspace; exact shared-backing fixture inapplicable | One output owns each workspace; exact shared-backing fixture inapplicable | One output owns each workspace; exact shared-backing fixture inapplicable | Selected and covered offline: local retirement publishes existing `exist:false` record; global occupancy/any-output view/live sibling binding veto native deletion. Local selection/window arrival readopts with fresh logical ID; remote occupancy alone does not. Native TBD |
+| Equal-count padding versus local pruning | Declare `equalCount`; L lists empty `[v,x,c,t]`, R lists `[v,c,t]` with t occupied; both show v; repeat complete report; close t's occupant and report complete empty observations | Exact capability fixture TBD | Exact capability fixture TBD | Exact capability fixture TBD | Exact capability fixture TBD | Selected explicit exception (User 2026-11-10), covered offline: retain empty/unshown x on L to keep live rings 3/3 while common c retires; after close, prune x and shrink both rings to 2/2. Existing clamp/padding unchanged; native TBD |
+
+Pinned evidence (source rules, not executed reference journeys):
+
+- COSMIC `cosmic-comp` @ `3d55cba06c9cf6f27609cdefb520f7857dba20af`:
+  `src/shell/mod.rs:652-715` (append, active/last retention, removal and indices),
+  `717-735` (nonempty set), `1280-1323` (Global all-set occupancy),
+  `src/shell/workspace.rs:496-500,1538-1543` (eligibility includes minimized and
+  fullscreen occupants), `cosmic-comp-config/src/workspace.rs:33-38`
+  (OutputBound default, Global alternative).
+- Hyprland @ `19fb395d45314960e6f79f17994a84094f1cd4f6`:
+  `src/state/workspace/State.hpp:12-31`, `State.cpp:44-60,95-108`
+  (weak inventory, unique numeric identities),
+  `src/desktop/view/window/Window.hpp:174`, `src/output/Monitor.hpp:76`,
+  `src/output/Monitor.cpp:1373-1378`, `src/workspace/RegularWorkspace.hpp:21-23`
+  (window/active/persistent strong holds). Destruction requires all holds to
+  release; exact close-animation timing is not established here.
+- i3 @ `903bcd518df32b0e055b17f5da3f988a0187fd3d`:
+  `src/workspace.c:320-326,524-540` (per-output visibility and old-empty cleanup).
+  This proves the close-then-switch fixture, not a sweep of arbitrary
+  never-shown empty workspaces; that broader outcome remains TBD.
+- sway @ `1652c54b73f67df17b7b4ab0b0f7048204aa8104`:
+  `sway/tree/workspace.c:299-331` (detach/destruction and occupancy/output/seat
+  holds). R-WS-18 supplies the separate no-auto-spare comparison for i3/sway.
+- Ours: `crates/tiler-core/src/{workspace,world_model,world_native,world_publish}.rs`,
+  `world_dynamic_lifecycle_tests.rs`, `kwin/tests/world-dynamic-lifecycle.test.ts`
+  and `kwin/src/world-apply.ts`. The [2026-11-10 decision](../../decisions/workspaces.md#dynamic-workspace-lifecycle-and-kde-pager-backing)
+  reconciles native removal/minimum placement without reviving the retired grid.
+  The selected equal-count exception uses `world_model.rs`'s existing removal
+  budget/parity padding and `world_native_retirement.rs::common_plus_extra_spares_only_extra_under_equal_count`;
+  the regression pins retention and subsequent pruning after longest-ring shrink.
+  [Current evidence and gaps](../../changes/kde-dynamic-workspaces.md).
 
 ## KDE aligned-grid discriminators (2026-10-18 decisions; evidence 2026-10-19)
 

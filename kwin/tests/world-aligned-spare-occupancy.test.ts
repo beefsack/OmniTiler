@@ -1,17 +1,22 @@
-// Occupancy-only spare lifecycle for per-output workspaces.
+// Eager-spare lifecycle for per-output workspaces.
 // Producer-shaped regression through the real `WorldEngine` (via the
-// test-only `raw_world_eval` example) plus the
-// production entry/apply path with fresh serial replies: showing an empty
-// end (including via a production-shaped empty-list sticky anchor, homed
-// by the observer at its output's current) creates no spare, relative-next
-// wraps from the live end on both outputs with the opposite view unchanged,
-// the departed end stays as a native-bound empty (core retains
-// native-bound empties; only unbound trailing spares retire), and a real
-// occupancy arrival on each output's end appends exactly one unbound
-// trailing logical (the ordinary spare never requests native backing).
-// No-creation is asserted directly via bound rows and unchanged native
-// inventories, never via constant counts across departures. Included in
-// `npm test`.
+// test-only `raw_world_eval` example) plus the production entry/apply path
+// with fresh serial replies: showing an empty end creates no spare and no
+// native (the rings stay minimal with locally-retired middles fenced by
+// native-only absence intents), relative-next wraps from the live end on
+// both outputs with the opposite view unchanged, a reshow of a
+// locally-retired native readopts fresh with positive output-local evidence
+// and mints one backed spare (a single shared native trails both rings),
+// the departed fresh middle retires locally while its native survives, and
+// a real occupancy arrival on an output's live end extends the ring with a
+// backed trailing spare per output (each output's spare carries an
+// independent core desire; the adapter executes each exactly once and the
+// report receipts correlate op to created native). The superseded
+// intermediate backing retires locally on both outputs while its native
+// survives (the production sticky anchor vetoes every removal). The filled
+// end keeps its logical and binding, the newcomer homes on the filled
+// logical, no existing window moves, no view switches, and no transfers
+// are retained. Included in `npm test`.
 
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -215,6 +220,12 @@ interface Harness {
     readonly takeReplies: string[];
     readonly timers: Timer[];
     readonly viewWrites: string[];
+    // Actual native setter counts (not desires): creations append the fresh
+    // id, removals append the deleted id, every window `desktops`
+    // reassignment that changes the id set appends to memberWrites.
+    readonly creations: string[];
+    readonly removals: string[];
+    readonly memberWrites: string[];
     activeScreen: { name: string };
     activeRef: FakeWindow | null;
     readonly handle: NonNullable<ReturnType<typeof startWorldAdapterEntry>>;
@@ -229,9 +240,82 @@ interface Harness {
 const LEFT = "out-left";
 const RIGHT = "out-right";
 
+function trackWin(h: Harness, win: FakeWindow): void {
+    let desks = win.desktops;
+    Object.defineProperty(win, "desktops", {
+        configurable: true,
+        get: () => desks,
+        set: (refs: FakeDesktop[]) => {
+            // Only genuine membership changes count: the fake host's own
+            // removal bookkeeping reassigns the same id set (a no-op
+            // filter), which is never an adapter move.
+            const before = desks.map((d) => d.id).join(",");
+            desks = refs;
+            if (refs.map((d) => d.id).join(",") !== before) {
+                h.memberWrites.push(`${win.internalId}->${refs.map((d) => d.id).join(",")}`);
+            }
+            return true;
+        },
+    });
+}
+
+function counters(h: Harness): { natives: number; creations: number; removals: number; members: number; views: number } {
+    return {
+        natives: h.desktops.length,
+        creations: h.creations.length,
+        removals: h.removals.length,
+        members: h.memberWrites.length,
+        views: h.viewWrites.length,
+    };
+}
+
+// Every core creation desire observed in replies answered at/after a call
+// index. Outstanding desires repeat across replies until executed, so
+// callers dedupe by op: one entry per independent desire.
+function desiresSince(h: Harness, fromCall: number): Array<Record<string, unknown>> {
+    const out: Array<Record<string, unknown>> = [];
+    for (const [at, raw] of h.replies) {
+        if (at < fromCall || (h.calls[at] as CapturedCall).method !== "DescribeWorld") {
+            continue;
+        }
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        for (const desire of (parsed["nativeCreations"] as Array<Record<string, unknown>>) ?? []) {
+            out.push(desire);
+        }
+    }
+    return out;
+}
+
+// Creation receipts the adapter rode on dispatched reports: the causal
+// op-to-native proof (op/ws/out plus the created id) for every executed
+// desire. The floor pad emits no receipt, so any creation here must have
+// exactly one receipt.
+function creationReceipts(h: Harness): Array<Record<string, unknown>> {
+    const out: Array<Record<string, unknown>> = [];
+    for (const call of h.calls) {
+        if (call.method !== "DescribeWorld") {
+            continue;
+        }
+        try {
+            const body = JSON.parse(call.payload) as Record<string, unknown>;
+            const report = (body["report"] as Record<string, unknown>) ?? {};
+            for (const attempt of (report["creationAttempts"] as Array<Record<string, unknown>>) ?? []) {
+                out.push(attempt);
+            }
+        } catch (error) {
+            void error;
+        }
+    }
+    return out;
+}
+
 async function makeSpareHarness(): Promise<Harness> {
     const desktops: FakeDesktop[] = ["ws-1", "ws-2", "ws-3", "ws-4"].map((id) => ({ id, name: id }));
     const byId = new Map(desktops.map((d) => [d.id, d]));
+    // Monotonic native ids: removals shrink the list, so `length + 1` would
+    // collide with a survivor. Production ids are opaque uniques; the fake
+    // mints `ws-N` from a counter that never rewinds.
+    let nextDesk = desktops.length + 1;
     const screens = [
         { name: LEFT, geometry: { x: 0, y: 0, width: 1000, height: 800 } },
         { name: RIGHT, geometry: { x: 1000, y: 50, width: 900, height: 700 } },
@@ -312,6 +396,9 @@ async function makeSpareHarness(): Promise<Harness> {
         takeReplies: [],
         timers: [],
         viewWrites: [],
+        creations: [],
+        removals: [],
+        memberWrites: [],
         activeScreen: { name: LEFT },
         activeRef: wins[2] as FakeWindow,
         handle: null as unknown as NonNullable<ReturnType<typeof startWorldAdapterEntry>>,
@@ -439,15 +526,19 @@ async function makeSpareHarness(): Promise<Harness> {
         sendClientToScreen: (): void => undefined,
         // Production void creation: append one native carrying the logical
         // token as its name for exact-name attribution. Proof comes from
-        // the fresh named enumeration, never a return value.
+        // the fresh named enumeration, never a return value. Monotonic
+        // ids: the eager lifecycle removes and creates across legs, and
+        // `length + 1` would collide with a survivor after any removal.
         createDesktop: (position: unknown, name: unknown): void => {
             assert.equal(typeof position, "number", "creation carries a numeric position");
             assert.equal(typeof name, "string", "creation carries a logical token name");
-            const id = `ws-${harness.desktops.length + 1}`;
+            const id = `ws-${nextDesk}`;
+            nextDesk += 1;
             const desk: FakeDesktop = { id, name: name as string };
             const at = Math.max(0, Math.min(position as number, harness.desktops.length));
             harness.desktops.splice(at, 0, desk);
             byId.set(id, desk);
+            harness.creations.push(id);
             harness.fire("desktopsChanged");
         },
         removeDesktop: (ref: unknown): boolean => {
@@ -461,6 +552,7 @@ async function makeSpareHarness(): Promise<Harness> {
             for (const win of harness.wins) {
                 win.desktops = win.desktops.filter((d) => d.id !== id);
             }
+            harness.removals.push(id);
             harness.fire("desktopsChanged");
             return true;
         },
@@ -497,6 +589,9 @@ async function makeSpareHarness(): Promise<Harness> {
     });
     assert.notEqual(handle, null, "world production entry starts on the fake surface");
     (harness as { handle: unknown }).handle = handle;
+    for (const win of wins) {
+        trackWin(harness, win);
+    }
     return harness;
 }
 
@@ -517,7 +612,17 @@ function transfersOf(reply: Record<string, unknown>): Array<Record<string, unkno
     return (reply["transfers"] as Array<Record<string, unknown>>) ?? [];
 }
 
-describe("world spare occupancy-only", () => {
+function liveRows(reply: Record<string, unknown>, out: string): Array<Record<string, unknown>> {
+    return workspacesOf(reply)
+        .filter((row) => row["out"] === out && row["exist"] !== false)
+        .sort((a, b) => (a["order"] as number) - (b["order"] as number));
+}
+
+function deadRows(reply: Record<string, unknown>, out: string): Array<Record<string, unknown>> {
+    return workspacesOf(reply).filter((row) => row["out"] === out && row["exist"] === false);
+}
+
+describe("world spare eager-backing", () => {
     it("showing empty ends creates no spare on either output, forward next wraps, occupancy still extends", { timeout: 240000 }, async () => {
         const h = await makeSpareHarness();
         try {
@@ -564,7 +669,13 @@ describe("world spare occupancy-only", () => {
                 "no report precedes the accepted settings",
             );
             await h.settle();
+            // Showing empty ends creates no spare and no native: the rings
+            // stay minimal (two live rows each) with locally-retired
+            // middles fenced by native-only absence intents (every row,
+            // live or retired, carries its native bind; no unbound rows).
             assert.equal(h.desktops.length, 4, "no native appended while showing empty ends");
+            assert.deepEqual(h.creations, [], "showing ends creates no native");
+            assert.deepEqual(h.removals, [], "showing ends removes no native");
             let reply = lastReply(h);
             assert.ok(
                 workspacesOf(reply).every((row) => (row["bind"] as string) !== ""),
@@ -573,10 +684,10 @@ describe("world spare occupancy-only", () => {
 
             // empty-list sticky anchor, homed by the observer at the shown
             // current. The anchor follows the view: after this departure it
-            // rehomes onto ws-1 and the old end stays as a native-bound
-            // empty (core retains native-bound empties against trailing
-            // lifecycle removal; only unbound trailing spares retire).
-            // No-creation is asserted directly via bound rows.
+            // rehomes onto ws-1 and the old end stays live-bound on the
+            // left (native-bound empties survive; locally-retired middles
+            // carry the absence intent instead). The wrap moves no window.
+            const wrapBase = counters(h);
             h.activeScreen = { name: LEFT };
             h.activeRef = h.wins[0] as FakeWindow;
             h.handle.requestWorkspaceRelative(1);
@@ -585,26 +696,47 @@ describe("world spare occupancy-only", () => {
             reply = lastReply(h);
             assert.equal(h.currents.get(LEFT), "ws-1", "relative next wraps from the shown empty end");
             assert.equal(h.currents.get(RIGHT), "ws-2", "opposite view unchanged by left wrap");
+            assert.equal(counters(h).members - wrapBase.members, 0, "wrap moves no windows");
             assert.ok(
                 workspacesOf(reply).every((row) => (row["bind"] as string) !== ""),
                 "wrap mints no spare (bound rows only)",
             );
-            const departedRow = workspacesOf(reply).find((row) => row["out"] === LEFT && (row["bind"] as string) === "ws-4");
+            const departedRow = liveRows(reply, LEFT).find((row) => (row["bind"] as string) === "ws-4");
             assert.ok(
                 departedRow !== undefined,
                 `departed end stays as a native-bound empty (desktops=${h.desktops.map((d) => d.id).join(",")})`,
             );
 
-            // Reshow the live end (ws-3) on the left: genuinely empty with
-            // the anchor homed at the current view, then numbered-depart it.
-            // Showing creates nothing either way.
+            // Reshow the locally-retired ws-3 on the left: selecting a
+            // retired native is positive output-local evidence, so the core
+            // clears the intent and adopts fresh, then eagerly backs the new
+            // trailing spare with one shared native (a single creation
+            // trails both rings). The opposite view is unchanged.
+            const leftStoneBefore = deadRows(reply, LEFT).find((row) => (row["bind"] as string) === "ws-3")?.["id"] as string;
+            assert.ok(leftStoneBefore !== undefined, "ws-3 starts locally retired on the left");
+            const reshowBase = counters(h);
             h.currents.set(LEFT, "ws-3");
             h.fire("currentDesktopChanged");
             await h.settle();
+            reply = lastReply(h);
+            assert.equal(counters(h).creations - reshowBase.creations, 1, "reshow backs the fresh trailing spare exactly once");
+            assert.equal(counters(h).removals - reshowBase.removals, 0, "reshow removes no native");
+            const freshLeft = liveRows(reply, LEFT).find((row) => (row["bind"] as string) === "ws-3");
+            assert.ok(freshLeft !== undefined, "reshow adopts the retired native fresh on the left");
+            assert.notEqual(freshLeft?.["id"], leftStoneBefore, "fresh adoption mints a new logical, never the retired id");
             assert.ok(
-                workspacesOf(lastReply(h)).every((row) => (row["bind"] as string) !== ""),
-                "reshowing the live end creates no spare",
+                !deadRows(reply, LEFT).some((row) => (row["bind"] as string) === "ws-3"),
+                "local selection clears the left absence intent",
             );
+            const sharedSpare = h.creations[h.creations.length - 1] as unknown as string;
+            assert.equal(liveRows(reply, LEFT).pop()?.["bind"], sharedSpare, "new native trails the left ring");
+            assert.equal(liveRows(reply, RIGHT).pop()?.["bind"], sharedSpare, "one shared native trails both rings");
+            assert.equal(h.currents.get(RIGHT), "ws-2", "opposite view unchanged by left reshow");
+            assert.ok(
+                workspacesOf(reply).every((row) => (row["bind"] as string) !== ""),
+                "reshow keeps native-only rows (no unbound logicals)",
+            );
+            assert.ok(transfersOf(reply).length === 0, "reshow retains no transfers");
             h.activeScreen = { name: LEFT };
             h.handle.requestWorkspaceSelect(1);
             h.runTimers();
@@ -612,46 +744,106 @@ describe("world spare occupancy-only", () => {
             reply = lastReply(h);
             assert.equal(h.currents.get(LEFT), "ws-1", "numbered 1 departs the shown empty end");
             assert.equal(h.currents.get(RIGHT), "ws-2", "opposite view unchanged by left departure");
+            // The departed fresh middle retires locally (the tombstone
+            // reuses the removed logical id) while its native survives; the
+            // trailing stays and no new native is minted by the departure.
+            const retiredLeft = deadRows(reply, LEFT).find((row) => (row["bind"] as string) === "ws-3");
+            assert.ok(retiredLeft !== undefined, "departed middle retires locally on the left");
+            assert.equal(retiredLeft?.["id"], freshLeft?.["id"], "tombstone reuses the removed logical id");
+            assert.ok(
+                !liveRows(reply, LEFT).some((row) => row["id"] === retiredLeft?.["id"]),
+                "absence intent is never a live ring row",
+            );
+            assert.ok(h.desktops.some((d) => d.id === "ws-3"), "retired native survives the local prune");
+            assert.equal(counters(h).creations - reshowBase.creations, 1, "departure mints no further native");
+            assert.equal(liveRows(reply, LEFT).pop()?.["bind"], sharedSpare, "backed trailing survives the departure");
             assert.ok(
                 workspacesOf(reply).every((row) => (row["bind"] as string) !== ""),
-                "numbered departure mints no spare",
+                "departure keeps native-only rows",
             );
+            assert.ok(transfersOf(reply).length === 0, "departure retains no transfers");
 
-            // Same on the right output: its shown end (ws-3, genuinely
-            // empty there) steps forward onto the retained ws-4 cell (the
-            // departed ws-4 was retained, not retired, so the ring still
-            // holds four cells and only the true end wraps). Left view
-            // unchanged and no spare minted.
+            // Same on the right output: its locally-retired ws-3 readopts
+            // fresh on selection and mints one shared backed spare trailing
+            // both rings. Left view unchanged.
+            const rightStoneBefore = deadRows(reply, RIGHT).find((row) => (row["bind"] as string) === "ws-3")?.["id"] as string;
+            assert.ok(rightStoneBefore !== undefined, "ws-3 starts locally retired on the right");
+            const rightReshowBase = counters(h);
             h.activeScreen = { name: RIGHT };
             h.activeRef = h.wins[1] as FakeWindow;
             h.currents.set(RIGHT, "ws-3");
             h.fire("currentDesktopChanged");
             await h.settle();
+            reply = lastReply(h);
+            assert.equal(counters(h).creations - rightReshowBase.creations, 1, "right reshow backs its trailing spare exactly once");
+            const freshRight = liveRows(reply, RIGHT).find((row) => (row["bind"] as string) === "ws-3");
+            assert.ok(freshRight !== undefined, "right reshow adopts the retired native fresh");
+            assert.notEqual(freshRight?.["id"], rightStoneBefore, "fresh adoption mints a new logical, never the retired id");
             assert.ok(
-                workspacesOf(lastReply(h)).every((row) => (row["bind"] as string) !== ""),
-                "right empty end creates no spare",
+                !deadRows(reply, RIGHT).some((row) => (row["bind"] as string) === "ws-3"),
+                "local selection clears the right absence intent",
             );
+            const sharedRight = h.creations[h.creations.length - 1] as unknown as string;
+            assert.equal(liveRows(reply, RIGHT).pop()?.["bind"], sharedRight, "new native trails the right ring");
+            assert.equal(liveRows(reply, LEFT).pop()?.["bind"], sharedRight, "one shared native trails both rings");
+            assert.equal(h.currents.get(LEFT), "ws-1", "left view unchanged by right reshow");
+            assert.ok(
+                workspacesOf(reply).every((row) => (row["bind"] as string) !== ""),
+                "right reshow keeps native-only rows",
+            );
+            // Forward next follows the live ring: from the fresh ws-3 cell
+            // the next cell is the backed trailing spare, so the view lands
+            // on the shared native (ws-4 retired once genuinely empty and
+            // unviewed, so the old retained end no longer exists). The
+            // departed fresh middle retires locally while its native
+            // survives, the opposite view is unchanged, and the outcome is
+            // quiescent (a further settle creates, removes, and moves
+            // nothing).
+            const ringBefore = liveRows(reply, RIGHT);
+            const atBefore = ringBefore.findIndex((row) => (row["bind"] as string) === h.currents.get(RIGHT));
+            assert.ok(atBefore >= 0, "current sits on the live right ring");
+            const expectedBind = ringBefore[(atBefore + 1) % ringBefore.length]?.["bind"] as string;
+            assert.equal(expectedBind, sharedRight, "live ring ends on the backed spare");
+            const relBase = counters(h);
             h.handle.requestWorkspaceRelative(1);
             h.runTimers();
             await h.settle();
             reply = lastReply(h);
-            assert.equal(h.currents.get(RIGHT), "ws-4", "relative next steps onto the retained end on the right");
+            assert.equal(h.currents.get(RIGHT), expectedBind, "relative next lands on the backed trailing spare");
             assert.equal(h.currents.get(LEFT), "ws-1", "left view unchanged by right step");
+            const retiredRight = deadRows(reply, RIGHT).find((row) => (row["bind"] as string) === "ws-3");
+            assert.ok(retiredRight !== undefined, "departed middle retires locally on the right");
+            assert.equal(retiredRight?.["id"], freshRight?.["id"], "tombstone reuses the removed logical id");
+            assert.ok(h.desktops.some((d) => d.id === "ws-3"), "retired native survives the local prune");
+            assert.ok(
+                !liveRows(reply, RIGHT).some((row) => row["id"] === retiredRight?.["id"]),
+                "absence intent is never a live ring row",
+            );
             assert.ok(
                 workspacesOf(reply).every((row) => (row["bind"] as string) !== ""),
-                "right wrap mints no spare",
+                "right step keeps native-only rows",
             );
+            assert.ok(transfersOf(reply).length === 0, "right step retains no transfers");
+            const relAfter = counters(h);
+            assert.equal(relAfter.creations - relBase.creations, 0, "step settles with no further creation");
+            await h.settle();
+            assert.deepEqual(counters(h), relAfter, "stepped lifecycle does not oscillate");
 
-            // Occupancy arrival still extends the spare on each output: a
-            // real window on an output's end appends exactly one trailing
-            // logical. The ordinary spare never requests native backing
-            // (core-owned lifecycle), so no native desktop is created; the
-            // filled end keeps its binding and the spare stays unbound. The
-            // retained ws-4 cell is the live end of the left ring (the
-            // departed end was retained, not retired), so the arrival
-            // targets it directly.
+            // Occupancy arrival extends the ring with eagerly-backed spares:
+            // a real window on an output's live end mints one independent
+            // trailing-spare desire per output (each output's spare is its
+            // own logical; the desires are independent, never migration or
+            // outside-native creation), the adapter executes each exactly
+            // once (one report receipt per op, created id equals the fresh
+            // native), and both rings converge trailing on the latest
+            // backing while the superseded intermediate retires locally on
+            // both outputs with its native surviving (the sticky anchor
+            // vetoes every removal). The filled end keeps its logical and
+            // binding, the newcomer homes on the filled logical, no existing
+            // window moves, no view switches, and no transfers are retained.
             const fillEnd = (tag: string, out: string, ws: string): void => {
                 const desk = h.desktops.find((d) => d.id === ws) as FakeDesktop;
+                assert.ok(desk !== undefined, `fill target native ${ws} exists`);
                 const frame = { x: 8, y: 52, width: 200, height: 200 };
                 const newcomer: FakeWindow = {
                     internalId: tag, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
@@ -681,52 +873,142 @@ describe("world spare occupancy-only", () => {
                     frameGeometryChanged: makeSignal().signal,
                 };
                 h.wins.push(newcomer);
+                trackWin(h, newcomer);
             };
-            const spareOf = (rows: Array<Record<string, unknown>>, out: string): Array<Record<string, unknown>> =>
-                rows.filter((row) => row["out"] === out && (row["bind"] as string) === "");
-            const countBeforeLeft = h.desktops.length;
-            fillEnd("win-c", LEFT, "ws-4");
+            // Fill the left live end (the backed spare both rings trail on):
+            // the shared trailing native is occupied, so each output mints
+            // its own next spare desire.
+            const leftEnd = liveRows(reply, LEFT).pop() as Record<string, unknown>;
+            const leftFilledLogical = leftEnd["id"] as string;
+            const leftFilledNative = leftEnd["bind"] as string;
+            const leftCallsBefore = h.calls.length;
+            const leftReceiptsBefore = creationReceipts(h).length;
+            const leftBase = counters(h);
+            fillEnd("win-c", LEFT, leftFilledNative);
             h.fire("windowAdded");
             await h.settle();
-            assert.equal(h.desktops.length, countBeforeLeft, "left fill creates no native (ordinary spare needs no backing)");
             reply = lastReply(h);
             {
-                const rows = workspacesOf(reply).filter((row) => row["out"] === LEFT);
-                const spares = spareOf(workspacesOf(reply), LEFT);
-                assert.equal(spares.length, 1, "left fill appends exactly one trailing spare");
-                assert.equal(spares[0]?.["id"], rows[rows.length - 1]?.["id"], "spare is the trailing row, never a mid-ring rename");
-                const filledLogical = rows.find((row) => (row["bind"] as string) === "ws-4")?.["id"] as string;
-                assert.ok(filledLogical !== undefined && filledLogical !== "", "filled end keeps its logical");
-                const winRows = (reply["windows"] as Array<Record<string, unknown>>);
-                assert.ok(winRows.some((w) => w["win"] === "win-c" && w["out"] === LEFT && w["ws"] === filledLogical), "newcomer homed on the filled end");
-                assert.deepEqual(reply["nativeCreations"], [], "ordinary spare desires no backing");
+                const newNatives = h.desktops.slice(leftBase.natives).map((d) => d.id);
+                assert.equal(newNatives.length, 2, `left fill mints one backing per output spare, got ${newNatives.join(",")}`);
+                const desires = desiresSince(h, leftCallsBefore);
+                const byOp = new Map<string, Record<string, unknown>>();
+                for (const desire of desires) {
+                    byOp.set(desire["op"] as string, desire);
+                }
+                assert.equal(byOp.size, 2, `exactly two independent spare desires, got ${JSON.stringify(desires)}`);
+                const outs = [...byOp.values()].map((desire) => desire["out"] as string).sort();
+                assert.deepEqual(outs, [LEFT, RIGHT], "each output desires its own spare, never migration");
+                const leftDesire = [...byOp.values()].find((desire) => desire["out"] === LEFT) as Record<string, unknown>;
+                const rightDesire = [...byOp.values()].find((desire) => desire["out"] === RIGHT) as Record<string, unknown>;
+                const freshReceipts = creationReceipts(h).slice(leftReceiptsBefore);
+                assert.equal(freshReceipts.length, 2, `each desire executes exactly once, got ${JSON.stringify(freshReceipts)}`);
+                for (const receipt of freshReceipts) {
+                    assert.ok(byOp.has(receipt["op"] as string), `receipt answers an observed desire, got ${JSON.stringify(receipt)}`);
+                    assert.equal(receipt["setter"], "accepted", "backing executes cleanly");
+                }
+                const created = freshReceipts.map((receipt) => receipt["created"] as string).sort();
+                assert.deepEqual(created, [...newNatives].sort(), "receipts correlate ops to the fresh natives");
+                // The filled end keeps its logical and binding while the
+                // newcomer homes on it; both rings converge trailing on the
+                // latest backing and the superseded intermediate retires
+                // locally on both outputs with its native surviving.
+                const filledRow = liveRows(reply, LEFT).find((row) => row["id"] === leftFilledLogical);
+                assert.equal(filledRow?.["bind"], leftFilledNative, "filled end keeps its logical and binding");
+                const winRows = reply["windows"] as Array<Record<string, unknown>>;
+                assert.ok(winRows.some((w) => w["win"] === "win-c" && w["out"] === LEFT && w["ws"] === leftFilledLogical), "newcomer homed on the filled end");
+                const latest = newNatives[newNatives.length - 1] as string;
+                const intermediate = newNatives[0] as string;
+                assert.equal(liveRows(reply, LEFT).pop()?.["bind"], latest, "left ring trails the latest backing");
+                assert.equal(liveRows(reply, RIGHT).pop()?.["bind"], latest, "right ring trails the latest backing");
+                assert.equal(rightDesire["ws"], liveRows(reply, RIGHT).pop()?.["id"], "right desire names its own trailing spare");
+                assert.ok(
+                    deadRows(reply, LEFT).some((row) => (row["bind"] as string) === intermediate),
+                    "superseded backing retires locally on the left",
+                );
+                assert.ok(
+                    deadRows(reply, RIGHT).some((row) => (row["bind"] as string) === intermediate),
+                    "superseded backing retires locally on the right",
+                );
+                assert.ok(h.desktops.some((d) => d.id === intermediate), "superseded native survives (sticky removal veto)");
+                assert.ok(leftDesire["ws"] !== undefined && (leftDesire["ws"] as string) !== "", "left desire names its spare logical");
+                void leftDesire;
             }
+            assert.ok(
+                workspacesOf(reply).every((row) => (row["bind"] as string) !== ""),
+                "filled rings keep native-only rows",
+            );
+            assert.deepEqual(reply["nativeCreations"], [], "desires settle once executed");
+            assert.equal(counters(h).removals - leftBase.removals, 0, "fill removes no native");
+            assert.equal(counters(h).members - leftBase.members, 0, "fill moves no existing window");
+            assert.equal(counters(h).views - leftBase.views, 0, "fill switches no view");
             assert.ok(
                 transfersOf(reply).length === 0,
                 `settled with no retained transfers, got ${JSON.stringify(transfersOf(reply))}`,
             );
-            const countBeforeRight = h.desktops.length;
-            const rightEnd = h.desktops[h.desktops.length - 1] as FakeDesktop;
-            fillEnd("win-d", RIGHT, rightEnd.id);
+            const leftAfter = counters(h);
+            await h.settle();
+            assert.deepEqual(counters(h), leftAfter, "filled lifecycle does not oscillate");
+            // Fill the right live end (the converged trailing both rings
+            // share): mirror image, one independent desire per output.
+            const rightEnd = liveRows(reply, RIGHT).pop() as Record<string, unknown>;
+            const rightFilledLogical = rightEnd["id"] as string;
+            const rightFilledNative = rightEnd["bind"] as string;
+            const rightCallsBefore = h.calls.length;
+            const rightReceiptsBefore = creationReceipts(h).length;
+            const rightBase = counters(h);
+            fillEnd("win-d", RIGHT, rightFilledNative);
             h.fire("windowAdded");
             await h.settle();
-            assert.equal(h.desktops.length, countBeforeRight, "right fill creates no native (ordinary spare needs no backing)");
             reply = lastReply(h);
             {
-                const rows = workspacesOf(reply).filter((row) => row["out"] === RIGHT);
-                const spares = spareOf(workspacesOf(reply), RIGHT);
-                assert.equal(spares.length, 1, "right fill appends exactly one trailing spare");
-                assert.equal(spares[0]?.["id"], rows[rows.length - 1]?.["id"], "spare is the trailing row, never a mid-ring rename");
-                const filledLogical = rows.find((row) => (row["bind"] as string) === rightEnd.id)?.["id"] as string;
-                assert.ok(filledLogical !== undefined && filledLogical !== "", "filled end keeps its logical");
-                const winRows = (reply["windows"] as Array<Record<string, unknown>>);
-                assert.ok(winRows.some((w) => w["win"] === "win-d" && w["out"] === RIGHT && w["ws"] === filledLogical), "newcomer homed on the filled end");
-                assert.deepEqual(reply["nativeCreations"], [], "ordinary spare desires no backing");
+                const newNatives = h.desktops.slice(rightBase.natives).map((d) => d.id);
+                assert.equal(newNatives.length, 2, `right fill mints one backing per output spare, got ${newNatives.join(",")}`);
+                const desires = desiresSince(h, rightCallsBefore);
+                const byOp = new Map<string, Record<string, unknown>>();
+                for (const desire of desires) {
+                    byOp.set(desire["op"] as string, desire);
+                }
+                assert.equal(byOp.size, 2, `exactly two independent spare desires, got ${JSON.stringify(desires)}`);
+                const outs = [...byOp.values()].map((desire) => desire["out"] as string).sort();
+                assert.deepEqual(outs, [LEFT, RIGHT], "each output desires its own spare, never migration");
+                const freshReceipts = creationReceipts(h).slice(rightReceiptsBefore);
+                assert.equal(freshReceipts.length, 2, `each desire executes exactly once, got ${JSON.stringify(freshReceipts)}`);
+                const created = freshReceipts.map((receipt) => receipt["created"] as string).sort();
+                assert.deepEqual(created, [...newNatives].sort(), "receipts correlate ops to the fresh natives");
+                const filledRow = liveRows(reply, RIGHT).find((row) => row["id"] === rightFilledLogical);
+                assert.equal(filledRow?.["bind"], rightFilledNative, "filled end keeps its logical and binding");
+                const winRows = reply["windows"] as Array<Record<string, unknown>>;
+                assert.ok(winRows.some((w) => w["win"] === "win-d" && w["out"] === RIGHT && w["ws"] === rightFilledLogical), "newcomer homed on the filled end");
+                const latest = newNatives[newNatives.length - 1] as string;
+                const intermediate = newNatives[0] as string;
+                assert.equal(liveRows(reply, RIGHT).pop()?.["bind"], latest, "right ring trails the latest backing");
+                assert.equal(liveRows(reply, LEFT).pop()?.["bind"], latest, "left ring trails the latest backing");
+                assert.ok(
+                    deadRows(reply, RIGHT).some((row) => (row["bind"] as string) === intermediate),
+                    "superseded backing retires locally on the right",
+                );
+                assert.ok(
+                    deadRows(reply, LEFT).some((row) => (row["bind"] as string) === intermediate),
+                    "superseded backing retires locally on the left",
+                );
+                assert.ok(h.desktops.some((d) => d.id === intermediate), "superseded native survives (sticky removal veto)");
             }
+            assert.ok(
+                workspacesOf(reply).every((row) => (row["bind"] as string) !== ""),
+                "filled rings keep native-only rows",
+            );
+            assert.deepEqual(reply["nativeCreations"], [], "desires settle once executed");
+            assert.equal(counters(h).removals - rightBase.removals, 0, "fill removes no native");
+            assert.equal(counters(h).members - rightBase.members, 0, "fill moves no existing window");
+            assert.equal(counters(h).views - rightBase.views, 0, "fill switches no view");
             assert.ok(
                 transfersOf(reply).length === 0,
                 `settled with no retained transfers, got ${JSON.stringify(transfersOf(reply))}`,
             );
+            const rightAfter = counters(h);
+            await h.settle();
+            assert.deepEqual(counters(h), rightAfter, "filled lifecycle does not oscillate");
         } finally {
             await h.stop();
         }

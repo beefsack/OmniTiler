@@ -1505,14 +1505,12 @@ fn selection_host_owned_focusless_pends_on_native_proof() {
     let mut engine = engine_with_caps(caps_host_owned());
     let boot = accepted(
         &mut engine,
-        &report(
+        &host_native_report(
             1,
             vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
-            vec![],
+            "n0",
             None,
             None,
-            vec![],
-            "",
         ),
     );
     let ring = ring_ids(&boot, "out-a");
@@ -6171,7 +6169,15 @@ fn focusless_empty_to_empty_zero_members_completes_at_issuing() {
     let mut engine = engine();
     let boot = accepted(
         &mut engine,
-        &report(1, vec![], vec![], None, None, vec![], ""),
+        &report(
+            1,
+            vec![sfact("w-seed", "out-a", 0)],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+        ),
     );
     let ring = ring_ids(&boot, "out-a");
     assert!(ring.len() >= 2, "owned plus trailing: {ring:?}");
@@ -10129,7 +10135,16 @@ fn migration_zero_member_issues_unproven_and_retires_parent_echoless() {
     let screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let boot = accepted(
         &mut engine,
-        &report_multi(1, vec![], vec![], None, None, vec![], "", screens.clone()),
+        &report_multi(
+            1,
+            vec![mfact("w1", "out-a", 0)],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+            screens.clone(),
+        ),
     );
     let ring: Vec<String> = boot
         .workspaces

@@ -2742,14 +2742,17 @@ fn logical_refill_selector_attempt_is_rejected_and_migration_already_retired() {
         "retired parent stays retired: {:?}",
         acked.transfers
     );
-    // Third known workspace on the source output, neither the refill nor
-    // the refused preimage.
+    // Single-spare entailment: the source ring holds the refill view
+    // with no third row beyond the refill and the refused preimage.
     let ring_a = engine.logical_ring("out-a");
-    let third = ring_a
-        .iter()
-        .find(|id| *id != &refill_ws && *id != &view_a)
-        .cloned()
-        .expect("third known source workspace");
+    assert!(
+        ring_a.contains(&refill_ws),
+        "refill view stays known: {ring_a:?}"
+    );
+    assert!(
+        ring_a.iter().all(|id| id == &refill_ws || id == &view_a),
+        "no third source row under the single spare: {ring_a:?}"
+    );
     // The former logical-selector refusal proof is invalid in v4.
     // v4 carries no view-echo lane; the adapter echoes here were inert
     // (native-free engines never stage or consult the views lane), so
@@ -2787,7 +2790,7 @@ fn logical_refill_selector_attempt_is_rejected_and_migration_already_retired() {
     let settled = accepted(&mut engine, &external);
     assert!(
         settled.transfers.is_empty(),
-        "nothing retained after the external move: {:?} (third={third:?} refill={refill_ws:?} pre={view_a:?})",
+        "nothing retained after the external move: {:?} (ring={ring_a:?} refill={refill_ws:?} pre={view_a:?})",
         settled.transfers
     );
     assert_eq!(

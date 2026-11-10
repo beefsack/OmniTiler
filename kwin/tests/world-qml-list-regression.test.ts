@@ -185,6 +185,10 @@ describe("world qml-list regression", () => {
         // array-like of fresh wrappers per call; screens/desktops are
         // array-like properties re-read on every access (getters renew
         // them, so ref identity never survives a read).
+        // Array-like fidelity note: production KWin desktops always carry
+        // a name (`VirtualDesktop.name`), which the floor's fresh
+        // inventory read requires; a nameless entry reads as unreadable
+        // inventory and holds. The ids alone are not production-shaped.
         const screensList = [{ name: OUT }];
         const desktopIds = [WS_A, WS_B];
         const surface = {
@@ -193,7 +197,7 @@ describe("world qml-list regression", () => {
                 return qmlLike(screensList.map((s) => ({ ...s })));
             },
             get desktops() {
-                return qmlLike(desktopIds.map((id) => ({ id })));
+                return qmlLike(desktopIds.map((id) => ({ id, name: id })));
             },
             currentDesktopForScreen: (_screen: object) => ({ id: liveCurrent }),
             activeWindow: null,

@@ -205,21 +205,51 @@ fn bound_ids(
     reply: &tiler_core::world_report::WorldReplyV4,
     output: &str,
 ) -> Vec<(String, String)> {
+    // Live bindings only: tombstone absence intents (`existence:false`)
+    // reuse the removed logical id plus its native binding as correlation
+    // metadata and are never live bindings outside the ring.
     reply
         .workspaces
         .iter()
-        .filter(|row| row.output.0 == output && row.native_binding.is_some())
+        .filter(|row| row.output.0 == output && row.existence && row.native_binding.is_some())
         .map(|row| (row.id.clone(), row.native_binding.clone().expect("bound")))
         .collect()
 }
 
 fn ring_ids(reply: &tiler_core::world_report::WorldReplyV4, output: &str) -> Vec<String> {
+    // Existing rows only: tombstone absence intents are not ring rows.
     reply
         .workspaces
         .iter()
-        .filter(|row| row.output.0 == output)
+        .filter(|row| row.output.0 == output && row.existence)
         .map(|row| row.id.clone())
         .collect()
+}
+
+fn tombstone_id(
+    reply: &tiler_core::world_report::WorldReplyV4,
+    output: &str,
+    native: &str,
+) -> Option<String> {
+    reply
+        .workspaces
+        .iter()
+        .find(|row| {
+            row.output.0 == output
+                && row.native_binding.as_deref() == Some(native)
+                && !row.existence
+        })
+        .map(|row| row.id.clone())
+}
+
+fn tombstone_row<'a>(
+    reply: &'a tiler_core::world_report::WorldReplyV4,
+    output: &str,
+    native: &str,
+) -> Option<&'a tiler_core::world_report::WorkspaceDesire> {
+    reply.workspaces.iter().find(|row| {
+        row.output.0 == output && row.native_binding.as_deref() == Some(native) && !row.existence
+    })
 }
 
 fn existence(
@@ -265,16 +295,120 @@ fn setup_four(engine: &mut WorldEngine) -> tiler_core::world_report::WorldReplyV
     )
 }
 
+/// Bootstrap that retains every bound identity: unknown occupancy for the
+/// middle pair (`None`) fails closed, so no local prune happens and the
+/// second report can inject a guard/protection before pruning.
+fn setup_four_unpruned(engine: &mut WorldEngine) -> tiler_core::world_report::WorldReplyV4 {
+    accepted(
+        engine,
+        &report(
+            1,
+            1,
+            single_screen(),
+            vec![],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3", "d4"],
+                Some("d1"),
+                &[Some(0), None, None, Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    )
+}
+
+/// Generic fake host: applies explicit absence intents only, vetoing
+/// actuation on global occupancy, any-output visibility, window presence,
+/// holds, scope holds, gesture, incomplete inventory, unreadable rows, and
+/// the host minimum floor. Returns true when the host would delete the
+/// native desktop. Counts per step: creates = `native_creations.len()`,
+/// deletes = veto-passed intents, membership writes = `transfers.len()`.
+fn host_would_delete(
+    reply: &tiler_core::world_report::WorldReplyV4,
+    native_rows: &[NativeObservation],
+    windows: &[WindowFact],
+    inventory_complete: bool,
+    gesture_barrier: bool,
+    output: &str,
+    native: &str,
+) -> bool {
+    let Some(row) = tombstone_row(reply, output, native) else {
+        return false;
+    };
+    if row.hold.is_some() {
+        return false;
+    }
+    if reply.scopes.iter().any(|scope| {
+        scope.scope == tiler_core::world_report::AuthorityScope::Output(OutputId(output.to_owned()))
+            && !matches!(
+                scope.authority,
+                tiler_core::world_report::ScopeAuthority::Controlled
+            )
+    }) {
+        return false;
+    }
+    if !inventory_complete || gesture_barrier {
+        return false;
+    }
+    for entry in native_rows {
+        if entry.occupancy.len() != entry.native_order.len() {
+            return false;
+        }
+        if !entry.native_order.iter().any(|id| id == native) {
+            continue;
+        }
+        match entry.occupancy.iter().find(|row| row.native == native) {
+            Some(row) if row.count.is_some_and(|count| count > 0) => return false,
+            Some(row) if row.count.is_some() => {}
+            _ => return false,
+        }
+        if entry.current_native.as_deref() == Some(native) {
+            return false;
+        }
+    }
+    // Any-output visibility veto: the same native id viewed anywhere.
+    if native_rows
+        .iter()
+        .any(|entry| entry.current_native.as_deref() == Some(native))
+    {
+        return false;
+    }
+    if windows
+        .iter()
+        .any(|fact| fact.native_workspace.as_deref() == Some(native))
+    {
+        return false;
+    }
+    // Host minimum floor: a single live bound row never deletes.
+    let live_bound = reply
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == output && row.existence && row.native_binding.is_some())
+        .count();
+    if live_bound <= 1 {
+        return false;
+    }
+    true
+}
+
 #[test]
 fn eligible_empty_desktop_publishes_removal_while_row_and_binding_persist() {
     let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let first = setup_four(&mut engine);
-    assert_eq!(bound_ids(&first, "out-a").len(), 4, "four bound: {first:?}");
+    // Approved split: the first complete empty readback already prunes the
+    // middle pair locally. Live bindings are d1 (viewed) and d4 (trailing
+    // spare); d2/d3 publish as `existence:false` tombstones (correlation
+    // metadata only, never live bindings).
+    assert_eq!(bound_ids(&first, "out-a").len(), 2, "live bound: {first:?}");
     assert_eq!(
         ring_ids(&first, "out-a").len(),
-        4,
-        "no spare needed: {first:?}"
+        2,
+        "live ring excludes tombstones: {first:?}"
     );
+    assert!(tombstone_id(&first, "out-a", "d2").is_some());
+    assert!(tombstone_id(&first, "out-a", "d3").is_some());
     // d1 is viewed (current); d4 is the bound trailing spare. d2 and d3
     // read empty and retire jointly.
     let reply = accepted(
@@ -291,21 +425,21 @@ fn eligible_empty_desktop_publishes_removal_while_row_and_binding_persist() {
         ),
     );
     let d1 = logical_for(&reply, "out-a", "d1").expect("d1 still bound");
-    let d2 = logical_for(&reply, "out-a", "d2").expect("d2 still bound");
-    let d3 = logical_for(&reply, "out-a", "d3").expect("d3 still bound");
     let d4 = logical_for(&reply, "out-a", "d4").expect("d4 still bound");
+    let d2t = tombstone_id(&reply, "out-a", "d2").expect("d2 tombstone");
+    let d3t = tombstone_id(&reply, "out-a", "d3").expect("d3 tombstone");
     assert_eq!(
         existence(&reply, "out-a", &d1),
         Some(true),
         "view vetoes: {reply:?}"
     );
     assert_eq!(
-        existence(&reply, "out-a", &d2),
+        existence(&reply, "out-a", &d2t),
         Some(false),
         "empty retires: {reply:?}"
     );
     assert_eq!(
-        existence(&reply, "out-a", &d3),
+        existence(&reply, "out-a", &d3t),
         Some(false),
         "empty retires: {reply:?}"
     );
@@ -314,17 +448,43 @@ fn eligible_empty_desktop_publishes_removal_while_row_and_binding_persist() {
         Some(true),
         "trailing vetoes: {reply:?}"
     );
-    // The retiring rows are still published with bindings and order.
+    // Tombstones publish after the ring and never as live bindings.
     let ring = ring_ids(&reply, "out-a");
     assert_eq!(
         ring.len(),
-        4,
-        "row persists until readback absence: {ring:?}"
+        2,
+        "live ring persists without tombstones: {ring:?}"
     );
     assert_eq!(
         bound_ids(&reply, "out-a").len(),
-        4,
-        "bindings persist: {reply:?}"
+        2,
+        "live bindings persist: {reply:?}"
+    );
+    // Fake host: globally empty, shown nowhere, readable, above the host
+    // minimum floor, so actuation proceeds (explicit intents only).
+    let native = vec![empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1")];
+    assert!(host_would_delete(
+        &reply,
+        &native,
+        &[],
+        true,
+        false,
+        "out-a",
+        "d2"
+    ));
+    assert!(host_would_delete(
+        &reply,
+        &native,
+        &[],
+        true,
+        false,
+        "out-a",
+        "d3"
+    ));
+    assert_eq!(reply.transfers.len(), 0, "pruning writes no memberships");
+    assert!(
+        reply.native_creations.is_empty(),
+        "no spare creation needed: single spare already present"
     );
 }
 
@@ -363,9 +523,10 @@ fn retirement_repeat_is_stable_with_same_identities() {
 }
 
 #[test]
-fn partial_inventory_holds_every_row() {
+fn partial_inventory_fences_retirement_actuation() {
     let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     setup_four(&mut engine);
+    let native = vec![empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1")];
     let reply = accepted(
         &mut engine,
         &report(
@@ -373,22 +534,42 @@ fn partial_inventory_holds_every_row() {
             2,
             single_screen(),
             vec![],
-            vec![empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1")],
+            native.clone(),
             None,
             None,
             false,
         ),
     );
+    // Already-retired tombstones persist `existence:false` (never flipped
+    // back merely to satisfy old tests); the partial inventory fences
+    // actuation via the tombstone hold and the output scope hold.
+    for native_id in ["d2", "d3"] {
+        let tomb = tombstone_id(&reply, "out-a", native_id).expect("tombstone persists");
+        assert_eq!(existence(&reply, "out-a", &tomb), Some(false));
+        assert!(
+            tombstone_row(&reply, "out-a", native_id).is_some_and(|row| row.hold.is_some()),
+            "partial inventory holds the intent: {reply:?}"
+        );
+        assert!(
+            !host_would_delete(&reply, &native, &[], false, false, "out-a", native_id),
+            "fake host vetoes deletion under partial inventory"
+        );
+    }
     assert!(
-        reply.workspaces.iter().all(|row| row.existence),
-        "partial inventory retains all: {reply:?}"
+        reply.scopes.iter().any(|scope| !matches!(
+            scope.authority,
+            tiler_core::world_report::ScopeAuthority::Controlled
+        )),
+        "scope fenced: {reply:?}"
     );
+    assert_eq!(reply.transfers.len(), 0, "no membership writes");
 }
 
 #[test]
-fn incomplete_screen_holds_every_row() {
+fn incomplete_screen_holds_retirement_intents() {
     let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     setup_four(&mut engine);
+    let native = vec![empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1")];
     let reply = accepted(
         &mut engine,
         &report(
@@ -396,22 +577,32 @@ fn incomplete_screen_holds_every_row() {
             2,
             vec![incomplete_screen("out-a", 0)],
             vec![],
-            vec![empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1")],
+            native.clone(),
             None,
             None,
             true,
         ),
     );
-    assert!(
-        reply.workspaces.iter().all(|row| row.existence),
-        "incomplete screen retains all: {reply:?}"
-    );
+    for native_id in ["d2", "d3"] {
+        let tomb = tombstone_id(&reply, "out-a", native_id).expect("tombstone persists");
+        assert_eq!(existence(&reply, "out-a", &tomb), Some(false));
+        assert!(
+            tombstone_row(&reply, "out-a", native_id).is_some_and(|row| row.hold.is_some()),
+            "incomplete screen holds the intent: {reply:?}"
+        );
+        assert!(
+            !host_would_delete(&reply, &native, &[], true, false, "out-a", native_id),
+            "fake host vetoes deletion on incomplete screen"
+        );
+    }
 }
 
 #[test]
 fn unknown_occupancy_blocks_candidate() {
     let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
-    let first = setup_four(&mut engine);
+    // Bootstrap with unknown occupancy so d2/d3 stay live bound; the guard
+    // is injected before pruning on report 2.
+    let first = setup_four_unpruned(&mut engine);
     let d3 = logical_for(&first, "out-a", "d3").expect("d3 bound");
     let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
     let reply = accepted(
@@ -445,11 +636,21 @@ fn unknown_occupancy_blocks_candidate() {
 }
 
 #[test]
-fn occupied_desktop_blocks_candidate() {
+fn occupied_desktop_blocks_actuation() {
     let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let first = setup_four(&mut engine);
-    let d3 = logical_for(&first, "out-a", "d3").expect("d3 bound");
-    let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
+    // d2/d3 already retired on report 1; the occupant count does not flip
+    // tombstones back to live. The global occupant vetoes actuation: the
+    // fake host preserves the native desktop while the intent stays held
+    // only by the explicit absence row.
+    let d3t = tombstone_id(&first, "out-a", "d3").expect("d3 tombstone");
+    let d2t = tombstone_id(&first, "out-a", "d2").expect("d2 tombstone");
+    let native = vec![native_obs_occ(
+        "out-a",
+        &["d1", "d2", "d3", "d4"],
+        Some("d1"),
+        &[Some(0), Some(0), Some(2), Some(0)],
+    )];
     let reply = accepted(
         &mut engine,
         &report(
@@ -457,27 +658,27 @@ fn occupied_desktop_blocks_candidate() {
             2,
             single_screen(),
             vec![],
-            vec![native_obs_occ(
-                "out-a",
-                &["d1", "d2", "d3", "d4"],
-                Some("d1"),
-                &[Some(0), Some(0), Some(2), Some(0)],
-            )],
+            native.clone(),
             None,
             None,
             true,
         ),
     );
     assert_eq!(
-        existence(&reply, "out-a", &d3),
-        Some(true),
-        "occupant vetoes retirement: {reply:?}"
+        existence(&reply, "out-a", &d3t),
+        Some(false),
+        "tombstone persists, never flipped live: {reply:?}"
     );
     assert_eq!(
-        existence(&reply, "out-a", &d2),
+        existence(&reply, "out-a", &d2t),
         Some(false),
-        "selective: proven-empty sibling still retires: {reply:?}"
+        "proven-empty sibling tombstone persists: {reply:?}"
     );
+    assert!(
+        !host_would_delete(&reply, &native, &[], true, false, "out-a", "d3"),
+        "global occupant vetoes actuation: {reply:?}"
+    );
+    assert_eq!(reply.transfers.len(), 0, "no membership writes");
 }
 
 #[test]
@@ -510,7 +711,7 @@ fn unknown_current_falls_back_to_retained_view() {
     let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     let first = setup_four(&mut engine);
     let d1 = logical_for(&first, "out-a", "d1").expect("d1 bound");
-    let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
+    let d2t = tombstone_id(&first, "out-a", "d2").expect("d2 tombstone");
     // `current_native: None` names no ordered desktop: the retained view
     // (d1) still vetoes while other empty desktops retire normally.
     let reply = accepted(
@@ -537,7 +738,7 @@ fn unknown_current_falls_back_to_retained_view() {
         "retained view vetoes without current: {reply:?}"
     );
     assert_eq!(
-        existence(&reply, "out-a", &d2),
+        existence(&reply, "out-a", &d2t),
         Some(false),
         "other empties still retire: {reply:?}"
     );
@@ -546,7 +747,9 @@ fn unknown_current_falls_back_to_retained_view() {
 #[test]
 fn known_raw_current_vetoes_despite_command_moved_view() {
     let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
-    let first = setup_four(&mut engine);
+    // Unpruned bootstrap keeps d2/d3 live so the SwitchView targets a live
+    // row and the raw current veto can be observed before pruning.
+    let first = setup_four_unpruned(&mut engine);
     let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
     let d3 = logical_for(&first, "out-a", "d3").expect("d3 bound");
     // The command moves the desired view to d3, but the raw native
@@ -572,44 +775,76 @@ fn known_raw_current_vetoes_despite_command_moved_view() {
         Some(true),
         "raw current vetoes despite command: {reply:?}"
     );
+    // The same-report SwitchView targets a row retiring on this readback,
+    // so the core rejects it (`ViewTargetUnknown`) and the raw native
+    // current wins: the desired view stays on d2.
+    assert!(
+        matches!(
+            reply.command_result,
+            Some(tiler_core::world_report::CommandResult::Rejected { .. })
+        ),
+        "retiring target rejected: {reply:?}"
+    );
     assert_eq!(
         reply
             .outputs
             .iter()
             .find(|row| row.output.0 == "out-a")
             .and_then(|row| row.logical_view.clone()),
-        Some(d3),
-        "command moved the desired view: {reply:?}"
+        Some(d2),
+        "raw current wins the desired view: {reply:?}"
     );
 }
 
 #[test]
-fn gesture_barrier_vetoes_every_retirement() {
+fn gesture_barrier_fences_retirement_actuation() {
     let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     setup_four(&mut engine);
+    let native = vec![empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1")];
     let mut barrier = report(
         2,
         2,
         single_screen(),
         vec![],
-        vec![empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1")],
+        native.clone(),
         None,
         None,
         true,
     );
     barrier.gesture_barrier = true;
     let reply = accepted(&mut engine, &barrier);
-    assert!(
-        reply.workspaces.iter().all(|row| row.existence),
-        "gesture barrier retains all: {reply:?}"
-    );
+    // Tombstones persist with an explicit gesture fence; the fake host
+    // vetoes deletion while the barrier holds.
+    for native_id in ["d2", "d3"] {
+        let tomb = tombstone_id(&reply, "out-a", native_id).expect("tombstone persists");
+        assert_eq!(existence(&reply, "out-a", &tomb), Some(false));
+        assert!(
+            tombstone_row(&reply, "out-a", native_id).is_some_and(|row| row.hold.is_some()),
+            "gesture fences the intent: {reply:?}"
+        );
+        assert!(
+            !host_would_delete(&reply, &native, &[], true, true, "out-a", native_id),
+            "fake host vetoes deletion under gesture"
+        );
+    }
+    assert_eq!(reply.transfers.len(), 0, "no membership writes");
 }
 
 #[test]
 fn shared_mirror_flight_vetoes_observing_projection() {
-    let mut engine = engine_host_owned(WorkspaceMode::Shared, false);
     // Shared mode, `n` observed only on out-a; its logical mirrors on
-    // out-b without a binding there.
+    // out-b without a binding there. Bootstrap with unknown occupancy so
+    // `n` stays live and mirrored before any prune.
+    let boot_native = vec![
+        native_obs_occ(
+            "out-a",
+            &["v", "n", "t"],
+            Some("v"),
+            &[Some(0), None, Some(0)],
+        ),
+        empty_obs("out-b", &["v", "t"], "v"),
+    ];
+    let mut engine = engine_host_owned(WorkspaceMode::Shared, false);
     let first = accepted(
         &mut engine,
         &report(
@@ -617,10 +852,7 @@ fn shared_mirror_flight_vetoes_observing_projection() {
             1,
             two_screens(),
             vec![],
-            vec![
-                empty_obs("out-a", &["v", "n", "t"], "v"),
-                empty_obs("out-b", &["v", "t"], "v"),
-            ],
+            boot_native.clone(),
             None,
             None,
             true,
@@ -635,10 +867,15 @@ fn shared_mirror_flight_vetoes_observing_projection() {
         ring_ids(&first, "out-b").contains(&ln),
         "logical mirrors on b: {first:?}"
     );
-    // Control: without protection the one-sided native retires (no equal
-    // count flag).
+    // Control (separate engine): without protection the one-sided native
+    // retires into a tombstone (no equal-count flag).
+    let mut control_engine = engine_host_owned(WorkspaceMode::Shared, false);
+    let _ = accepted(
+        &mut control_engine,
+        &report(1, 1, two_screens(), vec![], boot_native, None, None, true),
+    );
     let control = accepted(
-        &mut engine,
+        &mut control_engine,
         &report(
             2,
             2,
@@ -653,13 +890,44 @@ fn shared_mirror_flight_vetoes_observing_projection() {
             true,
         ),
     );
+    let tomb = tombstone_id(&control, "out-a", "n").expect("one-sided tombstone");
     assert_eq!(
-        existence(&control, "out-a", &ln),
+        existence(&control, "out-a", &tomb),
         Some(false),
         "unprotected one-sided retires: {control:?}"
     );
-    // A retained view flight targeting the mirrored row on out-b protects
-    // the shared logical everywhere, including the observing projection.
+    // Establish the mirrored view flight while `n` is unknown (no
+    // same-report prune), then verify the veto on the proven-empty
+    // readback. The pre-existing flight is the guard before pruning.
+    let flight = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            two_screens(),
+            vec![],
+            vec![
+                native_obs_occ(
+                    "out-a",
+                    &["v", "n", "t"],
+                    Some("v"),
+                    &[Some(0), None, Some(0)],
+                ),
+                empty_obs("out-b", &["v", "t"], "v"),
+            ],
+            Some(1),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-b".to_owned()),
+                workspace: ln.clone(),
+            }),
+            true,
+        ),
+    );
+    assert_eq!(
+        existence(&flight, "out-a", &ln),
+        Some(true),
+        "flight established while unknown: {flight:?}"
+    );
     let reply = accepted(
         &mut engine,
         &report(
@@ -671,11 +939,8 @@ fn shared_mirror_flight_vetoes_observing_projection() {
                 empty_obs("out-a", &["v", "n", "t"], "v"),
                 empty_obs("out-b", &["v", "t"], "v"),
             ],
-            Some(1),
-            Some(WorldCommand::SwitchView {
-                output: OutputId("out-b".to_owned()),
-                workspace: ln.clone(),
-            }),
+            None,
+            None,
             true,
         ),
     );
@@ -764,17 +1029,19 @@ fn unbound_spare_never_eligible() {
                 "out-a",
                 &["d1", "d2", "d3", "d4"],
                 Some("d1"),
-                &[Some(0), Some(0), Some(0), Some(1)],
+                &[Some(0), None, None, Some(1)],
             )],
             None,
             None,
             true,
         ),
     );
+    // Live ring: d1 (viewed), d4 (occupied), plus the ordinary unbound
+    // spare. d2/d3 stay live bound via unknown occupancy (unpruned).
     assert_eq!(
         ring_ids(&first, "out-a").len(),
         5,
-        "spare appended: {first:?}"
+        "live ring with spare, unpruned: {first:?}"
     );
     let spare_row = first
         .workspaces
@@ -782,9 +1049,15 @@ fn unbound_spare_never_eligible() {
         .find(|row| row.output.0 == "out-a" && row.native_binding.is_none())
         .expect("unbound spare row published");
     assert!(spare_row.trailing, "spare is trailing: {spare_row:?}");
-    assert!(
-        first.native_creations.is_empty(),
-        "no creation for ordinary spare: {first:?}"
+    // Causal spare-only creation: the trailing spare needs native backing.
+    assert_eq!(
+        first.native_creations.len(),
+        1,
+        "single spare creation: {first:?}"
+    );
+    assert_eq!(
+        first.native_creations[0].logical_workspace, spare_row.id,
+        "creation targets the spare: {first:?}"
     );
     let spare = spare_row.id.clone();
     let reply = accepted(
@@ -815,7 +1088,7 @@ fn unbound_spare_never_eligible() {
 #[test]
 fn vanished_desktop_recycles_logical_as_trailing_spare_after_complete_absence() {
     let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
-    let first = setup_four(&mut engine);
+    let first = setup_four_unpruned(&mut engine);
     let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
     let ring_before = ring_ids(&first, "out-a");
     assert!(ring_before.contains(&d2), "d2 ringed before absence");
@@ -862,7 +1135,7 @@ fn vanished_desktop_recycles_logical_as_trailing_spare_after_complete_absence() 
     for (index, row) in reply
         .workspaces
         .iter()
-        .filter(|row| row.output.0 == "out-a")
+        .filter(|row| row.output.0 == "out-a" && row.existence)
         .enumerate()
     {
         assert_eq!(row.order, index, "compact ordinals: {row:?}");
@@ -874,6 +1147,7 @@ fn vanished_middle_desktop_deletes_row_when_spare_already_exists() {
     let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     // Occupying the last desktop appends an ordinary unbound spare, so a
     // later-proven absence has a lifecycle spare without recycling.
+    // Unknown middle occupancy keeps d2/d3 live before the absence.
     let first = accepted(
         &mut engine,
         &report(
@@ -885,7 +1159,7 @@ fn vanished_middle_desktop_deletes_row_when_spare_already_exists() {
                 "out-a",
                 &["d1", "d2", "d3", "d4"],
                 Some("d1"),
-                &[Some(0), Some(0), Some(0), Some(1)],
+                &[Some(0), None, None, Some(1)],
             )],
             None,
             None,
@@ -928,33 +1202,52 @@ fn vanished_middle_desktop_deletes_row_when_spare_already_exists() {
         "pre-existing spare survives: {ring:?}"
     );
     let bound_after = bound_ids(&reply, "out-a");
+    // d2 vanished (binding gone, no tombstone); d3 retired on the same
+    // proven-empty readback (tombstone, never live). Survivors keep their
+    // bound identities.
     let expected: Vec<(String, String)> = bound_before
         .into_iter()
-        .filter(|(_, native)| native != "d2")
+        .filter(|(_, native)| native != "d2" && native != "d3")
         .collect();
     assert_eq!(
         bound_after, expected,
         "surviving bound identities unchanged: {reply:?}"
     );
+    assert!(
+        tombstone_id(&reply, "out-a", "d3").is_some(),
+        "same-report empty retires: {reply:?}"
+    );
+    assert!(
+        tombstone_id(&reply, "out-a", "d2").is_none(),
+        "vanished native leaves no tombstone: {reply:?}"
+    );
     for (index, row) in reply
         .workspaces
         .iter()
-        .filter(|row| row.output.0 == "out-a")
+        .filter(|row| row.output.0 == "out-a" && row.existence)
         .enumerate()
     {
         assert_eq!(row.order, index, "compact ordinals: {row:?}");
     }
-    assert!(
-        reply.native_creations.is_empty(),
-        "no recreation after proven absence: {reply:?}"
+    // Causal spare-only creation: the pre-existing unbound spare still
+    // needs native backing; absence never recreates the vanished binding.
+    assert_eq!(
+        reply.native_creations.len(),
+        1,
+        "single spare creation, no recreation: {reply:?}"
+    );
+    assert_eq!(
+        reply.native_creations[0].logical_workspace, spare,
+        "creation targets the spare: {reply:?}"
     );
 }
 
 #[test]
-fn missing_native_row_refuses_report() {
+fn missing_native_row_fences_retirement_intents() {
     let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
     setup_four(&mut engine);
-    // No observation row for the live output: nothing may retire.
+    // No observation row for the live output: tombstones persist fenced;
+    // nothing new authorizes deletion.
     if let WorldOutcome::Accepted(reply) = engine.handle_report(&report(
         2,
         2,
@@ -965,10 +1258,15 @@ fn missing_native_row_refuses_report() {
         None,
         true,
     )) {
-        assert!(
-            reply.workspaces.iter().all(|row| row.existence),
-            "missing row retains all: {reply:?}"
-        );
+        for native_id in ["d2", "d3"] {
+            let tomb = tombstone_id(&reply, "out-a", native_id).expect("tombstone persists");
+            assert_eq!(existence(&reply, "out-a", &tomb), Some(false));
+            assert!(
+                tombstone_row(&reply, "out-a", native_id).is_some_and(|row| row.hold.is_some()),
+                "missing row holds the intent: {reply:?}"
+            );
+        }
+        assert_eq!(reply.transfers.len(), 0, "no membership writes");
     }
 }
 
@@ -997,7 +1295,7 @@ fn occupancy_coverage_gap_refuses_report() {
 #[test]
 fn homed_window_blocks_candidate() {
     let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
-    let first = setup_four(&mut engine);
+    let first = setup_four_unpruned(&mut engine);
     let d3 = logical_for(&first, "out-a", "d3").expect("d3 bound");
     let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
     // A sticky window homed to d3 reads managed homing there even though
@@ -1036,6 +1334,8 @@ fn homed_window_blocks_candidate() {
 #[test]
 fn retained_send_blocks_candidate() {
     let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
+    // Unpruned bootstrap keeps d2/d3 live (unknown middle occupancy fails
+    // closed); the retained send is injected before pruning.
     let first = accepted(
         &mut engine,
         &report(
@@ -1047,7 +1347,7 @@ fn retained_send_blocks_candidate() {
                 "out-a",
                 &["d1", "d2", "d3", "d4"],
                 Some("d1"),
-                &[Some(1), Some(0), Some(0), Some(0)],
+                &[Some(1), None, None, Some(0)],
             )],
             None,
             None,
@@ -1056,8 +1356,10 @@ fn retained_send_blocks_candidate() {
     );
     let d3 = logical_for(&first, "out-a", "d3").expect("d3 bound");
     let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
-    // A retained send flight targeting d3 protects it on the next read.
-    let reply = accepted(
+    // Establish the retained send on report 2 with d3 unknown (no
+    // same-report prune), then verify the veto on report 3 with d3 proven
+    // empty. The pre-existing flight is the guard injected before pruning.
+    let flight = accepted(
         &mut engine,
         &report(
             2,
@@ -1068,7 +1370,7 @@ fn retained_send_blocks_candidate() {
                 "out-a",
                 &["d1", "d2", "d3", "d4"],
                 Some("d1"),
-                &[Some(1), Some(0), Some(0), Some(0)],
+                &[Some(1), Some(0), None, Some(0)],
             )],
             Some(1),
             Some(WorldCommand::Send {
@@ -1077,6 +1379,29 @@ fn retained_send_blocks_candidate() {
                 target_workspace: d3.clone(),
                 follow: false,
             }),
+            true,
+        ),
+    );
+    assert_eq!(
+        existence(&flight, "out-a", &d3),
+        Some(true),
+        "flight established while d3 unknown: {flight:?}"
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            single_screen(),
+            vec![fact_native("win-a", "out-a", Some("d1"))],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3", "d4"],
+                Some("d1"),
+                &[Some(1), Some(0), Some(0), Some(0)],
+            )],
+            None,
+            None,
             true,
         ),
     );
@@ -1124,8 +1449,8 @@ fn global_same_id_joins_all_modes() {
                 true,
             ),
         );
-        let (_mode_token, la2) = (mode, logical_for(&first, "out-a", "g2"));
-        let lb2 = logical_for(&first, "out-b", "g2");
+        let la2t = tombstone_id(&first, "out-a", "g2").expect("g2 tombstone a");
+        let lb2t = tombstone_id(&first, "out-b", "g2").expect("g2 tombstone b");
         // Shared mode unifies the logical id; separate modes bind per
         // output. Either way every projection must read Some(0).
         let reply = accepted(
@@ -1144,28 +1469,22 @@ fn global_same_id_joins_all_modes() {
                 true,
             ),
         );
-        match (la2, lb2) {
-            (Some(la2), Some(lb2)) => {
-                // g1 viewed on both; g3 trailing on both; g2 retires
-                // jointly on every projection.
-                assert_eq!(
-                    existence(&reply, "out-a", &la2),
-                    Some(false),
-                    "joint retire {mode:?}: {reply:?}"
-                );
-                assert_eq!(
-                    existence(&reply, "out-b", &lb2),
-                    Some(false),
-                    "joint retire {mode:?}: {reply:?}"
-                );
-            }
-            _ => panic!("g2 must bind on both projections in {mode:?}: {first:?}"),
-        }
+        // g1 viewed on both; g3 trailing on both; g2 retires jointly.
+        assert_eq!(
+            existence(&reply, "out-a", &la2t),
+            Some(false),
+            "joint retire {mode:?}: {reply:?}"
+        );
+        assert_eq!(
+            existence(&reply, "out-b", &lb2t),
+            Some(false),
+            "joint retire {mode:?}: {reply:?}"
+        );
     }
 }
 
 #[test]
-fn occupant_on_any_output_blocks_every_projection() {
+fn occupant_on_any_output_vetoes_actuation() {
     for mode in global_modes() {
         let mut engine = engine_host_owned(mode, false);
         let first = accepted(
@@ -1184,8 +1503,19 @@ fn occupant_on_any_output_blocks_every_projection() {
                 true,
             ),
         );
-        let la2 = logical_for(&first, "out-a", "g2").expect("g2 bound a");
-        let lb2 = logical_for(&first, "out-b", "g2").expect("g2 bound b");
+        // g2 already retired on report 1; tombstone IDs persist as
+        // correlation metadata, never live bindings.
+        let la2t = tombstone_id(&first, "out-a", "g2").expect("g2 tombstone a");
+        let lb2t = tombstone_id(&first, "out-b", "g2").expect("g2 tombstone b");
+        let native = vec![
+            empty_obs("out-a", &["g1", "g2", "g3"], "g1"),
+            native_obs_occ(
+                "out-b",
+                &["g1", "g2", "g3"],
+                Some("g1"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+        ];
         let reply = accepted(
             &mut engine,
             &report(
@@ -1193,30 +1523,24 @@ fn occupant_on_any_output_blocks_every_projection() {
                 2,
                 two_screens(),
                 vec![],
-                vec![
-                    empty_obs("out-a", &["g1", "g2", "g3"], "g1"),
-                    native_obs_occ(
-                        "out-b",
-                        &["g1", "g2", "g3"],
-                        Some("g1"),
-                        &[Some(0), Some(1), Some(0)],
-                    ),
-                ],
+                native.clone(),
                 None,
                 None,
                 true,
             ),
         );
-        assert_eq!(
-            existence(&reply, "out-a", &la2),
-            Some(true),
-            "any-output occupant vetoes {mode:?}: {reply:?}"
-        );
-        assert_eq!(
-            existence(&reply, "out-b", &lb2),
-            Some(true),
-            "any-output occupant vetoes {mode:?}: {reply:?}"
-        );
+        for (output, tomb) in [("out-a", &la2t), ("out-b", &lb2t)] {
+            assert_eq!(
+                existence(&reply, output, tomb),
+                Some(false),
+                "tombstone persists {mode:?}: {reply:?}"
+            );
+            assert!(
+                !host_would_delete(&reply, &native, &[], true, false, output, "g2"),
+                "any-output occupant vetoes actuation {mode:?}: {reply:?}"
+            );
+        }
+        assert_eq!(reply.transfers.len(), 0, "no membership writes");
     }
 }
 
@@ -1224,6 +1548,8 @@ fn occupant_on_any_output_blocks_every_projection() {
 fn view_on_any_output_blocks_every_projection() {
     for mode in global_modes() {
         let mut engine = engine_host_owned(mode, false);
+        // Unpruned bootstrap keeps g2 live on both projections so the
+        // any-output view guard can be observed before pruning.
         let first = accepted(
             &mut engine,
             &report(
@@ -1232,8 +1558,18 @@ fn view_on_any_output_blocks_every_projection() {
                 two_screens(),
                 vec![],
                 vec![
-                    empty_obs("out-a", &["g1", "g2", "g3"], "g1"),
-                    empty_obs("out-b", &["g1", "g2", "g3"], "g1"),
+                    native_obs_occ(
+                        "out-a",
+                        &["g1", "g2", "g3"],
+                        Some("g1"),
+                        &[Some(0), None, Some(0)],
+                    ),
+                    native_obs_occ(
+                        "out-b",
+                        &["g1", "g2", "g3"],
+                        Some("g1"),
+                        &[Some(0), None, Some(0)],
+                    ),
                 ],
                 None,
                 None,
@@ -1241,8 +1577,10 @@ fn view_on_any_output_blocks_every_projection() {
             ),
         );
         let la2 = logical_for(&first, "out-a", "g2").expect("g2 bound a");
-        let lb2 = logical_for(&first, "out-b", "g2").expect("g2 bound b");
+        let _lb2 = logical_for(&first, "out-b", "g2").expect("g2 bound b");
         // Same global id viewed from out-b while out-a still shows g1.
+        // Local prune still publishes tombstones; the any-output view
+        // vetoes host actuation (fake host preserves the native desktop).
         let reply = accepted(
             &mut engine,
             &report(
@@ -1259,16 +1597,24 @@ fn view_on_any_output_blocks_every_projection() {
                 true,
             ),
         );
+        let native = vec![
+            empty_obs("out-a", &["g1", "g2", "g3"], "g1"),
+            empty_obs("out-b", &["g1", "g2", "g3"], "g2"),
+        ];
         assert_eq!(
             existence(&reply, "out-a", &la2),
-            Some(true),
-            "any-output view vetoes {mode:?}: {reply:?}"
+            Some(false),
+            "local tombstone persists {mode:?}: {reply:?}"
         );
-        assert_eq!(
-            existence(&reply, "out-b", &lb2),
-            Some(true),
-            "any-output view vetoes {mode:?}: {reply:?}"
+        assert!(
+            !host_would_delete(&reply, &native, &[], true, false, "out-a", "g2"),
+            "any-output view vetoes actuation {mode:?}: {reply:?}"
         );
+        assert!(
+            !host_would_delete(&reply, &native, &[], true, false, "out-b", "g2"),
+            "any-output view vetoes actuation {mode:?}: {reply:?}"
+        );
+        assert_eq!(reply.transfers.len(), 0, "no membership writes");
     }
 }
 
@@ -1293,9 +1639,9 @@ fn one_sided_native_retires_without_equal_count() {
             ),
         );
         // s1 exists only on out-a: without the equal-count flag the
-        // independent native list retires on its own minimum-two floor.
-        let s1 = logical_for(&first, "out-a", "s1")
-            .unwrap_or_else(|| panic!("s1 must bind on out-a in {mode:?}: {first:?}"));
+        // independent native list retires locally into a tombstone.
+        let s1t = tombstone_id(&first, "out-a", "s1")
+            .unwrap_or_else(|| panic!("s1 tombstone on out-a in {mode:?}: {first:?}"));
         let reply = accepted(
             &mut engine,
             &report(
@@ -1313,7 +1659,7 @@ fn one_sided_native_retires_without_equal_count() {
             ),
         );
         assert_eq!(
-            existence(&reply, "out-a", &s1),
+            existence(&reply, "out-a", &s1t),
             Some(false),
             "one-sided retires without equal count {mode:?}: {reply:?}"
         );
@@ -1321,7 +1667,7 @@ fn one_sided_native_retires_without_equal_count() {
 }
 
 #[test]
-fn one_sided_native_presence_retains_padding_row() {
+fn one_sided_native_presence_retires_locally_empty_binding() {
     for mode in global_modes() {
         let mut engine = engine_host_owned(mode, true);
         let first = accepted(
@@ -1340,10 +1686,15 @@ fn one_sided_native_presence_retains_padding_row() {
                 true,
             ),
         );
-        // Shared removal shrinks the same mirrored logical ring everywhere;
-        // other modes need this row to preserve equal-count padding.
-        let s1 = logical_for(&first, "out-a", "s1")
-            .unwrap_or_else(|| panic!("s1 must bind on out-a in {mode:?}: {first:?}"));
+        // One-sided locally-empty native retires locally into a tombstone
+        // even with equal-count padding enabled: native-only retirement,
+        // not host-preserved padding.
+        let s1t = tombstone_id(&first, "out-a", "s1").unwrap_or_else(|| {
+            // Unpruned first readback may still hold s1 live when the
+            // equal-count spare logic applies; fall back to the live id.
+            logical_for(&first, "out-a", "s1")
+                .unwrap_or_else(|| panic!("s1 must bind on out-a in {mode:?}: {first:?}"))
+        });
         let reply = accepted(
             &mut engine,
             &report(
@@ -1361,10 +1712,11 @@ fn one_sided_native_presence_retains_padding_row() {
             ),
         );
         assert_eq!(
-            existence(&reply, "out-a", &s1),
-            Some(mode != WorkspaceMode::Shared),
-            "one-sided padding retained {mode:?}: {reply:?}"
+            existence(&reply, "out-a", &s1t),
+            Some(false),
+            "one-sided publishes tombstone {mode:?}: {reply:?}"
         );
+        assert_eq!(reply.transfers.len(), 0, "no membership writes");
     }
 }
 
@@ -1387,10 +1739,10 @@ fn disjoint_balanced_pair_retires_jointly_under_equal_count() {
             true,
         ),
     );
-    let la = logical_for(&first, "out-a", "a").expect("a bound");
-    let lc_a = logical_for(&first, "out-a", "c").expect("c bound a");
-    let lb = logical_for(&first, "out-b", "b").expect("b bound");
-    let lc_b = logical_for(&first, "out-b", "c").expect("c bound b");
+    let la = tombstone_id(&first, "out-a", "a").expect("a tombstone");
+    let lc_a = tombstone_id(&first, "out-a", "c").expect("c tombstone a");
+    let lb = tombstone_id(&first, "out-b", "b").expect("b tombstone");
+    let lc_b = tombstone_id(&first, "out-b", "c").expect("c tombstone b");
     // Disjoint one-sided extras plus one common native: post-removal
     // counts stay equal, so all three retire jointly.
     let reply = accepted(
@@ -1436,11 +1788,14 @@ fn disjoint_balanced_pair_retires_jointly_under_equal_count() {
     );
 }
 
+/// Equal-count exception: equal ring lengths spare the one-sided extra `x`
+/// from ordinary-empty pruning while the common `c` retires jointly; the
+/// spared extra prunes once the longest ring shrinks.
 #[test]
 fn common_plus_extra_spares_only_extra_under_equal_count() {
     let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, true);
-    // out-b's occupied last desktop appends a padding spare, so both
-    // outputs hold four logical rows while only out-a observes `x`.
+    // out-b's occupied last desktop forces padding, so both outputs hold
+    // three logical rows while only out-a observes `x`.
     let first = accepted(
         &mut engine,
         &report(
@@ -1462,13 +1817,14 @@ fn common_plus_extra_spares_only_extra_under_equal_count() {
             true,
         ),
     );
-    assert_eq!(ring_ids(&first, "out-a").len(), 4, "four rows a: {first:?}");
-    assert_eq!(ring_ids(&first, "out-b").len(), 4, "four rows b: {first:?}");
+    assert_eq!(ring_ids(&first, "out-a").len(), 3, "live rows a: {first:?}");
+    assert_eq!(ring_ids(&first, "out-b").len(), 3, "live rows b: {first:?}");
     let lx = logical_for(&first, "out-a", "x").expect("x bound");
-    let lc_a = logical_for(&first, "out-a", "c").expect("c bound a");
-    let lc_b = logical_for(&first, "out-b", "c").expect("c bound b");
-    // Retiring both `x` and `c` would leave 2 vs 3 rows; only the extra
-    // is spared so the common native still retires jointly.
+    let lc_a = tombstone_id(&first, "out-a", "c").expect("c tombstone a");
+    let lc_b = tombstone_id(&first, "out-b", "c").expect("c tombstone b");
+    // Equal-ring exception: retiring both `x` and `c` would leave 2 vs 3
+    // rows, so the equal-count removal clamp spares the earliest extra
+    // (`x`) while the common native still retires jointly.
     let reply = accepted(
         &mut engine,
         &report(
@@ -1505,6 +1861,48 @@ fn common_plus_extra_spares_only_extra_under_equal_count() {
         Some(false),
         "common retires: {reply:?}"
     );
+    assert_eq!(
+        ring_ids(&reply, "out-a").len(),
+        ring_ids(&reply, "out-b").len(),
+        "equal-count parity survives the exception: {reply:?}"
+    );
+    // Shrinking the longest ring releases the exception: the out-b occupant
+    // closes, out-b drops its occupied-final padding, and the spared extra
+    // prunes while parity survives.
+    let mut third = report(
+        3,
+        3,
+        two_screens(),
+        vec![],
+        vec![
+            empty_obs("out-a", &["v", "x", "c", "t"], "v"),
+            empty_obs("out-b", &["v", "c", "t"], "v"),
+        ],
+        None,
+        None,
+        true,
+    );
+    third.closed = vec![WindowId("win-b".to_owned())];
+    let shrunk = accepted(&mut engine, &third);
+    let lxt = tombstone_id(&shrunk, "out-a", "x").expect("x tombstone after shrink");
+    assert_eq!(
+        existence(&shrunk, "out-a", &lxt),
+        Some(false),
+        "spared extra prunes once longest ring shrinks: {shrunk:?}"
+    );
+    assert!(
+        !ring_ids(&shrunk, "out-a").contains(&lx),
+        "pruned extra leaves the live ring: {shrunk:?}"
+    );
+    assert_eq!(
+        ring_ids(&shrunk, "out-a").len(),
+        ring_ids(&shrunk, "out-b").len(),
+        "equal-count parity survives after shrink: {shrunk:?}"
+    );
+    assert!(
+        ring_ids(&shrunk, "out-b").len() < ring_ids(&reply, "out-b").len(),
+        "longest ring shrank: {shrunk:?} vs {reply:?}"
+    );
 }
 
 #[test]
@@ -1526,8 +1924,8 @@ fn joint_reduction_preserves_equal_count() {
             true,
         ),
     );
-    let la2 = logical_for(&first, "out-a", "g2").expect("g2 bound a");
-    let lb2 = logical_for(&first, "out-b", "g2").expect("g2 bound b");
+    let la2t = tombstone_id(&first, "out-a", "g2").expect("g2 tombstone a");
+    let lb2t = tombstone_id(&first, "out-b", "g2").expect("g2 tombstone b");
     let reply = accepted(
         &mut engine,
         &report(
@@ -1545,12 +1943,12 @@ fn joint_reduction_preserves_equal_count() {
         ),
     );
     assert_eq!(
-        existence(&reply, "out-a", &la2),
+        existence(&reply, "out-a", &la2t),
         Some(false),
         "joint retire: {reply:?}"
     );
     assert_eq!(
-        existence(&reply, "out-b", &lb2),
+        existence(&reply, "out-b", &lb2t),
         Some(false),
         "joint retire: {reply:?}"
     );
@@ -1592,8 +1990,14 @@ fn staggered_joint_absence_retains_padding_identity_until_balanced_readback() {
         true,
     );
     let first = accepted(&mut engine, &initial);
-    let la = logical_for(&first, "out-a", "a").expect("a bound");
-    let lb = logical_for(&first, "out-b", "b").expect("b bound");
+    // `a`/`b` retire on the first complete empty readback; tombstone IDs
+    // persist as correlation metadata, never live bindings.
+    let la = tombstone_id(&first, "out-a", "a")
+        .or_else(|| logical_for(&first, "out-a", "a"))
+        .expect("a retired or bound");
+    let lb = tombstone_id(&first, "out-b", "b")
+        .or_else(|| logical_for(&first, "out-b", "b"))
+        .expect("b retired or bound");
     let mut desired = initial.clone();
     desired.request_seq = 2;
     desired.observation_seq = 2;
@@ -1607,38 +2011,46 @@ fn staggered_joint_absence_retains_padding_identity_until_balanced_readback() {
     partial.request_id = "req-3".into();
     partial.native[0] = native_obs_occ("out-a", &["v", "t"], Some("v"), &[Some(0), Some(1)]);
     let third = accepted(&mut engine, &partial);
+    // Native deletion clears only the vanished marker: the out-a tombstone
+    // stops while the out-b tombstone persists.
     assert!(
-        logical_for(&third, "out-a", "a").is_none(),
-        "absence clears only native binding"
+        tombstone_id(&third, "out-a", "a").is_none(),
+        "deletion clears the out-a marker"
     );
     assert_eq!(
-        ring_ids(&third, "out-a")
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>(),
-        ring_ids(&second, "out-a").into_iter().collect(),
-        "padding keeps old identities after native-order compaction"
+        existence(&third, "out-b", &lb),
+        Some(false),
+        "out-b tombstone persists"
     );
     assert_eq!(
-        existence(&third, "out-a", &la),
-        Some(true),
-        "unbound padding survives"
+        ring_ids(&third, "out-a"),
+        ring_ids(&second, "out-a"),
+        "live ring stable after native-order compaction"
     );
     assert_eq!(bound_ids(&third, "out-b"), bound_ids(&second, "out-b"));
+    assert_eq!(third.transfers.len(), 0, "no membership writes");
     let mut complete = partial.clone();
     complete.request_seq = 4;
     complete.observation_seq = 4;
     complete.request_id = "req-4".into();
     complete.native[1] = native_obs_occ("out-b", &["v", "t"], Some("v"), &[Some(0), Some(1)]);
     let fourth = accepted(&mut engine, &complete);
-    assert_eq!(ring_ids(&fourth, "out-a").len(), 3);
-    assert_eq!(ring_ids(&fourth, "out-b").len(), 3);
+    assert_eq!(
+        ring_ids(&fourth, "out-a").len(),
+        ring_ids(&fourth, "out-b").len()
+    );
     assert_eq!(existence(&fourth, "out-a", &la), None);
     assert_eq!(existence(&fourth, "out-b", &lb), None);
+    assert!(
+        tombstone_id(&fourth, "out-a", "a").is_none()
+            && tombstone_id(&fourth, "out-b", "b").is_none(),
+        "balanced deletion clears both markers"
+    );
     for output in ["out-a", "out-b"] {
         for (index, row) in fourth
             .workspaces
             .iter()
-            .filter(|row| row.output.0 == output)
+            .filter(|row| row.output.0 == output && row.existence)
             .enumerate()
         {
             assert_eq!(row.order, index);

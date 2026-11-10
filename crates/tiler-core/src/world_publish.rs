@@ -1656,13 +1656,18 @@ impl WorldEngine {
     /// Planner-owned logical workspace rows: every retained ring id gets
     /// one row in ring order with scope, order, and tiling mode. Rings
     /// already converged (bootstrap, lifecycle, displacement, commands),
-    /// so rows publish the retained set directly. A row reads
+    /// so rows publish the retained set directly. A ring row reads
     /// `existence:false` only when the global native-retirement set names
-    /// it (completely empty everywhere, unprotected, above the native
-    /// minimum): eligibility only, the adapter re-enumerates before
-    /// deleting, and the ring plus native binding stay until a complete
-    /// readback drops the desktop. Incomplete screens hold their rows
-    /// without authorizing writes.
+    /// it (completely empty everywhere, unprotected, above the floor):
+    /// eligibility only, the adapter re-enumerates before deleting.
+    /// Locally retired natives publish after the ring rows as native-only
+    /// retirement intents: one `existence:false` row per tombstone pair
+    /// reusing the removed logical id plus its native binding, derived
+    /// from tombstone state only and never counted as a live
+    /// ring/spare/occupancy row. The adapter re-enumerates occupants,
+    /// visibility and its own floor before deleting; omission alone never
+    /// removes. Incomplete screens hold their rows without authorizing
+    /// writes.
     pub(crate) fn plan_workspaces(&mut self, scopes: &[ScopeStatus]) -> Vec<WorkspaceDesire> {
         let mut outputs: Vec<String> = self.mapping.keys().cloned().collect();
         outputs.sort();
@@ -1715,6 +1720,89 @@ impl WorldEngine {
                     existence: !doomed.contains(&(output.clone(), id.clone())),
                     hold,
                     trailing: marked.as_deref() == Some(id.as_str()),
+                });
+            }
+        }
+        // Native-only retirement intents: one `existence:false` row per
+        // locally retired `(output, native)` pair, reusing the removed
+        // logical id as correlation plus its native binding. Derived from
+        // tombstone state only: never live mapping/ring/spare/occupancy.
+        // No new wire field: the adapter re-enumerates occupants,
+        // visibility and its own floor before deleting, and omission alone
+        // never removes.
+        if self.host_owned_workspace_domains() {
+            let mut per_output_index: BTreeMap<String, usize> = BTreeMap::new();
+            let retired: Vec<((String, String), String)> = self
+                .retired_natives
+                .iter()
+                .map(|((output, native), logical)| {
+                    ((output.clone(), native.clone()), logical.clone())
+                })
+                .collect();
+            for ((output, native), logical) in retired {
+                if self
+                    .mapping
+                    .get(&output)
+                    .is_some_and(|ring| ring.contains(&logical))
+                {
+                    continue;
+                }
+                let ring_len = self.mapping.get(&output).map(Vec::len).unwrap_or(0);
+                let slot = per_output_index.entry(output.clone()).or_insert(0);
+                let order = ring_len + *slot;
+                *slot += 1;
+                let out = OutputId(output.clone());
+                // Tombstone absence intents never authorize actuation without
+                // a complete, readable, unheld readback: partial inventory,
+                // gesture, missing/coverage-gap native rows, and order
+                // conflict all fence the row. A native desktop still
+                // live-bound on another live output fences too: shared
+                // global native ids surface one creation on every output,
+                // so an output-local retirement must not authorize global
+                // deletion while a sibling output still rings the native
+                // (deleting it would orphan the sibling's live binding and
+                // re-mint spare backing indefinitely). The adapter
+                // re-enumerates occupants, visibility, and its own floor
+                // before deleting.
+                let native_entry = staged
+                    .observation
+                    .native
+                    .iter()
+                    .find(|entry| entry.output.0 == output);
+                let held = if !staged
+                    .screens
+                    .iter()
+                    .any(|screen| screen.output.0 == output && screen.complete)
+                {
+                    Some(HoldReason::IncompleteInventory)
+                } else if !staged.observation.inventory_complete {
+                    Some(HoldReason::IncompleteInventory)
+                } else if staged.gesture_barrier {
+                    Some(HoldReason::GestureBarrier)
+                } else if self.native_order_conflict() {
+                    Some(HoldReason::Unreadable)
+                } else if native_entry.is_none()
+                    || native_entry
+                        .is_some_and(|entry| entry.occupancy.len() != entry.native_order.len())
+                {
+                    Some(HoldReason::IncompleteInventory)
+                } else if self.creation_hold_for(&output, &logical) {
+                    Some(HoldReason::AmbiguousCreation)
+                } else if self.native_bound_elsewhere(&output, &native) {
+                    Some(HoldReason::Unreadable)
+                } else {
+                    None
+                };
+                rows.push(WorkspaceDesire {
+                    id: logical.clone(),
+                    output: out.clone(),
+                    native_binding: Some(native.clone()),
+                    scope: workspace_authority_scope(&out, &logical),
+                    order,
+                    tiling_mode: self.workspace_tiling_mode(&out, &logical),
+                    existence: false,
+                    hold: held,
+                    trailing: false,
                 });
             }
         }

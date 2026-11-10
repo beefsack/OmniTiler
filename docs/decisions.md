@@ -40,6 +40,8 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 - 2026-11-10: User decision: active signed foreground macOS development preview with exact-run teardown; native v4 acceptance and fixture chord/workspace harness remain pending ([development preview](decisions/development.md#tentative-macos-development-preview)).
 - 2026-11-10: User decision: confirm explicit Apply only; remove Authentic startup Apply during the port; remaining presets/ownership stay tentative ([shortcuts](decisions/reference-and-shortcuts.md#macos-preview-presets-and-native-shortcut-ownership)).
 - 2026-11-10: User decision: host-settled geometry design after macOS slice 1, brought for approval before slice 3 and before any core change ([design timing](decisions/layout-and-admission.md#host-settled-geometry-design-timing)).
+- 2026-11-10: [Dynamic workspace lifecycle and KDE pager backing](decisions/workspaces.md#dynamic-workspace-lifecycle-and-kde-pager-backing) - eager spare backing, unshown-empty pruning (equal-count hosts keep equal logical lengths), globally safe deletion, KDE-only minimum two (User 2026-11-10).
+- 2026-11-10: [Native-only retirement intent](decisions/contract.md#native-only-retirement-intent) - existing `exist:false` rows, local-evidence re-adoption, core-only removal authority (User 2026-11-10).
 
 ## Tentative decisions
 

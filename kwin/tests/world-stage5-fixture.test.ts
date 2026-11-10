@@ -340,12 +340,14 @@ function checkGenesis(chain: ChainName): void {
     const manifest = loadManifest(chain);
     const genesis = result.envelopes.filter((entry) => entry.step === "genesis");
     assert.equal(genesis.length, manifest.genesisEnvelopes.length, `${chain} genesis capture count`);
-    assert.equal(genesis.length, 2, `${chain} retains two genesis captures`);
+    assert.equal(genesis.length, 3, `${chain} retains initial, attempt and settled genesis captures`);
     const genesis0 = genesis[0] as { step: string; file: string; bytes: string } | undefined;
     const genesis1 = genesis[1] as { step: string; file: string; bytes: string } | undefined;
-    assert.ok(genesis0 !== undefined && genesis1 !== undefined, `${chain} genesis envelopes exist`);
+    const genesis2 = genesis[2] as { step: string; file: string; bytes: string } | undefined;
+    assert.ok(genesis0 !== undefined && genesis1 !== undefined && genesis2 !== undefined, `${chain} genesis envelopes exist`);
     assert.equal(genesis0.file, "envelope-genesis-0.json");
     assert.equal(genesis1.file, "envelope-genesis-1.json");
+    assert.equal(genesis2.file, "envelope-genesis-2.json");
     const compared0 = normalizeTopLevel(
         genesis0.bytes,
         v2Fixture(chain, "envelope-genesis-0.json"),
@@ -353,11 +355,19 @@ function checkGenesis(chain: ChainName): void {
     );
     assert.equal(compared0.actual, compared0.expected, `${chain} genesis-0 is byte-exact`);
     assertNoAttempts(parseReport(genesis0.bytes), `${chain} genesis-0`);
+    const compared2 = normalizeTopLevel(
+        genesis2.bytes,
+        v2Fixture(chain, "envelope-genesis-2.json"),
+        ["gen", "source"],
+    );
+    assert.equal(compared2.actual, compared2.expected, `${chain} settled genesis-2 is byte-exact`);
+    assertNoAttempts(parseReport(genesis2.bytes), `${chain} settled genesis-2`);
     const replies = result.replies.filter((entry) => entry.step === "genesis");
-    assert.equal(replies.length, 2, `${chain} genesis replies`);
+    assert.equal(replies.length, 3, `${chain} genesis replies`);
     const reply0 = replies[0] as { step: string; file: string; bytes: string } | undefined;
     const reply1 = replies[1] as { step: string; file: string; bytes: string } | undefined;
-    assert.ok(reply0 !== undefined && reply1 !== undefined, `${chain} genesis replies exist`);
+    const reply2 = replies[2] as { step: string; file: string; bytes: string } | undefined;
+    assert.ok(reply0 !== undefined && reply1 !== undefined && reply2 !== undefined, `${chain} genesis replies exist`);
     const expectedStamp = (JSON.parse(reply0.bytes) as { clock: string }).clock;
     const clock = (JSON.parse(reply1.bytes) as { clock: string }).clock;
     assertGenesisAttempts(
@@ -367,12 +377,12 @@ function checkGenesis(chain: ChainName): void {
         clock,
         `${chain} genesis-1`,
     );
-    // Genuine unknown-cover hide through the real entry+broker path: both
+    // Genuine unknown-cover hide through the real entry+broker path: all
     // genesis captures fly before the first facts answer, so the report
     // carries no causal cover and the witness rides null while tiling facts
     // stay alive (complete inventory, same foreground). No handwritten
     // bytes: the recorder's own envelopes prove the fail-closed hide.
-    for (const genesis of [genesis0, genesis1]) {
+    for (const genesis of [genesis0, genesis1, genesis2]) {
         const report = parseReport(genesis.bytes);
         assert.equal(report["nativeInvalidWitness"], null, `${chain} ${genesis.file} carries no causal cover`);
         assert.equal(
@@ -388,7 +398,7 @@ function checkGenesis(chain: ChainName): void {
     // with nulls) while tiling stays alive. This is the core hide verdict
     // through the genuine entry+broker path, distinct from the scripted
     // direct-entry unknown-cover tests. No regeneration, no new files.
-    for (const reply of [reply0, reply1]) {
+    for (const reply of [reply0, reply1, reply2]) {
         const body = JSON.parse(reply.bytes) as Record<string, unknown>;
         const presentation = body["presentation"] as Record<string, unknown>;
         assert.deepEqual(

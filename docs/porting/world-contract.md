@@ -584,13 +584,52 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   contradictory order holds, not adapter merging. Stable logical ids survive
   migration; only positive arrival/close/newer off-output proof releases source
   binding. Existing native creation/ambiguity/released-source rules remain.
-  Core `exist:false` is the sole native removal authority, not an instruction
-  to remove despite fresh occupancy/pin/minimum/completeness vetoes. Unknown
-  occupancy is not zero; incomplete evidence holds. macOS consumes that authority
-  through native removal mechanics, never autonomous trailing/shutdown cleanup
-  based on local creation ownership. No native-removal capability is added.
-  [R19](../decisions/layout-and-admission.md#native-workspace-adoption-and-r19),
-  [G2](../changes/v4-migration.md#b-reconciliations-and-open-points).
+   Core `exist:false` is the sole native removal authority, not an instruction
+   to remove despite fresh occupancy/pin/minimum/completeness vetoes. Unknown
+   occupancy is not zero; incomplete evidence holds. Adapters never remove a
+   native desktop autonomously, from omitted desires, or from local creation
+   ownership. No native-removal capability is added.
+   [R19](../decisions/layout-and-admission.md#native-workspace-adoption-and-r19),
+   [G2](../changes/v4-migration.md#b-reconciliations-and-open-points).
+
+#### Native-only retirement with per-output rings
+
+For the existing `hostOwned` native-desktop capability, native identities may
+be shared across outputs even when core maintains independent per-output rings;
+output-local native identities use the same rules. Logical ring removal and
+native deletion are separate operations. A native desktop can remain on the
+host after its empty, unshown logical workspace has left one output's ring.
+Hosts declaring `equalCount` keep equal logical ring lengths as an explicit
+ordinary-empty pruning exception; eligible padding prunes when the longest ring
+shrinks. This is distinct from the adapter's native minimum-count floor.
+
+- Core continues publishing an existing workspace row with `exist:false` and
+  `bind` naming that native desktop for each locally retired output/native pair.
+  The removed logical `id` identifies the absence record, not a live binding or
+  ring member. These records follow live ring rows, are never trailing spares,
+  and do not contribute to logical ring count or occupancy. No new wire key,
+  format, version or platform selector is introduced.
+- Core retains the absence record until complete native deletion evidence or
+  positive evidence on that output clears it: native current selection or an
+  observed window on that output/native pair. Ordinary adoption then supplies a
+  fresh logical identity at its position among the output's live native-backed
+  ring rows. Global occupancy counts alone are not output-local arrival evidence.
+  Existing settled migration source-release adoption remains operation-scoped:
+  only the migrated workspace's vacated source bindings clear before fresh adoption.
+- Retirement records retain existing scope, freshness, readability and hold
+  fences. Core does not retire displaced or held units. A native still backing a
+  live workspace on another output is protected from deletion; a retirement
+  record does not authorize destruction of that live backing.
+- The adapter rechecks all native occupants, any-output visibility, protection,
+  completeness and its minimum-count veto before deleting. Native floor padding
+  is adapter-owned: bootstrap may create native desktops up to its minimum,
+  which core adopts from ordinary native observations. This is distinct from
+  ordinary spare backing, which still requires explicit core creation desires.
+- Surviving native IDs, not host ordinal numbers, identify backing. Native
+  renumbering never authorizes relocating occupants to compact gaps. Existing
+  migration-release adoption and displaced-workspace handling are unchanged.
+
+[User decision 2026-11-10](../decisions/contract.md#native-only-retirement-intent).
 
 ## Commands and results
 

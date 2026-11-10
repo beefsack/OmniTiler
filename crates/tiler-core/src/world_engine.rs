@@ -1242,6 +1242,23 @@ pub struct WorldEngine {
     /// rename. Partial or absent rows never delete mappings. Reset on
     /// generation/incarnation. Empty in the native-free default.
     pub(crate) native_map: BTreeMap<(String, String), String>,
+    /// Locally retired native desktops (host-owned only): per-output
+    /// `(output, native id)` pairs whose logical row was pruned while the
+    /// native desktop survives (occupied elsewhere or host minimum floor),
+    /// each naming the removed logical id that identifies its absence
+    /// record on the wire. No logical binding is retained outside rings:
+    /// this map is tombstone correlation only, never a live
+    /// mapping/ring/spare/occupancy member. Ordinary outside adoption
+    /// suppresses these pairs until positive output-local evidence clears
+    /// them (current-native selection or observed window arrival/presence
+    /// there), after which ordinary adoption mints a fresh logical id.
+    /// Cleared on native deletion (vanished from the complete order).
+    /// Operation-scoped migration source release also clears its vacated
+    /// pairs before the existing settled fresh-adoption path.
+    /// Never holds displaced or held units. Internal only: published solely
+    /// as existing `existence:false` workspace rows reusing the removed
+    /// logical id plus its native binding; no new wire field or format.
+    pub(crate) retired_natives: BTreeMap<(String, String), String>,
     /// Core-owned current view per screen: the stable logical workspace id
     /// shown, retained across reports. Commands and policy moves update it;
     /// adapter echoes prove it.
@@ -1874,6 +1891,7 @@ impl WorldEngine {
             last_views: BTreeMap::new(),
             mapping: BTreeMap::new(),
             native_map: BTreeMap::new(),
+            retired_natives: BTreeMap::new(),
             views: BTreeMap::new(),
             history: ScopeHistory::new(),
             displaced: BTreeMap::new(),

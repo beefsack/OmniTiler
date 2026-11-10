@@ -166,7 +166,7 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
             1,
             WorkspaceMode::PerOutputLocal,
             two_screens(),
-            vec![],
+            vec![fact("win-s", "out-a", 0)],
             vec![],
             vec![],
             None,
@@ -183,8 +183,9 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
         .collect();
     assert_eq!(ring_a.len(), 2);
     let (ws_a, ws_b) = (ring_a[0].clone(), ring_a[1].clone());
-    // win-t stays on the fresh workspace; win-s joins on the next
-    // report through the real selection below.
+    // win-s occupies from the first report so the source workspace
+    // survives selection; win-t joins on the next report and stays on
+    // the fresh workspace.
     let s = fact("win-s", "out-a", 0);
     accepted(
         &mut engine,
@@ -192,7 +193,7 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
             2,
             WorkspaceMode::PerOutputLocal,
             two_screens(),
-            vec![fact("win-t", "out-a", 100)],
+            vec![s.clone(), fact("win-t", "out-a", 100)],
             vec![],
             vec![],
             None,
@@ -210,7 +211,7 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
             3,
             WorkspaceMode::PerOutputLocal,
             two_screens(),
-            vec![fact("win-t", "out-a", 100)],
+            vec![s.clone(), fact("win-t", "out-a", 100)],
             vec![],
             vec![],
             Some(11),
@@ -222,7 +223,7 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
             true,
         ),
     );
-    // Float ws_b; win-s arrives homed to the selected workspace.
+    // Float ws_b; win-s stays homed to the source workspace.
     accepted(
         &mut engine,
         &report(
@@ -305,7 +306,7 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
         reply
             .windows
             .iter()
-            .any(|row| row.lifetime.0 == "win-s" && row.workspace == ws_b),
+            .any(|row| row.lifetime.0 == "win-s" && row.workspace == ws_a),
         "source state maintained: {:?}",
         reply.windows
     );
@@ -528,7 +529,7 @@ fn shared_occupancy_union_keeps_b_only_workspace() {
             1,
             WorkspaceMode::Shared,
             two_screens(),
-            vec![],
+            vec![fact("win-a", "out-a", 0)],
             vec![],
             vec![],
             None,
@@ -553,7 +554,7 @@ fn shared_occupancy_union_keeps_b_only_workspace() {
             2,
             WorkspaceMode::Shared,
             two_screens(),
-            vec![b_only],
+            vec![fact("win-a", "out-a", 0), b_only],
             vec![],
             vec![],
             None,

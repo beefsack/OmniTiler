@@ -144,6 +144,17 @@ fn two_screens() -> Vec<ScreenReport> {
     vec![screen("out-a", 0), screen("out-b", 800)]
 }
 
+// Minimized occupant: occupies for ring purposes (mints the trailing
+// spare under the single-spare policy) but takes no per-window switch
+// target, so empty-view selections still complete at issuing.
+fn mfact(window: &str, output: &str) -> WindowFact {
+    WindowFact {
+        minimized: Some(true),
+        rect: None,
+        ..fact(window, output, 0)
+    }
+}
+
 fn engine_for_mode(mode: WorkspaceMode) -> WorldEngine {
     engine_for_mode_with_capabilities(
         mode,
@@ -220,7 +231,7 @@ fn local_modes_keep_independent_numbered_rings() {
                 1,
                 1,
                 two_screens(),
-                vec![],
+                vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
                 vec![],
                 vec![],
                 "",
@@ -243,7 +254,7 @@ fn local_modes_keep_independent_numbered_rings() {
                 2,
                 2,
                 two_screens(),
-                vec![],
+                vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
                 vec![],
                 vec![],
                 "",
@@ -391,7 +402,7 @@ fn shared_mode_shares_one_ring_view_and_history() {
             1,
             1,
             two_screens(),
-            vec![],
+            vec![mfact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -416,7 +427,7 @@ fn shared_mode_shares_one_ring_view_and_history() {
             2,
             2,
             two_screens(),
-            vec![],
+            vec![mfact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -444,7 +455,7 @@ fn shared_mode_shares_one_ring_view_and_history() {
             3,
             3,
             two_screens(),
-            vec![],
+            vec![mfact("win-a", "out-a")],
             vec![],
             vec![],
             "",

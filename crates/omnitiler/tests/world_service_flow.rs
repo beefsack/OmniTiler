@@ -580,7 +580,16 @@ fn queued_command_drains_exactly_once_with_terminal_result() {
 #[test]
 fn cross_sender_commands_never_steal_or_move_highwater() {
     let (service, generation) = discovered_service();
-    let inner = inner_report(&[], true, false, "");
+    // Single-spare fixture: minimized occupant on the second native desktop
+    // mints the second numbered slot (occupied final supplies the trailing
+    // spare) while taking no switch target, preserving both independent
+    // valid selections (indices 1/2).
+    let native = format!(
+        "{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\",\"{UUID_B}\"],\"current\":\"{UUID_A}\",\"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}},{{\"native\":\"{UUID_B}\",\"count\":null}}]}}"
+    );
+    let occupant = window_json("win-stay", "[0,0,200,200]", Some(UUID_B))
+        .replace("\"minimized\":false", "\"minimized\":true");
+    let inner = inner_report(&[occupant], true, true, &native);
     // Sender A files; sender B can neither collect it nor observe it.
     service
         .queue_command(

@@ -1975,7 +1975,13 @@ fn select_held_scope_stays_quiet_despite_eligible() {
     let mut engine = WorldEngine::new_test_bound_with_initial_settings(
         "gen-1",
         "adapter-1",
-        crate::connection::HostCapabilities::default(),
+        // Caps match the fixture facts (sticky/maximize lanes present) to
+        // retain the intended fixture admission.
+        crate::connection::HostCapabilities {
+            native_sticky: true,
+            maximize: true,
+            ..Default::default()
+        },
         vec![(
             "outer".to_owned(),
             crate::connection::RawSettingValue::Number(0.0),

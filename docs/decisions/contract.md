@@ -51,6 +51,14 @@
 - Status: active, 2026-10-30
 - Evidence: [review F1, F12, F19, P4](../changes/core-interface-review.md).
 
+### Native-only retirement intent
+- Decision: For the existing host-owned native-desktop capability, support native desktops shared across outputs while core keeps per-output rings, as well as output-local native desktops. Core remains the sole native-removal authority and continues publishing existing `exist:false` rows for locally retired output/native pairs until deletion or positive output-local re-adoption. The removed logical ID is absence-record correlation only, not a live binding outside the ring. No new wire field or format is required.
+- Decision: Global occupancy does not prove local arrival. Local native selection or observed window presence clears the local marker and ordinary adoption assigns a fresh logical ID at native order among live ring rows. Adapters apply fresh global occupant, any-output visibility, protection, completeness and minimum-count vetoes; never delete autonomously or from omission. Native minimum padding/bootstrap and ordinal renumbering belong to the adapter, not core policy.
+- Why: Independent logical pruning must not leak native desktops or misinterpret another output's occupants, and the same contract must fit hosts with shared or output-local native desktop identities.
+- Assumes / revisit if: Existing wire rows express native-only absence without counting as live ring/spare/occupancy rows. Displaced/held units and settled migration-release adoption remain protected. Generic fake-host and adapter pipeline regressions plus native verification are required; implementation acceptance is incomplete.
+- Status: approved, User 2026-11-10.
+- Evidence: [contract amendment](../porting/world-contract.md#native-only-retirement-with-per-output-rings); [implementation record](../changes/kde-dynamic-workspaces.md).
+
 ### Broker-mediated v4 connection
 - Decision: the KDE producer lifetime is the sole v4 `adapter`. KWin sends the real handshake through authenticated `DiscoverWorld`; the broker forwards it through `route_connection_request`, and core binds there. Reports carry that producer lifetime, not a broker incarnation. The same route dispatches separate handshake and settings messages by `type`; only handshake resets, while settings retain their independent revision and reply rules. Broker sequencing, replay, queue ownership and requester-only results remain broker-owned.
 - Why: one connection identity and one connection-family route avoid redundant fencing and temporary translation paths.

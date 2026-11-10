@@ -81,9 +81,167 @@ impl WorldEngine {
     }
 
     /// Whether one logical id is native-bound on any output (retained
-    /// against trailing-lifecycle removal even when empty).
+    /// against trailing-lifecycle removal even when empty, except via the
+    /// locally-retired path which prunes the ring while the native
+    /// survives elsewhere).
     pub(crate) fn is_native_bound(&self, logical: &str) -> bool {
         self.native_map.values().any(|id| id == logical)
+    }
+
+    /// Whether one `(output, native)` pair is locally retired: its logical
+    /// row was pruned while the native desktop survives. Ordinary outside
+    /// adoption suppresses these pairs; positive output-local evidence
+    /// clears them for fresh adoption.
+    pub(crate) fn is_locally_retired(&self, output: &str, native: &str) -> bool {
+        self.retired_natives
+            .contains_key(&(output.to_owned(), native.to_owned()))
+    }
+
+    /// Whether one native desktop is still live-bound on another live
+    /// output: a `(sibling, native)` pair exists in the binding map and the
+    /// sibling output is still staged. Output-local retirement fences its
+    /// tombstone intent while this holds (see `plan_workspaces`); the
+    /// sibling's live binding keeps the desktop alive. Pure read of
+    /// native_map over live outputs; no ring, binding, or wire change.
+    pub(crate) fn native_bound_elsewhere(&self, output: &str, native: &str) -> bool {
+        self.native_map.iter().any(|((sibling, bound), _)| {
+            sibling != output
+                && bound == native
+                && self
+                    .staged
+                    .screens
+                    .iter()
+                    .any(|screen| screen.output.0 == *sibling)
+        })
+    }
+
+    /// Whether the native desktop's occupancy is KNOWN on every observing
+    /// live output (complete list, present row, exact coverage, `Some`
+    /// count). Unknown (`None`, missing, incomplete) fails closed: bound
+    /// logical rows are retained, never locally retired. This preserves
+    /// settled host behavior under unknown occupancy while allowing real
+    /// pipeline prune when counts prove empty or occupied.
+    pub(crate) fn native_occupancy_known(&self, native: &str) -> bool {
+        let mut live: Vec<String> = self
+            .staged
+            .screens
+            .iter()
+            .map(|screen| screen.output.0.clone())
+            .collect();
+        live.sort();
+        if live.is_empty() || !self.staged.observation.inventory_complete {
+            return false;
+        }
+        let mut observed = false;
+        for output in &live {
+            if !self.native_list_complete(output) {
+                return false;
+            }
+            let Some(entry) = self
+                .staged
+                .observation
+                .native
+                .iter()
+                .find(|entry| entry.output.0 == *output)
+            else {
+                return false;
+            };
+            if entry.occupancy.len() != entry.native_order.len() {
+                return false;
+            }
+            if !entry.native_order.iter().any(|id| id == native) {
+                continue;
+            }
+            observed = true;
+            match entry.occupancy.iter().find(|row| row.native == native) {
+                Some(row) if row.count.is_some() => {}
+                _ => return false,
+            }
+        }
+        observed
+    }
+
+    /// Clear retired markers by positive output-local evidence and by
+    /// native deletion. Runs before adoption in native intake (same
+    /// report): current-native equality or observed window presence for
+    /// `(output, native)` clears it so ordinary adoption mints a fresh
+    /// logical id; a native vanished from its output's complete order
+    /// clears it as deleted. Only the output's own current-native surface
+    /// and its own window facts count: the producer repeats global
+    /// occupant counts on every output, so a repeated occupancy count is
+    /// never positive output-local evidence. Shared mode clears globally:
+    /// evidence on any output clears every retired pair naming that native
+    /// so the unified ring re-adopts coherently. Pure marker mutation; no
+    /// ring, binding, or wire change.
+    pub(crate) fn clear_retired_by_evidence(&mut self) {
+        if !self.host_owned_workspace_domains() || self.retired_natives.is_empty() {
+            return;
+        }
+        let shared = self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared;
+        // Native deletion: vanished from its output's complete order.
+        // Partial or absent rows never clear (unknown, never deletion).
+        let mut vanished: Vec<(String, String)> = Vec::new();
+        for ((output, native), _) in &self.retired_natives {
+            let order = self
+                .staged
+                .observation
+                .native
+                .iter()
+                .find(|entry| entry.output.0 == *output)
+                .map(|entry| entry.native_order.clone());
+            let Some(order) = order else { continue };
+            if !self.native_list_complete(output) {
+                continue;
+            }
+            if !order.iter().any(|id| id == native) {
+                vanished.push((output.clone(), native.clone()));
+            }
+        }
+        for entry in vanished {
+            self.retired_natives.remove(&entry);
+        }
+        if self.retired_natives.is_empty() {
+            return;
+        }
+        // Positive output-local evidence: current-native selection or an
+        // observed window fact naming the native on that same output.
+        // Occupancy counts never clear: they repeat global totals.
+        let mut clear: BTreeSet<(String, String)> = BTreeSet::new();
+        for entry in &self.staged.observation.native {
+            let output = entry.output.0.clone();
+            if let Some(current) = entry.current_native.as_deref() {
+                let key = (output.clone(), current.to_owned());
+                if self.retired_natives.contains_key(&key) {
+                    clear.insert(key);
+                }
+            }
+        }
+        for fact in self.staged.facts.values() {
+            let Some(native) = fact.native_workspace.as_deref() else {
+                continue;
+            };
+            let Some(output) = fact.output.as_ref() else {
+                continue;
+            };
+            let key = (output.0.clone(), native.to_owned());
+            if self.retired_natives.contains_key(&key) {
+                clear.insert(key);
+            }
+        }
+        if shared {
+            // Shared unified ring: evidence for a native anywhere clears
+            // every retired pair naming it.
+            let natives: BTreeSet<String> =
+                clear.iter().map(|(_, native)| native.clone()).collect();
+            for ((output, native), _) in self.retired_natives.clone() {
+                if natives.contains(&native) {
+                    clear.insert((output, native));
+                }
+            }
+        }
+        for entry in clear {
+            self.retired_natives.remove(&entry);
+        }
     }
 
     /// Whether native evidence is authoritative: the capability is on.
@@ -225,6 +383,10 @@ impl WorldEngine {
         }
         let shared = self.workspace_mode_setting() == WorkspaceMode::Shared;
         self.prune_retained_creations();
+        // Locally retired markers: positive output-local evidence or
+        // native deletion clears before adoption, so cleared pairs adopt
+        // fresh on this same report.
+        self.clear_retired_by_evidence();
         if shared {
             self.converge_native_shared();
         } else {
@@ -429,9 +591,10 @@ impl WorldEngine {
     /// guards on every output ringing the logical, including outputs that
     /// do not observe the candidate native. Guards also cover retained
     /// transfer sources/refills, staged unreadable/held domains, and the
-    /// gesture barrier: no held scope authorizes deletion. The native
-    /// minimum-two floor counts bound rows only (logical spares never
-    /// prove it) alongside an explicit logical minimum-two; while removal
+    /// gesture barrier: no held scope authorizes deletion. The host
+    /// native-desktop floor (adapter concern) counts bound rows only
+    /// (logical spares never prove it) alongside the core single-spare
+    /// invariant (`MIN_WORKSPACES == 1`); while removal
     /// would drop an output below a floor the earliest canonical-order
     /// groups are spared first, preferring groups exclusive to
     /// over-reduced outputs so globally joined deletions survive local
@@ -817,13 +980,14 @@ impl WorldEngine {
     /// desktop: unbound and effectively needed. Needed means viewed (the
     /// retained core view, e.g. a fresh trailing selection or a migrated
     /// target), targeted by a retained transfer or view flight (e.g. an
-    /// occupied spare committed by a send), or effectively occupied: a
+    /// occupied spare committed by a send), the trailing empty spare
+    /// itself (every output's trailing logical spare immediately requests
+    /// native backing so the pager shows it), or effectively occupied: a
     /// retained member homed here that is neither explicitly closed nor
     /// proven homed elsewhere by the staged observation (a vanished
-    /// desktop's departed member does not justify a recreation). The
-    /// ordinary trailing spare (empty, unviewed, untargeted, unoccupied)
-    /// never needs a desire; a vanished desktop's emptied logical is
-    /// lifecycle removal, never a recreation.
+    /// desktop's departed member does not justify a recreation). A
+    /// vanished desktop's emptied logical is lifecycle removal, never a
+    /// recreation.
     fn logical_needs_backing(&self, output: &str, logical: &str) -> bool {
         if self.native_binding_for(output, logical).is_some() {
             return false;
@@ -834,6 +998,19 @@ impl WorldEngine {
         if self.retained.iter().any(|retained| {
             retained.target.target_output.0 == output && retained.target.target_workspace == logical
         }) {
+            return true;
+        }
+        // Portable dynamic-workspace policy: the trailing logical spare
+        // always requests backing, even when empty, unviewed, untargeted
+        // and unoccupied. An occupied final row is already needed via the
+        // occupancy scan below; an empty trailing spare would otherwise
+        // never mint.
+        if self
+            .mapping
+            .get(output)
+            .and_then(|ring| ring.last())
+            .is_some_and(|tail| tail == logical)
+        {
             return true;
         }
         for (window, state) in &self.members {
@@ -1142,6 +1319,12 @@ impl WorldEngine {
         if self.native_logical(&out, native).is_some() {
             return None;
         }
+        // Locally retired natives suppress ordinary adoption; migration
+        // source release clears the marker before calling so settled
+        // arrival-gated adoption is preserved.
+        if self.is_locally_retired(output, native) {
+            return None;
+        }
         let order: Vec<String> = self
             .staged
             .observation
@@ -1262,8 +1445,9 @@ impl WorldEngine {
         }
     }
 
-    /// Mint creation desires for unbound logicals that need backing (never
-    /// the ordinary spare). One stable `op-native-<serial>` per logical;
+    /// Mint creation desires for unbound logicals that need backing
+    /// (including the ordinary trailing spare, which requests native
+    /// backing immediately). One stable `op-native-<serial>` per logical;
     /// replay idempotent; the adapter never treats an unbound row without a
     /// desire as permission.
     pub(crate) fn ensure_native_creations(&mut self, output: &str) {
@@ -1377,6 +1561,11 @@ impl WorldEngine {
                     }
                     continue;
                 }
+                // Locally retired natives never re-adopt without positive
+                // output-local evidence (cleared before adoption above).
+                if self.is_locally_retired(output, native) {
+                    continue;
+                }
                 let Some(id) = self.create_trailing_workspace(&out, self.default_tiled()) else {
                     break;
                 };
@@ -1420,8 +1609,13 @@ impl WorldEngine {
         // retired or unbound logical for a new native desktop would rename
         // a vanished id within the generation, which is forbidden. The
         // retired logical is lifecycle removal; the newcomer is adoption.
+        // Locally retired natives suppress here until cleared by positive
+        // output-local evidence.
         for (index, native) in order.iter().enumerate() {
             if self.native_logical(&out, native).is_some() {
+                continue;
+            }
+            if self.is_locally_retired(output, native) {
                 continue;
             }
             let predecessors = order[..index]
@@ -1621,6 +1815,19 @@ impl WorldEngine {
             if raced {
                 continue;
             }
+            // Locally retired natives suppress ordinary re-adoption until
+            // cleared by positive evidence (cleared before adoption above).
+            // A retired pair on any observing output suppresses the whole
+            // native so the unified ring never partially adopts a race.
+            let retired = ordered.iter().any(|output| {
+                self.is_locally_retired(output, native)
+                    && self.staged.observation.native.iter().any(|entry| {
+                        entry.output.0 == *output && entry.native_order.iter().any(|n| n == native)
+                    })
+            });
+            if retired {
+                continue;
+            }
             let at = union[..index]
                 .iter()
                 .filter(|predecessor| {
@@ -1641,6 +1848,7 @@ impl WorldEngine {
                     });
                     if observed
                         && !blocked.contains(output)
+                        && !self.is_locally_retired(output, native)
                         && self
                             .native_logical(&OutputId(output.clone()), native)
                             .is_none()
@@ -1751,11 +1959,11 @@ impl WorldEngine {
 
     /// Mint shared creation desires for globally unbound logicals (no
     /// binding on any output) that are effectively needed (viewed anywhere,
-    /// targeted by a retained flight, or effectively occupied on any
-    /// ordered output and observed live). The desire targets the first
-    /// ordered output with an observed native row (independent orders may
-    /// not list the sorted-first output at all); binding fans out on proof.
-    /// The trailing spare never mints.
+    /// targeted by a retained flight, effectively occupied on any ordered
+    /// output and observed live, or the unified trailing spare). The desire
+    /// targets the first ordered output with an observed native row
+    /// (independent orders may not list the sorted-first output at all);
+    /// binding fans out on proof.
     pub(crate) fn ensure_native_creations_shared(&mut self, ordered: &[String]) {
         if !self.host_owned_workspace_domains() || ordered.is_empty() {
             return;
@@ -1797,6 +2005,7 @@ impl WorldEngine {
             return;
         }
         let ring: Vec<String> = self.mapping.get(first).cloned().unwrap_or_default();
+        let trailing = ring.last().cloned();
         for logical in ring {
             if self.is_native_bound(&logical) {
                 continue;
@@ -1825,7 +2034,7 @@ impl WorldEngine {
                 occupied = true;
                 break;
             }
-            if !(viewed || targeted || occupied) {
+            if !(viewed || targeted || occupied) && Some(&logical) != trailing.as_ref() {
                 continue;
             }
             let exists = self

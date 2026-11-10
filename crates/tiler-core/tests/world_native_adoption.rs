@@ -554,7 +554,7 @@ fn outside_move_and_create_are_adopted() {
                 fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(N1)),
                 fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(N2)),
             ],
-            vec![native_obs("out-a", &[N1, N2], N1)],
+            vec![native_obs("out-a", &[N1, N2, N3], N1)],
             None,
             None,
             true,
@@ -571,7 +571,7 @@ fn outside_move_and_create_are_adopted() {
                 fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(N2)),
                 fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(N2)),
             ],
-            vec![native_obs("out-a", &[N1, N2], N2)],
+            vec![native_obs("out-a", &[N1, N2, N3], N2)],
             None,
             None,
             true,
@@ -603,7 +603,7 @@ fn outside_move_and_create_are_adopted() {
                 fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(N2)),
                 fact_native("win-c", "out-a", rect(0, 0, 800, 560), Some(N5)),
             ],
-            vec![native_obs("out-a", &[N1, N2, N5], N2)],
+            vec![native_obs("out-a", &[N1, N2, N3, N5], N2)],
             None,
             None,
             true,
@@ -612,11 +612,44 @@ fn outside_move_and_create_are_adopted() {
     let bound = bound_ids(&created, "out-a");
     assert_eq!(
         bound.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>(),
-        vec![N1, N2, N5],
+        vec![N1, N2, N3, N5],
         "outside id bound at native-order position"
     );
     // Empty native-bound desktops keep identity: N1 is empty but stays.
     assert!(bound.iter().any(|(_, n)| n == N1));
+    // Eager trailing spare requests independent backing; the outside
+    // fresh native itself needs no creation desire (already bound).
+    let logical_n5 = bound
+        .iter()
+        .find(|(_, n)| n == N5)
+        .map(|(id, _)| id.clone())
+        .expect("bound N5");
+    let rows: Vec<_> = created
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .collect();
+    let spare = rows.last().expect("spare").id.clone();
+    assert!(
+        rows.last().is_some_and(|row| row.native_binding.is_none()),
+        "spare stays unbound: {rows:?}"
+    );
+    assert_eq!(
+        created.native_creations.len(),
+        1,
+        "eager spare desires backing only: {:?}",
+        created.native_creations
+    );
+    assert_eq!(
+        created.native_creations[0].logical_workspace, spare,
+        "creation targets the live trailing spare: {:?}",
+        created.native_creations
+    );
+    assert_ne!(
+        created.native_creations[0].logical_workspace, logical_n5,
+        "outside fresh native needs no desire: {:?}",
+        created.native_creations
+    );
 }
 
 #[test]
@@ -922,6 +955,7 @@ fn separate_outputs_share_ids_independently_and_shared_unions() {
 
 #[test]
 fn shared_late_pair_binds_existing_logical_at_union_position() {
+    const N5: &str = "9f1c-0005-space";
     let screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let mut engine = engine_host_owned(WorkspaceMode::Shared, false);
     let first = accepted(
@@ -936,12 +970,17 @@ fn shared_late_pair_binds_existing_logical_at_union_position() {
             ],
             vec![
                 native_obs("out-a", &[N1, N2], N1),
-                native_obs("out-b", &[N3], N3),
+                native_obs("out-b", &[N3, N5], N3),
             ],
             None,
             None,
             true,
         ),
+    );
+    assert!(
+        first.native_creations.is_empty(),
+        "trailing empty N5 isolates late-pair intent: {:?}",
+        first.native_creations
     );
     let logical_n1 = first
         .workspaces
@@ -963,7 +1002,7 @@ fn shared_late_pair_binds_existing_logical_at_union_position() {
             ],
             vec![
                 native_obs("out-a", &[N1, N2], N1),
-                native_obs("out-b", &[N3, N1], N3),
+                native_obs("out-b", &[N3, N1, N5], N3),
             ],
             None,
             None,
@@ -1012,7 +1051,7 @@ fn shared_late_pair_binds_existing_logical_at_union_position() {
             ],
             vec![
                 native_obs("out-a", &[N1, N4, N2], N1),
-                native_obs("out-b", &[N3, N1], N3),
+                native_obs("out-b", &[N3, N1, N5], N3),
             ],
             None,
             None,
@@ -1396,7 +1435,7 @@ fn shared_missing_native_inventory_retains_unbound_rings() {
     let mut engine = engine_host_owned(WorkspaceMode::Shared, false);
     let mut input = report(1, 1, two_native_screens(), vec![], vec![], None, None, true);
     let first = accepted(&mut engine, &input);
-    assert_eq!(first.workspaces.len(), 2);
+    assert_eq!(first.workspaces.len(), 1);
     assert!(
         first
             .workspaces

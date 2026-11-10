@@ -114,18 +114,21 @@ describe("world genuine-producer output disconnect and return journeys", () => {
                 assert.equal(rowByWin(reply, win)["ws"], "ws-4", `${win} rides the separate displaced unit, never the survivor's own`);
             }
             // Separate backing, not a hidden divergent home: displacement
-            // creates exactly one native desktop (ws-3) backing c/d while
-            // a/b stay on the survivor's ws1, and the core binds the
-            // displaced unit to exactly that created native.
+            // mints the displaced backing (ws-4, named after its logical
+            // through the desire path) for c/d while a/b stay on the
+            // survivor's ws1, and the reshaped ring's new trailing spare is
+            // eagerly backed too (ws-5). The core binds the displaced unit
+            // to exactly its created native; both creations settle with no
+            // outstanding desire.
             assert.deepEqual(
                 (h.workspace["desktops"] as Array<{ id: string }>).map((d) => d.id),
-                ["ws1", "ws2", "ws-3"],
-                "displacement creates exactly one native desktop",
+                ["ws1", "ws2", "ws-3", "ws-4", "ws-5"],
+                "displacement creates the displaced backing plus the eager trailing spare",
             );
             for (const win of ["win-c", "win-d"]) {
                 assert.deepEqual(
                     winById(h, win).desktops.map((d) => d.id),
-                    ["ws-3"],
+                    ["ws-4"],
                     `native membership of ${win} rides the created desktop`,
                 );
             }
@@ -133,7 +136,14 @@ describe("world genuine-producer output disconnect and return journeys", () => {
                 (u) => u["out"] === "out-left" && u["id"] === "ws-4",
             );
             assert.ok(displacedUnit !== undefined, "displaced unit publishes on the survivor");
-            assert.equal(displacedUnit["bind"], "ws-3", "displaced unit binds the created native");
+            assert.equal(displacedUnit["bind"], "ws-4", "displaced unit binds the created native");
+            // The ring's new trailing spare is backed, never unbound:
+            // native-only absence carries a bind on every row.
+            const trailing = (reply["workspaces"] as Array<Record<string, unknown>>)
+                .filter((u) => u["out"] === "out-left" && u["exist"] !== false)
+                .sort((a, b) => (a["order"] as number) - (b["order"] as number))
+                .pop();
+            assert.equal(trailing?.["bind"], "ws-5", "reshaped ring trails on the eagerly-backed spare");
             // Native output reassignment is KWin-complete before the core
             // reply lands: every live window names the survivor.
             assert.deepEqual(
@@ -357,7 +367,13 @@ describe("world genuine-producer output disconnect and return journeys", () => {
             assert.notEqual(rowByWin(removedReply, "win-b")["ws"], rowByWin(removedReply, "win-a")["ws"], "T2 keeps a separate displaced unit on the occupied native index");
             assert.equal(rowByWin(removedReply, "win-c")["ws"], rowByWin(removedReply, "win-d")["ws"], "F/T3 keep their shared displaced unit");
             assert.notDeepEqual(winById(h, "win-c").desktops.map((d) => d.id), ["ws2"], "F/T3 receive distinct native backing before selection");
-            // L2 select: A ws2 through the production numbered route.
+            // L2 select: position 2 on the survivor through the production
+            // numbered route. The reshaped ring grew eager-backed spares,
+            // so position 2 no longer views the retired ws2 native (it
+            // pruned locally once empty and unviewed); it views whatever
+            // the live ring holds second, read dynamically from the plan.
+            // The route itself (exactly one filed selection settling its
+            // own take) is what this leg proves.
             h.activeScreen = { name: "out-left" };
             h.handle.requestWorkspaceSelect(2);
             // The drain dispatch gates on the async Queue filing ack, which
@@ -368,7 +384,15 @@ describe("world genuine-producer output disconnect and return journeys", () => {
             await h.settle();
             assert.equal(h.commandPayloads("select-numbered").length, 1, "selection files exactly once");
             const currentFor = h.workspace["currentDesktopForScreen"] as (screen: { name: string }) => { id: string };
-            assert.equal(currentFor({ name: "out-left" }).id, "ws2", "native current reads back ws2");
+            const ringAfterRemoval = (lastDescribeReply(h)["workspaces"] as Array<Record<string, unknown>>)
+                .filter((u) => u["out"] === "out-left" && u["exist"] !== false)
+                .sort((a, b) => (a["order"] as number) - (b["order"] as number));
+            assert.ok(ringAfterRemoval.length >= 2, "reshaped ring holds at least two cells");
+            assert.equal(
+                currentFor({ name: "out-left" }).id,
+                ringAfterRemoval[1]?.["bind"],
+                "numbered select lands on the live ring's second cell",
+            );
             const selectTakes = takeReadys(h);
             assert.equal(selectTakes.length, 1, "selection settles its own take");
             assert.equal(selectTakes[0]?.["globalCmd"], "1", "selection take rides sequence 1");

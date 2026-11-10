@@ -355,11 +355,11 @@ fn native_free_bootstrap_creates_per_screen_rings_views_and_trailing() {
         ),
     );
     assert!(reply.ready);
-    // One owned workspace plus a trailing empty per screen, stable ids.
+    // One trailing spare per screen (single-spare invariant), stable ids.
     let ring_a = workspace_ids(&reply, "out-a");
     let ring_b = workspace_ids(&reply, "out-b");
-    assert_eq!(ring_a.len(), 2, "ring: {ring_a:?}");
-    assert_eq!(ring_b.len(), 2, "ring: {ring_b:?}");
+    assert_eq!(ring_a.len(), 1, "ring: {ring_a:?}");
+    assert_eq!(ring_b.len(), 1, "ring: {ring_b:?}");
     assert_ne!(ring_a[0], ring_b[0]);
     // Views show the heads; outputs carry the same logical views.
     let view_a = output_view(&reply, "out-a").expect("view a");
@@ -974,7 +974,7 @@ fn selection_commands_resolve_over_logical_rings() {
             1,
             1,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -1009,7 +1009,7 @@ fn selection_commands_resolve_over_logical_rings() {
             2,
             2,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -1037,7 +1037,7 @@ fn selection_commands_resolve_over_logical_rings() {
             3,
             3,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -1060,7 +1060,7 @@ fn selection_commands_resolve_over_logical_rings() {
         4,
         4,
         two_screens(),
-        vec![],
+        vec![minimized_fact("win-a", "out-a")],
         vec![],
         vec![],
         "",
@@ -1089,7 +1089,7 @@ fn selection_commands_resolve_over_logical_rings() {
             5,
             5,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -2891,7 +2891,7 @@ fn empty_migration_binds_focusless_and_retires_without_echoes() {
             1,
             1,
             two_screens(),
-            vec![],
+            vec![fact("win-a", "out-a", 0)],
             vec![],
             vec![],
             "",
@@ -3468,7 +3468,7 @@ fn generations_watermarks_and_command_consumption_hold() {
         3,
         3,
         two_screens(),
-        vec![],
+        vec![fact("win-a", "out-a", 0)],
         vec![],
         vec![],
         "",
@@ -3625,7 +3625,7 @@ fn host_owned_capability_gates_native_observations() {
     }
     // With the capability native observations adopt: out-a builds one
     // logical per native id in native order and publishes the binding;
-    // the ordinary trailing spare stays unbound.
+    // the viewed single empty keeps no spare.
     let mut capable_engine =
         WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("valid generation");
     let mut good = report(
@@ -3658,12 +3658,16 @@ fn host_owned_capability_gates_native_observations() {
         .find(|row| row.output.0 == "out-a" && row.native_binding.as_deref() == Some("ws"))
         .expect("bound row publishes its native id");
     assert_eq!(bound.order, 0);
-    // The ordinary trailing spare stays unbound.
-    assert!(
-        reply
-            .workspaces
-            .iter()
-            .any(|row| row.output.0 == "out-a" && row.native_binding.is_none())
+    let ring_a: Vec<String> = reply
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    assert_eq!(
+        ring_a,
+        vec![bound.id.clone()],
+        "viewed single empty keeps no spare: {ring_a:?}"
     );
     // Native-free output stays unbound.
     assert!(
@@ -4285,7 +4289,9 @@ fn floating_select_workspace_completes_empty_at_issuing() {
             1,
             1,
             two_screens(),
-            vec![],
+            // Occupy the head so the single-spare invariant supplies the
+            // second row the selection below needs.
+            vec![fact("win-a", "out-a", 0)],
             vec![],
             vec![],
             "",
@@ -4304,7 +4310,7 @@ fn floating_select_workspace_completes_empty_at_issuing() {
             2,
             2,
             two_screens(),
-            vec![],
+            vec![fact("win-a", "out-a", 0)],
             vec![],
             vec![],
             "",
@@ -4439,7 +4445,7 @@ fn floating_select_previous_returns_to_floating_target() {
             1,
             1,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -4458,7 +4464,7 @@ fn floating_select_previous_returns_to_floating_target() {
             2,
             2,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -4478,7 +4484,7 @@ fn floating_select_previous_returns_to_floating_target() {
             3,
             3,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -4497,7 +4503,7 @@ fn floating_select_previous_returns_to_floating_target() {
             4,
             4,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -4513,7 +4519,7 @@ fn floating_select_previous_returns_to_floating_target() {
             5,
             5,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -4532,7 +4538,7 @@ fn floating_select_previous_returns_to_floating_target() {
             6,
             6,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -4549,7 +4555,7 @@ fn floating_select_previous_returns_to_floating_target() {
             7,
             7,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -4578,7 +4584,7 @@ fn floating_select_previous_returns_to_floating_target() {
             8,
             8,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -4611,7 +4617,7 @@ fn floating_select_trailing_reuses_floating_empty() {
             1,
             1,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -4636,7 +4642,7 @@ fn floating_select_trailing_reuses_floating_empty() {
             2,
             2,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -4654,7 +4660,7 @@ fn floating_select_trailing_reuses_floating_empty() {
             3,
             3,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -4670,7 +4676,7 @@ fn floating_select_trailing_reuses_floating_empty() {
             4,
             4,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -4692,7 +4698,7 @@ fn floating_select_trailing_reuses_floating_empty() {
             5,
             5,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -4711,7 +4717,7 @@ fn floating_select_trailing_reuses_floating_empty() {
             6,
             6,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -4727,7 +4733,7 @@ fn floating_select_trailing_reuses_floating_empty() {
             7,
             7,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -4762,7 +4768,7 @@ fn floating_select_trailing_reuses_floating_empty() {
             8,
             8,
             two_screens(),
-            vec![],
+            vec![minimized_fact("win-a", "out-a")],
             vec![],
             vec![],
             "",
@@ -4797,7 +4803,7 @@ fn floating_select_refusal_settles_to_observed_preserving_logical() {
             1,
             1,
             two_screens(),
-            vec![],
+            vec![fact("win-a", "out-a", 0)],
             vec![],
             vec![],
             "",
@@ -5131,7 +5137,7 @@ fn queued_implicit_selection_resolves_at_execution_cursor() {
         1,
         1,
         two_screens(),
-        vec![fact("win-a", "out-a", 0)],
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
         vec![],
         vec![],
         "win-a",
@@ -5150,7 +5156,7 @@ fn queued_implicit_selection_resolves_at_execution_cursor() {
         2,
         2,
         two_screens(),
-        vec![fact("win-a", "out-a", 0)],
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
         vec![],
         vec![],
         "win-a",
@@ -5172,7 +5178,7 @@ fn queued_implicit_selection_resolves_at_execution_cursor() {
         3,
         3,
         two_screens(),
-        vec![fact("win-a", "out-a", 0)],
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
         vec![],
         vec![],
         "win-a",
@@ -5198,7 +5204,7 @@ fn queued_implicit_selection_resolves_at_execution_cursor() {
         4,
         4,
         two_screens(),
-        vec![fact("win-a", "out-a", 0)],
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
         vec![],
         vec![],
         "win-a",

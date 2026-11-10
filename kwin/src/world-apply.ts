@@ -1575,6 +1575,79 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
     if (result.stoppedMidApply) {
         return result;
     }
+    // Adapter-owned native-desktop floor (host concern, never core
+    // policy): pad fresh native inventory up to `minDesktops` with no core
+    // desire. Core adopts padding through ordinary observation; no receipt
+    // rides the report lane (no core op exists). Fresh complete
+    // enumeration per padding step, never the stale observation:
+    // synchronous KWin signals make the call reentrant, so a reentrant
+    // apply sees the grown inventory and never double-pads. Unreadable
+    // inventory, a stale reply, a throw, or a no-growth step holds.
+    if (env.listDesktops !== undefined && env.minDesktops > 0) {
+        for (;;) {
+            if (!replyFresh(env, reply, entryObs)) {
+                result.stoppedMidApply = true;
+                break;
+            }
+            let fresh: Array<{ readonly id: string; readonly name: string }> | null = null;
+            try {
+                fresh = env.listDesktops();
+            } catch (error) {
+                void error;
+                fresh = null;
+            }
+            if (fresh === null) {
+                result.held += 1;
+                break;
+            }
+            if (fresh.length >= env.minDesktops) {
+                break;
+            }
+            if (!fresh.every((desktop) => isOpaqueId(desktop.id))) {
+                result.held += 1;
+                break;
+            }
+            const beforeIds = fresh.map((desktop) => desktop.id);
+            let threw = false;
+            try {
+                env.createDesktop(fresh.length, `Desktop ${fresh.length + 1}`);
+            } catch (error) {
+                void error;
+                threw = true;
+            }
+            if (threw) {
+                result.held += 1;
+                break;
+            }
+            let after: Array<{ readonly id: string; readonly name: string }> | null = null;
+            try {
+                after = env.listDesktops();
+            } catch (error) {
+                void error;
+                after = null;
+            }
+            if (after === null) {
+                result.held += 1;
+                break;
+            }
+            const afterIds = after.map((desktop) => desktop.id);
+            const beforeSet = new Set(beforeIds);
+            const delta = afterIds.filter((id) => !beforeSet.has(id));
+            if (delta.length !== 1 || afterIds.length <= beforeIds.length) {
+                result.held += 1;
+                break;
+            }
+            result.creations += 1;
+            liveDesktopIds.add(delta[0] as string);
+            if (midApplyStopped(env, entryObs)) {
+                result.stoppedMidApply = true;
+                break;
+            }
+        }
+    }
+    if (result.stoppedMidApply) {
+        return result;
+    }
     // Native removal dedup: one native binding may repeat per
     // output, so several rows can name the same native binding. Every
     // gate below keys on the native id only, so the first row decides and
