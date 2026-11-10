@@ -442,3 +442,22 @@
   foreground assertion is introduced.
 - `git diff --check` passes. Native close-to-refocus timing is pending; no
   native acceptance is claimed.
+
+### Native preparation and acceptance limit
+
+- Matching signed macOS and fixture bundles build offline with the existing
+  persistent development identity. Bundle-attributed preflight reports
+  Accessibility trusted, posting available, an unlocked session and inactive
+  Secure Input. This is permission/preparation evidence, not close-focus proof.
+- A bounded native Space lifecycle preparation created one owned empty Space,
+  selected it, returned and removed it; source topology and current Space were
+  restored. The integrated preparation failed its final protected-window frame
+  equality check. A later native sample recovered the exact original frame
+  without a window write. Full before/after CG comparison still reports unequal
+  offscreen system-service rosters, with no surviving-window geometry changes;
+  it is not a clean baseline-comparison result.
+- No product, tap or fixture-window integration was launched. The created Space
+  and awake helper were removed, Mission Control is closed and original focus
+  is observed. Preparation is not marked passed; a safe held owned-Space route
+  and the baseline-comparison discrepancy remain to resolve before close legs.
+  No close-to-refocus timing samples or slice-1 native acceptance exist yet.
