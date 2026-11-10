@@ -200,8 +200,8 @@ fn operation_commands_cover_every_supported_tiling_action() {
             .unwrap_or_else(|| panic!("{action:?} has an operation route"));
         assert_eq!(token, op);
         assert!(
-            tiler_core::world_report::valid_operation(&command),
-            "{action:?} carries a valid operation"
+            tiler_core::world_report::valid_command(&command),
+            "{action:?} carries a valid world command"
         );
     }
     // Workspace actions never ride the operation route (planner-owned

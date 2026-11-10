@@ -2255,6 +2255,14 @@ fn dispatch_focus_effects(
     let explicit_focus_seq = match (ticket_command, ticket_command_seq) {
         (Some(WorldCommand::Focus { .. }), Some(seq))
         | (Some(WorldCommand::Operation(CoreCommand::Focus { .. })), Some(seq)) => Some(seq),
+        // Directional focus steps ride the execution-time implicit subject:
+        // the core still mints the correlated explicit-command focus
+        // effect, so it dispatches exactly like a by-id focus step.
+        (Some(WorldCommand::Implicit(inner)), Some(seq))
+            if matches!(**inner, WorldCommand::FocusDirectional { .. }) =>
+        {
+            Some(seq)
+        }
         _ => None,
     };
     if let Some(seq) = explicit_focus_seq {

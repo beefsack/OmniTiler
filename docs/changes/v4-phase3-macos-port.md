@@ -184,6 +184,19 @@
   explicit neutral facts in scoped captures improve this to 83 passed / 67
   failed. Missing synthetic raw facts and input codec routing remain to audit.
   The mocked development shell suite passes 104/0. No native acceptance yet.
+- Directional routing correction: production focus/move mapping now emits v4
+  implicit directional commands instead of codec-invalid legacy operations.
+  Only the command-correlated focus effect dispatches; no admission focus is
+  authorized by this change. Producer-map byte round trips pass for both
+  commands. Real-engine focus controls, exhausted-edge typed refusal and
+  consumed-sequence replay pass. The integration focus walk retains the edge
+  and recovers with unchanged geometry/workspace desires. Its Accepted envelope
+  counter does not imply command success; the command refusal is separately
+  pinned. Identical desired frames may be rewritten on reconciliation, so this
+  proves no frame change, not zero native setter calls. All four focus/gap
+  integrations and the two affected scoped focus/move tests pass. The library
+  passed 1475 tests before adding the final edge proof; a fresh full rerun is
+  still required after this unit.
 - Raw settings checkpoint: focused acquisition/connection tests pass for CLI
   precedence, explicit null versus omission, invalid-field diagnostics with
   valid siblings retained, and revision/generation refusals. Core-effective

@@ -7,8 +7,10 @@
 //!   outer margin (KDE/Windows 8/8 parity) before the core plans, so applied
 //!   frames keep the edge margin with inner sibling spacing.
 //! - Focus: repeated directional steps walk the row and retain at the exhausted
-//!   edge (shared Tier-1 rule: no wrap, no workspace cycling), counted as
-//!   `focus-rejected`, with later steps still dispatching after the miss.
+//!   edge (shared Tier-1 rule: no wrap, no workspace cycling). The refused
+//!   edge reconciles its observation (Accepted envelope) while the command
+//!   itself refuses typed operation-refused with no dispatch and no plan
+//!   change; later steps still dispatch after the miss.
 //! - Traces: republishing identical focus evidence stays ring-silent; only
 //!   genuine changes emit.
 //!
@@ -560,6 +562,12 @@ fn native_focus_walk_retains_at_edge_per_tier1() {
     );
     assert!(fixture.handle.flush(FLUSH));
     while fixture.focus_rx.try_recv().is_ok() {}
+    // Before/after invariants across the refused edge: no plan change, no
+    // native focus dispatch, or changed applied frames.
+    let before_geometry = fixture.handle.last_desired_geometry();
+    let (_, _, before_desires, _) = fixture.handle.last_indicator_snapshot();
+    let before_dispatched = fixture.handle.diagnostics().focus_dispatched;
+    while fixture.applied_rx.try_recv().is_ok() {}
     send_focus_right(&fixture);
     assert!(
         fixture
@@ -570,26 +578,54 @@ fn native_focus_walk_retains_at_edge_per_tier1() {
     );
     assert!(fixture.handle.flush(FLUSH));
     let diagnostics = fixture.handle.diagnostics();
-    assert!(
-        diagnostics
-            .core_replies
-            .get("focus-rejected-unchanged")
-            .copied()
-            .unwrap_or(0)
-            >= 1,
-        "edge retain must be counted: {:?}",
-        diagnostics.core_replies
-    );
+    // Accepted envelope != command success: the refused edge reconciles
+    // its observation, so all three focus reports count `focus-accepted`
+    // while the command itself refuses typed operation-refused (proven at
+    // the engine level by
+    // directional_edge_is_accepted_envelope_with_typed_rejection).
     assert_eq!(
         diagnostics
             .core_replies
             .get("focus-accepted")
             .copied()
             .unwrap_or(0),
-        2,
-        "both walking steps must plan: {:?}",
+        3,
+        "all three focus reports reconcile Accepted: {:?}",
         diagnostics.core_replies
     );
+    assert_eq!(
+        fixture.handle.last_desired_geometry(),
+        before_geometry,
+        "refused edge must not replan geometry"
+    );
+    assert_eq!(
+        fixture.handle.last_indicator_snapshot().2,
+        before_desires,
+        "refused edge must not change workspace desires"
+    );
+    assert_eq!(
+        diagnostics.focus_dispatched, before_dispatched,
+        "refused edge must not dispatch native focus"
+    );
+    // The refused edge reconciles Accepted, and the runtime actuates the
+    // full desired snapshot on reconcile: identical plan frames are
+    // rewritten to native. The honest invariant is no frame CHANGE: every
+    // post-edge applied frame must match the pre-edge desired geometry.
+    let mut expected = BTreeMap::new();
+    for frame in &before_geometry {
+        expected.insert(frame.window.clone(), (frame.x, frame.y, frame.w, frame.h));
+    }
+    let mut post_edge_frames = Vec::new();
+    while let Ok(record) = fixture.applied_rx.try_recv() {
+        post_edge_frames.push(record);
+    }
+    for (_, _, window, rect, _) in &post_edge_frames {
+        assert_eq!(
+            expected.get(window).copied(),
+            Some(*rect),
+            "post-edge frame must rewrite only the unchanged plan: {window:?} got {rect:?}"
+        );
+    }
 
     // Recovery: an external arrival back on win2 steps to win3 again, so a
     // retained edge never wedges later focus.

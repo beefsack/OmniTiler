@@ -1710,7 +1710,7 @@ fn process_job(
                 focus_capacity,
                 dispatch,
                 Vec::new(),
-                Some(tiler_core::world_report::WorldCommand::Operation(command)),
+                Some(command),
                 None,
                 false,
                 op,

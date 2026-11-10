@@ -8,8 +8,10 @@
 //! subset maps to planner-owned select commands (positional numbered
 //! selects over the adopted ring, relative/previous/trailing unchanged),
 //! the send-shaped actions map to positional planner-owned send commands
-//! for the admission-resolved explicit source, every other supported
-//! tiling action maps to its existing core command shape, and anything
+//! for the admission-resolved explicit source, directional focus/move map
+//! to execution-time implicit directional commands (core-owned subject at
+//! execution), every other supported tiling action maps to its existing
+//! core command shape, and anything
 //! else has no route (capability-refused by the caller). Pure over
 //! retained input state except the keyboard-resize repeat cursor it
 //! advances. The core resolves all targeting from these commands; the
@@ -226,33 +228,36 @@ pub(crate) fn send_command_with_capability(
     }
 }
 
-/// Map one supported tiling input to its existing core command (exact
-/// legacy shapes) plus its diagnostic op token. Selects and unsupported
-/// actions have no operation route here (`None`).
+/// Map one supported tiling input to its world command plus its
+/// diagnostic op token. Directional focus/move ride the execution-time
+/// implicit directional commands (the core resolves the subject from
+/// retained canonical focus at execution; the inner carries a placeholder
+/// empty subject that never executes), resize and the toggles keep their
+/// exact legacy [`CoreCommand`](tiler_core::boundary::CoreCommand) shapes under
+/// [`WorldCommand::Operation`](tiler_core::world_report::WorldCommand).
+/// Selects and unsupported actions have no operation route here (`None`).
 pub(crate) fn operation_command(
     action: &InputSemanticAction,
     window: &str,
     retained: &mut RetainedCore,
-) -> Option<(tiler_core::boundary::CoreCommand, &'static str)> {
+) -> Option<(WorldCommand, &'static str)> {
     use tiler_core::boundary::CoreCommand;
-    use tiler_core::directional::SameAxisMove;
+    use tiler_core::directional::{SameAxisMove, WindowId};
+    let empty = || WindowId(String::new());
     match action {
         InputSemanticAction::FocusStep { direction } => Some((
-            CoreCommand::Focus {
-                window: window.to_owned(),
+            WorldCommand::Implicit(Box::new(WorldCommand::FocusDirectional {
+                window: empty(),
                 direction: direction.as_str().to_owned(),
-                cross_output_transfer: false,
-                float_subject: false,
-            },
+            })),
             OP_FOCUS,
         )),
         InputSemanticAction::MoveStep { direction } => Some((
-            CoreCommand::Move {
-                window: window.to_owned(),
+            WorldCommand::Implicit(Box::new(WorldCommand::MoveDirectional {
+                window: empty(),
                 direction: direction.as_str().to_owned(),
-                cross_output_transfer: false,
-                same_axis_move: SameAxisMove::default(),
-            },
+                same_axis: SameAxisMove::default(),
+            })),
             OP_MOVE,
         )),
         InputSemanticAction::ResizeStep { direction, mode } => {
@@ -267,32 +272,565 @@ pub(crate) fn operation_command(
             );
             retained.resize_repeat = Some(repeat);
             Some((
-                CoreCommand::Resize {
+                WorldCommand::Operation(CoreCommand::Resize {
                     window: window.to_owned(),
                     direction: direction.as_str().to_owned(),
                     mode: mode.as_str().to_owned(),
                     press_index,
-                },
+                }),
                 OP_RESIZE,
             ))
         }
         InputSemanticAction::ToggleFloat => Some((
-            CoreCommand::ToggleFloat {
+            WorldCommand::Operation(CoreCommand::ToggleFloat {
                 window: window.to_owned(),
                 float_rect: None,
-            },
+            }),
             OP_TOGGLE_FLOAT,
         )),
         InputSemanticAction::ToggleOrientation => Some((
-            CoreCommand::ToggleOrientation {
+            WorldCommand::Operation(CoreCommand::ToggleOrientation {
                 window: window.to_owned(),
-            },
+            }),
             OP_TOGGLE_ORIENTATION,
         )),
         _ => None,
     }
 }
 
+#[cfg(test)]
+mod directional_codec_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// Production-map codec regression: directional focus/move map to the
+    /// execution-time implicit directional commands and survive the genuine
+    /// v4 byte codec (the runtime dispatches through `codec_transact`,
+    /// whose `Operation` encoder only accepts toggle-float/orientation/
+    /// resize). The legacy `Operation(Focus/Move)` spelling failed here
+    /// with `command-invalid`.
+    #[test]
+    fn directional_production_map_encodes_through_genuine_v4_codec() {
+        use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
+        use tiler_core::geometry::Rect;
+        use tiler_core::session::DomainKey;
+        use tiler_core::size_hints::WindowSizeHints;
+        use tiler_core::world_report::{HoldReason, WorldCommand};
+        use tiler_core::world_report_v4_checks::validate_report_v4_reason;
+        use tiler_protocol::world_protocol::{
+            CreationReceiptWire, CursorHitWire, DecodedReportV4, GestureIngressWire,
+            ReportWireOptionals, decode_report_v4, encode_report_v4,
+        };
+
+        use crate::runtime_core::{LifetimeMemory, RetainedCore};
+        use crate::runtime_types::{
+            InputDirection, NativeContext, NativeDomain, ObservedWindow, WindowRawFacts, window_id,
+        };
+        use crate::world_builder::{ReportInput, build_report};
+
+        fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
+            Rect { x, y, w, h }
+        }
+        let output = OutputId(crate::topology::output_key(1));
+        let ctx = NativeContext {
+            revision: 9,
+            domains: vec![NativeDomain {
+                cg_id: 1,
+                uuid: None,
+                output: output.clone(),
+                workspace: WorkspaceId(crate::topology::workspace_key(1)),
+                space: 1,
+                current: true,
+                readable: true,
+                bounds: rect(0, 0, 800, 600),
+                visible: rect(0, 0, 800, 560),
+            }],
+            skipped: Vec::new(),
+        };
+        let domain = DomainKey {
+            output: output.clone(),
+            workspace: WorkspaceId(crate::topology::workspace_key(1)),
+        };
+        let members: BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> = BTreeMap::from([(
+            domain,
+            vec![
+                (
+                    4242,
+                    ObservedWindow {
+                        wid: 7,
+                        x: 0,
+                        y: 0,
+                        w: 390,
+                        h: 560,
+                        floating: false,
+                        fullscreen: false,
+                        hints: WindowSizeHints::none(),
+                    },
+                ),
+                (
+                    4242,
+                    ObservedWindow {
+                        wid: 8,
+                        x: 410,
+                        y: 0,
+                        w: 390,
+                        h: 560,
+                        floating: false,
+                        fullscreen: false,
+                        hints: WindowSizeHints::none(),
+                    },
+                ),
+            ],
+        )]);
+        let mut raw: BTreeMap<String, WindowRawFacts> = BTreeMap::new();
+        for pairs in members.values() {
+            for (pid, window) in pairs {
+                raw.insert(
+                    window_id(*pid, window.wid),
+                    WindowRawFacts {
+                        role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                        subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                        modal: Some(false),
+                        resizable: Some(true),
+                        layer: Some(0),
+                        app_id: Some("com.example.app".to_owned()),
+                        activation_policy: Some(
+                            tiler_core::world_report::ActivationPolicy::Regular,
+                        ),
+                        host_hidden: Some(false),
+                    },
+                );
+            }
+        }
+        let memory = LifetimeMemory::empty();
+        let unreadable: BTreeMap<DomainKey, HoldReason> = BTreeMap::new();
+        let req_id = "req-7".to_owned();
+
+        let mut retained = RetainedCore::default();
+        // The approved v4 shapes: execution-time implicit subjects (the
+        // core resolves the window from retained canonical focus at
+        // execution; the inner carries a placeholder empty subject that
+        // never executes). Same-axis stays the default
+        // (`group-with-neighbor`, matching the prior legacy intent).
+        let expected_focus = WorldCommand::Implicit(Box::new(WorldCommand::FocusDirectional {
+            window: WindowId(String::new()),
+            direction: "left".to_owned(),
+        }));
+        let expected_move = WorldCommand::Implicit(Box::new(WorldCommand::MoveDirectional {
+            window: WindowId(String::new()),
+            direction: "right".to_owned(),
+            same_axis: tiler_core::directional::SameAxisMove::default(),
+        }));
+        for (action, op, expected) in [
+            (
+                InputSemanticAction::FocusStep {
+                    direction: InputDirection::Left,
+                },
+                OP_FOCUS,
+                expected_focus,
+            ),
+            (
+                InputSemanticAction::MoveStep {
+                    direction: InputDirection::Right,
+                },
+                OP_MOVE,
+                expected_move,
+            ),
+        ] {
+            let (command, token) = operation_command(&action, "4242_7", &mut retained)
+                .unwrap_or_else(|| panic!("{action:?} has an operation route"));
+            assert_eq!(token, op);
+            assert_eq!(
+                command, expected,
+                "{action:?} maps to the approved implicit directional shape"
+            );
+            assert!(
+                tiler_core::world_report::valid_command(&command),
+                "{op} mapped command validates"
+            );
+            let world = command;
+            let mut input = ReportInput::new(
+                "adapter-1",
+                "gen-1",
+                &ctx,
+                7,
+                7,
+                &req_id,
+                &members,
+                &memory,
+                &[],
+                &unreadable,
+                &[],
+                "4242_7",
+                false,
+            );
+            input.command_seq = Some(7);
+            input.command = Some(world.clone());
+            input.raw = &raw;
+            let report = build_report(&mut input);
+            assert!(
+                validate_report_v4_reason(&report).is_none(),
+                "{op} production report validates"
+            );
+            let decoded = DecodedReportV4 {
+                wire: ReportWireOptionals {
+                    cursor_hit: match &report.cursor_hit {
+                        None => CursorHitWire::Absent,
+                        Some(_) => CursorHitWire::Id,
+                    },
+                    monotonic_ms_present: report.monotonic_ms != 0,
+                    frame_attempts_present: !report.frames.is_empty(),
+                    member_attempts_present: !report.member_attempts.is_empty(),
+                    view_attempts_present: !report.view_attempts.is_empty(),
+                    clear_attempts_present: !report.clear_attempts.is_empty(),
+                    creation_attempts_present: !report.creation_attempts.is_empty(),
+                    gesture_ingress: match &report.gesture {
+                        None => GestureIngressWire::Absent,
+                        Some(_) => GestureIngressWire::Present,
+                    },
+                },
+                creation_receipts: report
+                    .creation_attempts
+                    .iter()
+                    .map(|row| match &row.created_native {
+                        None => CreationReceiptWire::Null,
+                        Some(_) => CreationReceiptWire::Id,
+                    })
+                    .collect(),
+                report,
+            };
+            let wire = encode_report_v4(&decoded).expect(
+                "production-mapped directional command encodes through the genuine v4 codec",
+            );
+            let back = decode_report_v4(&wire).expect("round-trips");
+            assert_eq!(back.report.command, Some(world), "{op} round-trips");
+        }
+    }
+
+    /// Exhausted-edge execution proof through the real engine: the
+    /// production-mapped implicit focus step reconciles its observation
+    /// (Accepted envelope) while the command itself refuses with typed
+    /// `Rejected(OperationRefused)` and no focus effect. Accepted envelope
+    /// != command success. The ordinary (non-edge) control steps plan with
+    /// a correlated explicit-focus effect and no command result. The refused
+    /// sequence is consumed at-most-once: replaying its command_seq reports
+    /// CommandConsumed instead of re-executing.
+    #[test]
+    fn directional_edge_is_accepted_envelope_with_typed_rejection() {
+        use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
+        use tiler_core::geometry::Rect;
+        use tiler_core::session::DomainKey;
+        use tiler_core::size_hints::WindowSizeHints;
+        use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+        use tiler_core::world_report::{
+            CommandRejectKind, CommandResult, EffectKind, HoldReason, WorldCommand, WorldReportV4,
+        };
+        use tiler_core::world_report_v4_checks::validate_report_v4_reason;
+        use tiler_protocol::world_protocol::{
+            DecodedReplyV4, ReplyWireOptionals, decode_reply_v4_for_host, encode_reply_v4,
+        };
+
+        use crate::runtime_core::{LifetimeMemory, RetainedCore};
+        use crate::runtime_types::{
+            InputDirection, NativeContext, NativeDomain, ObservedWindow, WindowRawFacts,
+        };
+        use crate::world_builder::{ReportInput, build_report};
+
+        fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
+            Rect { x, y, w, h }
+        }
+        // Genuine known admit shape: mirrors the working
+        // focus_gaps_trace startup (1440x900 display, three columns
+        // tiling the inset area), so the engine builds the same row
+        // tree the integration fixture walks. Do not invent geometry here:
+        // the engine's split placement follows the admitted shape.
+        fn observed(wid: u32, x: i32, w: i32) -> ObservedWindow {
+            ObservedWindow {
+                wid,
+                x,
+                y: 8,
+                w,
+                h: 884,
+                floating: false,
+                fullscreen: false,
+                hints: WindowSizeHints::none(),
+            }
+        }
+        let output = OutputId(crate::topology::output_key(1));
+        let ctx = NativeContext {
+            revision: 9,
+            domains: vec![NativeDomain {
+                cg_id: 1,
+                uuid: None,
+                output: output.clone(),
+                workspace: WorkspaceId(crate::topology::workspace_key(1)),
+                space: 1,
+                current: true,
+                readable: true,
+                bounds: rect(0, 0, 1440, 900),
+                visible: rect(0, 0, 1440, 900),
+            }],
+            skipped: Vec::new(),
+        };
+        let domain = DomainKey {
+            output: output.clone(),
+            workspace: WorkspaceId(crate::topology::workspace_key(1)),
+        };
+        let members: BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> = BTreeMap::from([(
+            domain,
+            vec![
+                (4242, observed(7, 8, 466)),
+                (4242, observed(8, 482, 466)),
+                (4242, observed(9, 956, 468)),
+            ],
+        )]);
+        let mut raw: BTreeMap<String, WindowRawFacts> = BTreeMap::new();
+        for pairs in members.values() {
+            for (pid, window) in pairs {
+                raw.insert(
+                    crate::runtime_types::window_id(*pid, window.wid),
+                    WindowRawFacts {
+                        role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                        subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                        modal: Some(false),
+                        resizable: Some(true),
+                        layer: Some(0),
+                        app_id: Some("com.example.app".to_owned()),
+                        activation_policy: Some(
+                            tiler_core::world_report::ActivationPolicy::Regular,
+                        ),
+                        host_hidden: Some(false),
+                    },
+                );
+            }
+        }
+        let memory = LifetimeMemory::empty();
+        let unreadable: BTreeMap<DomainKey, HoldReason> = BTreeMap::new();
+
+        fn command_report(
+            ctx: &NativeContext,
+            members: &BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
+            raw: &BTreeMap<String, WindowRawFacts>,
+            memory: &LifetimeMemory,
+            unreadable: &BTreeMap<DomainKey, HoldReason>,
+            obs: u64,
+            req: u64,
+            focused: &str,
+            seq: Option<u64>,
+            command: Option<WorldCommand>,
+        ) -> WorldReportV4 {
+            let req_id = format!("req-{req}");
+            let mut input = ReportInput::new(
+                "adapter-1",
+                "gen-1",
+                ctx,
+                obs,
+                req,
+                &req_id,
+                members,
+                memory,
+                &[],
+                unreadable,
+                &[],
+                focused,
+                false,
+            );
+            input.command_seq = seq;
+            input.command = command;
+            input.raw = raw;
+            let report = build_report(&mut input);
+            assert!(
+                validate_report_v4_reason(&report).is_none(),
+                "report validates"
+            );
+            report
+        }
+
+        let mut retained = RetainedCore::default();
+        let mut engine = WorldEngine::new_test_bound_with_capabilities(
+            "gen-1",
+            "adapter-1",
+            crate::world_connection::macos_capabilities(),
+        )
+        .expect("production capabilities bind");
+        let right = InputSemanticAction::FocusStep {
+            direction: InputDirection::Right,
+        };
+
+        // Admit with native focus on win1.
+        let first = command_report(
+            &ctx,
+            &members,
+            &raw,
+            &memory,
+            &unreadable,
+            1,
+            1,
+            "4242_7",
+            None,
+            None,
+        );
+        match engine.handle_report(&first) {
+            WorldOutcome::Accepted(_) => {}
+            other => panic!("admit accepted, got {other:?}"),
+        }
+
+        // Control 1: win1 -> win2 plans with one correlated focus effect
+        // and no command result (tiled success carries no result: the
+        // effect IS the outcome).
+        let (command, op) =
+            operation_command(&right, "4242_7", &mut retained).expect("focus route");
+        assert_eq!(op, OP_FOCUS);
+        let second = command_report(
+            &ctx,
+            &members,
+            &raw,
+            &memory,
+            &unreadable,
+            2,
+            2,
+            "4242_7",
+            Some(2),
+            Some(command),
+        );
+        let reply = match engine.handle_report(&second) {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("control step accepted, got {other:?}"),
+        };
+        assert!(
+            reply.command_result.is_none(),
+            "tiled success carries no result, got {:?}",
+            reply.command_result
+        );
+        let focus: Vec<_> = reply
+            .effects
+            .iter()
+            .filter(|effect| effect.kind == EffectKind::Focus)
+            .collect();
+        assert_eq!(focus.len(), 1, "one focus effect, got {:?}", reply.effects);
+        assert!(focus[0].is_explicit_focus_for(2), "correlated to seq 2");
+        assert_eq!(focus[0].target, WindowId("4242_8".to_owned()));
+
+        // Control 2: arrival on win2, then win2 -> win3.
+        let (command, _) = operation_command(&right, "4242_8", &mut retained).expect("focus route");
+        let third = command_report(
+            &ctx,
+            &members,
+            &raw,
+            &memory,
+            &unreadable,
+            3,
+            3,
+            "4242_8",
+            Some(3),
+            Some(command),
+        );
+        let reply = match engine.handle_report(&third) {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("control step accepted, got {other:?}"),
+        };
+        assert!(
+            reply.command_result.is_none(),
+            "tiled success carries no result, got {:?}",
+            reply.command_result
+        );
+        let focus: Vec<_> = reply
+            .effects
+            .iter()
+            .filter(|effect| effect.kind == EffectKind::Focus)
+            .collect();
+        assert_eq!(focus.len(), 1, "one focus effect, got {:?}", reply.effects);
+        assert!(focus[0].is_explicit_focus_for(3), "correlated to seq 3");
+        assert_eq!(focus[0].target, WindowId("4242_9".to_owned()));
+
+        // Exhausted edge: arrival on win3, then win3 + right retains.
+        // Accepted envelope, typed Rejected(OperationRefused), no focus
+        // effect, sequence consumed.
+        let (command, _) = operation_command(&right, "4242_9", &mut retained).expect("focus route");
+        let edge_command = command.clone();
+        let fourth = command_report(
+            &ctx,
+            &members,
+            &raw,
+            &memory,
+            &unreadable,
+            4,
+            4,
+            "4242_9",
+            Some(4),
+            Some(command),
+        );
+        let reply = match engine.handle_report(&fourth) {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("edge step reconciles Accepted, got {other:?}"),
+        };
+        assert_eq!(
+            reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused,
+            }),
+            "exhausted edge refuses typed operation-refused"
+        );
+        assert!(
+            !reply.command_consumed,
+            "fresh refusal is not a consumed replay"
+        );
+        assert!(
+            reply
+                .effects
+                .iter()
+                .all(|effect| effect.kind != EffectKind::Focus),
+            "no focus effect at the exhausted edge: {:?}",
+            reply.effects
+        );
+        // The typed refusal survives the genuine reply codec.
+        let suspended = reply.presentation.suspended_output.is_some();
+        let wire = encode_reply_v4(&DecodedReplyV4 {
+            reply,
+            wire: ReplyWireOptionals {
+                suspended_output_present: suspended,
+            },
+        })
+        .expect("edge reply encodes");
+        let back = decode_reply_v4_for_host(&wire, &crate::world_connection::macos_capabilities())
+            .expect("edge reply decodes");
+        assert_eq!(
+            back.reply.command_result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused,
+            }),
+            "typed refusal round-trips the wire"
+        );
+        assert!(
+            back.reply
+                .effects
+                .iter()
+                .all(|effect| effect.kind != EffectKind::Focus),
+            "no focus effect after wire round-trip: {:?}",
+            back.reply.effects
+        );
+        // At-most-once: replaying the refused seq never re-executes.
+        let replay = command_report(
+            &ctx,
+            &members,
+            &raw,
+            &memory,
+            &unreadable,
+            5,
+            5,
+            "4242_9",
+            Some(4),
+            Some(edge_command),
+        );
+        assert!(
+            matches!(
+                engine.handle_report(&replay),
+                WorldOutcome::CommandConsumed(_)
+            ),
+            "refused seq replays as CommandConsumed"
+        );
+    }
+}
 #[cfg(test)]
 mod trailing_command_tests {
     use super::*;
