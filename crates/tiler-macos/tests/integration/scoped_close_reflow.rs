@@ -238,13 +238,13 @@ fn meta(wid: u32, spaces: &[u64]) -> ScopedWindowMeta {
         fullscreen: false,
         minimized: false,
         hidden: false,
-        role: None,
-        subrole: None,
-        modal: None,
-        resizable: None,
-        layer: None,
-        app_id: None,
-        activation_policy: None,
+        role: Some(tiler_macos::classifier::ROLE_WINDOW.to_owned()),
+        subrole: Some(tiler_macos::classifier::SUBROLE_STANDARD.to_owned()),
+        modal: Some(false),
+        resizable: Some(true),
+        layer: Some(0),
+        app_id: Some("com.example.app".to_owned()),
+        activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
     }
 }
 
@@ -257,9 +257,13 @@ fn scoped_obs(
     revision: u64,
 ) -> ScopedObservation {
     let windows: Vec<ObservedWindow> = members.iter().map(|(window, _)| *window).collect();
-    let meta = members
+    let meta: Vec<ScopedWindowMeta> = members
         .iter()
-        .map(|(window, spaces)| meta(window.wid, spaces))
+        .map(|(window, spaces)| {
+            let mut row = meta(window.wid, spaces);
+            row.fullscreen = window.fullscreen;
+            row
+        })
         .collect();
     // Agreeing global evidence: frontmost + AX + CG all name the reporter.
     let (frontmost_pid, ax_focus) = match focused_wid {

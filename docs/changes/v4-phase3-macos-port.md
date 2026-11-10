@@ -176,11 +176,14 @@
 - The macOS-owned boundary now contains handshake/settings and report/reply
   codec dispatch; this is code presence, not native acceptance.
 - Offline checkpoint (2026-11-10): allowlisted locked/offline build and macOS
-  all-target test compilation pass without warnings. The last full library run
-  reported 1443 passed and 30 failed before subsequent fixture repairs. Affected
-  suites now have focused passing evidence, including 239 tests after dead-code
-  removal; this is not a fresh full-suite result. Modified-source formatting
-  and diff checks pass. Full gates and native acceptance remain pending.
+  all-target test compilation pass. A fresh full macOS library run passed all
+  1474 tests. After absorbing the upstream sticky-placement fix, core library
+  passed 2085 tests and the build, compilation and focused producer/restart
+  regressions passed again. Modified Rust sources pass edition-2024 formatting.
+  Integration fixtures remain under repair: 65 passed / 85 failed initially;
+  explicit neutral facts in scoped captures improve this to 83 passed / 67
+  failed. Missing synthetic raw facts and input codec routing remain to audit.
+  The mocked development shell suite passes 104/0. No native acceptance yet.
 - Raw settings checkpoint: focused acquisition/connection tests pass for CLI
   precedence, explicit null versus omission, invalid-field diagnostics with
   valid siblings retained, and revision/generation refusals. Core-effective
@@ -214,8 +217,10 @@
   Independent source review accepted the narrow guard; focused core tests pass.
    Core/protocol build and behavioral targets pass. The workspace unsafe
    allowlist test fails on three unchanged fixture attributes; protocol strict
-   clippy fails on two unchanged single-element loops. Core strict all-target
-   clippy passes. Attribution to the base is source comparison only. Full gate
+    clippy fails on two unchanged single-element loops. After upstream changes,
+    core strict clippy also reports eight `unnecessary_get_then_check` findings
+    in frame-policy tests. macOS strict clippy is blocked by those dependencies.
+    Attribution to the base is source comparison only. Full gate
    closure remains pending. See the
   [original blocker](macos-core-trailing-pager.md#core-blocker-same-report-minimized-target-during-an-inventory-gap).
 - M5: an observed appended native Space is no longer claimed as causal creation
@@ -234,7 +239,8 @@
 - Reply decoding uses actual macOS capabilities before sequencing/apply.
   Dead pre-v4 report/session policy plumbing is removed; normalization with
   remaining test readers is test-only. No compatibility report is retained.
-- Latest verification limits: a fresh full suite and post-integration gates
+- Latest verification limits: the integration suite remains red; a fresh full
+  library rerun after the latest upstream integration and complete gate closure
   remain pending. Focused passes do not establish a usable native surface.
 
 ## Transferable KDE lessons

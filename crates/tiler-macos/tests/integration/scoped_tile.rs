@@ -303,13 +303,13 @@ fn meta(wid: u32, spaces: &[u64]) -> ScopedWindowMeta {
         fullscreen: false,
         minimized: false,
         hidden: false,
-        role: None,
-        subrole: None,
-        modal: None,
-        resizable: None,
-        layer: None,
-        app_id: None,
-        activation_policy: None,
+        role: Some(tiler_macos::classifier::ROLE_WINDOW.to_owned()),
+        subrole: Some(tiler_macos::classifier::SUBROLE_STANDARD.to_owned()),
+        modal: Some(false),
+        resizable: Some(true),
+        layer: Some(0),
+        app_id: Some("com.example.app".to_owned()),
+        activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
     }
 }
 
@@ -322,10 +322,14 @@ fn scripted(
     focused: Option<u32>,
 ) -> ScopedBackendSnapshot {
     assert_eq!(windows.len(), spaces.len());
-    let meta = windows
+    let meta: Vec<ScopedWindowMeta> = windows
         .iter()
         .zip(spaces.iter())
-        .map(|(w, s)| meta(w.wid, s))
+        .map(|(w, s)| {
+            let mut row = meta(w.wid, s);
+            row.fullscreen = w.fullscreen;
+            row
+        })
         .collect();
     // Fake attests a fresh complete CG read for its own windows.
     let mut cg_owner_wids: Vec<u32> = windows.iter().map(|w| w.wid).collect();
@@ -423,9 +427,13 @@ fn scoped_obs(
     let mut cg_owner_wids: Vec<u32> = windows.iter().map(|w| w.wid).collect();
     cg_owner_wids.sort_unstable();
     cg_owner_wids.dedup();
-    let meta = members
+    let meta: Vec<ScopedWindowMeta> = members
         .iter()
-        .map(|(w, spaces)| meta(w.wid, spaces))
+        .map(|(w, spaces)| {
+            let mut row = meta(w.wid, spaces);
+            row.fullscreen = w.fullscreen;
+            row
+        })
         .collect();
     ScopedObservation {
         pid,
