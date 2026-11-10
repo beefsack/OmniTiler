@@ -16,8 +16,11 @@
   D28 are must-pass sub-legs of check 1, counted once. Underlay candidate C is a
   separate before-0.1 visual check. Multi-output M legs must pass before 0.1.
 - **MAC gate** marks the state-target user check required before starting the
-  macOS port ([ordering](../decisions/contract.md)). RC instead gates the macOS
-  reconnect/rehome slice and 0.1. Offline phase 2 completion alone clears neither.
+  macOS port ([ordering](../decisions/contract.md)). **Cleared 2026-11-10:** KDE
+  phase 2 complete offline and physical ST passed apart from desktop/stacking
+  and compositor-boundary recovery, deferred by the user until after macOS start.
+  Those sub-legs remain open KDE acceptance. RC instead gates the macOS
+  reconnect/rehome slice and 0.1; it is not cleared by ST.
 - Disposition of the 54 historical KDE checks: **53 retained user-run, 0 fully
   closed by scenario/offline coverage, 1 retired (K35)**. Partial coverage is listed
   below; no result from this records work is native acceptance. Six obsolete
@@ -136,8 +139,10 @@
 - **E5 - bounded state restart**:
   [state record](v4-phase2-kde-state-targets.md):609-648 reports injected prior-tile
   sticky restart/off PASS with native joins/focus and both readiness gates.
-  Prior-float native repeat, physical input, native-menu release, compositor
-  restart recovery and full storage/protocol proof are not closed. See
+  E10 adds user-reported physical prior-tile AND prior-float orderly restart/off
+  PASS, not isolated desktop/stacking preimage recovery. Detailed native-menu
+  release, compositor restart recovery and full storage/protocol proof remain
+  open. See
   [discriminators](../spec/reference-outcomes.md):104-121.
 - **E6 - geometry versus scale change**:
   [scale record](v4-phase2-kde-scaled-metrics.md):87-104 reports current-scale
@@ -169,6 +174,18 @@
   publish the allocation under core clamp/burst authority, not the old adapter
   raised-minimum target. **User 2026-11-09** approved that replacement as A4 below;
   all native minimum/origin/convergence journeys and M18's must-pass class remain.
+- **E10 - physical ST, user report 2026-11-10**:
+  [results and limits](v4-phase2-kde-state-targets.md#2026-11-10-physical-state-target-acceptance)
+  record physical overlay-stack/base restore, sticky from tile and prior float,
+  explicit tile from sticky, and orderly restart/off from both prior modes PASS.
+  Native-menu combinations and earlier state-chord spam were reported correct
+  in summary, not individual release or counted-delivery proofs. Logs from this
+  run were not captured for the record; outcomes are verbal user reports, not
+  new E1 runner execution or refreshed E2/E3 offline evidence.
+  [Desktop/stacking and KWin-restart recovery](v4-phase2-kde-state-targets.md#deferred-st-recovery)
+  remain open, deferred until after macOS start. The
+  [sticky-from-tile placement defect](v4-phase2-kde-state-targets.md#sticky-from-tile-placement-defect)
+  remains open P1 KDE, not a macOS start gate. Full storage/protocol proof stays open.
 - **None** in a coverage cell means no matching v4 acceptance evidence identified
   in this audit, not proof there are no relevant unit tests. Generic admission,
   maximize or disconnect journeys do not prove fixed-client, G-05, G-06, G-37,
@@ -176,8 +193,9 @@
 
 ## Release inventory: all 57 checks
 
-Each active KDE row below is an unchecked executable user-run leg; K35 is retained
-as a retired historical row, not a runnable check. E references are
+Each active KDE row below retains unchecked user-run requirements; bounded
+results do not close unreported permutations. K35 is retained as a retired
+historical row, not a runnable check. E references are
 partial coverage only; source links preserve the original acceptance scope.
 Rows 3-5 remain in the 57-count reconciliation but are not KDE work.
 
@@ -188,7 +206,7 @@ Rows 3-5 remain in the 57-count reconciliation but are not KDE work.
 | 3 W | [Windows placement](windows-physical-checklist.md) | Windows-only; unchanged, not retired or accepted here. |
 | 4 W | [Windows parity/settings/tray](windows-physical-checklist.md) | Windows-only; unchanged, not retired or accepted here. |
 | 5 K | [COSMIC confirmation](pending-live-checks.md#original-backlog-lines-2372-2377) | Reference-only: on COSMIC intentionally float B, maximize, unfloat once; record clear-then-fresh-admit. Not a KDE/product gate; remains pending separately. |
-| 6 M | E1 state-targets partial; E8 not clean acceptance; [source](pending-live-checks.md#original-backlog-lines-2380-2394) | [ ] Meta+M/native-restore/repress and inverse; sticky native-unstick/restick/repress, tiled and floating origins. Hold/release Meta+M and Meta+Shift+G; record callback count, visible cycling, release/repress. Preserve false-refusal evidence; do not continue around it. |
+| 6 M | E1 state-targets partial; E8 not clean acceptance; E10 physical state transitions/menu/spam user summary PASS, not each native-release permutation or held-key callback counts; [source](pending-live-checks.md#original-backlog-lines-2380-2394) | [ ] Meta+M/native-restore/repress and inverse; sticky native-unstick/restick/repress, tiled and floating origins. Hold/release Meta+M and Meta+Shift+G; record callback count, visible cycling, release/repress. Preserve false-refusal evidence; do not continue around it. |
 | 7 M | E2 ordinary unfloat, not raced/fixed clear; [source](pending-live-checks.md#original-backlog-lines-2395-2404) | [ ] Float B, native-maximize, Meta+G once: clear then fresh tile with settled focus/frame. Repeat ordinary nonmax, fixed explicit override, refused/raced clear and later-press recovery. Physical delivery required. |
 | 8 M | E5 sticky, not fixed override; [source](pending-live-checks.md#original-backlog-lines-2405-2420) | [ ] Tile genuine fixed client; separately orderly controller and Planner restart with it alive; preserve override. Check hint/predicate changes, hidden clients, re-float/close/prune and degraded/old/unmatched fallback. Correlate hydrate/persist/clear ACKs; ordinary clients gain no tile persistence. Exact-site D7 refusal is diagnostic, not a pass. |
 | 9 M | E1 state-targets ordinary exit only; [source](pending-live-checks.md#original-backlog-lines-2421-2430) | [ ] Born-fullscreen first exit: both predicates, changed current hints, non-fixed/fixed/prior-fixed-float and real game. Verify classification, later identity and zero inappropriate geometry/focus/stacking/above/max-clear writes to fixed exits; no writes while fullscreen. |
@@ -214,7 +232,7 @@ Rows 3-5 remain in the 57-count reconciliation but are not KDE work.
 | 29 K | None; [source](pending-live-checks.md#original-backlog-lines-2649-2657) | [ ] Check worktree tray panel Active/NeedsAttention. In separate packaged session check one login tray, restart after loss, second invocation exit, logout stop/no loop, dev coexistence and once-only user-journal diagnostics. |
 | 30 M | None; [source](pending-live-checks.md#original-backlog-lines-2658-2659) | [ ] On one output follow linked process-loss/sleep plan with fixture tiling. Verify no stuck state/input and recovery/readiness; forced-crash cases nested only. |
 | 31 M | E7 partial, not paint; [source](pending-live-checks.md#original-backlog-lines-2660-2665) | [ ] Fresh-session effect discovery/endpoint and border paint; fullscreen/any maximize suppress outlines. Run focus/continuity/mismatch row below; retain combined trace if disappearance recurs. |
-| 32 M | E3/E5 prior-tile restart partial; [source](pending-live-checks.md#original-backlog-lines-2666-2669) | [ ] Sticky on, orderly restart/re-enable, sticky off from tile and intentional float. Repeat native-menu unknown-origin sticky release with retained home. Verify native membership/above and selected prior-mode rules; compositor-restart recovery separately. |
+| 32 M | E3/E5 injected partial; E10 physical orderly restart/sticky-off from tile AND intentional float user-reported PASS, no retained logs. Unknown-origin native-menu release, full native/storage proof and compositor recovery remain open; [source](pending-live-checks.md#original-backlog-lines-2666-2669) | [x] User-reported sticky on, orderly dev-session restart, sticky off from tile and intentional float (2026-11-10). [ ] Repeat native-menu unknown-origin sticky release with retained home; retain native membership/above and prior-mode evidence. [ ] Compositor-restart recovery separately, deferred until after macOS start. |
 | 33 M | E3 selection does not prove hide/reveal; [source](pending-live-checks.md#original-backlog-lines-2670-2672) | [ ] Hidden startup/open/move: native focus/current desktop unchanged. No rendered-state claim from membership exclusion, `hidden=false` or Wayland `visible:null`; unsupported shown observer stays TBD. |
 | 34 M | E6 geometry, not cost gate; [source](pending-live-checks.md#original-backlog-lines-2673-2677) | [ ] Run linked fullscreen residual/gaming-cost baseline; change resolution/work area/scale with overlay isolation and restoration. Record native convergence plus cost measurement, not only correctness. |
 | 35 K (retired) | A1 approved **User 2026-11-09**; [source](pending-live-checks.md#original-backlog-lines-2678-2680) | RETIRED standalone Custom Tile component check. Product tiling/drag/native safety remains under 25/36/47; do not revive the removed harness or unsafe structural probes. |
@@ -249,7 +267,7 @@ drop the additional permutations. No new release classification is assigned.
 
 | ID / gate / source | Executable user-run steps and expected evidence | Existing v4 coverage / disposition |
 | --- | --- | --- |
-| ST / **MAC gate**, overlaps 6-11,19,32; [state slice](v4-phase2-kde-state-targets.md):378-410,609-648 | [ ] Physical Meta+M on, Meta+F11 on/off, Meta+M off: maximize remains beneath fullscreen, base restores. Float on/off: fresh admission and sibling reflow, above released. Sticky on/off and sticky-on/orderly restart/off from tile AND prior float: all-desktop/above then correct prior-mode release. Repeat native maximize/fullscreen/above/all-desktop menu controls where offered; record each native-origin release separately. Unsupported menu equivalent is BLOCKED, not an invented OmniTiler float menu action. Separately verify desktop/stacking recovery and compositor-boundary recovery. | **FAIL, 2026-11-09.** [Physical triage](v4-phase2-kde-state-targets.md#2026-11-09-physical-state-target-triage): maximize/fullscreen and sticky failed; independent float on/off reported PASS; later unfloat after failed sticky reported rejected, cause unresolved. All four logs report degraded namespace-mismatched preimage seeds and stale native-state drops despite delivered commands. Remaining user-run steps (reported as 4-6) NOT RUN. MAC start gate open. E1/E2/E3/E5 partial only; menu/storage/recovery lanes remain open. |
+| ST / **MAC start gate cleared 2026-11-10**, overlaps 6-11,19,32; [current state results](v4-phase2-kde-state-targets.md#2026-11-10-physical-state-target-acceptance) | [x] Physical maximize/fullscreen stack and base restore, sticky on/off from tile and prior float, Meta+G from sticky to current-workspace tile, orderly restart/sticky-off from BOTH prior modes. [x] Offered native maximize/fullscreen/above/all-desktop menu controls handled (user summary only). [ ] Retain detailed native-origin release permutations and full storage/protocol proof. [ ] Desktop/stacking recovery and compositor-boundary recovery remain open, deferred until after macOS start. | **User-run physical ST PASS, 2026-11-10, apart from deferred recovery sub-legs; MAC start gate cleared.** E10 verbal user outcomes, no logs captured for this run; menu releases not reported individually. Supersedes the [2026-11-09 physical failures](v4-phase2-kde-state-targets.md#2026-11-09-physical-state-target-triage) for the reported sequences, not blanket closure of overlapping rows. [Sticky-from-tile placement defect](v4-phase2-kde-state-targets.md#sticky-from-tile-placement-defect) remains open P1 KDE, not a start gate. [Deferred recovery decision and limits](v4-phase2-kde-state-targets.md#deferred-st-recovery) preserve open KDE acceptance. |
 | RC / **macOS reconnect/rehome slice and 0.1 gate**, overlaps 51; [native remainder](v4-phase2-kde-physical-reconnect.md#native-only-remainder):214-234 | [ ] Record complete identity rows/bindings for two physical outputs with distinct fixture workspaces; focus removed output, unplug/reconnect, observe displacement/focus/current-content return. Repeat focused survivor (its view/focus retained). During absence explicitly move a fixture out; no pullback. Changed connector only with readable identity, ambiguity holds. Three outputs: nearest survivor by disconnect-time geometry. Supported minimized move: D23 destination restore and return-still-minimized, then restore; no stale source slot. Afterwards ordinary tiling/selection/arrival/focus/paint/state transitions. Restore only test-owned state. | **PARTIAL, 2026-11-09; leg 2 FAIL.** [User-run real-window result](v4-phase2-kde-physical-reconnect.md#2026-11-09-native-reconnect-triage): leg 1 return reported PASS, unplug merge/focus qualified; leg 2 survivor focus retained, F failed to return and explicitly moved T3 was pulled back; leg 3 ordinary tiling reported PASS only. Identity/binding and causal payloads absent from summary logs; remaining variants NOT RUN. RC leg-2 fix and merge decision must land before the macOS reconnect/rehome slice and 0.1, not port start. Unsupported native minimized route remains TBD. |
 | SC / N4 overlap; [scale slice](v4-phase2-kde-scaled-metrics.md):80-104 | [ ] Two tiles and loaded-effect observation; change scale once through display UI. Verify actual notification, logical gaps/styles, native frame/allocation convergence and border/underlay repaint. Repeat N4 overlay/fixed-float arms and work-area/mode changes in 34. Restore setting; fractional readback is a separate witness, not guaranteed by a fractional output scale. | E6 current geometry/crossing PASS, dynamic change/paint open. No new resize-minima policy selected. |
 | FB / 31,44 overlap; [focus slice](v4-phase2-kde-focus-feedback.md):389-454, [discriminator](../spec/reference-outcomes.md#anchored-border-in-flight-replacement) | [ ] With effect loaded, alternate native focus including formerly non-active fixture; minimize/restore, maximize/unmaximize; physically drag and edge/corner resize, release/cancel. Correlate native frame motion, world traffic, chain/witness joins and paint: follow without broker round trip, hide/re-arm as eligible; record unexpected hidden interval count/duration separately from expected vetoes. Version-mismatch all-surface quiet-hide with tiling continuing requires an isolated supported mismatched-presentation probe; if unavailable, BLOCKED, do not fabricate a command or load ABI experiment in host session. | E7 nested wire/frame agreement only. Full K5/R20, mismatch and real gesture dropout evidence open; old batch's drag-border skip is not a waiver. |
@@ -319,5 +337,7 @@ the current inventory is 56, including 53 active KDE checks.
 - No M-check is retired or downgraded; partial producer/injected samples cannot
   replace physical/game/multi-output acceptance. K24 and K38 remain active K checks.
 - Missing menu/probe/native capability is BLOCKED/TBD, not acceptance by absence.
-  Record ST and RC results per sub-leg: ST gates macOS start; RC gates its
-  reconnect/rehome slice and 0.1.
+  Record ST and RC results per sub-leg: ST cleared macOS start on 2026-11-10
+  apart from user-deferred desktop/stacking and compositor-boundary recovery,
+  which remain open KDE acceptance; RC still gates its reconnect/rehome slice
+  and 0.1.

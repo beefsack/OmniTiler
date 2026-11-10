@@ -821,3 +821,54 @@
 - The linked record updates the same three traced diagnostic sequences: expect
   a successful seed and fresh native arming, not namespace-driven stale drops.
   No live rerun occurred; ST and the separate sticky/unfloat item remain open.
+
+## 2026-11-10 physical state-target acceptance
+
+- **User-run ST PASS apart from the deferred recovery sub-legs; macOS start gate
+  cleared.** Current build included fixes `6c92aa2a` and `262af8b5`. The user ran
+  `just dev trace`, physical keys, an appended workspace and two disposable
+  windows. These results supersede the 2026-11-09 physical failures for the
+  sequences below, not their retained diagnostic evidence.
+- Evidence limit: outcomes were reported verbally by the user. Logs from this
+  run were not captured for the record. No independent native readback,
+  readiness/identity joins, storage acknowledgements or protocol settlement proof
+  is claimed. Earlier captured logs remain identified by basename above; they
+  are not evidence of this run.
+
+| Leg | User-reported result |
+| --- | --- |
+| A - overlay stack | PASS: Meta+M on, Meta+F11 on, Meta+F11 off returned to maximized; Meta+M off restored the base tile, sibling unchanged. |
+| B - sticky from tile | PASS: Meta+Shift+G floated the subject and kept it above, sibling reflowed, subject visible on other workspaces; second press released all-desktop/above and re-tiled. Placement defect remains below. |
+| C - sticky from prior float | PASS: Meta+G floated; sticky-on preserved the float frame; sticky-off stayed floating in the same frame; Meta+G tiled and released above. |
+| D - explicit tile from sticky | PASS: sticky from tile, then Meta+G cleared sticky and tiled on the current workspace. |
+| E - orderly restart | PASS from both tiled and prior-float origins: Ctrl-C stopped the dev session, then `just dev trace` restarted it; sticky was retained and sticky-off honored the prior mode. Not a KWin restart or isolated native-preimage recovery proof. |
+| F - native menu | PASS, user summary: Alt+F3 offered maximize, fullscreen, keep above and all-desktops and they were handled; sticky-on then menu all-desktops-off was handled. Other combinations were reported correct. Each native-origin release was not reported individually, so the detailed release matrix is not closed. |
+| Earlier state-chord spam | User reported Meta+G, Meta+M, Meta+F11 and Meta+Shift+G spam all fine. No counts, command correlation or latency evidence; not full rapid-input acceptance. |
+
+### Deferred ST recovery
+
+- **User decision 2026-11-10:** defer ST desktop/stacking recovery and
+  compositor-boundary (KWin restart) recovery until after the macOS start. These
+  sub-legs no longer gate port start and remain open KDE acceptance, not PASS.
+  Leg E proves only the user-observed sticky intent/prior-mode outcome across
+  an orderly development-session restart; it does not separately prove the
+  transient restoration of native desktop/stacking preimages.
+- KDE phase 2 is complete offline and physical ST has passed apart from these
+  deferred sub-legs, so the [port start gate](../decisions/contract.md#contract-authority-and-v4-migration)
+  conditions are met. This does not close RC, the broader release inventory,
+  native-menu permutations or full storage/protocol proof.
+
+### Sticky-from-tile placement defect
+
+- **Open P1 KDE defect, user-reported 2026-11-10; not a macOS start gate:**
+  Meta+Shift+G from TILE retains the tiled position, whereas ordinary Meta+G
+  uses the centered 60% work-area frame. The
+  [intentional-float placement decision](../decisions/window-state.md#floating-membership-and-placement)
+  specifies that first-float fallback (later retained placement), and
+  [sticky policy](../decisions/window-state.md#sticky-floating) says tiled-origin
+  sticky floats first while float-origin preserves frame. Tile-origin sticky
+  should therefore use the float placement rather than retain the tile frame.
+  No fix or independent reproduction is claimed.
+- This note remains active for this defect, the deferred recovery sub-legs,
+  detailed native-origin release coverage and full storage/protocol proof.
+  No code, tests or live actions were run for this records update.

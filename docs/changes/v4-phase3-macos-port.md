@@ -6,11 +6,14 @@
   usable increments modelled on KDE's [dogfoodable slices](archive/v4-phase2-kde-port.md#later-dogfoodable-slices).
   The linked contracts, decisions and native records own the detail; this plan
   neither replaces them nor reopens approved behavior.
-- **Not started; start gate pending.** Under the [migration decision](../decisions/contract.md#contract-authority-and-v4-migration),
-  KDE phase 2 must be complete offline, including remaining v3 removal (done),
-  and the user-run KDE state-target check must pass (pending in the
-  [single acceptance checklist](kde-v4-acceptance-checklist.md#additional-kde-acceptance-and-diagnostic-legs),
-  ST, marked MAC gate). The KDE reconnect (RC) leg-2 fix and merge decision
+- **Not started; start gate cleared 2026-11-10.** Under the [migration decision](../decisions/contract.md#contract-authority-and-v4-migration),
+  KDE phase 2 is complete offline, including remaining v3 removal, and the
+  [user-run physical ST acceptance passed 2026-11-10](v4-phase2-kde-state-targets.md#2026-11-10-physical-state-target-acceptance)
+  apart from desktop/stacking and compositor-boundary (KWin restart) recovery.
+  The user deferred those sub-legs until after macOS start; they remain open KDE
+  acceptance, not start gates. ST is recorded in the
+  [single acceptance checklist](kde-v4-acceptance-checklist.md#additional-kde-acceptance-and-diagnostic-legs).
+  The KDE reconnect (RC) leg-2 fix and merge decision
   must land before this port reaches its reconnect/rehome slice and before 0.1. Other KDE acceptance remains separate, not implicitly
   cleared by opening this port.
 - Complete the [pre-port backlog items](../backlog.md#open-work): review the
