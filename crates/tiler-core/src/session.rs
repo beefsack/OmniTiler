@@ -106,6 +106,7 @@ mod world;
 
 pub mod capacity;
 pub(crate) use group_alloc::GroupAllocator;
+pub(crate) use ops::float::centered_float_rect;
 
 /// Test-only re-export of the shared entry-edge ranking helper (the sole
 /// out-of-module caller is the `#[cfg(test)]` selector suite).

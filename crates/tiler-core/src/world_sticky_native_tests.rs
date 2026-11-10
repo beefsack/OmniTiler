@@ -2,13 +2,14 @@
 
 use crate::boundary::CoreCommand;
 use crate::directional::{OutputId, WindowId};
+use crate::geometry::Rect;
 use crate::intent_data::{IntentData, encode_intent_data};
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
     AttemptOutcome, CommandRejectKind, IntentRecord, IntentWrite, ScopeAuthority, StateProperty,
     WorldCommand, WorldReportV4,
 };
-use crate::world_v4_support_tests::{accepted, fact, float_fact, report_full, screen};
+use crate::world_v4_support_tests::{accepted, desire, fact, float_fact, report_full, screen};
 
 fn bootstrap(windows: Vec<crate::world_report::WindowFact>) -> WorldReportV4 {
     report_full(
@@ -68,6 +69,13 @@ fn toggle_float(window: &str) -> WorldCommand {
     })
 }
 
+fn toggle_float_rect(window: &str, rect: Rect) -> WorldCommand {
+    WorldCommand::Operation(CoreCommand::ToggleFloat {
+        window: window.to_owned(),
+        float_rect: Some(rect),
+    })
+}
+
 fn native_engine() -> WorldEngine {
     WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation")
 }
@@ -123,6 +131,159 @@ fn native_on_from_tile_records_false_prior_and_floats() {
     assert_eq!((value, seq), (true, Some(1)));
     assert_eq!(authority, ScopeAuthority::Controlled);
     assert!(reply.windows.iter().all(|row| row.visibility.is_none()));
+}
+
+#[test]
+fn native_sticky_on_from_tile_takes_centered_sixty_percent_placement() {
+    let mut engine = native_engine();
+    accepted(&mut engine, &bootstrap(vec![fact("win-a", "out-a", 0)]));
+    let reply = accepted(
+        &mut engine,
+        &cmd(
+            2,
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            set_sticky("win-a", true),
+        ),
+    );
+    assert!(reply.command_result.is_none());
+    let (value, authority, seq) = target_row(&reply, "win-a").expect("sticky target");
+    assert_eq!((value, seq), (true, Some(1)));
+    assert_eq!(authority, ScopeAuthority::Controlled);
+    // Same intentional-float placement as the ordinary float toggle over
+    // the 800x560 work area: centered 60% fallback over the inset work
+    // area, never the tile frame.
+    let expected = Rect {
+        x: 165,
+        y: 117,
+        w: 470,
+        h: 326,
+    };
+    let row = desire(&reply, "win-a");
+    assert!(row.floating, "sticky floats: {row:?}");
+    assert_eq!(
+        row.effective_frame,
+        Some(expected),
+        "centered placement: {row:?}"
+    );
+    assert_eq!(
+        row.frame_operation.as_deref(),
+        Some("op-1"),
+        "one-shot placement token: {row:?}"
+    );
+    let id = WindowId("win-a".to_owned());
+    let key = engine
+        .engine
+        .domain_keys()
+        .into_iter()
+        .next()
+        .expect("domain");
+    let session = engine.engine.session(&key).expect("session");
+    assert_eq!(session.floating_geometry(&id), Some(expected));
+    assert_eq!(session.retained_float_geometry(&id), Some(expected));
+}
+
+#[test]
+fn native_sticky_on_from_tile_reuses_retained_float_placement() {
+    let mut engine = native_engine();
+    accepted(&mut engine, &bootstrap(vec![fact("win-a", "out-a", 0)]));
+    // Distinct user placement (not the centered fallback, not the tile
+    // frame): reusing it proves the durable retained read.
+    let user = Rect {
+        x: 300,
+        y: 200,
+        w: 250,
+        h: 180,
+    };
+    let fallback = Rect {
+        x: 165,
+        y: 117,
+        w: 470,
+        h: 326,
+    };
+    assert_ne!(user, fallback);
+    let placed = accepted(
+        &mut engine,
+        &cmd(
+            2,
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            toggle_float_rect("win-a", user),
+        ),
+    );
+    assert_eq!(
+        desire(&placed, "win-a").effective_frame,
+        Some(user),
+        "float publishes the user placement"
+    );
+    let unplaced = accepted(
+        &mut engine,
+        &cmd(3, 2, vec![fact("win-a", "out-a", 0)], toggle_float("win-a")),
+    );
+    assert!(!desire(&unplaced, "win-a").floating, "unfloat retiles");
+    let reply = accepted(
+        &mut engine,
+        &cmd(
+            4,
+            3,
+            vec![fact("win-a", "out-a", 0)],
+            set_sticky("win-a", true),
+        ),
+    );
+    assert!(reply.command_result.is_none());
+    let (value, authority, seq) = target_row(&reply, "win-a").expect("sticky target");
+    assert_eq!((value, seq), (true, Some(3)));
+    assert_eq!(authority, ScopeAuthority::Controlled);
+    let row = desire(&reply, "win-a");
+    assert!(row.floating, "sticky floats: {row:?}");
+    assert_eq!(
+        row.effective_frame,
+        Some(user),
+        "sticky reuses the retained user placement, not the fallback: {row:?}"
+    );
+    assert_eq!(
+        row.frame_operation.as_deref(),
+        Some("op-3"),
+        "one-shot placement token: {row:?}"
+    );
+}
+
+#[test]
+fn native_sticky_on_from_float_preserves_observed_frame() {
+    let mut engine = native_engine();
+    accepted(
+        &mut engine,
+        &bootstrap(vec![float_fact("win-a", "out-a", 0, 0)]),
+    );
+    let reply = accepted(
+        &mut engine,
+        &cmd(
+            2,
+            1,
+            vec![float_fact("win-a", "out-a", 0, 0)],
+            set_sticky("win-a", true),
+        ),
+    );
+    assert!(reply.command_result.is_none());
+    let row = desire(&reply, "win-a");
+    assert!(row.floating, "sticky floats: {row:?}");
+    // Float-origin preserves the observed frame by issuing no placement:
+    // never the centered fallback, never a one-shot token.
+    assert_eq!(
+        row.frame_operation, None,
+        "no placement token for float-origin: {row:?}"
+    );
+    assert!(
+        row.effective_frame.is_none()
+            || row.effective_frame
+                == Some(Rect {
+                    x: 0,
+                    y: 0,
+                    w: 200,
+                    h: 200,
+                }),
+        "float-origin preserves frame: {row:?}"
+    );
 }
 
 #[test]

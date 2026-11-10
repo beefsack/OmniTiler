@@ -22,8 +22,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::boundary::{CoreCommand, CoreEvent};
 use crate::directional::{WindowId, WorkspaceId};
 use crate::engine::Engine;
+use crate::geometry::Rect;
 use crate::intent_data::{IntentData, encode_intent_data};
-use crate::session::{DomainKey, OutputDomain};
+use crate::session::{DomainKey, OutputDomain, centered_float_rect};
 use crate::world_commands::CommandApplied;
 use crate::world_engine::{
     KIND_IN_FLIGHT, KIND_OPERATION, KIND_SCOPE_HELD, MSG_IN_FLIGHT, MSG_OPERATION, MSG_SCOPE_HELD,
@@ -820,6 +821,10 @@ impl WorldEngine {
                 rect: None,
                 no_space: false,
             });
+            // Workspace-driven float landing carries no explicit-float
+            // mark: spend any outstanding sticky-on placement token so a
+            // later retiling restores the saved tile base.
+            staged.retained_floats.retain(|held| held.window != *window);
             staged.note_command(command_seq);
             *self = staged;
             return CommandApplied::NoEffect;
@@ -884,6 +889,9 @@ impl WorldEngine {
                 rect: None,
                 no_space: false,
             });
+            // The direct clear bypasses `finish_operation_event`, so spend
+            // any outstanding sticky-on placement token here.
+            staged.retained_floats.retain(|held| held.window != *window);
             staged.reset_frame_burst(window);
             staged.note_command(command_seq);
             *self = staged;
@@ -1007,6 +1015,48 @@ impl WorldEngine {
         };
         let was_float = self.is_exception_window_any(window);
         let mut staged = self.clone();
+        // A sticky clear spends any outstanding sticky-on placement
+        // token up front: the sweep below must stage exactly as if no
+        // token existed (a kept float holds its frame under ordinary
+        // rules; a tile lands with no frame write). Withdrawing late
+        // would leave the token visible to classification and to the
+        // unfloat fallback's early return.
+        if !desired {
+            staged.retained_floats.retain(|held| held.window != *window);
+        }
+        // Tiled-origin sticky-on takes intentional-float placement (user
+        // 2026-11-10): durable retained geometry else the centered 60%
+        // work-area fallback, matching the ordinary float toggle.
+        // Float-origin preserves the observed frame.
+        let tile_origin_on = desired && !was_float;
+        let float_placement: Option<Rect> = if tile_origin_on {
+            if let Some(retained) = staged
+                .engine
+                .session(dest)
+                .and_then(|session| session.retained_float_geometry(window))
+            {
+                Some(retained)
+            } else {
+                staged
+                    .staged
+                    .domains
+                    .iter()
+                    .find(|domain| domain.key == *dest)
+                    .and_then(|report| {
+                        let staged_output = OutputDomain {
+                            id: dest.output.clone(),
+                            workspace: dest.workspace.clone(),
+                            bounds: report.bounds,
+                            gap: report.gap,
+                            adjacent: BTreeMap::new(),
+                        };
+                        crate::world_engine::inset_world_domain(&staged_output, report.outer_gap)
+                    })
+                    .map(|inset| centered_float_rect(inset.bounds))
+            }
+        } else {
+            None
+        };
         // A floating destination cannot host a tile: an off-to-tile
         // intent lands floated there with its base tile intent saved, and
         // no session is forced until a retiling. Every other path lands
@@ -1057,12 +1107,20 @@ impl WorldEngine {
             data: Some(encode_intent_data(&save)),
         });
         let rect = staged.staged.facts.get(window).and_then(|fact| fact.rect);
+        // A tiled-origin sticky-on carries the intentional-float placement
+        // as its member geometry (falling back to the observed frame only
+        // when no placement resolved); every other path keeps the frame.
+        let geometry = if tile_origin_on {
+            float_placement.or(rect)
+        } else {
+            rect
+        };
         match staged.members.get_mut(window) {
             Some(state) => {
                 state.home = dest.clone();
                 state.floating = landing_float;
                 state.minimized = false;
-                state.geometry = rect;
+                state.geometry = geometry;
             }
             None => {
                 staged.members.insert(
@@ -1071,7 +1129,7 @@ impl WorldEngine {
                         home: dest.clone(),
                         floating: landing_float,
                         minimized: false,
-                        geometry: rect,
+                        geometry,
                     },
                 );
             }
@@ -1224,6 +1282,35 @@ impl WorldEngine {
         if !landing_float {
             staged.engine.commit_fixed_tile_override(window);
         }
+        if tile_origin_on && let Some(target) = float_placement {
+            // Seed the session exception plus durable retained placement,
+            // then retain the one-shot frame token so the row carries the
+            // placement exactly once (mirrors the ordinary ToggleFloat
+            // commit in `finish_operation_event`). A floating-scope landing
+            // has no session exception, so a failed adopt keeps the
+            // membership-only outcome with no token.
+            if staged
+                .engine
+                .session_mut(dest)
+                .is_some_and(|session| session.adopt_float_placement(window, target))
+            {
+                staged.retained_floats.retain(|held| held.window != *window);
+                staged.reset_frame_burst(window);
+                staged
+                    .retained_floats
+                    .push(crate::world_engine::RetainedFloat {
+                        operation_id: format!("op-{command_seq}"),
+                        command_seq,
+                        window: window.clone(),
+                        target,
+                        source: rect,
+                        output: dest.output.clone(),
+                        workspace: dest.workspace.0.clone(),
+                        ambiguous: false,
+                        pending: None,
+                    });
+            }
+        }
         staged.reset_frame_burst(window);
         staged.note_command(command_seq);
         *self = staged;
@@ -1317,6 +1404,11 @@ impl WorldEngine {
         // (already sticky) and every OFF/clear never touched it.
         if meta.requested && meta.prior_restored_sticky.is_none() {
             staged.sticky_visible_rev.remove(&window);
+        }
+        // A refused ON spends the placement token its transition retained;
+        // OFF/clear rollbacks never minted one.
+        if meta.requested {
+            staged.retained_floats.retain(|held| held.window != window);
         }
         let home = meta.home.clone();
         let floating = if meta.requested {

@@ -4034,8 +4034,9 @@ fn selection_composed_sticky_members_join_frozen_arrival_with_precedence() {
         .collect();
     members.sort();
     assert_eq!(members, vec!["w2".to_owned(), "w3".to_owned()]);
-    // The floated sticky member carries no desire frame: null waives frame
-    // equality only, never the need for a readable live frame in proof.
+    // Tile-origin sticky-on takes intentional-float placement (the
+    // centered 60% fallback here): the frozen arrival carries the
+    // published desire frame for the floated sticky member.
     assert_eq!(
         binding
             .members
@@ -4043,7 +4044,7 @@ fn selection_composed_sticky_members_join_frozen_arrival_with_precedence() {
             .find(|member| member.window.0 == "w3")
             .expect("w3 frozen")
             .frame,
-        None
+        frames["w3"]
     );
     assert!(
         !engine
@@ -4112,7 +4113,7 @@ fn selection_composed_sticky_members_join_frozen_arrival_with_precedence() {
         Some("w2"),
         vec![
             bracket("w2", "out-a", 5, frames["w2"]),
-            bracket("w3", "out-a", 5, Some(rect(200, 0, 40, 90))),
+            bracket("w3", "out-a", 5, frames["w3"]),
         ],
     );
     let _ = accepted(

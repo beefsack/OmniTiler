@@ -196,7 +196,9 @@ impl super::super::Session {
 
 /// Centered 60% work-area rectangle, matching the adapter's previous static
 /// placement: `max(1, floor(0.6 * bounds))` size centered on the bounds.
-pub(in crate::session) fn centered_float_rect(bounds: Rect) -> Rect {
+/// Shared with the sticky-on transition so tiled-origin sticky takes the
+/// same intentional-float placement as the ordinary float toggle.
+pub(crate) fn centered_float_rect(bounds: Rect) -> Rect {
     let w = ((i64::from(bounds.w) * 6) / 10).max(1) as i32;
     let h = ((i64::from(bounds.h) * 6) / 10).max(1) as i32;
     Rect {

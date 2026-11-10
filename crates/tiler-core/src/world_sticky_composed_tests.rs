@@ -9,6 +9,7 @@
 use crate::boundary::CoreCommand;
 use crate::connection::HostCapabilities;
 use crate::directional::{OutputId, WindowId};
+use crate::geometry::Rect;
 use crate::intent_data::{IntentData, decode_intent_data, encode_intent_data};
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
@@ -99,6 +100,13 @@ fn toggle_float(window: &str) -> WorldCommand {
     WorldCommand::Operation(CoreCommand::ToggleFloat {
         window: window.to_owned(),
         float_rect: None,
+    })
+}
+
+fn toggle_float_rect(window: &str, rect: Rect) -> WorldCommand {
+    WorldCommand::Operation(CoreCommand::ToggleFloat {
+        window: window.to_owned(),
+        float_rect: Some(rect),
     })
 }
 
@@ -220,6 +228,183 @@ fn set_sticky_on_from_float_keeps_true_prior() {
             .get(&WindowId("win-a".to_owned()))
             .and_then(|fact| fact.sticky),
         None
+    );
+}
+
+#[test]
+fn sticky_on_from_tiled_takes_centered_sixty_percent_placement() {
+    let mut engine = composed_engine();
+    accepted(&mut engine, &bootstrap(vec![cfact("win-a", "out-a", 0)]));
+    let reply = accepted(
+        &mut engine,
+        &cmd(
+            2,
+            1,
+            vec![cfact("win-a", "out-a", 0)],
+            set_sticky("win-a", true),
+        ),
+    );
+    assert!(reply.command_result.is_none());
+    // Intentional-float placement over the 800x560 work area, matching the
+    // ordinary float toggle: no retained geometry exists yet, so the
+    // centered 60% fallback wins (never the observed tile frame). The
+    // fallback centers over the outer-gap-inset work area, exactly as the
+    // session computes it for Meta+G.
+    let expected = Rect {
+        x: 165,
+        y: 117,
+        w: 470,
+        h: 326,
+    };
+    let row = desire(&reply, "win-a");
+    assert!(row.floating, "sticky floats: {row:?}");
+    assert_eq!(
+        row.effective_frame,
+        Some(expected),
+        "centered placement: {row:?}"
+    );
+    assert_eq!(
+        row.frame_operation.as_deref(),
+        Some("op-1"),
+        "one-shot placement token: {row:?}"
+    );
+    let id = WindowId("win-a".to_owned());
+    let key = engine
+        .engine
+        .domain_keys()
+        .into_iter()
+        .next()
+        .expect("domain");
+    let session = engine.engine.session(&key).expect("session");
+    assert_eq!(session.floating_geometry(&id), Some(expected));
+    assert_eq!(session.retained_float_geometry(&id), Some(expected));
+}
+
+#[test]
+fn sticky_on_from_tiled_reuses_retained_float_placement() {
+    let mut engine = composed_engine();
+    accepted(&mut engine, &bootstrap(vec![cfact("win-a", "out-a", 0)]));
+    // A distinct user-moved/resized placement: not the centered fallback
+    // below and not the observed tile frame, so reusing it proves the
+    // durable retained read instead of a recomputed fallback.
+    let user = Rect {
+        x: 300,
+        y: 200,
+        w: 250,
+        h: 180,
+    };
+    let fallback = Rect {
+        x: 165,
+        y: 117,
+        w: 470,
+        h: 326,
+    };
+    assert_ne!(user, fallback);
+    let placed = accepted(
+        &mut engine,
+        &cmd(
+            2,
+            1,
+            vec![cfact("win-a", "out-a", 0)],
+            toggle_float_rect("win-a", user),
+        ),
+    );
+    match &placed.command_result {
+        Some(CommandResult::Float { rect, .. }) => assert_eq!(
+            *rect,
+            Some(user),
+            "explicit float carries the user placement"
+        ),
+        other => panic!("expected float landing result, got {other:?}"),
+    }
+    assert_eq!(
+        desire(&placed, "win-a").effective_frame,
+        Some(user),
+        "float publishes the user placement"
+    );
+    let unplaced = accepted(
+        &mut engine,
+        &cmd(
+            3,
+            2,
+            vec![cfact("win-a", "out-a", 0)],
+            toggle_float("win-a"),
+        ),
+    );
+    assert!(!desire(&unplaced, "win-a").floating, "unfloat retiles");
+    let id = WindowId("win-a".to_owned());
+    let key = engine
+        .engine
+        .domain_keys()
+        .into_iter()
+        .next()
+        .expect("domain");
+    assert_eq!(
+        engine
+            .engine
+            .session(&key)
+            .expect("session")
+            .retained_float_geometry(&id),
+        Some(user),
+        "unfloat keeps the durable user placement"
+    );
+    let reply = accepted(
+        &mut engine,
+        &cmd(
+            4,
+            3,
+            vec![cfact("win-a", "out-a", 0)],
+            set_sticky("win-a", true),
+        ),
+    );
+    let row = desire(&reply, "win-a");
+    assert!(row.floating, "sticky floats: {row:?}");
+    assert_eq!(
+        row.effective_frame,
+        Some(user),
+        "sticky reuses the retained user placement, not the fallback: {row:?}"
+    );
+    assert_eq!(
+        row.frame_operation.as_deref(),
+        Some("op-3"),
+        "one-shot placement token: {row:?}"
+    );
+}
+
+#[test]
+fn sticky_on_from_float_preserves_observed_frame() {
+    let mut engine = composed_engine();
+    accepted(
+        &mut engine,
+        &bootstrap(vec![cfloat("win-a", "out-a", 0, 0)]),
+    );
+    let reply = accepted(
+        &mut engine,
+        &cmd(
+            2,
+            1,
+            vec![cfloat("win-a", "out-a", 0, 0)],
+            set_sticky("win-a", true),
+        ),
+    );
+    let row = desire(&reply, "win-a");
+    assert!(row.floating, "sticky floats: {row:?}");
+    // Float-origin preserves the observed frame by issuing no placement:
+    // never the centered fallback, never a one-shot token.
+    assert_eq!(
+        row.frame_operation, None,
+        "no placement token for float-origin: {row:?}"
+    );
+    assert!(
+        row.effective_frame.is_none()
+            || row.effective_frame
+                == Some(Rect {
+                    x: 0,
+                    y: 0,
+                    w: 200,
+                    h: 200,
+                }),
+        "float-origin preserves frame: {row:?}"
     );
 }
 

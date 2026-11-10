@@ -1,5 +1,14 @@
 # V4 phase 2: KDE state targets
 
+## Status
+
+- Active: implementation complete offline; user-run physical ST acceptance passed
+  2026-11-10 apart from the deferred recovery sub-legs. The macOS start gate is
+  clear. Desktop/stacking and compositor-boundary recovery and full storage/protocol
+  proof remain open (the sticky-from-tile placement defect is fixed and
+  re-checked 2026-11-10); see the
+  [current results and limits](#2026-11-10-physical-state-target-acceptance).
+
 ## Goal and scope
 
 - Port core-authorized maximize, fullscreen, native sticky and persistent above
@@ -872,3 +881,43 @@
 - This note remains active for this defect, the deferred recovery sub-legs,
   detailed native-origin release coverage and full storage/protocol proof.
   No code, tests or live actions were run for this records update.
+- **Placement clarification, User 2026-11-10:** the existing producer test
+  deliberately retained the tile frame, but this was an implementation choice,
+  not a recorded placement decision. Tiled-origin sticky-on now follows
+  intentional-float placement: retained float frame, else centered 60% fallback.
+  Float-origin keeps its frame; sticky-off still honors prior mode, and ordinary
+  float toggle on sticky still tiles. Shared core covers KDE and Windows;
+  macOS sticky remains unsupported. State-target, restart and arrival contracts
+  are unchanged.
+- **Offline correction:** shared sticky transition selects and retains the
+  intentional-float placement with ordinary one-shot frame authority. Sticky
+  clear and refused acquisition withdraw the placement token. An initial
+  implementation left tokens visible to float classification during sticky-off
+  and workspace-driven retile; withdrawing before staging restores those paths.
+  Frozen-arrival coverage now carries the authorized sticky placement frame
+  rather than waiving frame equality, without changing arrival policy.
+- **Regression evidence:** before the fix, first-placement native/composed tests
+  failed with no centered frame or placement token, and retained placement had
+  no write token. Six regressions now pass, covering native/composed first
+  placement, distinct retained placement and float-origin no-write preservation;
+  existing prior-mode, refusal, retile and sticky-to-tile controls also pass.
+  The producer journey now expects the same centered frame as ordinary float.
+- **Verification:** `cargo test -p tiler-core -p tiler-protocol -p omnitiler --
+  --skip workspace_unsafe_posture`: core 2575, protocol 288, omnitiler 341 passed;
+  no failures. `cargo fmt --all -- --check` and KWin typecheck passed; KWin
+  1224/1224 and KDE scenario runner 130/130 passed. Independent diff review
+  found no blocking issues; targeted sticky coverage passed 203 tests, frozen
+  arrival 1 test, and producer journeys 18 tests. The code fix is complete
+  offline. No live re-check is claimed; physical placement acceptance remains
+  pending.
+- A final concurrent verification run passed Rust and the runner but reached
+  KWin 1223/1224: an unchanged migration test read its ordinary-float setup as
+  still tiled before any sticky operation. That test passed standalone, then
+  the full standalone KWin suite passed 1224/1224 without code changes. A
+  load-sensitive setup/settlement race is suspected, not proven; no test oracle
+  or timeout was weakened.
+- **Physical re-check, user-run 2026-11-10: PASS.** All four re-check points
+  passed: fresh tiled Meta+Shift+G centres like Meta+G; tile-origin sticky after
+  a moved float restores the retained frame; float-origin sticky on/off keeps
+  its frame; Meta+G on sticky tiles. Verbal user report; logs not captured for
+  the record. The defect is closed.

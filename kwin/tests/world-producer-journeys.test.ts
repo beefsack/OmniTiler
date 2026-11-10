@@ -744,14 +744,16 @@ describe("world genuine-producer sticky journeys", () => {
                 "post-actuation capture parks the settled target as Hold/unreadable",
             );
             appliedMatchesReply(h, lastDescribeReply(h));
-            // Tiled-origin sticky floats first (window-state decision) but
-            // keeps the observed tile frame as its float placement: core
-            // sets member geometry from the observed fact rect
-            // (`run_sticky_transition` in crates/tiler-core/src/world_sticky.rs),
-            // never the centered first-time fallback the float toggle
-            // uses. The lone survivor refills the full single-tile row
-            // (gap arithmetic over the 1920x400 client area).
-            assert.deepEqual(frameOf(winById(h, "win-a")), framesBefore.get("win-a"), "sticky-on retains the tile frame as the float placement");
+            // Tiled-origin sticky takes intentional-float placement
+            // (window-state decision): the centered 60% work-area fallback
+            // over the 1920x400 client area, matching the float journey
+            // above. The real core publishes [389,85,1142,230] with the
+            // one-shot frame token while the take still resolves null
+            // (sticky takes carry no command_result). The lone survivor
+            // refills the full single-tile row (gap arithmetic over the
+            // 1920x400 client area).
+            const stickyFrame = frameOf(winById(h, "win-a"));
+            assert.deepEqual([stickyFrame.x, stickyFrame.y, stickyFrame.w, stickyFrame.h], [389, 85, 1142, 230], "sticky-on takes the centered fallback placement");
             assert.deepEqual(frameOf(winById(h, "win-b")), { x: 8, y: 8, w: 1904, h: 384 }, "lone survivor refills the full row");
             // Sticky-off leg returns the subject to tile via fresh admission.
             h.handle.requestSticky();

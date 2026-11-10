@@ -127,6 +127,7 @@ Column legs below use separately stated column Givens with the same identities a
   `S(S-pan-cmds)`; host journey queued.
 - Then Ours KDE: All managed workspaces of output, float-only; Win+Shift+G; origin-honoring off (tiled fresh-admits, float stays float); `D(D-dec-ww)` KDE + `D(D-sticky)` Windows scoped proof
 - Then Ours Windows: All managed workspaces of output, float-only; Win+Shift+G; origin-honoring off (tiled fresh-admits, float stays float); `D(D-dec-ww)` KDE + `D(D-sticky)` Windows scoped proof
+- OmniTiler product choice (User 2026-11-10): tiled-origin sticky-on uses retained float placement, otherwise the centered 60% work-area fallback, matching ordinary float toggle; float-origin sticky-on preserves frame. This applies to both KDE and Windows, not a reference-WM placement claim; see [sticky decision](../../decisions/window-state.md#sticky-floating).
 - Variant hook: V-STICKY-SCOPE.
 
 <a id="r-flt-03-backfill-float-out-survivor-widths-scrolling"></a>
