@@ -22,6 +22,8 @@
 //! Approved `allow(unsafe_code)` roots (the only ones):
 //! - `crates/tiler-windows/src/ffi/mod.rs` (child modules inherit the allow)
 //! - `crates/tiler-macos/src/ffi.rs`
+//! - `crates/tiler-live-fixture/src/pipe_win.rs`
+//! - `crates/tiler-live-fixture/src/menu_macos.rs`
 //!
 //! Run: `cargo test --locked -p tiler-core --test unsafe_guardrail`
 //! (also runs inside `cargo test --workspace`). No dependencies beyond `std`.
@@ -51,6 +53,7 @@ const APPROVED_ALLOW_ROOTS: &[&str] = &[
     "crates/tiler-windows/src/ffi/mod.rs",
     "crates/tiler-macos/src/ffi.rs",
     "crates/tiler-live-fixture/src/pipe_win.rs",
+    "crates/tiler-live-fixture/src/menu_macos.rs",
 ];
 
 /// Crates allowed a standalone `[lints.rust] unsafe_code = "deny"`.
@@ -1439,6 +1442,10 @@ mod e2e_tests {
             ),
             (
                 "crates/tiler-live-fixture/src/pipe_win.rs",
+                "#![allow(unsafe_code)]\n",
+            ),
+            (
+                "crates/tiler-live-fixture/src/menu_macos.rs",
                 "#![allow(unsafe_code)]\n",
             ),
         ];
