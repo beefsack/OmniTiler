@@ -175,6 +175,29 @@
   remain separate acceptance work.
 - The macOS-owned boundary now contains handshake/settings and report/reply
   codec dispatch; this is code presence, not native acceptance.
+- Current offline follow-up (2026-11-11; test execution reported, source and
+  retained logs reviewed): the three superseded lifecycle expectations are
+  repaired without production changes. Full macOS library: raw exit 0,
+  **1519 passed / 0 failed**. Scoped Native integration fakes now provide
+  explicit neutral facts through the real macOS capability handshake, not
+  all-supported capabilities or production raw-fact shortcuts. Original
+  behavior assertions remain: `tile_entry` 8/0 and `runtime_freshness` 9/0
+  (both raw exit 0); `runtime_phase1` 34/5 (raw exit 101). A termination-focus
+  case also varied between earlier runs; stability is not established.
+  The last full integration baseline was 89/61 (raw exit 101), before these
+  repairs; no combined post-repair result is claimed. Classification (18
+  baseline failures), own-bundle gate (1), and scoped topology/selection (2)
+  remain untriaged. Fresh core library and combined strict clippy remain unrun.
+- Protocol follow-up: the first full run passed 228 tests before a launch
+  stall at `target_lanes`; a second passed 109 before `intent_wire`. Neither
+  produced a final raw exit code (tool timeouts, not suite passes).
+  `target_lanes --list`, each of its two tests individually, and both together
+  subsequently passed with raw exit 0; both bodies took 0.00 seconds.
+  `intent_wire --list` reproduced the stall after a 0.15-second completed
+  build, before harness output. An active-process sample stayed entirely in
+  `_dyld_start`: this is a pre-main launch/runtime stall, not an identified
+  hanging test body or slow compilation. Why dyld stalls remains unknown.
+  Full protocol verification remains incomplete.
 - Offline checkpoint (2026-11-10): allowlisted locked/offline build and macOS
   all-target test compilation pass. A fresh full macOS library run passed all
   1474 tests. After absorbing the upstream sticky-placement fix, core library
@@ -262,13 +285,41 @@
   gate closure remains pending. Focused passes do not establish a usable native
   surface.
 
-### Blocker: positive close with no observed focus
+### Blocker: suppressed admission focus changes the next implicit subject
 
-- Minimal case: admit A/B in separate app lifetimes, focus A, positively close
+- Historical minimal offline case: observe A focused; admit ordinary B to its right
+  while observing A still focused; suppress automatic native admission focus;
+  issue explicit focus-right. `admission_never_steals_focus_but_explicit_focus_dispatches`
+  reproduces no queued focus request instead of one request for B.
+- Source/log agreement: `world_publish.rs::assemble_publication_rows` calls
+  `world_sends.rs::record_published_focus`, which records admission effects in
+  the canonical implicit-focus slot. macOS
+  `world_dispatch.rs::dispatch_focus_effects` deliberately spends but does not
+  actuate admission effects. The next command log names B (`1001_12`) as subject
+  while observed focus remains A (`1001_11`), with `internal=unchanged` and
+  `wire=operation-refused`. `focus-accepted` only counts the accepted envelope;
+  it does not prove a successful command or a ticket/effect correlation bug.
+- Resolution approved 2026-11-11: macOS shall actuate published admission focus
+  through [one retained focus request for every cause](retained-focus-requests.md),
+  replacing admission suppression without changing candidate selection. Core's
+  execution-time logical cursor is separate from observed foreground; adapters
+  need only the latest publication, with no current-command ticket requirement.
+  Q1-Q3 fix any-batch non-focus preservation, same-report cause precedence and
+  fresh-hover identity. Implementation and per-cause skipped-publication proofs
+  remain pending; the red reproduction above is not a new result for that target.
+  Preserve FIFO implicit subjects, selection dependencies and native safety.
+  No assertion weakening is authorized. The other four phase-1 focus failures
+  are not yet causally attributed to this case; native acceptance remains open.
+- Minimal discriminator and unsupported outcomes are retained in the
+  [platform-fit table](../spec/reference-outcomes.md#v4-macos-platform-fit-discriminators).
+
+### Superseded blocker: positive close with no observed focus
+
+- Historical minimal case: admit A/B in separate app lifetimes, focus A, positively close
   A while its app remains alive, and report complete AX/CG absence plus B's
   ordinary facts with no new observed focus. Three scoped close/reflow tests
-  fail: survivor desires have no frames and the occupied scope holds Unreadable.
-  The existing covering close journey remains a distinct passing case.
+  failed: survivor desires had no frames and the occupied scope held Unreadable.
+  The covering close journey was a distinct passing case.
 - Independent offline review instrumented an isolated source copy and reported
   the exact complete close report and shared sweep refusal: `focus-mismatch`,
   followed by `Hold(Unreadable)`, zero frames. No repository source was changed
@@ -284,6 +335,36 @@
   occupancy proof (currently unknown occupancy prevents removal); unsupported
   capabilities and unpersisted intent writes remain fail-closed. These checks
   do not close native M3/M5/M6 or FIFO/render acceptance.
+
+### Draft user-run off-current Space recovery check
+
+- Assessment only; unrun and not full held/unreadable acceptance. Resume after
+  the open offline focus blocker and verification gates are resolved. Use the
+  [signed-bundle preflight, bounded launch and stop route](core-owned-close-refocus.md#user-run-macos-native-acceptance)
+  with a fresh log directory, replacing TextEdit scope with
+  `io.github.omnitiler.live-fixture`. Do not overlap product instances.
+1. Follow the [fixture bundle setup and ownership joins](../../crates/tiler-live-fixture/README.md#macos-bundle-launch-and-scope);
+   create two disposable ordinary fixture windows on an existing user Space.
+   Do not create/remove Spaces or move unrelated windows for this check.
+2. Start the fixture-only bounded product run. After admission/reflow settles,
+   retain fixture `get`/`list`, run ownership, and signed-route
+   `scope-inspect --scope io.github.omnitiler.live-fixture` output: native window
+   ids, Space membership, AX frames and CG bounds. Keep the same fixture process
+   and both windows alive throughout.
+3. Physically switch to another existing user Space, leave the fixture windows
+   untouched, and switch back before the bounded run expires. If the fixture
+   remains visible on the other Space, the off-current leg was not established.
+4. Obtain fresh complete scoped readback. Expect the same owned native windows
+   to remain and tile normally; compare independent AX/CG frames and report
+   disappearance, held/non-recovery state, jumps or jank rather than retrying.
+5. Let the bounded product run stop; require `shutdown_clean:true` and released
+   interception/border. Shut down only the verified fixture instance and verify
+   process/window/socket absence using its documented cleanup route.
+- Evidence limit: native ids/frames plus visual recovery do not prove retained
+  core lifetime identity or zero setters during the away interval. This does
+  not induce arbitrary AX unreadability. Full acceptance still needs joined
+  core-lifetime/publication and no-write evidence; do not infer it from physical
+  switching, callbacks or `scope-inspect`'s launch-date presence bit.
 
 ## Transferable KDE lessons
 
