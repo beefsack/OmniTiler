@@ -1244,11 +1244,21 @@ fn trailing_lifecycle_owns_only_created_proven_empty_never_baseline() {
         "absent owned reports residue: {residue:?}"
     );
     assert!(residue[0].1.contains("absent"), "{residue:?}");
-    // Below-floor protection: owned empty but removal would breach MIN.
+    // Shared single-spare minimum (MIN_WORKSPACES == 1): an owned empty
+    // with a two-Space row removes (one survivor satisfies the floor).
     let small = TrailingLifecycle::new(&[1]);
     let mut small = small;
     small.adopt_created(21).unwrap();
     let (remove, residue) = small.cleanup_plan(&[1, 21], 1, &|_| Ok(true));
+    assert_eq!(remove, vec![21], "single-spare floor keeps one survivor");
+    assert!(residue.is_empty(), "{residue:?}");
+    // Floor isolation at the minimum: a lone owned Space never removes
+    // below one (pure-logic check with a non-member current so the
+    // current rule does not fire first; production current always names
+    // a row member and reports "current" before reaching the floor).
+    let mut lone = TrailingLifecycle::new(&[]);
+    lone.adopt_created(21).unwrap();
+    let (remove, residue) = lone.cleanup_plan(&[21], 99, &|_| Ok(true));
     assert!(remove.is_empty(), "MIN floor holds");
     assert!(!residue.is_empty());
     // Release after verified removal forgets narrowly; unknown refuses.

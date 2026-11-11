@@ -2676,17 +2676,18 @@ fn joined_home_send_arrival() -> (RetainedCore, WorldSession, WorldEngine) {
 /// Discriminating send-to-occupied-existing causal case: native row
 /// `[1, 277]`, both windows homed on Space 1, numbered send-2 follow
 /// accepted, subject arrival on 277, then one stable observation-only
-/// reply. The converged reply must carry the occupied target plus a
-/// logical-only trailing spare (unbound, last in ring order) and zero
-/// native creation desires: the ordinary trailing spare never mints a
-/// host-owned desire, so the adapter correctly creates no physical Space
-/// and the indicator (a native-row projection) correctly shows no third
-/// entry. A missing physical trailing desktop after this send is the
-/// selected core policy, not an adapter drop and not a missing creation
-/// seam (the desire-gated creation seam already exists for explicitly
-/// needed backing and is exercised by the select/trailing-send paths).
+/// reply. The converged reply carries the occupied target plus a
+/// logical-only trailing spare (unbound, last in ring order) and exactly
+/// one eager native creation desire naming that spare: the approved
+/// dynamic-workspace policy backs every trailing spare immediately, so
+/// the adapter creates the physical Space through the desire-gated
+/// creation seam (exercised by the select/trailing-send paths) while the
+/// indicator (a native-row projection) still shows no third entry until
+/// the desktop exists. A missing physical trailing desktop before the
+/// adapter executes the desire is the selected core policy, not an
+/// adapter drop.
 #[test]
-fn send_to_occupied_existing_keeps_spare_logical_without_native_desire() {
+fn send_to_occupied_existing_keeps_spare_logical_with_eager_backing_desire() {
     let (mut retained, mut session, mut engine) = joined_home_send_arrival();
     let w7 = repro_observed(7);
     let w8 = repro_observed(8);
@@ -2744,15 +2745,26 @@ fn send_to_occupied_existing_keeps_spare_logical_without_native_desire() {
         "trailing spare is logical-only, never a physical desktop"
     );
 
-    // Actual native creation desires: none. The spare is empty, unviewed,
-    // untargeted and unoccupied, so `logical_needs_backing` is false and
-    // no host-owned append is authorized. The adapter therefore consumes
-    // nothing here (no desire-gated create runs; select/send keep mapping
-    // positionally over the native row and the indicator keeps projecting
-    // the two native entries).
-    assert!(
-        reply.native_creations.is_empty(),
-        "ordinary trailing spare mints no native creation desire"
+    // Actual native creation desires: exactly one eager backing desire
+    // for the trailing spare. The spare is empty, unviewed, untargeted
+    // and unoccupied, yet `logical_needs_backing` requests backing for
+    // the trailing logical immediately, so the adapter executes one
+    // desire-gated create (positional select/send keep mapping over the
+    // native row and the indicator keeps projecting the two native
+    // entries until the desktop exists).
+    assert_eq!(
+        reply.native_creations.len(),
+        1,
+        "eager spare backing mints exactly one desire"
+    );
+    let spare_desire = &reply.native_creations[0];
+    assert_eq!(
+        spare_desire.logical_workspace, rows[2].id,
+        "the desire names the spare logical"
+    );
+    assert_eq!(
+        spare_desire.target_output, output,
+        "the desire names the reply output"
     );
 
     // Adapter indicator consumption: the occupancy projection maps the
@@ -2920,7 +2932,11 @@ fn send_numbered_3_to_spare_executes_through_desire_backed_lane() {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("stable observation applies, got {other:?}"),
     };
-    assert!(stable_reply.native_creations.is_empty());
+    assert_eq!(
+        stable_reply.native_creations.len(),
+        1,
+        "stable reply carries the eager spare backing desire"
+    );
     let output = OutputId(crate::topology::output_key(1));
     let spare_id = stable_reply
         .workspaces
@@ -2929,6 +2945,14 @@ fn send_numbered_3_to_spare_executes_through_desire_backed_lane() {
         .expect("converged ring carries the unbound spare")
         .id
         .clone();
+    assert_eq!(
+        stable_reply.native_creations[0].logical_workspace, spare_id,
+        "the stable desire names the converged spare"
+    );
+    assert_eq!(
+        stable_reply.native_creations[0].target_output, output,
+        "the stable desire names the reply output"
+    );
 
     // Subject/current focus grounded: 4242_7 is homed on current 277.
     retained.observed_focus = Some(WindowId("4242_7".to_owned()));
@@ -2989,6 +3013,10 @@ fn send_numbered_3_to_spare_executes_through_desire_backed_lane() {
         .iter()
         .find(|desire| desire.logical_workspace == spare_id)
         .expect("targeted spare mints a backing desire");
+    assert_eq!(
+        desire.operation_id, stable_reply.native_creations[0].operation_id,
+        "one stable per-logical desire: replay idempotent, never re-minted"
+    );
     // Owner bind: the unbound target binds the desire but no SID, so the
     // numbered lane cannot pin it - the desire-gated creation seam lives
     // on the trailing-0 lane only.
