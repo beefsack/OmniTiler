@@ -330,9 +330,10 @@
 3. Coordinated KDE/macOS/Windows consumer and producer support with genuine
    producer -> codec -> core -> latest-reply -> mocked actuator journeys.
 4. Full affected offline/conformance gates; independent review of native
-   actuation and public-contract changes. Then separately authorized fixture-only
-   native legs under each platform live guide, followed by user physical/latency
-   acceptance. Do not turn source inspection or mock setters into native proof.
+   actuation and public-contract changes. macOS native acceptance is the user-run
+   physical procedure below, replacing the automated close-focus harness route
+   (User 2026-11-11). KDE/Windows native acceptance remains separate under their
+   live guides. Do not turn source inspection or mock setters into native proof.
 
 ## Acceptance and required discriminators
 
@@ -458,6 +459,91 @@
   it is not a clean baseline-comparison result.
 - No product, tap or fixture-window integration was launched. The created Space
   and awake helper were removed, Mission Control is closed and original focus
-  is observed. Preparation is not marked passed; a safe held owned-Space route
-  and the baseline-comparison discrepancy remain to resolve before close legs.
-  No close-to-refocus timing samples or slice-1 native acceptance exist yet.
+  is observed. Preparation remains FAIL; the held owned-Space route and
+  baseline-comparison discrepancy were not resolved. Automated close-focus
+  harness work is superseded by the user-run route below, not by a retroactive
+  preparation pass. No close-to-refocus timing samples or slice-1 native
+  acceptance exist yet.
+
+### User-run macOS native acceptance
+
+1. Use the existing signed product bundle built from `52d3ff22`, not the fixture
+   bundle or a directly executed binary. Its recorded executable SHA-256 is
+   `28e5bb52f45f2c5355c2f91b0d4280de71684b2d5e9e0da87915e589d384f079`.
+   The later preparation record and this lint/documentation update do not change
+   product behavior, so this bundle needs no rebuild. From the build-output root
+   containing `target/macos/OmniTilerProbe.app`, verify it and make a fresh log
+   directory. Stop if verification fails, the hash differs or the directory
+   already exists; do not overwrite an earlier run:
+
+   ```sh
+   codesign --verify --deep --strict target/macos/OmniTilerProbe.app
+   shasum -a 256 target/macos/OmniTilerProbe.app/Contents/MacOS/tiler-macos
+   mkdir target/macos/close-refocus-manual
+   open -n --stdout target/macos/close-refocus-manual/preflight.json --stderr target/macos/close-refocus-manual/preflight.err target/macos/OmniTilerProbe.app --args preflight
+   ```
+
+2. Once preflight has finished, read its output:
+
+   ```sh
+   cat target/macos/close-refocus-manual/preflight.json
+   cat target/macos/close-refocus-manual/preflight.err
+   ```
+
+   Require `ax_trusted:true`, `post_event_access:true`, unlocked session and
+   inactive Secure Input; stop on a permission shortfall or unexpected error.
+   Save work first. Stop any existing tiler through its own normal stop route;
+   do not overlap instances. Open three disposable ordinary TextEdit document
+   windows on one ordinary Space, mentally labelled A, B and C. Keep other
+   TextEdit documents out of this check: the scope covers the entire app.
+
+3. Launch a bounded, TextEdit-only product run through LaunchServices, using the
+   same signed-bundle route as the [launch docs](../live-macos-testing.md#required-preflight):
+
+   ```sh
+   open -n --stdout target/macos/close-refocus-manual/tile.jsonl --stderr target/macos/close-refocus-manual/tile.err target/macos/OmniTilerProbe.app --args tile --user-start --scope com.apple.TextEdit --input tap --seconds 120 --log verbose
+   ```
+
+   This manages ordinary app windows, not fixtures, for at most 120 seconds plus
+   startup/teardown. It does not manage the controlling terminal. Wait for tiling
+   to settle before judging close behavior. If the run expires before all legs,
+   retain its logs and use a fresh log directory for another bounded run.
+
+4. Tiled close: physically focus A, then C, then B. Close B's window normally
+   (not Quit TextEdit); leave the pointer still and make no further input until
+   focus settles. Expect C, the pre-close MRU tiled survivor, to receive focus;
+   A/C keep their order and reflow. Repeat with a fresh B if useful, always
+   re-establishing A,C,B focus order.
+
+5. Float close: with A/C tiled, create a fresh B, focus it and press Ctrl+G to
+   float it. Focus A, C, then floating B; close B normally. Expect tiled C to
+   receive focus, with A/C tile frames unchanged by closing the float.
+
+6. Sole close: close the other test documents, leaving only one on this Space;
+   focus and close that last document. Expect the same workspace to remain shown
+   with no focused managed window, no Space switch and no OmniTiler activation
+   on another workspace/output. A frontmost windowless app or native host
+   fallback is not a request to force-clear native foreground.
+
+7. Optional, only with two displays already available: leave a test document D
+   on the other display's shown Space and repeat the sole-close leg on the first.
+   Expect the emptied source workspace/output to stay selected, with no tiler
+   cross-output focus jump to D. Do not attach/reconfigure displays for this
+   check; report native fallback separately if it occurs.
+
+8. For each leg, report actual final focus, whether refocus felt immediate or
+   delayed (rough milliseconds only if you can estimate), any wrong-window
+   flash/double focus, reflow jump, flicker or other jank, and whether it repeats.
+   Include app/leg, source revision, single/two-display leg, and the two tile log
+   files with document content/titles redacted. Physical feel is the acceptance
+   result; these observations alone do not prove exact setter counts or separate
+   a matching native fallback from a tiler correction.
+
+9. Stop by letting the bounded run expire. Inspect `tile.jsonl`/`tile.err` for
+   terminal outcome and `shutdown_clean:true`, and confirm interception and the
+   active border have gone. `open` returning, or Ctrl+C in its terminal, does not
+   stop the app. If urgent or hung, use Activity Monitor to quit only the product
+   process matching the `tilestarted` PID in this run's log; report forced/unclean
+   teardown rather than success. Close only the disposable test documents after
+   the product stops, retaining logs for the report. Window geometry is left in
+   place on stop; no automatic restoration is promised.
