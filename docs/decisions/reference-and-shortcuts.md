@@ -3,7 +3,7 @@
 ### Reference outcome authority
 - Decision: Reference-WM outcome matrix records minimal action sequences and per-WM outcomes as evidence feeding functional spec; existing selections remain authoritative and outcomes become supported variants only when explicitly selected, with setting when applicable. Keep index plus per-area files, stable scenario IDs/precise fixtures/actions/observations; new scenarios use Given/When/Then with one Then per each of eight existing references, niri, PaperWM, karousel, paneru, Ours KDE and Ours Windows. Qualify unsupported fixtures/actions and owner journeys; unknowns TBD. Evidence expands corpus, never selected behavior or consensus denominator.
 - Why: not recorded.
-- Assumes / revisit if: wide existing tables unchanged until separate migration; columns/viewport notation model-qualified; reference baselines use pinned shipped defaults and named variants; PaperWM.spoon corroboration only.
+- Assumes / revisit if: wide existing tables unchanged until separate migration; columns/viewport notation model-qualified. New reference-WM findings use each WM's latest stable release tag, shipped defaults and named variants (currently COSMIC epoch-1.10.0, Hyprland v0.56.2, i3 4.25.1, sway 1.12). Existing development-commit matrix findings stay at their recorded pins; re-check and relabel only when a decision relies on them again. KDE's separate 6.6-floor/latest-stable policy is unchanged. PaperWM.spoon corroboration only.
 - Status: active, 2026-10-06
 - Evidence: [reference outcomes](../spec/reference-outcomes.md).
 
@@ -17,7 +17,7 @@
 ### Functional specification and unresolved work
 - Decision: 2026-10-11 triage D01/D03/D09/D10/D12/D13/D16/D22/D23/D25/D26/D27/D28 became user-decided 2026-10-12. Functional spec remains one file; requirements normative only when selected by recorded decision, otherwise OPEN/PROVISIONAL. Workflows transfer across Linux/Windows/macOS. Add shortest discriminating scenario for each uncovered ambiguity; read source when confident, else leave user's test TBD. Defer GNOME Shell/Mutter/wlroots source pinning and fixture wording (302 residual cells/92 rows; 40 current host-source candidates, 38 PaperWM/2 sway) until a specific decision needs them; not active P1. Defer live-test reference VMs until after 0.1 or tabbed-stack design.
 - Why: not recorded.
-- Assumes / revisit if: compact citations resolve to dated tests, pinned source line ranges or linked docs; no versions inferred from later checkouts. Matrix hook names are provisional, not product commitments. Remove backlog rows tracking only physical checks; keep pending status in change records; removal never implies acceptance. AGENTS.md remains operational guidance.
+- Assumes / revisit if: compact citations resolve to dated tests, pinned source line ranges or linked docs. Every new reference-WM finding carries its source version inline next to the finding (for example, `i3 4.25.1 src/config.c:229`); older/development evidence remains revision-bound and potentially outdated, with no version inferred from a later checkout. Re-check and relabel existing evidence only when a decision relies on it again. Matrix hook names are provisional, not product commitments. Remove backlog rows tracking only physical checks; keep pending status in change records; removal never implies acceptance. AGENTS.md remains operational guidance.
 - Status: active, 2026-10-10
 - Evidence: [residual ledger](../changes/archive/reference-source-fill-remaining.md).
 

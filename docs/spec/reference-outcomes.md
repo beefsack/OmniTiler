@@ -15,6 +15,10 @@ behavior or ambiguity (reference WMs disagree, or our behavior is undecided).
 Reuse existing coverage rather than duplicating a scenario with a
 trivially different start state.
 
+New reference-WM findings use latest stable release tags and inline source-version
+labels under the [reference source policy](../decisions/reference-and-shortcuts.md#reference-outcome-authority).
+Existing citation keys retain historical pins until relied on again; KDE policy is unchanged.
+
 ### Pager order before window facts
 
 | Minimal action sequence | Selected outcome / implementation evidence | Unproven native/reference outcome |

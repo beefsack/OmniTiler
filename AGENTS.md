@@ -11,6 +11,7 @@
   `git show <pin>:<path>`, `git grep <pattern> <pin>`, or a worktree instead
   of web-fetching source files. Web links remain fine as citations in records.
 - Add a missing source clone as a sibling directory with full history.
+- New reference-WM matrix findings use latest stable release tags and inline source-version labels; see [reference source policy](docs/decisions/reference-and-shortcuts.md#reference-outcome-authority). Existing pins remain historical; KWin's separate policy is unchanged.
 
 ## Live KWin/Plasma Testing
 
