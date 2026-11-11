@@ -5,7 +5,8 @@ rebuild goals, and propose improvements. Pre-0.1: breaking changes are
 acceptable.
 
 Status: findings C1-C10 recorded 2026-11-11 against `cd5e9e82`; proposals are
-candidates, not approved. Nothing here is product policy until recorded in
+candidates except where [user decisions](#user-decisions-2026-11-12) approve a
+direction. Nothing else here is product policy until recorded in
 [decisions](../decisions.md). Finding ids use a `C` prefix to stay distinct
 from the F/R ids in the [interface review](core-interface-review.md).
 
@@ -335,6 +336,45 @@ Found by search. Only the `world_frames.rs` constants and
 2. Core structure: C1, then C2, then C5.
 3. C7 budget and gate, then the KDE debounce.
 4. C8 and C9 clean-up.
+
+## User decisions (2026-11-12)
+
+Directions approved by the user. Each large item still needs its own design
+note approved before code; contract-shape items are in-place v4 amendments.
+
+- C7: KDE sends commands with no delay; the 120 ms debounce stays for bursts
+  of native events only. The per-report latency budget and regression gate
+  follow after C1/C2.
+- C3: each remaining one-time reply item (`intentWrites`, settlements, cursor
+  warp, `effects`, command `result`) becomes a retained, latest-wins field,
+  one at a time in the style of the retained focus request, starting with
+  `intentWrites` as a per-window desired record. Rejected: a `state` plus
+  acknowledged `events` split (reintroduces sequence tracking).
+- C4: one unified property attempt record with one settlement engine,
+  property-specific policy kept on top, creation separate; design note first;
+  after the C3 conversions and before the Windows port.
+- C10: one report ingress on every platform, taking a report plus an ordered
+  command list, with neutral contract wording; done with the C7 KDE change.
+- C6: remove all four platform specifics from core. Delete the dead
+  `focused_fullscreen_presentation_suspension` flag now. Each of
+  `fixed_send_admission` and `maximized_focus_fence` gets a separate user
+  choice between one shared behaviour and a declared neutral capability,
+  after a reference-outcome check. Adapters report shell surfaces as neutral
+  window types (with the Windows port). Settings exposure moves to adapters
+  or neutral capabilities.
+- C1, C2, C5: approved in that order, behaviour-preserving, each behind its
+  own design note, after the contract-shape items, with a single owner.
+- C8: remove stale suppressions and comments naming removed functions now;
+  the facade, test-support feature, typed ids and rename pass wait until
+  after C1/C2.
+- C9: fix the stale contract status line and label the three
+  host-compensation policies with their host limits now; the two uncited
+  settings and the OPEN requirement rows come to the user in small batches;
+  missing "Why" entries are not backfilled.
+- Principles added from this review: replace-not-layer and one mechanism per
+  job ([Simplicity](../principles.md#simplicity)), undelayed user input
+  ([Efficiency](../principles.md#efficiency)) and wire-independent core
+  ([Layering](../principles.md#layering)).
 
 ## Limits of this review
 
