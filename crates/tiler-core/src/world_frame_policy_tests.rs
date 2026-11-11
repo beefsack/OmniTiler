@@ -3293,7 +3293,7 @@ fn rapid_toggle_burst_ending_tile_reconverges() {
         ScopeAuthority::Controlled
     );
     assert!(
-        engine.frame_bursts.get(&key).is_none(),
+        !engine.frame_bursts.contains_key(&key),
         "float excursion re-arms the tiled burst: {:?}",
         engine.frame_bursts.get(&key)
     );
@@ -3521,7 +3521,7 @@ fn rapid_toggle_odd_burst_ending_float_keeps_token() {
     assert_eq!(row.effective_frame, Some(floated_target));
     assert!(row.frame_operation.is_some());
     assert!(
-        engine.frame_bursts.get(&key).is_none(),
+        !engine.frame_bursts.contains_key(&key),
         "float excursion re-arms: {:?}",
         engine.frame_bursts.get(&key)
     );
@@ -3542,7 +3542,7 @@ fn rapid_toggle_odd_burst_ending_float_keeps_token() {
     assert!(row.floating);
     assert_eq!(row.effective_frame, Some(floated_target));
     assert_eq!(row.frame_operation, None);
-    assert!(engine.frame_bursts.get(&key).is_none());
+    assert!(!engine.frame_bursts.contains_key(&key));
 }
 
 #[test]
@@ -3640,7 +3640,7 @@ fn rapid_toggle_exhausted_burst_ending_float_keeps_token() {
     assert_eq!(row.effective_frame, Some(floated_target));
     assert!(row.frame_operation.is_some());
     assert!(
-        engine.frame_bursts.get(&key).is_none(),
+        !engine.frame_bursts.contains_key(&key),
         "float excursion re-arms: {:?}",
         engine.frame_bursts.get(&key)
     );
@@ -3661,7 +3661,7 @@ fn rapid_toggle_exhausted_burst_ending_float_keeps_token() {
     assert!(row.floating);
     assert_eq!(row.effective_frame, Some(floated_target));
     assert_eq!(row.frame_operation, None);
-    assert!(engine.frame_bursts.get(&key).is_none());
+    assert!(!engine.frame_bursts.contains_key(&key));
 }
 
 #[test]
@@ -3823,7 +3823,7 @@ fn rapid_toggle_sticky_excursion_rearms_with_gap_protection() {
         stuck.command_result
     );
     assert!(
-        engine.frame_bursts.get(&key).is_none(),
+        !engine.frame_bursts.contains_key(&key),
         "accepted sticky transition re-arms: {:?}",
         engine.frame_bursts.get(&key)
     );
@@ -3908,7 +3908,7 @@ fn composed_sticky_round_trip_rearms_burst() {
         on_reply.command_result
     );
     assert!(
-        engine.frame_bursts.get(&key).is_none(),
+        !engine.frame_bursts.contains_key(&key),
         "accepted sticky-on re-arms: {:?}",
         engine.frame_bursts.get(&key)
     );
@@ -3946,7 +3946,7 @@ fn composed_sticky_round_trip_rearms_burst() {
         ScopeAuthority::Controlled
     );
     assert!(
-        engine.frame_bursts.get(&key).is_none(),
+        !engine.frame_bursts.contains_key(&key),
         "accepted unfloat re-arms: {:?}",
         engine.frame_bursts.get(&key)
     );

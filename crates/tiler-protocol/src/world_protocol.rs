@@ -3141,12 +3141,10 @@ fn decode_fact_v4(
     }
     // v4 deltas: unknown closed tokens, out-of-range layers, and
     // empty/NUL text hold the identifiable row instead of refusing it.
-    for key in ["type"] {
-        if let Some(serde_json::Value::String(text)) = map.get(key)
-            && WindowType::parse(text).is_none()
-        {
-            held = true;
-        }
+    if let Some(serde_json::Value::String(text)) = map.get("type")
+        && WindowType::parse(text).is_none()
+    {
+        held = true;
     }
     if let Some(serde_json::Value::String(text)) = map.get("activationPolicy")
         && ActivationPolicy::parse(text).is_none()
@@ -3169,13 +3167,11 @@ fn decode_fact_v4(
     // the bound (no hold here); `executable` keeps the nonempty NUL-free
     // identity grammar and `processId` keeps the opaque-Id grammar (held
     // below when bad).
-    for key in ["executable"] {
-        if let Some(serde_json::Value::String(text)) = map.get(key)
-            && !valid_identity_text(text)
-            && text.len() <= tiler_core::world_report::MAX_METADATA_TEXT_BYTES
-        {
-            held = true;
-        }
+    if let Some(serde_json::Value::String(text)) = map.get("executable")
+        && !valid_identity_text(text)
+        && text.len() <= tiler_core::world_report::MAX_METADATA_TEXT_BYTES
+    {
+        held = true;
     }
     // Bad nested `visibility`/`lastWrite` shapes hold the row.
     if let Some(value) = map.get("visibility")
