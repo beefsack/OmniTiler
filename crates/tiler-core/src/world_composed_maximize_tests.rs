@@ -326,7 +326,7 @@ fn composed_unavailable_frame_authority_refuses_without_recovery() {
         toggle("win-a"),
     );
     barrier.gesture_barrier = true;
-    match engine.handle_report(&barrier) {
+    match engine.handle_report(&barrier, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -391,7 +391,10 @@ fn composed_null_maximized_admits_ordinarily_and_true_conflicts_fail_closed() {
     // with no intent change.
     let mut conflict = cfact("win-a", "out-a", 0);
     conflict.maximized = Some(true);
-    match engine.handle_report(&cmd(3, 2, vec![conflict], "win-a", toggle("win-a"))) {
+    match engine
+        .handle_report(&cmd(3, 2, vec![conflict], "win-a", toggle("win-a")), &[])
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -424,7 +427,10 @@ fn composed_some_false_conflicts_fail_closed() {
     );
     let mut conflict = cfact("win-a", "out-a", 0);
     conflict.maximized = Some(false);
-    match engine.handle_report(&cmd(3, 2, vec![conflict], "win-a", toggle("win-a"))) {
+    match engine
+        .handle_report(&cmd(3, 2, vec![conflict], "win-a", toggle("win-a")), &[])
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -514,7 +520,10 @@ fn unsupported_nonnull_maximized_grades_conflicting_and_recovers_on_null() {
     // applicable gate (kind follows the structural gate, never reordered).
     let mut conflict = cfact("win-a", "out-a", 0);
     conflict.maximized = Some(false);
-    match engine.handle_report(&cmd(5, 2, vec![conflict], "win-a", toggle("win-a"))) {
+    match engine
+        .handle_report(&cmd(5, 2, vec![conflict], "win-a", toggle("win-a")), &[])
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -1109,17 +1118,23 @@ fn composed_float_full_entry_pending_withholds_restore_token_until_exit() {
     );
     // Clearing the overlay while the entry pends refuses: the bit removal
     // itself is a withheld frame write.
-    match engine.handle_report(&cmd(
-        6,
-        4,
-        vec![{
-            let mut row = cfact("win-a", "out-a", 0);
-            row.rect = Some(float_base);
-            row
-        }],
-        "win-a",
-        toggle("win-a"),
-    )) {
+    match engine
+        .handle_report(
+            &cmd(
+                6,
+                4,
+                vec![{
+                    let mut row = cfact("win-a", "out-a", 0);
+                    row.rect = Some(float_base);
+                    row
+                }],
+                "win-a",
+                toggle("win-a"),
+            ),
+            &[],
+        )
+        .0
+    {
         crate::world_engine::WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -1188,13 +1203,19 @@ fn composed_tiled_max_off_while_full_entry_pending_refuses_without_intent_change
     );
     // Max-off removes the overlay bit, which would write the base frame
     // beside the queued entry: refuse with the bit retained.
-    match engine.handle_report(&cmd(
-        4,
-        3,
-        vec![cfact("win-a", "out-a", 0), cfact("win-b", "out-a", 100)],
-        "win-a",
-        toggle("win-a"),
-    )) {
+    match engine
+        .handle_report(
+            &cmd(
+                4,
+                3,
+                vec![cfact("win-a", "out-a", 0), cfact("win-b", "out-a", 100)],
+                "win-a",
+                toggle("win-a"),
+            ),
+            &[],
+        )
+        .0
+    {
         crate::world_engine::WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -2816,7 +2837,13 @@ fn composed_tiled_focus_vertical_and_single_output_refuse_unchanged() {
     let mut _alloc = None;
     toggle_on(&mut engine, &mut _alloc);
     let windows = || vec![cfact("win-a", "out-a", 0), cfact("win-b", "out-a", 100)];
-    match engine.handle_report(&cmd(3, 2, windows(), "win-a", focus_dir("win-a", "up"))) {
+    match engine
+        .handle_report(
+            &cmd(3, 2, windows(), "win-a", focus_dir("win-a", "up")),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -2830,7 +2857,13 @@ fn composed_tiled_focus_vertical_and_single_output_refuse_unchanged() {
             .composed_maximized
             .contains(&WindowId("win-a".to_owned()))
     );
-    match engine.handle_report(&cmd(4, 3, windows(), "win-a", focus_dir("win-a", "right"))) {
+    match engine
+        .handle_report(
+            &cmd(4, 3, windows(), "win-a", focus_dir("win-a", "right")),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -2988,13 +3021,13 @@ fn composed_move_in_flight_restores_bit() {
             .composed_maximized
             .contains(&WindowId("win-a".to_owned()))
     );
-    match engine.handle_report(&cmd_two(
-        4,
-        3,
-        windows(),
-        "win-a",
-        move_dir("win-a", "right"),
-    )) {
+    match engine
+        .handle_report(
+            &cmd_two(4, 3, windows(), "win-a", move_dir("win-a", "right")),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -3048,7 +3081,13 @@ fn b9_unreadable_hints_refuses_with_bit_retained() {
     let mut unreadable = cfact("win-a", "out-a", 0);
     unreadable.rect = Some(work_area());
     unreadable.hints = None;
-    match engine.handle_report(&cmd(5, 3, vec![unreadable], "win-a", toggle_float("win-a"))) {
+    match engine
+        .handle_report(
+            &cmd(5, 3, vec![unreadable], "win-a", toggle_float("win-a")),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -3455,7 +3494,7 @@ fn composed_incomplete_inventory_refuses_without_recovery() {
         toggle("win-a"),
     );
     gapped.inventory_complete = false;
-    match engine.handle_report(&gapped) {
+    match engine.handle_report(&gapped, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -3521,7 +3560,13 @@ fn composed_float_unreadable_hints_refuses_toggle_without_intent_change() {
     let mut hintless = cfact("win-a", "out-a", 0);
     hintless.rect = Some(float_base);
     hintless.hints = None;
-    match engine.handle_report(&cmd(3, 2, vec![hintless.clone()], "win-a", toggle("win-a"))) {
+    match engine
+        .handle_report(
+            &cmd(3, 2, vec![hintless.clone()], "win-a", toggle("win-a")),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -3555,7 +3600,13 @@ fn composed_float_unreadable_hints_refuses_toggle_without_intent_change() {
     let mut hintless_off = cfact("win-a", "out-a", 0);
     hintless_off.rect = Some(work_area());
     hintless_off.hints = None;
-    match engine.handle_report(&cmd(7, 4, vec![hintless_off], "win-a", toggle("win-a"))) {
+    match engine
+        .handle_report(
+            &cmd(7, 4, vec![hintless_off], "win-a", toggle("win-a")),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -3588,13 +3639,19 @@ fn composed_tiled_unreadable_hints_holds_admission() {
             "win-a",
         ),
     );
-    match engine.handle_report(&cmd(
-        2,
-        1,
-        vec![hintless, cfact("win-b", "out-a", 100)],
-        "win-a",
-        toggle("win-a"),
-    )) {
+    match engine
+        .handle_report(
+            &cmd(
+                2,
+                1,
+                vec![hintless, cfact("win-b", "out-a", 100)],
+                "win-a",
+                toggle("win-a"),
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -3624,13 +3681,19 @@ fn tile_with_bit_toggle_float_refuses_not_tiled() {
     );
     let mut _alloc = None;
     toggle_on(&mut engine, &mut _alloc);
-    match engine.handle_report(&cmd(
-        3,
-        2,
-        vec![cfact("win-a", "out-a", 0), cfact("win-b", "out-a", 100)],
-        "win-a",
-        toggle_float("win-a"),
-    )) {
+    match engine
+        .handle_report(
+            &cmd(
+                3,
+                2,
+                vec![cfact("win-a", "out-a", 0), cfact("win-b", "out-a", 100)],
+                "win-a",
+                toggle_float("win-a"),
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {

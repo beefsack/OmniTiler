@@ -150,14 +150,14 @@ fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReportV4,
 ) -> tiler_core::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
 
 fn rejected_kind(engine: &mut WorldEngine, report: &WorldReportV4) -> &'static str {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Rejected { kind, .. } => kind,
         other => panic!("expected rejected, got {other:?}"),
     }
@@ -239,13 +239,13 @@ fn observation_stale_and_duplicates_hold_the_watermark() {
     assert_eq!(engine.state_revision(), revision);
     // An identical latest report duplicates with the cached reply and no
     // new revision.
-    match engine.handle_report(&report_obs(
-        1,
-        2,
-        vec![fact("win-a", "out-a", 0)],
-        None,
-        None,
-    )) {
+    match engine
+        .handle_report(
+            &report_obs(1, 2, vec![fact("win-a", "out-a", 0)], None, None),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Duplicate(reply) => assert_eq!(reply.state_revision, revision),
         other => panic!("expected duplicate, got {other:?}"),
     }
@@ -320,17 +320,23 @@ fn late_command_refusal_rolls_back_without_mutation() {
     // Same-output send to an unknown workspace refuses after staging:
     // no transfer retained, no ring/view churn; the refused sequence still
     // consumes and the issuing revision advances by exactly one.
-    match engine.handle_report(&report(
-        4,
-        vec![fact("win-a", "out-a", 0)],
-        Some(11),
-        Some(WorldCommand::Send {
-            window: WindowId("win-a".to_owned()),
-            target_output: OutputId("out-a".to_owned()),
-            target_workspace: "ws-999".to_owned(),
-            follow: false,
-        }),
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                4,
+                vec![fact("win-a", "out-a", 0)],
+                Some(11),
+                Some(WorldCommand::Send {
+                    window: WindowId("win-a".to_owned()),
+                    target_output: OutputId("out-a".to_owned()),
+                    target_workspace: "ws-999".to_owned(),
+                    follow: false,
+                }),
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(tiler_core::world_report::CommandResult::Rejected {

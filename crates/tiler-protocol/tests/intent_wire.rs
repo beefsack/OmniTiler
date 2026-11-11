@@ -348,7 +348,7 @@ fn engine_accepts_opaque_record_and_publishes_empty_writes() {
     let row = nested_record("report-intent-unsupported-inner-version");
     let report = decode_request(&envelope(serde_json::json!([row]))).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let reply = match engine.handle_report(&report) {
+    let reply = match engine.handle_report(&report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -357,7 +357,7 @@ fn engine_accepts_opaque_record_and_publishes_empty_writes() {
     // records at all (identical published reply on a fresh engine).
     let mut twin = connected_engine("gen-1", HostCapabilities::default());
     let empty = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
-    let twin_reply = match twin.handle_report(&empty) {
+    let twin_reply = match twin.handle_report(&empty, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -389,7 +389,7 @@ fn canonical_save_and_clear_spell_exact_key_order() {
     assert_eq!(save_data, "{\"v\":1,\"float\":true,\"stickyPrior\":false}");
     let report = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let mut reply = match engine.handle_report(&report) {
+    let mut reply = match engine.handle_report(&report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -452,7 +452,7 @@ fn estimates_count_escaped_bytes_and_both_arrays() {
     let mut report = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
     report.intent_records = records;
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let mut reply = match engine.handle_report(&report) {
+    let mut reply = match engine.handle_report(&report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -615,7 +615,7 @@ fn published_replies_originate_valid_under_the_commit_gate() {
     // precondition.
     let report = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let reply = match engine.handle_report(&report) {
+    let reply = match engine.handle_report(&report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -657,20 +657,20 @@ fn reused_seq_with_only_intent_bytes_changed_reuses_nothing() {
     ])))
     .expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let reply = match engine.handle_report(&first) {
+    let reply = match engine.handle_report(&first, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     let mut edited = first.clone();
     edited.intent_records[0].data = "{\"v\":1,\"float\":false,\"stickyPrior\":null}".to_owned();
     assert_ne!(edited, first);
-    match engine.handle_report(&edited) {
+    match engine.handle_report(&edited, &[]).0 {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-reused"),
         other => panic!("expected request-reused, got {other:?}"),
     }
     // The refused edit committed nothing: the identical original still hits
     // the cached reply byte-for-byte.
-    match engine.handle_report(&first) {
+    match engine.handle_report(&first, &[]).0 {
         WorldOutcome::Duplicate(cached) => assert_eq!(cached, reply),
         other => panic!("expected duplicate, got {other:?}"),
     }
@@ -690,7 +690,7 @@ fn heavy_intent_report_refuses_oversized_without_mutation() {
         .collect();
     assert!(report_estimate_v4(&base) > 4 * 1024 * 1024);
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    match engine.handle_report(&base) {
+    match engine.handle_report(&base, &[]).0 {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "oversized"),
         other => panic!("expected oversized, got {other:?}"),
     }
@@ -699,7 +699,7 @@ fn heavy_intent_report_refuses_oversized_without_mutation() {
     next.request_seq = base.request_seq + 1;
     next.observation_seq = base.observation_seq + 1;
     next.request_id = "req-2".to_owned();
-    match engine.handle_report(&next) {
+    match engine.handle_report(&next, &[]).0 {
         WorldOutcome::Accepted(_) => {}
         other => panic!("expected accepted, got {other:?}"),
     }

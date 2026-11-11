@@ -130,7 +130,7 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -425,17 +425,22 @@ fn view_return_select_records_linked_target_before_native_writes() {
     );
     // Leave early: no further legs. Real duplicate check: replaying the
     // consumed sequence reconciles only, never re-executes.
-    let outcome = engine.handle_report(&report(
-        5,
-        two_screens(),
-        windows(),
-        "win-b",
-        Some(13),
-        Some(WorldCommand::SwitchView {
-            output: OutputId("out-a".to_owned()),
-            workspace: target_ws.clone(),
-        }),
-    ));
+    let outcome = engine
+        .handle_report(
+            &report(
+                5,
+                two_screens(),
+                windows(),
+                "win-b",
+                Some(13),
+                Some(WorldCommand::SwitchView {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: target_ws.clone(),
+                }),
+            ),
+            &[],
+        )
+        .0;
     assert!(
         matches!(outcome, WorldOutcome::CommandConsumed(_)),
         "replayed select stays consumed: {outcome:?}"
@@ -556,17 +561,22 @@ fn view_return_fallback_records_effect_target_not_remembered() {
 fn rejected_unknown_focus_records_nothing() {
     let (mut engine, key) = bootstrap_two_tiled();
     let before = remembered_window(&engine, &key);
-    let outcome = engine.handle_report(&report(
-        2,
-        two_screens(),
-        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 200)],
-        "win-a",
-        Some(11),
-        Some(WorldCommand::Focus {
-            window: WindowId("win-gone".to_owned()),
-            direction: "right".to_owned(),
-        }),
-    ));
+    let outcome = engine
+        .handle_report(
+            &report(
+                2,
+                two_screens(),
+                vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 200)],
+                "win-a",
+                Some(11),
+                Some(WorldCommand::Focus {
+                    window: WindowId("win-gone".to_owned()),
+                    direction: "right".to_owned(),
+                }),
+            ),
+            &[],
+        )
+        .0;
     match outcome {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,

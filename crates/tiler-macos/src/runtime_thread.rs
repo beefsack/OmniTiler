@@ -4495,7 +4495,7 @@ mod trailing_join_tests {
             "req-3",
         )
         .expect("nonempty context reports");
-        match session.engine_mut().handle_report(&report) {
+        match session.engine_mut().handle_report(&report, &[]).0 {
             WorldOutcome::Accepted(_) => {}
             other => panic!("hold observation must accept, got {other:?}"),
         }
@@ -4743,7 +4743,7 @@ mod trailing_join_tests {
                 crate::world_connection::macos_capabilities(),
             )
             .expect("bound test engine");
-        match prove_engine.handle_report(&report) {
+        match prove_engine.handle_report(&report, &[]).0 {
             tiler_core::world_engine::WorldOutcome::Accepted(reply)
             | tiler_core::world_engine::WorldOutcome::Duplicate(reply) => {
                 let desired = reply
@@ -6500,7 +6500,7 @@ mod trailing_join_tests {
                 ),
                 "drain-verified after read rides the native post key"
             );
-            let reply = match session.engine_mut().handle_report(&report) {
+            let reply = match session.engine_mut().handle_report(&report, &[]).0 {
                 WorldOutcome::Accepted(reply) => reply,
                 other => panic!("expected accepted, got {other:?}"),
             };
@@ -6532,7 +6532,7 @@ mod trailing_join_tests {
             )
             .expect("nonempty context reports");
             assert!(report.view_attempts.is_empty() && report.member_attempts.is_empty());
-            let reply = match session.engine_mut().handle_report(&report) {
+            let reply = match session.engine_mut().handle_report(&report, &[]).0 {
                 WorldOutcome::Accepted(reply) => reply,
                 other => panic!("expected accepted, got {other:?}"),
             };
@@ -6697,7 +6697,7 @@ mod trailing_join_tests {
                 ),
                 "drain-verified arrival rides the native post key"
             );
-            let reply = match session.engine_mut().handle_report(&report) {
+            let reply = match session.engine_mut().handle_report(&report, &[]).0 {
                 WorldOutcome::Accepted(reply) => reply,
                 other => panic!("expected accepted, got {other:?}"),
             };
@@ -6738,7 +6738,7 @@ mod trailing_join_tests {
             )
             .expect("nonempty context reports");
             assert!(report.member_attempts.is_empty() && report.view_attempts.is_empty());
-            let reply = match session.engine_mut().handle_report(&report) {
+            let reply = match session.engine_mut().handle_report(&report, &[]).0 {
                 WorldOutcome::Accepted(reply) => reply,
                 other => panic!("expected accepted, got {other:?}"),
             };

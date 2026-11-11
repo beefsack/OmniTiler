@@ -140,7 +140,7 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -264,7 +264,10 @@ fn explicit_set_keeps_genuine_set_semantics() {
 fn toggle_unknown_workspace_refuses_like_set() {
     let (mut engine, _ws) = bootstrap_workspace();
     let windows = vec![fact("win-a", "out-a", 0)];
-    match engine.handle_report(&report(2, windows, Some(11), Some(toggle("ws-nope")))) {
+    match engine
+        .handle_report(&report(2, windows, Some(11), Some(toggle("ws-nope"))), &[])
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {

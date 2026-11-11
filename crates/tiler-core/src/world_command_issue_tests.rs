@@ -140,7 +140,7 @@ fn accepted_v4(
     engine: &mut WorldEngine,
     report: &WorldReportV4,
 ) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -1491,7 +1491,7 @@ fn handle_report_echoes_envelope_request_and_command_sequence() {
     bootstrap.windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 200)];
     bootstrap.focused_global = "win-a".to_owned();
     bootstrap.foreground_known = true;
-    match engine.handle_report(&bootstrap) {
+    match engine.handle_report(&bootstrap, &[]).0 {
         WorldOutcome::Accepted(_) => {}
         other => panic!("bootstrap must accept, got {other:?}"),
     }
@@ -1501,7 +1501,7 @@ fn handle_report_echoes_envelope_request_and_command_sequence() {
     command_report.foreground_known = true;
     command_report.command_seq = Some(7);
     command_report.command = Some(focus_command("win-b"));
-    let reply = match engine.handle_report(&command_report) {
+    let reply = match engine.handle_report(&command_report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("command report must accept, got {other:?}"),
     };
@@ -1514,7 +1514,7 @@ fn handle_report_echoes_envelope_request_and_command_sequence() {
     observation_only.windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 200)];
     observation_only.focused_global = "win-a".to_owned();
     observation_only.foreground_known = true;
-    let reply = match engine.handle_report(&observation_only) {
+    let reply = match engine.handle_report(&observation_only, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("observation-only must accept, got {other:?}"),
     };

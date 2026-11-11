@@ -232,7 +232,7 @@ fn two_screens() -> Vec<ScreenReport> {
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -789,24 +789,30 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
         "membership proof settles: {:?}",
         settled.transfers
     );
-    match engine.handle_report(&report(
-        4,
-        4,
-        two_screens(),
-        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
-        vec![],
-        vec![],
-        "win-a",
-        Some(12),
-        Some(WorldCommand::Send {
-            window: WindowId("win-a".to_owned()),
-            target_output: OutputId("out-b".to_owned()),
-            target_workspace: view_b,
-            follow: true,
-        }),
-        true,
-        false,
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                4,
+                4,
+                two_screens(),
+                vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+                vec![],
+                vec![],
+                "win-a",
+                Some(12),
+                Some(WorldCommand::Send {
+                    window: WindowId("win-a".to_owned()),
+                    target_output: OutputId("out-b".to_owned()),
+                    target_workspace: view_b,
+                    follow: true,
+                }),
+                true,
+                false,
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -933,26 +939,32 @@ fn directional_focus_up_never_crosses_outputs() {
     );
     // Up never crosses: the outcome stays local (an effect on the home
     // output) or refuses as unchanged, never an out-b target.
-    match engine.handle_report(&report(
-        2,
-        2,
-        two_screens(),
-        vec![
-            fact("win-a", "out-a", 0),
-            fact("win-b", "out-b", 800),
-            fact("win-c", "out-a", 100),
-        ],
-        vec![],
-        vec![],
-        "win-a",
-        Some(11),
-        Some(WorldCommand::FocusDirectional {
-            window: WindowId("win-a".to_owned()),
-            direction: "up".to_owned(),
-        }),
-        true,
-        false,
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                2,
+                2,
+                two_screens(),
+                vec![
+                    fact("win-a", "out-a", 0),
+                    fact("win-b", "out-b", 800),
+                    fact("win-c", "out-a", 100),
+                ],
+                vec![],
+                vec![],
+                "win-a",
+                Some(11),
+                Some(WorldCommand::FocusDirectional {
+                    window: WindowId("win-a".to_owned()),
+                    direction: "up".to_owned(),
+                }),
+                true,
+                false,
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => {
             assert!(
                 reply
@@ -1057,22 +1069,28 @@ fn selection_commands_resolve_over_logical_rings() {
     );
     // Unknown targets refuse without mutation.
     let seq = 4;
-    match engine.handle_report(&report(
-        4,
-        4,
-        two_screens(),
-        vec![minimized_fact("win-a", "out-a")],
-        vec![],
-        vec![],
-        "",
-        Some(13),
-        Some(WorldCommand::SelectWorkspace {
-            output: OutputId("out-a".to_owned()),
-            workspace: "ws-999".to_owned(),
-        }),
-        true,
-        false,
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                4,
+                4,
+                two_screens(),
+                vec![minimized_fact("win-a", "out-a")],
+                vec![],
+                vec![],
+                "",
+                Some(13),
+                Some(WorldCommand::SelectWorkspace {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: "ws-999".to_owned(),
+                }),
+                true,
+                false,
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -1227,24 +1245,30 @@ fn numbered_send_mismatched_output_refuses_without_mutation() {
     // alike.
     for (i, (seq, index)) in [(2u64, 0u8), (3u64, 1u8)].iter().enumerate() {
         let command_seq = 11 + i as u64;
-        match engine.handle_report(&report(
-            *seq,
-            *seq,
-            two_screens(),
-            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
-            vec![],
-            vec![],
-            "win-a",
-            Some(command_seq),
-            Some(WorldCommand::SendNumbered {
-                window: WindowId("win-a".to_owned()),
-                source: SendSource::Explicit(OutputId("out-b".to_owned())),
-                index: *index,
-                follow: true,
-            }),
-            false,
-            false,
-        )) {
+        match engine
+            .handle_report(
+                &report(
+                    *seq,
+                    *seq,
+                    two_screens(),
+                    vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+                    vec![],
+                    vec![],
+                    "win-a",
+                    Some(command_seq),
+                    Some(WorldCommand::SendNumbered {
+                        window: WindowId("win-a".to_owned()),
+                        source: SendSource::Explicit(OutputId("out-b".to_owned())),
+                        index: *index,
+                        follow: true,
+                    }),
+                    false,
+                    false,
+                ),
+                &[],
+            )
+            .0
+        {
             WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
@@ -1390,20 +1414,26 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match engine.handle_report(&staged(
-        2,
-        vec![fact("win-a", "out-b", 800)],
-        "win-a",
-        None,
-        None,
-        vec!["out-a", "out-b"],
-        WorldCommand::SendNumbered {
-            window: WindowId("win-a".to_owned()),
-            source: SendSource::HomeThenAction,
-            index: 1,
-            follow: false,
-        },
-    )) {
+    match engine
+        .handle_report(
+            &staged(
+                2,
+                vec![fact("win-a", "out-b", 800)],
+                "win-a",
+                None,
+                None,
+                vec!["out-a", "out-b"],
+                WorldCommand::SendNumbered {
+                    window: WindowId("win-a".to_owned()),
+                    source: SendSource::HomeThenAction,
+                    index: 1,
+                    follow: false,
+                },
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -1432,20 +1462,26 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match engine.handle_report(&staged(
-        2,
-        vec![fact("win-n", "out-a", 10)],
-        "win-n",
-        None,
-        Some("out-b"),
-        vec!["out-a", "out-b"],
-        WorldCommand::SendNumbered {
-            window: WindowId("win-n".to_owned()),
-            source: SendSource::HomeThenAction,
-            index: 0,
-            follow: false,
-        },
-    )) {
+    match engine
+        .handle_report(
+            &staged(
+                2,
+                vec![fact("win-n", "out-a", 10)],
+                "win-n",
+                None,
+                Some("out-b"),
+                vec!["out-a", "out-b"],
+                WorldCommand::SendNumbered {
+                    window: WindowId("win-n".to_owned()),
+                    source: SendSource::HomeThenAction,
+                    index: 0,
+                    follow: false,
+                },
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -1476,20 +1512,26 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match live_cached.handle_report(&staged(
-        2,
-        vec![fact("win-n", "out-a", 10)],
-        "win-n",
-        None,
-        Some("out-b"),
-        vec!["out-a", "out-b"],
-        WorldCommand::SendNumbered {
-            window: WindowId("win-n".to_owned()),
-            source: SendSource::HomeThenAction,
-            index: 0,
-            follow: false,
-        },
-    )) {
+    match live_cached
+        .handle_report(
+            &staged(
+                2,
+                vec![fact("win-n", "out-a", 10)],
+                "win-n",
+                None,
+                Some("out-b"),
+                vec!["out-a", "out-b"],
+                WorldCommand::SendNumbered {
+                    window: WindowId("win-n".to_owned()),
+                    source: SendSource::HomeThenAction,
+                    index: 0,
+                    follow: false,
+                },
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -1520,20 +1562,26 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match cli.handle_report(&staged(
-        2,
-        vec![fact("win-n", "out-a", 10)],
-        "win-n",
-        None,
-        Some("out-z"),
-        vec!["out-a", "out-b", "out-z"],
-        WorldCommand::SendNumbered {
-            window: WindowId("win-n".to_owned()),
-            source: SendSource::HomeThenAction,
-            index: 0,
-            follow: false,
-        },
-    )) {
+    match cli
+        .handle_report(
+            &staged(
+                2,
+                vec![fact("win-n", "out-a", 10)],
+                "win-n",
+                None,
+                Some("out-z"),
+                vec!["out-a", "out-b", "out-z"],
+                WorldCommand::SendNumbered {
+                    window: WindowId("win-n".to_owned()),
+                    source: SendSource::HomeThenAction,
+                    index: 0,
+                    follow: false,
+                },
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -1560,20 +1608,26 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match keyboard.handle_report(&staged(
-        2,
-        vec![fact("win-n", "out-a", 10), fact("win-m", "out-a", 100)],
-        "win-n",
-        None,
-        Some("out-z"),
-        vec!["out-a", "out-b", "out-z"],
-        WorldCommand::SendRelative {
-            window: WindowId("win-n".to_owned()),
-            source: SendSource::HomeThenAction,
-            delta: 1,
-            follow: false,
-        },
-    )) {
+    match keyboard
+        .handle_report(
+            &staged(
+                2,
+                vec![fact("win-n", "out-a", 10), fact("win-m", "out-a", 100)],
+                "win-n",
+                None,
+                Some("out-z"),
+                vec!["out-a", "out-b", "out-z"],
+                WorldCommand::SendRelative {
+                    window: WindowId("win-n".to_owned()),
+                    source: SendSource::HomeThenAction,
+                    delta: 1,
+                    follow: false,
+                },
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -2556,7 +2610,10 @@ fn migration_refused_or_superseded_settles_without_fighting() {
                 }),
                 attempt_ms: 3,
             };
-            match engine.handle_report(&make_report(vec![logical_attempt])) {
+            match engine
+                .handle_report(&make_report(vec![logical_attempt]), &[])
+                .0
+            {
                 WorldOutcome::Rejected { message, .. } => {
                     assert_eq!(message, "native-without-capability")
                 }
@@ -3412,72 +3469,96 @@ fn generations_watermarks_and_command_consumption_hold() {
             false,
         ),
     );
-    match engine.handle_report(&report(
-        2,
-        2,
-        two_screens(),
-        vec![],
-        vec![],
-        vec![],
-        "",
-        None,
-        None,
-        true,
-        false,
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                2,
+                2,
+                two_screens(),
+                vec![],
+                vec![],
+                vec![],
+                "",
+                None,
+                None,
+                true,
+                false,
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Duplicate(cached) => {
             assert_eq!(cached.state_revision, first.state_revision)
         }
         other => panic!("expected duplicate, got {other:?}"),
     }
     // Reused sequence with different input is invalid, never executed.
-    match engine.handle_report(&report(
-        2,
-        2,
-        two_screens(),
-        vec![fact("win-a", "out-a", 0)],
-        vec![],
-        vec![],
-        "",
-        None,
-        None,
-        true,
-        false,
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                2,
+                2,
+                two_screens(),
+                vec![fact("win-a", "out-a", 0)],
+                vec![],
+                vec![],
+                "",
+                None,
+                None,
+                true,
+                false,
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-reused"),
         other => panic!("expected request-reused, got {other:?}"),
     }
     // Older sequences are superseded.
-    match engine.handle_report(&report(
-        1,
-        1,
-        two_screens(),
-        vec![],
-        vec![],
-        vec![],
-        "",
-        None,
-        None,
-        true,
-        false,
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                1,
+                1,
+                two_screens(),
+                vec![],
+                vec![],
+                vec![],
+                "",
+                None,
+                None,
+                true,
+                false,
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-superseded"),
         other => panic!("expected request-superseded, got {other:?}"),
     }
     // Foreign generations never reset ordering.
-    match engine.handle_report(&report(
-        3,
-        3,
-        two_screens(),
-        vec![fact("win-a", "out-a", 0)],
-        vec![],
-        vec![],
-        "",
-        None,
-        None,
-        true,
-        false,
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                3,
+                3,
+                two_screens(),
+                vec![fact("win-a", "out-a", 0)],
+                vec![],
+                vec![],
+                "",
+                None,
+                None,
+                true,
+                false,
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(_) => {}
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -3505,21 +3586,27 @@ fn generations_watermarks_and_command_consumption_hold() {
     assert_eq!(view_reply.switch_settled.len(), 1);
     let transfers = view_reply.transfers.len();
     assert_eq!(transfers, 0);
-    match engine.handle_report(&report(
-        5,
-        5,
-        two_screens(),
-        vec![],
-        vec![],
-        vec![],
-        "",
-        Some(11),
-        Some(WorldCommand::SelectTrailing {
-            output: Some(OutputId("out-a".to_owned())),
-        }),
-        true,
-        false,
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                5,
+                5,
+                two_screens(),
+                vec![],
+                vec![],
+                vec![],
+                "",
+                Some(11),
+                Some(WorldCommand::SelectTrailing {
+                    output: Some(OutputId("out-a".to_owned())),
+                }),
+                true,
+                false,
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::CommandConsumed(reply) => assert_eq!(reply.transfers.len(), transfers),
         other => panic!("expected command-consumed, got {other:?}"),
     }
@@ -3538,7 +3625,7 @@ fn generations_watermarks_and_command_consumption_hold() {
         false,
     );
     bad.core_generation = "gen-2".to_owned();
-    match engine.handle_report(&bad) {
+    match engine.handle_report(&bad, &[]).0 {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "generation-mismatch"),
         other => panic!("expected generation-mismatch, got {other:?}"),
     }
@@ -3620,7 +3707,7 @@ fn host_owned_capability_gates_native_observations() {
             count: None,
         }],
     });
-    match engine.handle_report(&bad) {
+    match engine.handle_report(&bad, &[]).0 {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
         other => panic!("expected snapshot-invalid, got {other:?}"),
     }
@@ -4863,40 +4950,46 @@ fn floating_select_refusal_settles_to_observed_preserving_logical() {
     );
     // Logical selector attempts are rejected in v4 rather than acting as
     // synthetic proof. The floating workspace membership remains intact.
-    match engine.handle_report(&report_attempts(
-        4,
-        4,
-        two_screens(),
-        vec![],
-        vec![],
-        vec![],
-        "",
-        None,
-        None,
-        true,
-        false,
-        crate::workspace_scope::WorkspaceMode::PerOutputLocal,
-        Vec::new(),
-        vec![crate::world_report::ViewAttempt {
-            operation_id: "op-12".to_owned(),
-            target_output: OutputId("out-a".to_owned()),
-            target_workspace: target.clone(),
-            setter: crate::world_report::FrameSetter::Refused,
-            pre: Some(crate::world_report::WorkspaceRef::Logical {
-                output: OutputId("out-a".to_owned()),
-                workspace: crate::directional::WorkspaceId(current.clone()),
-            }),
-            post: Some(crate::world_report::WorkspaceRef::Logical {
-                output: OutputId("out-a".to_owned()),
-                workspace: crate::directional::WorkspaceId(current.clone()),
-            }),
-            baseline: Some(crate::world_report::WorkspaceRef::Logical {
-                output: OutputId("out-a".to_owned()),
-                workspace: crate::directional::WorkspaceId(target.clone()),
-            }),
-            attempt_ms: 4,
-        }],
-    )) {
+    match engine
+        .handle_report(
+            &report_attempts(
+                4,
+                4,
+                two_screens(),
+                vec![],
+                vec![],
+                vec![],
+                "",
+                None,
+                None,
+                true,
+                false,
+                crate::workspace_scope::WorkspaceMode::PerOutputLocal,
+                Vec::new(),
+                vec![crate::world_report::ViewAttempt {
+                    operation_id: "op-12".to_owned(),
+                    target_output: OutputId("out-a".to_owned()),
+                    target_workspace: target.clone(),
+                    setter: crate::world_report::FrameSetter::Refused,
+                    pre: Some(crate::world_report::WorkspaceRef::Logical {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: crate::directional::WorkspaceId(current.clone()),
+                    }),
+                    post: Some(crate::world_report::WorkspaceRef::Logical {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: crate::directional::WorkspaceId(current.clone()),
+                    }),
+                    baseline: Some(crate::world_report::WorkspaceRef::Logical {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: crate::directional::WorkspaceId(target.clone()),
+                    }),
+                    attempt_ms: 4,
+                }],
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Rejected { message, .. } => {
             assert_eq!(message, "native-without-capability")
         }

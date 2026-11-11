@@ -377,7 +377,7 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -1578,25 +1578,31 @@ fn rejected_logical_supersession_does_not_replay_migration() {
     );
     // V4 rejects the historical logical-selector supersession proof. The
     // incomplete inventory still cannot erase migration state.
-    match engine.handle_report(&report_with_screens(
-        5,
-        5,
-        vec![screen("out-a", 0), screen("out-b", 800)],
-        vec![],
-        "",
-        None,
-        None,
-        vec![],
-        vec![logical_view_attempt(
-            "out-b",
-            &view_a,
-            None,
-            Some(native_ref("out-b", &view_b)),
-            Some(native_ref("out-b", &view_a)),
-        )],
-        false,
-        vec![],
-    )) {
+    match engine
+        .handle_report(
+            &report_with_screens(
+                5,
+                5,
+                vec![screen("out-a", 0), screen("out-b", 800)],
+                vec![],
+                "",
+                None,
+                None,
+                vec![],
+                vec![logical_view_attempt(
+                    "out-b",
+                    &view_a,
+                    None,
+                    Some(native_ref("out-b", &view_b)),
+                    Some(native_ref("out-b", &view_a)),
+                )],
+                false,
+                vec![],
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Rejected { message, .. } => {
             assert_eq!(message, "native-without-capability")
         }
@@ -2016,7 +2022,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         inventory_complete: true,
         ..report(2, 2, vec![], "", None, None, vec![], vec![])
     };
-    match engine.handle_report(&east) {
+    match engine.handle_report(&east, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -2039,7 +2045,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
     );
     inv.inventory_complete = false;
-    match engine.handle_report(&inv) {
+    match engine.handle_report(&inv, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -2066,7 +2072,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
     );
     ghost.action_outputs.push(OutputId("out-z".to_owned()));
     ghost.action_cached = Some(OutputId("out-z".to_owned()));
-    match engine.handle_report(&ghost) {
+    match engine.handle_report(&ghost, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -2092,7 +2098,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
         vec![],
     );
-    match engine.handle_report(&bad_src) {
+    match engine.handle_report(&bad_src, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -2122,7 +2128,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
     );
     tgt.screens = inc_screens.clone();
-    match engine.handle_report(&tgt) {
+    match engine.handle_report(&tgt, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -2146,7 +2152,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
     );
     topo.screens = inc_screens;
-    match engine.handle_report(&topo) {
+    match engine.handle_report(&topo, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -2200,7 +2206,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
         vec![],
     );
-    match flight_engine.handle_report(&again) {
+    match flight_engine.handle_report(&again, &[]).0 {
         WorldOutcome::Accepted(reply) => {
             let source = reply
                 .command_result
@@ -2390,25 +2396,31 @@ fn logical_view_attempt_is_rejected_without_losing_migration_membership() {
     );
     let screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let windows = vec![fact("win-a", "out-a", 0)];
-    match engine.handle_report(&report_with_screens(
-        5,
-        5,
-        screens.clone(),
-        windows.clone(),
-        "",
-        None,
-        None,
-        vec![],
-        vec![logical_view_attempt(
-            "out-b",
-            &view_a,
-            None,
-            Some(native_ref("out-b", &view_a)),
-            None,
-        )],
-        true,
-        vec![],
-    )) {
+    match engine
+        .handle_report(
+            &report_with_screens(
+                5,
+                5,
+                screens.clone(),
+                windows.clone(),
+                "",
+                None,
+                None,
+                vec![],
+                vec![logical_view_attempt(
+                    "out-b",
+                    &view_a,
+                    None,
+                    Some(native_ref("out-b", &view_a)),
+                    None,
+                )],
+                true,
+                vec![],
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Rejected { message, .. } => {
             assert_eq!(message, "native-without-capability")
         }
@@ -2495,25 +2507,31 @@ fn logical_selector_attempt_rejects_while_migration_remains_in_flight() {
     );
     let screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let windows = vec![fact("win-a", "out-a", 0)];
-    match engine.handle_report(&report_with_screens(
-        5,
-        5,
-        screens.clone(),
-        windows.clone(),
-        "",
-        None,
-        None,
-        vec![],
-        vec![logical_view_attempt(
-            "out-b",
-            &view_a,
-            Some(native_ref("out-b", &view_b)),
-            Some(native_ref("out-b", &view_b)),
-            Some(native_ref("out-b", &view_a)),
-        )],
-        true,
-        vec![],
-    )) {
+    match engine
+        .handle_report(
+            &report_with_screens(
+                5,
+                5,
+                screens.clone(),
+                windows.clone(),
+                "",
+                None,
+                None,
+                vec![],
+                vec![logical_view_attempt(
+                    "out-b",
+                    &view_a,
+                    Some(native_ref("out-b", &view_b)),
+                    Some(native_ref("out-b", &view_b)),
+                    Some(native_ref("out-b", &view_a)),
+                )],
+                true,
+                vec![],
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Rejected { message, .. } => {
             assert_eq!(message, "native-without-capability")
         }
@@ -2786,7 +2804,7 @@ fn logical_refill_selector_attempt_is_rejected_and_migration_already_retired() {
         baseline: Some(native_ref("out-a", &refill_ws)),
         attempt_ms: 7,
     });
-    match engine.handle_report(&invalid) {
+    match engine.handle_report(&invalid, &[]).0 {
         WorldOutcome::Rejected { message, .. } => {
             assert_eq!(message, "native-without-capability")
         }
@@ -2943,14 +2961,20 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
     // A stale-but-registered cache still selects and refuses downstream
     // instead of silently retargeting live state.
     let (mut engine, _, _) = seeded();
-    match engine.handle_report(&context_cmd(
-        2,
-        registry(&["out-a", "out-b", "out-z"]),
-        None,
-        None,
-        Some("out-z"),
-        "right",
-    )) {
+    match engine
+        .handle_report(
+            &context_cmd(
+                2,
+                registry(&["out-a", "out-b", "out-z"]),
+                None,
+                None,
+                Some("out-z"),
+                "right",
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -2981,7 +3005,7 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
         }),
         ..report(2, 2, vec![], "", None, None, vec![], vec![])
     };
-    match engine.handle_report(&empty) {
+    match engine.handle_report(&empty, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -3013,7 +3037,7 @@ fn migrate_directional_freezes_source_view_pre_observation() {
         }),
         ..report(1, 1, vec![], "", None, None, vec![], vec![])
     };
-    match fresh.handle_report(&unbootstrapped) {
+    match fresh.handle_report(&unbootstrapped, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -3119,7 +3143,7 @@ fn migrate_directional_ignores_same_report_view_creation() {
             vec![],
         )
     };
-    match engine.handle_report(&hotplug) {
+    match engine.handle_report(&hotplug, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {

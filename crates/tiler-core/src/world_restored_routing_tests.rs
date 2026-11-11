@@ -215,7 +215,7 @@ fn report_full(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -581,7 +581,7 @@ fn flight_fences_second_move_pre_engine_without_rerank() {
         Some(113),
         Some(move_up("win-a")),
     );
-    match engine.handle_report(&again) {
+    match engine.handle_report(&again, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -612,7 +612,7 @@ fn flight_fences_second_move_pre_engine_without_rerank() {
         Some(114),
         Some(move_up("win-a")),
     );
-    match engine.handle_report(&again) {
+    match engine.handle_report(&again, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -934,7 +934,7 @@ fn drag_preview_same_domain_routes_and_carries_core_rect_and_hover() {
             source: None,
         })),
     );
-    let reply = match engine.handle_report(&preview) {
+    let reply = match engine.handle_report(&preview, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         WorldOutcome::Rejected { kind, .. } => {
             panic!("same-domain preview must run the legacy route, got {kind}")
@@ -1310,7 +1310,7 @@ fn operation_send_retains_and_foreign_routes_refuse() {
             direction: "right".to_owned(),
         })),
     );
-    match solo.handle_report(&refused) {
+    match solo.handle_report(&refused, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -1379,7 +1379,7 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
             }),
         );
         seq += 1;
-        match engine.handle_report(&send) {
+        match engine.handle_report(&send, &[]).0 {
             WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
@@ -1595,7 +1595,7 @@ fn deterministic_sequence_replay_matches_exactly() {
             WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
         let mut replies = Vec::new();
         for report in reports {
-            match engine.handle_report(report) {
+            match engine.handle_report(report, &[]).0 {
                 WorldOutcome::Accepted(reply)
                 | WorldOutcome::CommandConsumed(reply)
                 | WorldOutcome::Duplicate(reply) => replies.push(reply),
@@ -1785,7 +1785,7 @@ fn hotplug_incomplete_survivor_holds_unit_and_full_report_recovers() {
         Some(11),
         Some(move_up("win-a")),
     );
-    match engine.handle_report(&fenced) {
+    match engine.handle_report(&fenced, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -1991,7 +1991,7 @@ fn unknown_outputs_and_views_hold_fail_closed() {
             direction: "left".to_owned(),
         }),
     );
-    match engine.handle_report(&focus_ghost) {
+    match engine.handle_report(&focus_ghost, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -2329,7 +2329,7 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
             },
         };
         let report_in = report(3, 3, screens, facts, "win-a", Some(11), Some(command));
-        let reply = match engine.handle_report(&report_in) {
+        let reply = match engine.handle_report(&report_in, &[]).0 {
             WorldOutcome::Accepted(reply) => reply,
             WorldOutcome::Rejected { kind, message } => {
                 panic!("case {case}: expected accept, rejected {kind} {message}")
@@ -2450,15 +2450,21 @@ fn explicit_output_send_uses_output_route() {
             target_workspace: view_b.clone(),
             follow,
         });
-        let reply = match engine.handle_report(&report(
-            3,
-            3,
-            screens.clone(),
-            facts.clone(),
-            "win-a",
-            Some(11),
-            Some(command),
-        )) {
+        let reply = match engine
+            .handle_report(
+                &report(
+                    3,
+                    3,
+                    screens.clone(),
+                    facts.clone(),
+                    "win-a",
+                    Some(11),
+                    Some(command),
+                ),
+                &[],
+            )
+            .0
+        {
             WorldOutcome::Accepted(reply) => reply,
             WorldOutcome::Rejected { kind, message } => {
                 panic!("follow={follow}: explicit SendToOutput must accept, got {kind} {message}")
@@ -2673,7 +2679,7 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        match engine.handle_report(&refused) {
+        match engine.handle_report(&refused, &[]).0 {
             WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
@@ -2709,7 +2715,7 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        match engine.handle_report(&refused) {
+        match engine.handle_report(&refused, &[]).0 {
             WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
@@ -2747,7 +2753,7 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        let reply = match engine.handle_report(&first) {
+        let reply = match engine.handle_report(&first, &[]).0 {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("follow={follow}: first send must accept, got {other:?}"),
         };
@@ -2772,7 +2778,7 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        match engine.handle_report(&again) {
+        match engine.handle_report(&again, &[]).0 {
             WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
@@ -2874,7 +2880,7 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        match engine.handle_report(&probe) {
+        match engine.handle_report(&probe, &[]).0 {
             WorldOutcome::Accepted(reply) => {
                 // KIND_SEND_TARGET is "send-target-unknown"; the
                 // migration-destination fence runs before the
@@ -3685,7 +3691,7 @@ fn physical_disconnect_no_survivor_holds_unit_for_retry() {
         None,
         None,
     );
-    let held = match engine.handle_report(&empty) {
+    let held = match engine.handle_report(&empty, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("empty-screen disconnect must hold, got {other:?}"),
     };
@@ -5438,28 +5444,34 @@ fn physical_chain_return_moved_out_member_stays_away() {
     );
     // Explicit move-out while displaced: win-s leaves its unit for the
     // survivor's own unit through the ordinary send route.
-    let moved = match engine.handle_report(&report(
-        4,
-        4,
-        vec![screen_ident(
-            "out-u",
-            rect(1600, 0, 800, 600),
-            tuple_only("u"),
-        )],
-        vec![
-            fact("win-s", "out-u", 1600),
-            fact("win-t", "out-u", 1700),
-            fact("win-u", "out-u", 1800),
-        ],
-        "win-s",
-        Some(11),
-        Some(WorldCommand::Operation(CoreCommand::SendToWorkspace {
-            window: "win-s".to_owned(),
-            target_output: "out-u".to_owned(),
-            target_workspace: view_u.clone(),
-            follow: false,
-        })),
-    )) {
+    let moved = match engine
+        .handle_report(
+            &report(
+                4,
+                4,
+                vec![screen_ident(
+                    "out-u",
+                    rect(1600, 0, 800, 600),
+                    tuple_only("u"),
+                )],
+                vec![
+                    fact("win-s", "out-u", 1600),
+                    fact("win-t", "out-u", 1700),
+                    fact("win-u", "out-u", 1800),
+                ],
+                "win-s",
+                Some(11),
+                Some(WorldCommand::Operation(CoreCommand::SendToWorkspace {
+                    window: "win-s".to_owned(),
+                    target_output: "out-u".to_owned(),
+                    target_workspace: view_u.clone(),
+                    follow: false,
+                })),
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("explicit move-out must accept, got {other:?}"),
     };

@@ -125,7 +125,7 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -886,7 +886,7 @@ fn duplicate_cache_and_consumed_command_mint_no_new_identities() {
     let tokens = engine.automatic_focus_tokens.clone();
     // An exact duplicate returns the cached reply without running the
     // producers again.
-    match engine.handle_report(&arrival) {
+    match engine.handle_report(&arrival, &[]).0 {
         WorldOutcome::Duplicate(cached) => {
             assert_eq!(cached.state_revision, revision);
         }
@@ -923,7 +923,7 @@ fn duplicate_cache_and_consumed_command_mint_no_new_identities() {
     replay.request_seq = 4;
     replay.observation_seq = 4;
     replay.request_id = "req-4".to_owned();
-    let consumed = match engine.handle_report(&replay) {
+    let consumed = match engine.handle_report(&replay, &[]).0 {
         WorldOutcome::CommandConsumed(reply) => reply,
         other => panic!("expected consumed command, got {other:?}"),
     };
@@ -996,7 +996,7 @@ fn rejected_command_keeps_admission_mapping_envelope_rejection_adopts_nothing() 
     let mut tampered = refused.clone();
     tampered.focused_global = "w2".to_owned();
     tampered.foreground_known = true;
-    match engine.handle_report(&tampered) {
+    match engine.handle_report(&tampered, &[]).0 {
         WorldOutcome::Rejected { .. } => {}
         other => panic!("expected envelope rejection, got {other:?}"),
     }
@@ -1053,7 +1053,7 @@ fn max_revision_boundary_mints_no_unissued_identity() {
         None,
         None,
     );
-    match engine.handle_report(&probe) {
+    match engine.handle_report(&probe, &[]).0 {
         WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REVISION_EXHAUSTED);
         }

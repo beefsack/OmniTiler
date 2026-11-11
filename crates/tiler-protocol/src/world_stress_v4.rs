@@ -255,7 +255,7 @@ fn bootstrap_binding_v4(
         pairs: Vec::new(),
     };
     let first = build_report_v4(case, mode, &sim, None, None, vec![])?;
-    let reply = match probe.handle_report(&first) {
+    let reply = match probe.handle_report(&first, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         WorldOutcome::Duplicate(_) => {
             return Err("bootstrap probe: expected accepted, got duplicate".to_owned());
@@ -702,7 +702,7 @@ fn submit_v4(
     // Every in-flow submit is fresh, so only `Accepted` counts: duplicates
     // and consumed commands fail loudly (no relabel), refusals keep their
     // kind/message.
-    match engine.handle_report(&report) {
+    match engine.handle_report(&report, &[]).0 {
         WorldOutcome::Accepted(reply) => {
             let revision = sim.pairs.len() as u64 + 1;
             check_pairing_v4(case, &report, &reply, at, revision)?;
@@ -1321,7 +1321,7 @@ fn probe_completions_v4(
     let (last_report, last_reply) = sim.pairs.last().expect("final").clone();
     // Exact redelivery is a duplicate: the cached reply returns with no new
     // revision, never a fresh acceptance.
-    match engine.handle_report(&last_report) {
+    match engine.handle_report(&last_report, &[]).0 {
         WorldOutcome::Duplicate(cached) => {
             if cached != last_reply {
                 return Err("probe duplicate: cached reply moved".to_owned());
@@ -1350,7 +1350,7 @@ fn probe_completions_v4(
         stale.request_seq = sim.req + 1;
         stale.request_id = format!("req-{}", sim.req + 1);
         stale.observation_seq = sim.obs.saturating_sub(1).max(1);
-        match engine.handle_report(&stale) {
+        match engine.handle_report(&stale, &[]).0 {
             WorldOutcome::Rejected {
                 kind: "observation-stale",
                 ..
@@ -1372,7 +1372,7 @@ fn probe_completions_v4(
         let mut reused = last_report.clone();
         reused.focused_global = "nobody".to_owned();
         reused.foreground_known = true;
-        match engine.handle_report(&reused) {
+        match engine.handle_report(&reused, &[]).0 {
             WorldOutcome::Rejected {
                 kind: "request-reused",
                 ..
@@ -1435,7 +1435,7 @@ fn probe_completions_v4(
             Some(first_seq),
             vec![],
         )?;
-        match engine.handle_report(&report) {
+        match engine.handle_report(&report, &[]).0 {
             WorldOutcome::CommandConsumed(reply) => {
                 if !reply.command_consumed {
                     return Err(

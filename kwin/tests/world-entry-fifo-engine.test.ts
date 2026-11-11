@@ -131,7 +131,7 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
         }
     });
 
-    it("applies rapid left then right pressed during a coalescing debounce in order", async () => {
+    it("applies rapid left then right pressed during a native burst in order, with zero debounce wait", async () => {
         const h = await makeHarness("win-a", ["win-a", "win-b", "win-c"]);
         try {
             await discover(h);
@@ -148,8 +148,10 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             assert.deepEqual(h.focused, ["win-c"], "setup press focuses middle win-c");
             // A native burst arms the observation debounce with no command
             // in flight; both rapid presses queue behind it in order. The
-            // debounce never captures commandless while filings are
-            // outstanding: one capture still drains the whole batch.
+            // filed batch preempts the armed debounce on the zero-delay
+            // path (never a 120 ms wait, never a commandless capture while
+            // filings are outstanding): one capture still drains the whole
+            // batch.
             h.fire("windowActivated");
             h.handle.requestFocus("left");
             h.handle.requestFocus("right");
@@ -167,7 +169,7 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
                 );
             }
             const batchIndex = await awaitDispatch(h);
-            assert.equal(describeCount(h), n0 + 1, "debounced pair still drains in one capture, never a commandless trailing capture");
+            assert.equal(describeCount(h), n0 + 1, "preempted pair still drains in one capture, never a commandless trailing capture");
             assert.deepEqual(h.focused, ["win-c"], "no intermediate native focus before the batch lands");
             const batchReply = JSON.parse(h.replies.get(await h.flushAt(batchIndex)) as string) as Record<string, unknown>;
             assert.notEqual(batchReply["outcome"], "rejected", "real Engine drains the debounced batch");

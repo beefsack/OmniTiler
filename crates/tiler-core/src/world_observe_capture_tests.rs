@@ -1026,7 +1026,7 @@ fn capture_mutates_no_retained_routing() {
     );
     seed.focused_global = "win-a".to_owned();
     seed.foreground_known = true;
-    match subject.handle_report(&seed) {
+    match subject.handle_report(&seed, &[]).0 {
         crate::world_run_v4::V4RunOutcome::Accepted(_) => {}
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -1062,7 +1062,7 @@ fn held_scope_keeps_prior_staged_homing() {
         Vec::new(),
         Vec::new(),
     );
-    match subject.handle_report(&seed) {
+    match subject.handle_report(&seed, &[]).0 {
         crate::world_run_v4::V4RunOutcome::Accepted(_) => {}
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -5959,7 +5959,7 @@ fn gesture_rig() -> WorldEngine {
     );
     bootstrap.focused_global = "win-a".to_owned();
     bootstrap.foreground_known = true;
-    match engine.handle_report(&bootstrap) {
+    match engine.handle_report(&bootstrap, &[]).0 {
         crate::world_run_v4::V4RunOutcome::Accepted(_) => {}
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -7317,7 +7317,7 @@ fn staged_routing_owns_post_capture_fresh_placement() {
         Vec::new(),
         Vec::new(),
     );
-    match engine.handle_report(&bootstrap_7280) {
+    match engine.handle_report(&bootstrap_7280, &[]).0 {
         crate::world_run_v4::V4RunOutcome::Accepted(_) => {}
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -7385,7 +7385,7 @@ fn staged_focused_policy_owns_post_capture_routing_and_trace() {
         Vec::new(),
         Vec::new(),
     );
-    match engine.handle_report(&bootstrap_7340) {
+    match engine.handle_report(&bootstrap_7340, &[]).0 {
         crate::world_run_v4::V4RunOutcome::Accepted(_) => {}
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -7470,7 +7470,7 @@ fn staged_fresh_gate_holds_native_affinity_without_trace_update() {
                 Vec::new(),
                 Vec::new(),
             );
-            match engine.handle_report(&bootstrap_7415) {
+            match engine.handle_report(&bootstrap_7415, &[]).0 {
                 crate::world_run_v4::V4RunOutcome::Accepted(_) => {}
                 other => panic!("expected accepted, got {other:?}"),
             }
@@ -7542,7 +7542,7 @@ fn staged_retained_home_survives_mutated_source() {
         Vec::new(),
         Vec::new(),
     );
-    match engine.handle_report(&bootstrap_7479) {
+    match engine.handle_report(&bootstrap_7479, &[]).0 {
         crate::world_run_v4::V4RunOutcome::Accepted(_) => {}
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -7579,7 +7579,7 @@ fn v4_staging_drives_convergence_homing_and_resweep() {
         Vec::new(),
         Vec::new(),
     );
-    match engine.handle_report(&bootstrap_7507) {
+    match engine.handle_report(&bootstrap_7507, &[]).0 {
         crate::world_run_v4::V4RunOutcome::Accepted(_) => {}
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -7703,7 +7703,7 @@ fn staged_admission_focus_at_most_once_and_barrier_spend() {
         Vec::new(),
         Vec::new(),
     );
-    match rig.handle_report(&bootstrap_7623) {
+    match rig.handle_report(&bootstrap_7623, &[]).0 {
         crate::world_run_v4::V4RunOutcome::Accepted(_) => {}
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -7745,7 +7745,7 @@ fn staged_admission_focus_at_most_once_and_barrier_spend() {
         Vec::new(),
         Vec::new(),
     );
-    match barred.handle_report(&bootstrap_7657) {
+    match barred.handle_report(&bootstrap_7657, &[]).0 {
         crate::world_run_v4::V4RunOutcome::Accepted(_) => {}
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -8889,7 +8889,7 @@ fn staged_frame_clock_drives_suppression_and_burst() {
         Vec::new(),
     );
     base.monotonic_ms = 0;
-    let first = match engine.handle_report(&base) {
+    let first = match engine.handle_report(&base, &[]).0 {
         crate::world_run_v4::V4RunOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -9095,7 +9095,7 @@ fn staged_frame_clock_drives_suppression_and_burst() {
         Vec::new(),
     );
     base.monotonic_ms = 0;
-    let first = match engine.handle_report(&base) {
+    let first = match engine.handle_report(&base, &[]).0 {
         crate::world_run_v4::V4RunOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -9207,7 +9207,7 @@ fn staged_frame_clock_drives_suppression_and_burst() {
         Vec::new(),
     );
     base.monotonic_ms = 0;
-    let first = match engine.handle_report(&base) {
+    let first = match engine.handle_report(&base, &[]).0 {
         crate::world_run_v4::V4RunOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -10691,7 +10691,7 @@ fn host_unknown_fact(window: &str, output: &str, x: i32) -> WindowFact {
 }
 
 fn host_accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         crate::world_run_v4::V4RunOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -11640,7 +11640,7 @@ fn native_value_without_capability_rejects_pipeline_unchanged() {
         Vec::new(),
         Vec::new(),
     );
-    match engine.handle_report(&report) {
+    match engine.handle_report(&report, &[]).0 {
         crate::world_run_v4::V4RunOutcome::Rejected { message, .. } => assert_eq!(
             message, "native-without-capability",
             "native value refuses without the capability"

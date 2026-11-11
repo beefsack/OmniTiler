@@ -250,7 +250,7 @@ fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReportV4,
 ) -> tiler_core::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -1156,7 +1156,7 @@ fn out_of_bounds_cursor_refuses_at_validation() {
     );
     assert!(validate_report_v4_reason(&bad).is_some());
     assert_eq!(validate_report_v4_reason(&bad), Some("cursor-invalid"));
-    match engine.handle_report(&bad) {
+    match engine.handle_report(&bad, &[]).0 {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
         other => panic!("expected snapshot-invalid, got {other:?}"),
     }

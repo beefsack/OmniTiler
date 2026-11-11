@@ -29,7 +29,7 @@ fn accepted_reply(
     engine: &mut WorldEngine,
     report: &crate::world_report::WorldReportV4,
 ) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -440,7 +440,7 @@ fn conflicting_sticky_never_masks_structure_or_invalid_precedence() {
         let mut engine = engine_with(false);
         assert!(
             matches!(
-                engine.handle_report(&engine_report),
+                engine.handle_report(&engine_report, &[]).0,
                 WorldOutcome::Rejected { .. }
             ),
             "{label} violation refuses through the engine"
@@ -597,7 +597,7 @@ fn conflict_recovery_consumes_pending_and_seals_admission() {
         engine.staged.held_windows
     );
     // An exact duplicate of the recovery returns the cached reply.
-    match engine.handle_report(&recovery) {
+    match engine.handle_report(&recovery, &[]).0 {
         WorldOutcome::Duplicate(cached) => assert_eq!(cached, reply),
         other => panic!("expected duplicate, got {other:?}"),
     }
@@ -639,7 +639,7 @@ fn conflict_recovery_consumes_pending_and_seals_admission() {
     changed_row.sticky = Some(true);
     let mut changed = late.clone();
     changed.windows = vec![changed_row];
-    match engine.handle_report(&changed) {
+    match engine.handle_report(&changed, &[]).0 {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-reused"),
         other => panic!("expected reused rejection, got {other:?}"),
     }

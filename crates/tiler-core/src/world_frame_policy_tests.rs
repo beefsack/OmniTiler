@@ -597,7 +597,7 @@ pub(crate) fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReportV4,
 ) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -4028,7 +4028,7 @@ fn float_command_refusal_keeps_budget_over_observation_gap() {
         );
         let mut floated = report(3, vec![gap], vec![], vec![], 1100, true);
         toggle_float(&mut floated, "w1", 1, Some(target));
-        match engine.handle_report(&floated) {
+        match engine.handle_report(&floated, &[]).0 {
             WorldOutcome::Accepted(reply) => {
                 assert!(
                     !frame_row(&reply, "w1").floating,

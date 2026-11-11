@@ -153,7 +153,7 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -1967,7 +1967,7 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
                 follow: true,
             }),
         );
-        match engine.handle_report(&send) {
+        match engine.handle_report(&send, &[]).0 {
             WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
@@ -2024,7 +2024,7 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
             }),
         );
         let revision_before = engine.state_revision();
-        match engine.handle_report(&send) {
+        match engine.handle_report(&send, &[]).0 {
             WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
@@ -2110,7 +2110,7 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
             }),
         );
         let revision_before = engine.state_revision();
-        match engine.handle_report(&send) {
+        match engine.handle_report(&send, &[]).0 {
             WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
@@ -2195,7 +2195,7 @@ fn second_migration_explicit_refuses_while_directional_resolves_current() {
     retry_explicit.action_foreground = Some(OutputId("out-a".to_owned()));
     retry_explicit.action_outputs =
         vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
-    match engine.handle_report(&retry_explicit) {
+    match engine.handle_report(&retry_explicit, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -2226,7 +2226,7 @@ fn second_migration_explicit_refuses_while_directional_resolves_current() {
     retry_directional.action_foreground = Some(OutputId("out-a".to_owned()));
     retry_directional.action_outputs =
         vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
-    let applied = match engine.handle_report(&retry_directional) {
+    let applied = match engine.handle_report(&retry_directional, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("directional retry: expected apply, got {other:?}"),
     };
@@ -3475,18 +3475,24 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
     // Maximize still refuses on the same command path, both directions.
     let mut maxed = fact("w1", "out-a", 100);
     maxed.maximized = Some(true);
-    match engine.handle_report(&report(
-        5,
-        screens.clone(),
-        vec![fact("w0", "out-a", 0), maxed],
-        "w0",
-        vec![],
-        Some(5),
-        Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: "w1".to_owned(),
-            float_rect: None,
-        })),
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                5,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), maxed],
+                "w0",
+                vec![],
+                Some(5),
+                Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                    window: "w1".to_owned(),
+                    float_rect: None,
+                })),
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -3528,18 +3534,24 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
     let mut maxed_float = fact("w1", "out-a", 100);
     maxed_float.transient = Some(true);
     maxed_float.maximized = Some(true);
-    match engine.handle_report(&report(
-        3,
-        screens.clone(),
-        vec![fact("w0", "out-a", 0), maxed_float],
-        "w0",
-        vec![],
-        Some(3),
-        Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: "w1".to_owned(),
-            float_rect: None,
-        })),
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                3,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), maxed_float],
+                "w0",
+                vec![],
+                Some(3),
+                Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                    window: "w1".to_owned(),
+                    float_rect: None,
+                })),
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -3762,15 +3774,21 @@ fn toggle_maximize_command_decides_and_reports() {
     );
     // A newer report reusing a consumed sequence reconciles only: the
     // stale command never re-emits its result.
-    let replay = match engine.handle_report(&report(
-        7,
-        screens.clone(),
-        vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
-        "w1",
-        vec![],
-        Some(2),
-        Some(toggle("w1")),
-    )) {
+    let replay = match engine
+        .handle_report(
+            &report(
+                7,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+                "w1",
+                vec![],
+                Some(2),
+                Some(toggle("w1")),
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::CommandConsumed(reply) => reply,
         other => panic!("consumed sequence replays quiet, got {other:?}"),
     };
@@ -3863,15 +3881,21 @@ fn toggle_maximize_command_decides_and_reports() {
     }
 
     // Refusal: a command naming an unfocused window never executes.
-    match engine.handle_report(&report(
-        8,
-        screens.clone(),
-        vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
-        "w0",
-        vec![],
-        Some(8),
-        Some(toggle("w1")),
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                8,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+                "w0",
+                vec![],
+                Some(8),
+                Some(toggle("w1")),
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -3934,15 +3958,21 @@ fn toggle_maximize_command_decides_and_reports() {
             },
             roomy("out-b", 800),
         ];
-        match held_engine.handle_report(&report(
-            2,
-            clamped,
-            vec![fact("w0", "out-a", 710), fact("wb", "out-b", 800)],
-            "w0",
-            vec![],
-            Some(11),
-            Some(toggle("w0")),
-        )) {
+        match held_engine
+            .handle_report(
+                &report(
+                    2,
+                    clamped,
+                    vec![fact("w0", "out-a", 710), fact("wb", "out-b", 800)],
+                    "w0",
+                    vec![],
+                    Some(11),
+                    Some(toggle("w0")),
+                ),
+                &[],
+            )
+            .0
+        {
             WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
@@ -4001,15 +4031,21 @@ fn toggle_maximize_command_decides_and_reports() {
                 .any(|t| matches!(&t.kind, TransferKind::Window(_))),
             "send retains a window transfer"
         );
-        match flight_engine.handle_report(&report(
-            3,
-            screens.clone(),
-            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
-            "w0",
-            vec![],
-            Some(3),
-            Some(toggle("w0")),
-        )) {
+        match flight_engine
+            .handle_report(
+                &report(
+                    3,
+                    screens.clone(),
+                    vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+                    "w0",
+                    vec![],
+                    Some(3),
+                    Some(toggle("w0")),
+                ),
+                &[],
+            )
+            .0
+        {
             WorldOutcome::Accepted(reply) => assert_eq!(
                 reply.command_result,
                 Some(CommandResult::Rejected {
@@ -4200,7 +4236,7 @@ fn bootstrap_first_bad_identifiable_output_has_no_authority() {
     let mut engine = engine_with_gaps(8.0, 8.0);
     let mut bad_first = report(1, Vec::new(), Vec::new(), "", vec![], None, None);
     bad_first.held_screens = vec![held_unreadable_row("out-b", 0)];
-    let reply = match engine.handle_report(&bad_first) {
+    let reply = match engine.handle_report(&bad_first, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected bootstrap, got {other:?}"),
     };
@@ -4242,7 +4278,7 @@ fn after_ready_bad_screen_holds_only_affected_output() {
         None,
     );
     narrow.held_screens = vec![held_unreadable_row("out-b", 1)];
-    let reply = match engine.handle_report(&narrow) {
+    let reply = match engine.handle_report(&narrow, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted narrow hold, got {other:?}"),
     };
@@ -4317,7 +4353,7 @@ fn direct_invalid_scale_first_report_grades_to_hold_without_authority() {
         None,
     );
     assert_eq!(validate_report_reason(&bad), Some("screen-scale-invalid"));
-    let reply = match engine.handle_report(&bad) {
+    let reply = match engine.handle_report(&bad, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected bootstrap narrow hold, got {other:?}"),
     };
@@ -4361,7 +4397,7 @@ fn direct_invalid_scale_after_ready_holds_only_affected_output() {
         validate_report_reason(&narrow),
         Some("screen-scale-invalid")
     );
-    let reply = match engine.handle_report(&narrow) {
+    let reply = match engine.handle_report(&narrow, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted narrow hold, got {other:?}"),
     };
@@ -4440,7 +4476,7 @@ fn direct_nonfinite_scale_grades_to_hold_without_null_encoding() {
         crate::world_report::encode_held_screen_canonical(&graded.held_screens[0]).is_err(),
         "retained non-finite fact never spells null"
     );
-    let reply = match engine.handle_report(&narrow) {
+    let reply = match engine.handle_report(&narrow, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted narrow hold, got {other:?}"),
     };
@@ -4485,7 +4521,7 @@ fn direct_invalid_scale_with_preheld_row_keeps_ordinals() {
         .map(|held| held.ordinal)
         .collect();
     assert_eq!(ordinals, vec![1, 2]);
-    let reply = match engine.handle_report(&mixed) {
+    let reply = match engine.handle_report(&mixed, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted mixed hold, got {other:?}"),
     };
@@ -4533,7 +4569,7 @@ fn direct_invalid_scale_with_structural_violation_still_refuses() {
         None,
     );
     bad_id.screens[0].output = OutputId(String::new());
-    match engine.handle_report(&bad_id) {
+    match engine.handle_report(&bad_id, &[]).0 {
         WorldOutcome::Rejected { kind, message } => {
             assert_eq!(kind, "snapshot-invalid");
             assert_eq!(message, "screen-id-invalid");
@@ -4549,7 +4585,7 @@ fn direct_invalid_scale_with_structural_violation_still_refuses() {
         None,
         None,
     );
-    match engine.handle_report(&duplicate) {
+    match engine.handle_report(&duplicate, &[]).0 {
         WorldOutcome::Rejected { kind, message } => {
             assert_eq!(kind, "snapshot-invalid");
             assert_eq!(message, "duplicate-screen");

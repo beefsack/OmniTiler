@@ -270,13 +270,19 @@ fn host_arm_mismatch_rejects_without_mutation() {
     accepted(&mut engine, &base(1));
     let revision = engine.state_revision;
     let last = engine.last_report_v4.clone().expect("last report");
-    match engine.handle_report(&with_feedback(
-        base(2),
-        vec![native_bracket("win-a", 2, None)]
-            .into_iter()
-            .map(|b| row("fb-2", "win-a", vec![b]))
-            .collect::<Vec<_>>(),
-    )) {
+    match engine
+        .handle_report(
+            &with_feedback(
+                base(2),
+                vec![native_bracket("win-a", 2, None)]
+                    .into_iter()
+                    .map(|b| row("fb-2", "win-a", vec![b]))
+                    .collect::<Vec<_>>(),
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT);
             assert_eq!(message, "arrival-host-mismatch");
@@ -304,14 +310,20 @@ fn host_owned_mirrors_arm_gate() {
     accepted(&mut engine, &base(1));
     let revision = engine.state_revision;
     let last = engine.last_report_v4.clone().expect("last report");
-    match engine.handle_report(&with_feedback(
-        base(2),
-        vec![row(
-            "fb-2",
-            "win-a",
-            vec![output_bracket("win-a", 2, Some("out-a"))],
-        )],
-    )) {
+    match engine
+        .handle_report(
+            &with_feedback(
+                base(2),
+                vec![row(
+                    "fb-2",
+                    "win-a",
+                    vec![output_bracket("win-a", 2, Some("out-a"))],
+                )],
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT);
             assert_eq!(message, "arrival-host-mismatch");
@@ -346,7 +358,7 @@ fn changed_feedback_reuse_fences_while_exact_resend_duplicates() {
     );
     let reply = accepted(&mut engine, &first);
     let revision = engine.state_revision;
-    match engine.handle_report(&first) {
+    match engine.handle_report(&first, &[]).0 {
         WorldOutcome::Duplicate(cached) => {
             assert_eq!(cached, reply);
             assert_eq!(engine.state_revision, revision);
@@ -355,7 +367,7 @@ fn changed_feedback_reuse_fences_while_exact_resend_duplicates() {
     }
     let mut changed = first.clone();
     changed.focus_feedback[0].attempt_ms = 10;
-    match engine.handle_report(&changed) {
+    match engine.handle_report(&changed, &[]).0 {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
         other => panic!("expected reused fence, got {other:?}"),
     }

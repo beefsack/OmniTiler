@@ -448,6 +448,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     let stopped = false;
     let debounceArmed = false;
     let dispatchTimerCancel: (() => void) | null = null;
+    // Native-debounce identity: preempting a command cancels the armed 120
+    // ms timer, and the epoch below retires its callback (cancel is
+    // best-effort) so the stale fire never dispatches a trailing capture.
+    let debounceEpoch = 0;
     // No DescribeWorld round may start while a DiscoverWorld round is
     // outstanding: the generation it would carry is known-stale (rebind
     // window) or absent (startup, already gated by boundGen).
@@ -1779,10 +1783,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return;
         }
         debounceArmed = true;
+        const epoch = (debounceEpoch += 1);
         if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
             worldTraceProbes.get(state)?.noteDebounceStart();
         }
         dispatchTimerCancel = scheduleOnce(WORLD_DEBOUNCE_MS, () => {
+            if (epoch !== debounceEpoch) {
+                return;
+            }
             debounceArmed = false;
             dispatchTimerCancel = null;
             if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
@@ -1792,16 +1800,39 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         });
     };
 
-    // Zero-delay queue drain, armed only after an accepted reply with
-    // queued directionals still waiting. Sync native effects already ran
-    // inside apply, so capturing on the next tick is fresh without
-    // waiting out the observation debounce. Never preempts an armed
-    // native debounce: that timer already guarantees a dispatch.
-    let drainTimerCancel: (() => void) | null = null;
-    const scheduleDrain = (): void => {
-        if (stopped || drainTimerCancel !== null || debounceArmed) {
+    // Command preemption over the native debounce: a filed user command
+    // cancels the armed 120 ms native timer (epoch-retired, best-effort
+    // cancel) so the command drains on the zero-delay path below instead
+    // of waiting behind native bursts. Native-only events keep the full
+    // debounce: only command paths call this.
+    const preemptDebounceForCommand = (): void => {
+        if (!debounceArmed) {
             return;
         }
+        debounceArmed = false;
+        debounceEpoch += 1;
+        const cancel = dispatchTimerCancel;
+        dispatchTimerCancel = null;
+        try {
+            cancel?.();
+        } catch (error) {
+            void error;
+        }
+    };
+
+    // Zero-delay queue drain, armed after an accepted reply with queued
+    // tails still waiting, or by a filed command preempting an armed
+    // native debounce. Sync native effects already ran inside apply, so
+    // capturing on the next tick is fresh without waiting out the
+    // observation debounce. Preemption cancels the armed native timer
+    // first: the pending tails (or the preempting filing) own the next
+    // dispatch, never a commandless debounce trailing behind them.
+    let drainTimerCancel: (() => void) | null = null;
+    const scheduleDrain = (): void => {
+        if (stopped || drainTimerCancel !== null) {
+            return;
+        }
+        preemptDebounceForCommand();
         drainTimerCancel = scheduleOnce(0, () => {
             drainTimerCancel = null;
             void dispatch(false);
@@ -1811,10 +1842,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // command-carrying flight with queued tails still waiting. The next
     // dispatch files the next batch (or observes commandless when the queue
     // emptied), so tails drain only after the failure settles. A failed
-    // commandless flight schedules nothing: no retry loop.
+    // commandless flight schedules nothing: no retry loop. The waiting
+    // tails preempt an armed native debounce like every other command
+    // drain, so a burst racing the failure adds no 120 ms wait.
     const drainAfterFailure = (consumed: boolean): void => {
         if (consumed && pendingQueue.length > 0) {
-            scheduleDispatch();
+            scheduleDrain();
         }
     };
     const onNativeInvalidation = (): void => {
@@ -2337,7 +2370,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             });
         }
         log(`omnitiler:world:command op=${token((command as { op?: unknown }).op)} label=${token(label)} nwinv=${state.currentInvalid}`);
-        scheduleDispatch();
+        // Settled-continuation commands preempt an armed native debounce
+        // the same way filed FIFO commands do: the busy refusal above is
+        // unchanged, only the 120 ms wait is removed.
+        preemptDebounceForCommand();
+        void dispatch(false);
         return true;
     };
     // Newer explicit input supersedes a deferred B9 unfloat immediately:
@@ -2530,9 +2567,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             isStopped: () => stopped,
             getGeneration: () => state.boundGen,
             // Single hydration kick: one redispatch, never a poll or retry.
+            // A parked command drains on the zero-delay path (never the
+            // native 120 ms wait); nothing parked keeps native pacing.
             onHydrated: () => {
                 if (!stopped) {
-                    scheduleDispatch();
+                    if (pendingQueue.length > 0) {
+                        scheduleDrain();
+                    } else {
+                        scheduleDispatch();
+                    }
                 }
             },
         },
@@ -2577,9 +2620,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             isStopped: () => stopped,
             getGeneration: () => state.boundGen,
             // Single hydration kick: one redispatch, never a poll or retry.
+            // A parked command drains on the zero-delay path (never the
+            // native 120 ms wait); nothing parked keeps native pacing.
             onHydrated: () => {
                 if (!stopped) {
-                    scheduleDispatch();
+                    if (pendingQueue.length > 0) {
+                        scheduleDrain();
+                    } else {
+                        scheduleDispatch();
+                    }
                 }
             },
         },
@@ -6151,8 +6200,25 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (dispatchActive) {
             return;
         }
-        if (state.inFlight === null && !debounceArmed && !state.observationOnlyCatchup) {
-            void dispatch(false);
+        if (state.inFlight === null && !state.observationOnlyCatchup) {
+            if (drainTimerCancel !== null) {
+                // A zero-delay drain already owns the next dispatch: the
+                // settled filing joins its batch, never a second capture.
+                return;
+            }
+            if (debounceArmed) {
+                // A filed command preempts the armed native debounce: the
+                // 120 ms timer is cancelled and the filing drains on the
+                // zero-delay path (same-turn filings still batch there),
+                // so commands interleave with native bursts with no wait.
+                // Ordering is unchanged: a filing still in flight owns the
+                // kick (dispatch returns without capturing) and an
+                // in-flight capture still fences dispatch below.
+                preemptDebounceForCommand();
+                scheduleDrain();
+            } else {
+                void dispatch(false);
+            }
         } else {
             scheduleDispatch();
         }

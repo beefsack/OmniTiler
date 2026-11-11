@@ -582,7 +582,13 @@ fn minimized_window_refuses_without_mutation() {
     minimized.minimized = Some(true);
     accepted(&mut engine, &bootstrap(vec![minimized.clone()]));
     let rev_before = engine.state_revision;
-    match engine.handle_report(&cmd(2, 1, vec![minimized], set_fullscreen("win-a", true))) {
+    match engine
+        .handle_report(
+            &cmd(2, 1, vec![minimized], set_fullscreen("win-a", true)),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {
@@ -673,12 +679,18 @@ fn binding_cap_replacement_allowed_but_new_key_refused_atomic() {
         );
     }
     let revision = capped.state_revision;
-    match capped.handle_report(&cmd(
-        2,
-        1,
-        vec![fs_fact("win-a", None, false)],
-        set_fullscreen("win-a", true),
-    )) {
+    match capped
+        .handle_report(
+            &cmd(
+                2,
+                1,
+                vec![fs_fact("win-a", None, false)],
+                set_fullscreen("win-a", true),
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {

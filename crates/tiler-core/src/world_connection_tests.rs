@@ -160,7 +160,7 @@ fn reports_wait_for_initial_settings_and_ready_latches_across_gaps() {
     let first_handshake = handshake("adapter-1");
     let generation = engine.handshake(&first_handshake).generation.unwrap();
     let initial = report(1, true);
-    let WorldOutcome::Accepted(bootstrap) = engine.handle_report(&initial) else {
+    let WorldOutcome::Accepted(bootstrap) = engine.handle_report(&initial, &[]).0 else {
         panic!("valid pre-settings report should receive a bootstrap reply");
     };
     assert_eq!(bootstrap.request_id, initial.request_id);
@@ -185,19 +185,19 @@ fn reports_wait_for_initial_settings_and_ready_latches_across_gaps() {
     assert_eq!(settings.status, SettingsStatus::Accepted);
     assert!(!settings.diagnostics.is_empty());
 
-    let WorldOutcome::Accepted(ready) = engine.handle_report(&initial) else {
+    let WorldOutcome::Accepted(ready) = engine.handle_report(&initial, &[]).0 else {
         panic!("same pre-settings report should process normally after settings");
     };
     assert!(ready.ready);
     assert!(engine.is_ready());
 
-    let WorldOutcome::Accepted(incomplete) = engine.handle_report(&report(2, false)) else {
+    let WorldOutcome::Accepted(incomplete) = engine.handle_report(&report(2, false), &[]).0 else {
         panic!("incomplete first report should receive a bootstrap reply");
     };
     assert!(incomplete.ready);
     assert!(engine.is_ready());
 
-    let WorldOutcome::Accepted(gapped) = engine.handle_report(&report(3, false)) else {
+    let WorldOutcome::Accepted(gapped) = engine.handle_report(&report(3, false), &[]).0 else {
         panic!("later incomplete report should be accepted after readiness latches");
     };
     assert!(gapped.ready);
@@ -224,7 +224,7 @@ fn incomplete_first_report_after_settings_does_not_authorize_effects_or_readines
         .unwrap();
 
     let incomplete_report = report(1, false);
-    let WorldOutcome::Accepted(bootstrap) = engine.handle_report(&incomplete_report) else {
+    let WorldOutcome::Accepted(bootstrap) = engine.handle_report(&incomplete_report, &[]).0 else {
         panic!("incomplete first report should receive a bootstrap reply");
     };
     assert_eq!(bootstrap.request_id, incomplete_report.request_id);
@@ -236,7 +236,7 @@ fn incomplete_first_report_after_settings_does_not_authorize_effects_or_readines
     assert_eq!(engine.state_revision(), 0);
     assert!(!engine.is_ready());
 
-    let WorldOutcome::Accepted(ready) = engine.handle_report(&report(2, true)) else {
+    let WorldOutcome::Accepted(ready) = engine.handle_report(&report(2, true), &[]).0 else {
         panic!("first usable complete report should process normally");
     };
     assert!(ready.ready);
@@ -253,7 +253,7 @@ fn foreign_and_malformed_reports_reject_before_not_ready_bootstrap() {
     foreign_adapter.adapter_incarnation = "adapter-2".into();
     assert!(
         matches!(
-            engine.handle_report(&foreign_adapter),
+            engine.handle_report(&foreign_adapter, &[]).0,
             WorldOutcome::Rejected { .. }
         ),
         "foreign adapter must reject, never bootstrap"
@@ -263,7 +263,7 @@ fn foreign_and_malformed_reports_reject_before_not_ready_bootstrap() {
     foreign_generation.core_generation = "gen-2".into();
     assert!(
         matches!(
-            engine.handle_report(&foreign_generation),
+            engine.handle_report(&foreign_generation, &[]).0,
             WorldOutcome::Rejected { .. }
         ),
         "foreign generation must reject, never bootstrap"
@@ -274,7 +274,7 @@ fn foreign_and_malformed_reports_reject_before_not_ready_bootstrap() {
     unpaired.command_seq = Some(7);
     assert!(
         matches!(
-            engine.handle_report(&unpaired),
+            engine.handle_report(&unpaired, &[]).0,
             WorldOutcome::Rejected { .. }
         ),
         "unpaired command sequence must reject, never bootstrap"
@@ -291,7 +291,7 @@ fn pre_settings_command_sequence_is_not_consumed_or_retained() {
     let mut commanded = report(1, true);
     commanded.command_seq = Some(7);
     commanded.command = Some(WorldCommand::Operation(CoreCommand::Reconcile));
-    let WorldOutcome::Accepted(bootstrap) = engine.handle_report(&commanded) else {
+    let WorldOutcome::Accepted(bootstrap) = engine.handle_report(&commanded, &[]).0 else {
         panic!("valid pre-settings commanded report should receive a bootstrap reply");
     };
     assert!(!bootstrap.ready);
@@ -310,7 +310,7 @@ fn pre_settings_command_sequence_is_not_consumed_or_retained() {
 
     // The same sequence after accepted settings executes instead of
     // replaying a consumed command.
-    let WorldOutcome::Accepted(executed) = engine.handle_report(&commanded) else {
+    let WorldOutcome::Accepted(executed) = engine.handle_report(&commanded, &[]).0 else {
         panic!("same command sequence after settings must execute");
     };
     assert!(executed.ready);
@@ -320,7 +320,7 @@ fn pre_settings_command_sequence_is_not_consumed_or_retained() {
     let mut replay = report(2, true);
     replay.command_seq = Some(7);
     replay.command = Some(WorldCommand::Operation(CoreCommand::Reconcile));
-    let WorldOutcome::CommandConsumed(consumed) = engine.handle_report(&replay) else {
+    let WorldOutcome::CommandConsumed(consumed) = engine.handle_report(&replay, &[]).0 else {
         panic!("reused command sequence must report consumed");
     };
     assert!(consumed.command_consumed);
@@ -475,7 +475,7 @@ fn accepted_reply(
     engine: &mut WorldEngine,
     report: &WorldReportV4,
 ) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -955,7 +955,10 @@ fn masked_owner_with_overbound_refuses_typed() {
     );
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     assert!(
-        matches!(engine.handle_report(&base), WorldOutcome::Rejected { .. }),
+        matches!(
+            engine.handle_report(&base, &[]).0,
+            WorldOutcome::Rejected { .. }
+        ),
         "engine refuses masked owner"
     );
 }

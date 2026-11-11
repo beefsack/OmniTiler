@@ -185,7 +185,7 @@ fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReportV4,
 ) -> tiler_core::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -542,7 +542,7 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
     );
     send_report.focused_global = "win-a".to_owned();
     send_report.foreground_known = true;
-    match engine.handle_report(&send_report) {
+    match engine.handle_report(&send_report, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(tiler_core::world_report::CommandResult::Rejected {
@@ -570,7 +570,7 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
     );
     focus_report.focused_global = "win-a".to_owned();
     focus_report.foreground_known = true;
-    match engine.handle_report(&focus_report) {
+    match engine.handle_report(&focus_report, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(tiler_core::world_report::CommandResult::Rejected {
@@ -1127,7 +1127,7 @@ fn pager_click_minimized_refuses_while_tiled_focus_succeeds() {
     );
     click_minimized.focused_global = "win-a".to_owned();
     click_minimized.foreground_known = true;
-    match engine.handle_report(&click_minimized) {
+    match engine.handle_report(&click_minimized, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(tiler_core::world_report::CommandResult::Rejected {

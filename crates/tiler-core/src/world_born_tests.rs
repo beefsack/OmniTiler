@@ -2146,19 +2146,25 @@ fn toggle_float_on_maximized_birth_refuses_without_clear() {
         w: 150,
         h: 120,
     };
-    match engine.handle_report(&report_full(
-        2,
-        2,
-        vec![screen("out-a", 0)],
-        vec![born_maximized("win-born", "out-a", 100)],
-        Vec::new(),
-        "",
-        Some(7),
-        Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: "win-born".to_owned(),
-            float_rect: Some(target),
-        })),
-    )) {
+    match engine
+        .handle_report(
+            &report_full(
+                2,
+                2,
+                vec![screen("out-a", 0)],
+                vec![born_maximized("win-born", "out-a", 100)],
+                Vec::new(),
+                "",
+                Some(7),
+                Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                    window: "win-born".to_owned(),
+                    float_rect: Some(target),
+                })),
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {

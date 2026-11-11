@@ -281,7 +281,7 @@ fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReportV4,
 ) -> tiler_core::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -816,7 +816,7 @@ fn unknown_partial_missing_hold_and_duplicates_refuse() {
         None,
         true,
     );
-    match engine.handle_report(&dup) {
+    match engine.handle_report(&dup, &[]).0 {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
         other => panic!("within-output duplicate must refuse, got {other:?}"),
     }
@@ -824,7 +824,7 @@ fn unknown_partial_missing_hold_and_duplicates_refuse() {
         native_obs("out-a", &[N1], N1),
         native_obs("out-a", &[N2], N2),
     ];
-    match engine.handle_report(&dup) {
+    match engine.handle_report(&dup, &[]).0 {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
         other => panic!("contradictory duplicate rows must refuse, got {other:?}"),
     }

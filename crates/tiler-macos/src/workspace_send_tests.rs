@@ -1652,7 +1652,7 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
         "producer report validates"
     );
     assert!(matches!(
-        engine.handle_report(&first),
+        engine.handle_report(&first, &[]).0,
         WorldOutcome::Accepted(_)
     ));
     let command = send_command(&send(1), "4242_7", output.clone()).expect("send route");
@@ -1671,7 +1671,10 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
     );
     assert!(validate_report_v4_reason(&second).is_none());
     assert!(
-        matches!(engine.handle_report(&second), WorldOutcome::Accepted(_)),
+        matches!(
+            engine.handle_report(&second, &[]).0,
+            WorldOutcome::Accepted(_)
+        ),
         "Desktop-1 from a 277-started runtime admits"
     );
     let retained = engine.retained_transfers();
@@ -1710,7 +1713,7 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
     );
     assert!(validate_report_v4_reason(&first).is_none());
     assert!(matches!(
-        engine.handle_report(&first),
+        engine.handle_report(&first, &[]).0,
         WorldOutcome::Accepted(_)
     ));
     let command = send_command(&send(2), "4242_8", output.clone()).expect("send route");
@@ -1729,7 +1732,10 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
     );
     assert!(validate_report_v4_reason(&second).is_none());
     assert!(
-        matches!(engine.handle_report(&second), WorldOutcome::Accepted(_)),
+        matches!(
+            engine.handle_report(&second, &[]).0,
+            WorldOutcome::Accepted(_)
+        ),
         "Desktop-2 from a 1-started runtime admits"
     );
     let retained = engine.retained_transfers();
@@ -1768,7 +1774,7 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
         None,
     );
     assert!(matches!(
-        engine.handle_report(&first),
+        engine.handle_report(&first, &[]).0,
         WorldOutcome::Accepted(_)
     ));
     let command = send_command(&send(2), "4242_7", output.clone()).expect("send route");
@@ -1785,7 +1791,7 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
         Some(2),
         Some(command),
     );
-    match engine.handle_report(&second) {
+    match engine.handle_report(&second, &[]).0 {
         WorldOutcome::Accepted(reply) => {
             assert_eq!(
                 reply.command_result,
@@ -1829,7 +1835,7 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
         Some(3),
         Some(command),
     );
-    match engine.handle_report(&third) {
+    match engine.handle_report(&third, &[]).0 {
         WorldOutcome::Accepted(reply) => {
             assert_eq!(
                 reply.command_result,
@@ -1885,7 +1891,7 @@ fn same_current_numbered_send_is_honest_unchanged_noop() {
     );
     assert!(validate_report_v4_reason(&first).is_none());
     assert!(matches!(
-        engine.handle_report(&first),
+        engine.handle_report(&first, &[]).0,
         WorldOutcome::Accepted(_)
     ));
     // Same-current accepts the report with an `operation-refused`
@@ -1905,7 +1911,7 @@ fn same_current_numbered_send_is_honest_unchanged_noop() {
         Some(command.clone()),
     );
     assert!(validate_report_v4_reason(&second).is_none());
-    match engine.handle_report(&second) {
+    match engine.handle_report(&second, &[]).0 {
         WorldOutcome::Accepted(reply) => {
             assert_eq!(
                 reply.command_result,
@@ -1942,7 +1948,7 @@ fn same_current_numbered_send_is_honest_unchanged_noop() {
         Some(command),
     );
     assert!(validate_report_v4_reason(&third).is_none());
-    match engine.handle_report(&third) {
+    match engine.handle_report(&third, &[]).0 {
         WorldOutcome::Accepted(reply) => {
             assert_eq!(
                 reply.command_result,
@@ -1979,7 +1985,7 @@ fn same_current_numbered_send_is_honest_unchanged_noop() {
         Some(4),
         Some(unknown),
     );
-    match engine.handle_report(&fourth) {
+    match engine.handle_report(&fourth, &[]).0 {
         WorldOutcome::Accepted(reply) => {
             assert_eq!(
                 reply.command_result,
@@ -2033,7 +2039,7 @@ fn positional_send_resolves_native_order_under_adoption() {
     );
     assert!(validate_report_v4_reason(&first).is_none());
     assert!(matches!(
-        engine.handle_report(&first),
+        engine.handle_report(&first, &[]).0,
         WorldOutcome::Accepted(_)
     ));
     let legacy_command = WorldCommand::SendNumbered {
@@ -2059,7 +2065,7 @@ fn positional_send_resolves_native_order_under_adoption() {
         validate_report_v4_reason(&legacy_second).is_none(),
         "positional report is well-formed wire input"
     );
-    let reply = match engine.handle_report(&legacy_second) {
+    let reply = match engine.handle_report(&legacy_second, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => {
             panic!("positional SendNumbered-1 from a 277-started runtime admits, got {other:?}")
@@ -2098,7 +2104,7 @@ fn positional_send_resolves_native_order_under_adoption() {
     );
     assert!(validate_report_v4_reason(&first).is_none());
     assert!(matches!(
-        fixed.handle_report(&first),
+        fixed.handle_report(&first, &[]).0,
         WorldOutcome::Accepted(_)
     ));
     let fixed_command = send_command(&send(1), "4242_7", output.clone()).expect("send route");
@@ -2121,7 +2127,7 @@ fn positional_send_resolves_native_order_under_adoption() {
     );
     assert!(
         matches!(
-            fixed.handle_report(&fixed_second),
+            fixed.handle_report(&fixed_second, &[]).0,
             WorldOutcome::Accepted(_)
         ),
         "positional send to Desktop-1 from a 277-started runtime admits"
@@ -2600,7 +2606,7 @@ fn joined_home_send_arrival() -> (RetainedCore, WorldSession, WorldEngine) {
     assert!(validate_report_v4_reason(&first).is_none());
     assert!(first.inventory_complete, "home inventory is complete");
     assert!(matches!(
-        engine.handle_report(&first),
+        engine.handle_report(&first, &[]).0,
         WorldOutcome::Accepted(_)
     ));
 
@@ -2611,7 +2617,7 @@ fn joined_home_send_arrival() -> (RetainedCore, WorldSession, WorldEngine) {
     let send2 = send_command_implicit(&send(2), "4242_7").expect("production send route");
     let second = dispatch_join(&mut session, &retained, &ctx, 2, 2, Some(2), Some(send2));
     assert!(validate_report_v4_reason(&second).is_none());
-    match engine.handle_report(&second) {
+    match engine.handle_report(&second, &[]).0 {
         WorldOutcome::Accepted(_) => {}
         other => panic!("first send-2 follow admits, got {other:?}"),
     }
@@ -2645,7 +2651,10 @@ fn joined_home_send_arrival() -> (RetainedCore, WorldSession, WorldEngine) {
     assert!(validate_report_v4_reason(&third).is_none());
     assert!(third.inventory_complete, "arrival inventory is complete");
     assert!(
-        matches!(engine.handle_report(&third), WorldOutcome::Accepted(_)),
+        matches!(
+            engine.handle_report(&third, &[]).0,
+            WorldOutcome::Accepted(_)
+        ),
         "arrival observation applies"
     );
     assert!(
@@ -2710,7 +2719,7 @@ fn send_to_occupied_existing_keeps_spare_logical_with_eager_backing_desire() {
     let stable = dispatch_join(&mut session, &retained, &ctx277, 4, 4, None, None);
     assert!(validate_report_v4_reason(&stable).is_none());
     assert!(stable.inventory_complete, "stable inventory is complete");
-    let reply = match engine.handle_report(&stable) {
+    let reply = match engine.handle_report(&stable, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("stable observation applies, got {other:?}"),
     };
@@ -2880,7 +2889,7 @@ fn send_numbered_3_to_spare_executes_through_desire_backed_lane() {
     let first = dispatch_join(&mut session, &retained, &ctx1, 1, 1, None, None);
     assert!(validate_report_v4_reason(&first).is_none());
     assert!(matches!(
-        session.engine_mut().handle_report(&first),
+        session.engine_mut().handle_report(&first, &[]).0,
         WorldOutcome::Accepted(_)
     ));
     retained.observed_focus = Some(WindowId("4242_7".to_owned()));
@@ -2888,7 +2897,7 @@ fn send_numbered_3_to_spare_executes_through_desire_backed_lane() {
     let second = dispatch_join(&mut session, &retained, &ctx277, 2, 2, Some(2), Some(send2));
     assert!(validate_report_v4_reason(&second).is_none());
     assert!(matches!(
-        session.engine_mut().handle_report(&second),
+        session.engine_mut().handle_report(&second, &[]).0,
         WorldOutcome::Accepted(_)
     ));
     assert_eq!(
@@ -2919,7 +2928,7 @@ fn send_numbered_3_to_spare_executes_through_desire_backed_lane() {
     let third = dispatch_join(&mut session, &retained, &ctx277, 3, 3, None, None);
     assert!(validate_report_v4_reason(&third).is_none());
     assert!(matches!(
-        session.engine_mut().handle_report(&third),
+        session.engine_mut().handle_report(&third, &[]).0,
         WorldOutcome::Accepted(_)
     ));
     assert!(
@@ -2928,7 +2937,7 @@ fn send_numbered_3_to_spare_executes_through_desire_backed_lane() {
     );
     let fourth = dispatch_join(&mut session, &retained, &ctx277, 4, 4, None, None);
     assert!(validate_report_v4_reason(&fourth).is_none());
-    let stable_reply = match session.engine_mut().handle_report(&fourth) {
+    let stable_reply = match session.engine_mut().handle_report(&fourth, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("stable observation applies, got {other:?}"),
     };
@@ -2984,7 +2993,7 @@ fn send_numbered_3_to_spare_executes_through_desire_backed_lane() {
         Some(cmd3),
     );
     assert!(validate_report_v4_reason(&fifth).is_none());
-    let reply = match session.engine_mut().handle_report(&fifth) {
+    let reply = match session.engine_mut().handle_report(&fifth, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("send-3 report applies, got {other:?}"),
     };
@@ -3860,7 +3869,7 @@ fn return_after_send_follow_with_ax_partial_omit_recovers_target_scope() {
         Some(space277.as_str()),
         "re-homed fact carries native 277 evidence"
     );
-    match engine.handle_report(&fourth) {
+    match engine.handle_report(&fourth, &[]).0 {
         WorldOutcome::Accepted(reply) => {
             assert!(
                 reply
@@ -3889,7 +3898,7 @@ fn return_after_send_follow_with_ax_partial_omit_recovers_target_scope() {
     );
     assert!(validate_report_v4_reason(&fifth).is_none());
     assert!(fifth.inventory_complete, "send report is complete");
-    match engine.handle_report(&fifth) {
+    match engine.handle_report(&fifth, &[]).0 {
         WorldOutcome::Accepted(_) => {}
         other => panic!("send to recovered off-current target admits, got {other:?}"),
     }
@@ -3924,7 +3933,10 @@ fn return_after_send_follow_with_ax_partial_omit_recovers_target_scope() {
     assert!(validate_report_v4_reason(&sixth).is_none());
     assert!(sixth.inventory_complete, "arrival inventory is complete");
     assert!(
-        matches!(engine.handle_report(&sixth), WorldOutcome::Accepted(_)),
+        matches!(
+            engine.handle_report(&sixth, &[]).0,
+            WorldOutcome::Accepted(_)
+        ),
         "arrival observation applies"
     );
     assert!(
@@ -3986,7 +3998,7 @@ fn cg_alive_unreadable_membership_holds_target_scope() {
         None,
         "unknown home carries no native receipt"
     );
-    match engine.handle_report(&fourth) {
+    match engine.handle_report(&fourth, &[]).0 {
         WorldOutcome::Accepted(reply) => {
             assert!(
                 reply.scopes.iter().any(|s| s.scope.covers_workspace(
@@ -4020,7 +4032,7 @@ fn cg_alive_unreadable_membership_holds_target_scope() {
         !fifth.inventory_complete,
         "hold persists across the send report"
     );
-    match engine.handle_report(&fifth) {
+    match engine.handle_report(&fifth, &[]).0 {
         WorldOutcome::Accepted(reply) => {
             assert_eq!(
                 reply.command_result,
@@ -4075,7 +4087,7 @@ fn cg_unreadable_oracle_holds_target_scope() {
     let fourth = dispatch_join(&mut session, &retained, &ctx1, 4, 4, None, None);
     assert!(validate_report_v4_reason(&fourth).is_none());
     assert!(!fourth.inventory_complete, "hold fences the report");
-    match engine.handle_report(&fourth) {
+    match engine.handle_report(&fourth, &[]).0 {
         WorldOutcome::Accepted(reply) => {
             assert!(
                 reply.scopes.iter().any(|s| s.scope.covers_workspace(
@@ -4101,7 +4113,7 @@ fn cg_unreadable_oracle_holds_target_scope() {
         Some(to_off_current),
     );
     assert!(validate_report_v4_reason(&fifth).is_none());
-    match engine.handle_report(&fifth) {
+    match engine.handle_report(&fifth, &[]).0 {
         WorldOutcome::Accepted(reply) => {
             assert_eq!(
                 reply.command_result,
@@ -4144,7 +4156,7 @@ fn actual_close_prunes_and_releases_hold() {
     assert!(validate_report_v4_reason(&first).is_none());
     assert!(first.inventory_complete, "home inventory is complete");
     assert!(matches!(
-        engine.handle_report(&first),
+        engine.handle_report(&first, &[]).0,
         WorldOutcome::Accepted(_)
     ));
 
@@ -4177,7 +4189,10 @@ fn actual_close_prunes_and_releases_hold() {
         second.closed,
     );
     assert!(
-        matches!(engine.handle_report(&second), WorldOutcome::Accepted(_)),
+        matches!(
+            engine.handle_report(&second, &[]).0,
+            WorldOutcome::Accepted(_)
+        ),
         "close observation applies"
     );
 }

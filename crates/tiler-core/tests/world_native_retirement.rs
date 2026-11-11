@@ -180,7 +180,7 @@ fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReportV4,
 ) -> tiler_core::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -1259,16 +1259,13 @@ fn missing_native_row_fences_retirement_intents() {
     setup_four(&mut engine);
     // No observation row for the live output: tombstones persist fenced;
     // nothing new authorizes deletion.
-    if let WorldOutcome::Accepted(reply) = engine.handle_report(&report(
-        2,
-        2,
-        single_screen(),
-        vec![],
-        vec![],
-        None,
-        None,
-        true,
-    )) {
+    if let WorldOutcome::Accepted(reply) = engine
+        .handle_report(
+            &report(2, 2, single_screen(), vec![], vec![], None, None, true),
+            &[],
+        )
+        .0
+    {
         for native_id in ["d2", "d3"] {
             let tomb = tombstone_id(&reply, "out-a", native_id).expect("tombstone persists");
             assert_eq!(existence(&reply, "out-a", &tomb), Some(false));
@@ -1287,16 +1284,12 @@ fn occupancy_coverage_gap_refuses_report() {
     setup_four(&mut engine);
     let mut obs = empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1");
     obs.occupancy.pop();
-    let outcome = engine.handle_report(&report(
-        2,
-        2,
-        single_screen(),
-        vec![],
-        vec![obs],
-        None,
-        None,
-        true,
-    ));
+    let outcome = engine
+        .handle_report(
+            &report(2, 2, single_screen(), vec![], vec![obs], None, None, true),
+            &[],
+        )
+        .0;
     assert!(
         !matches!(outcome, WorldOutcome::Accepted(_)),
         "coverage gap must not accept: {outcome:?}"

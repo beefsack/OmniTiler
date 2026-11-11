@@ -165,7 +165,7 @@ fn test_engine() -> WorldEngine {
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -1385,7 +1385,7 @@ fn envelope_rejection_adopts_nothing() {
         true,
         9,
     )];
-    match engine.handle_report(&reused) {
+    match engine.handle_report(&reused, &[]).0 {
         WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REUSED)
         }
@@ -1422,7 +1422,7 @@ fn consumed_command_report_still_settles_feedback() {
         Some(focus_command("w0")),
     );
     consumed.focus_feedback = vec![row];
-    match engine.handle_report(&consumed) {
+    match engine.handle_report(&consumed, &[]).0 {
         WorldOutcome::CommandConsumed(reply) => {
             assert_eq!(reply.command_result, None);
             assert!(reply.effects.is_empty());
@@ -1460,7 +1460,7 @@ fn duplicate_replay_keeps_settlement_unchanged() {
     );
     let reply = accepted(&mut engine, &settled);
     let revision = engine.state_revision;
-    match engine.handle_report(&settled) {
+    match engine.handle_report(&settled, &[]).0 {
         WorldOutcome::Duplicate(cached) => assert_eq!(cached, reply),
         other => panic!("expected duplicate, got {other:?}"),
     }

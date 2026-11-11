@@ -670,7 +670,7 @@ mod directional_codec_tests {
             None,
             None,
         );
-        match engine.handle_report(&first) {
+        match engine.handle_report(&first, &[]).0 {
             WorldOutcome::Accepted(_) => {}
             other => panic!("admit accepted, got {other:?}"),
         }
@@ -693,7 +693,7 @@ mod directional_codec_tests {
             Some(2),
             Some(command),
         );
-        let reply = match engine.handle_report(&second) {
+        let reply = match engine.handle_report(&second, &[]).0 {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("control step accepted, got {other:?}"),
         };
@@ -725,7 +725,7 @@ mod directional_codec_tests {
             Some(3),
             Some(command),
         );
-        let reply = match engine.handle_report(&third) {
+        let reply = match engine.handle_report(&third, &[]).0 {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("control step accepted, got {other:?}"),
         };
@@ -760,7 +760,7 @@ mod directional_codec_tests {
             Some(4),
             Some(command),
         );
-        let reply = match engine.handle_report(&fourth) {
+        let reply = match engine.handle_report(&fourth, &[]).0 {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("edge step reconciles Accepted, got {other:?}"),
         };
@@ -824,7 +824,7 @@ mod directional_codec_tests {
         );
         assert!(
             matches!(
-                engine.handle_report(&replay),
+                engine.handle_report(&replay, &[]).0,
                 WorldOutcome::CommandConsumed(_)
             ),
             "refused seq replays as CommandConsumed"
@@ -1215,10 +1215,13 @@ mod trailing_command_tests {
         )
         .expect("production capabilities bind");
         assert!(
-            matches!(probe.handle_report(&first), WorldOutcome::Accepted(_)),
+            matches!(
+                probe.handle_report(&first, &[]).0,
+                WorldOutcome::Accepted(_)
+            ),
             "spare fixture is engine-accepted"
         );
-        let reply1 = match session.engine_mut().handle_report(&first) {
+        let reply1 = match session.engine_mut().handle_report(&first, &[]).0 {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),
         };
@@ -1340,7 +1343,7 @@ mod trailing_command_tests {
             ticket2.command_seq,
             command,
         );
-        let reply2 = match session.engine_mut().handle_report(&second) {
+        let reply2 = match session.engine_mut().handle_report(&second, &[]).0 {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),
         };

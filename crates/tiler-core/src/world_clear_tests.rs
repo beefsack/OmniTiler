@@ -1661,7 +1661,7 @@ fn clear_consumed_replay_does_not_supersede() {
         Some(true),
         Some(false),
     )];
-    let outcome = engine.handle_report(&replay);
+    let outcome = engine.handle_report(&replay, &[]).0;
     match outcome {
         WorldOutcome::CommandConsumed(reply) => {
             assert!(
@@ -2410,7 +2410,7 @@ fn float_settled_events_are_one_shot_and_replay_cached() {
     );
     // Replay of the identical report repeats the cached reply with its
     // events instead of settling twice.
-    match engine.handle_report(&confirming) {
+    match engine.handle_report(&confirming, &[]).0 {
         WorldOutcome::Duplicate(cached) => {
             assert_eq!(cached.operation_settled, reply.operation_settled);
         }

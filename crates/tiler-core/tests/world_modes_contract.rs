@@ -194,7 +194,7 @@ fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReportV4,
 ) -> tiler_core::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -368,21 +368,27 @@ fn local_mode_selects_without_swap_when_target_visible_elsewhere() {
     );
     let view_b = view_of(&first, "out-b").expect("view b");
     // Local mode refuses a foreign id: no cross-output duplication.
-    match engine.handle_report(&report(
-        2,
-        2,
-        two_screens(),
-        vec![],
-        vec![],
-        vec![],
-        "",
-        Some(11),
-        Some(WorldCommand::SelectWorkspace {
-            output: OutputId("out-a".to_owned()),
-            workspace: view_b,
-        }),
-        vec![],
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                2,
+                2,
+                two_screens(),
+                vec![],
+                vec![],
+                vec![],
+                "",
+                Some(11),
+                Some(WorldCommand::SelectWorkspace {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: view_b,
+                }),
+                vec![],
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(tiler_core::world_report::CommandResult::Rejected {
@@ -490,22 +496,28 @@ fn shared_mode_refuses_whole_workspace_migration() {
         ),
     );
     let shared = view_of(&first, "out-a").expect("shared view");
-    match engine.handle_report(&report(
-        2,
-        2,
-        two_screens(),
-        vec![fact("win-a", "out-a", 0)],
-        vec![],
-        vec![],
-        "",
-        Some(11),
-        Some(WorldCommand::MigrateWorkspace {
-            source_output: OutputId("out-a".to_owned()),
-            target_output: OutputId("out-b".to_owned()),
-            workspace: shared,
-        }),
-        vec![],
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                2,
+                2,
+                two_screens(),
+                vec![fact("win-a", "out-a", 0)],
+                vec![],
+                vec![],
+                "",
+                Some(11),
+                Some(WorldCommand::MigrateWorkspace {
+                    source_output: OutputId("out-a".to_owned()),
+                    target_output: OutputId("out-b".to_owned()),
+                    workspace: shared,
+                }),
+                vec![],
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(tiler_core::world_report::CommandResult::Rejected {

@@ -949,7 +949,7 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
     );
     input.raw = &raw;
     let first = crate::world_builder::build_report(&mut input);
-    let adopted = match session.engine_mut().handle_report(&first) {
+    let adopted = match session.engine_mut().handle_report(&first, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("adopt report must accept, got {other:?}"),
     };
@@ -994,7 +994,7 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
         workspace: logical_b.clone(),
     });
     let second_report = crate::world_builder::build_report(&mut second);
-    match session.engine_mut().handle_report(&second_report) {
+    match session.engine_mut().handle_report(&second_report, &[]).0 {
         WorldOutcome::Accepted(_) => {}
         other => panic!("switch-view must accept, got {other:?}"),
     }
@@ -1026,7 +1026,7 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
         follow: false,
     });
     let third_report = crate::world_builder::build_report(&mut third);
-    match session.engine_mut().handle_report(&third_report) {
+    match session.engine_mut().handle_report(&third_report, &[]).0 {
         WorldOutcome::Accepted(_) => {}
         other => panic!("send must accept, got {other:?}"),
     };
@@ -1391,7 +1391,7 @@ fn restart_sessions_mint_distinct_tokens_and_fence_old_traffic() {
     .expect("synthetic report builds");
     assert!(
         matches!(
-            old.engine_mut().handle_report(&old_report),
+            old.engine_mut().handle_report(&old_report, &[]).0,
             WorldOutcome::Accepted(_)
                 | WorldOutcome::Duplicate(_)
                 | WorldOutcome::CommandConsumed(_)
@@ -1400,7 +1400,7 @@ fn restart_sessions_mint_distinct_tokens_and_fence_old_traffic() {
     );
     assert!(
         matches!(
-            new.engine_mut().handle_report(&old_report),
+            new.engine_mut().handle_report(&old_report, &[]).0,
             WorldOutcome::Rejected { .. }
         ),
         "old report must not be admitted after restart"
@@ -1491,7 +1491,7 @@ fn reused_pid_shape_with_distinct_nonces_fences_old_traffic() {
     .expect("synthetic report builds");
     assert!(
         matches!(
-            old.engine_mut().handle_report(&old_report),
+            old.engine_mut().handle_report(&old_report, &[]).0,
             WorldOutcome::Accepted(_)
                 | WorldOutcome::Duplicate(_)
                 | WorldOutcome::CommandConsumed(_)
@@ -1500,7 +1500,7 @@ fn reused_pid_shape_with_distinct_nonces_fences_old_traffic() {
     );
     assert!(
         matches!(
-            new.engine_mut().handle_report(&old_report),
+            new.engine_mut().handle_report(&old_report, &[]).0,
             WorldOutcome::Rejected { .. }
         ),
         "old report must not be admitted after restart under a reused PID"
@@ -1589,7 +1589,7 @@ fn entropy_failure_session_stays_unbound_and_admits_nothing() {
     .expect("synthetic report builds");
     assert!(
         matches!(
-            session.engine_mut().handle_report(&report),
+            session.engine_mut().handle_report(&report, &[]).0,
             WorldOutcome::Rejected { .. }
         ),
         "unbound session must reject even its own report"

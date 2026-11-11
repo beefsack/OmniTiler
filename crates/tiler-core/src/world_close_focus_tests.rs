@@ -131,7 +131,7 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -655,18 +655,24 @@ fn consumed_sequence_report_supersedes_pending_request() {
     // Repeating the consumed sequence reconciles only, and still retires.
     // A consumed repeat publishes through the CommandConsumed outcome with
     // the same reply shape.
-    let superseded = match engine.handle_report(&report(
-        5,
-        survivors,
-        vec![],
-        "",
-        true,
-        Some(1),
-        Some(WorldCommand::Focus {
-            window: WindowId("win-a".to_owned()),
-            direction: "left".to_owned(),
-        }),
-    )) {
+    let superseded = match engine
+        .handle_report(
+            &report(
+                5,
+                survivors,
+                vec![],
+                "",
+                true,
+                Some(1),
+                Some(WorldCommand::Focus {
+                    window: WindowId("win-a".to_owned()),
+                    direction: "left".to_owned(),
+                }),
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => reply,
         other => panic!("expected accepted or consumed, got {other:?}"),
     };

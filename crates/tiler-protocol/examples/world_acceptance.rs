@@ -475,7 +475,7 @@ fn bootstrap_binding(
     }
     let mut probe = configured_engine(case, mode)?;
     let first = build_report_v4(case, step0, mode, &BTreeMap::new(), &BTreeMap::new())?;
-    let reply = match probe.handle_report(&first) {
+    let reply = match probe.handle_report(&first, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         WorldOutcome::Duplicate(_) => {
             return Err("bootstrap probe: expected accepted, got duplicate".to_owned());
@@ -558,7 +558,7 @@ fn execute(case: &CaseFile) -> Result<Vec<(WorldReportV4, WorldReplyV4)>, String
             }
         }
         let report = build_report_v4(case, step, mode, &binding, &grants)?;
-        match engine.handle_report(&report) {
+        match engine.handle_report(&report, &[]).0 {
             WorldOutcome::Accepted(reply) => {
                 if select_changed {
                     grants.clear();
@@ -1262,7 +1262,7 @@ mod acceptance_tests {
             configured_engine(&case, case_mode(&case.mode).expect("mode")).expect("engine");
         let mut replies = Vec::new();
         for report in &reports {
-            match engine.handle_report(report) {
+            match engine.handle_report(report, &[]).0 {
                 WorldOutcome::Accepted(reply) => replies.push(reply),
                 WorldOutcome::Duplicate(_) => panic!("duplicate is not fresh acceptance"),
                 WorldOutcome::CommandConsumed(_) => panic!("consumed never re-executes"),
@@ -1284,7 +1284,7 @@ mod acceptance_tests {
             configured_engine(&case, case_mode(&case.mode).expect("mode")).expect("engine");
         let mut replies = Vec::new();
         for report in &reports {
-            match engine.handle_report(report) {
+            match engine.handle_report(report, &[]).0 {
                 WorldOutcome::Accepted(reply) => replies.push(reply),
                 WorldOutcome::Duplicate(_) => panic!("duplicate is not fresh acceptance"),
                 WorldOutcome::CommandConsumed(_) => panic!("consumed never re-executes"),

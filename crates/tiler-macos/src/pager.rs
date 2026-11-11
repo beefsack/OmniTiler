@@ -417,7 +417,7 @@ mod tests {
     }
 
     fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldPresentationV4 {
-        match engine.handle_report(report) {
+        match engine.handle_report(report, &[]).0 {
             WorldOutcome::Accepted(reply) => reply.presentation,
             WorldOutcome::Duplicate(reply) => reply.presentation,
             other => panic!("expected accepted, got {other:?}"),
@@ -770,7 +770,7 @@ mod tests {
     }
 
     fn accepted_reply(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
-        match engine.handle_report(report) {
+        match engine.handle_report(report, &[]).0 {
             WorldOutcome::Accepted(reply) => reply,
             WorldOutcome::Duplicate(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),

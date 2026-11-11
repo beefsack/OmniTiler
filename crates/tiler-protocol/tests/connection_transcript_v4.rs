@@ -100,7 +100,7 @@ impl Driver {
     fn submit_report(&mut self, line: &str) -> ReportOut {
         let decoded = decode_request_with_wire(line).expect("report decodes");
         let live = self.live();
-        match live.handle_report(&decoded.report) {
+        match live.handle_report(&decoded.report, &[]).0 {
             WorldOutcome::Accepted(reply)
             | WorldOutcome::Duplicate(reply)
             | WorldOutcome::CommandConsumed(reply) => {

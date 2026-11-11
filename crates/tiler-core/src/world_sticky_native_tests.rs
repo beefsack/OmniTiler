@@ -2088,7 +2088,7 @@ fn native_rollback_consumed_report_still_emits() {
     );
     proof.command_seq = Some(2);
     proof.command = Some(set_sticky("win-a", false));
-    match engine.handle_report(&proof) {
+    match engine.handle_report(&proof, &[]).0 {
         WorldOutcome::CommandConsumed(reply) => {
             let prior = IntentData::new(Some(true), Some(false));
             assert_eq!(
@@ -2325,7 +2325,7 @@ fn native_rollback_reserve_rejects_before_mutation_and_small_retry_rolls_back() 
     let floats = engine.restored_floats.clone();
     let highwater = engine.command_highwater;
     let queued = engine.sticky_rollback_saves.clone();
-    match engine.handle_report(&report) {
+    match engine.handle_report(&report, &[]).0 {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REPLY_SIZE),
         other => panic!("expected reply-oversize, got {other:?}"),
     }
@@ -2400,14 +2400,20 @@ fn native_rollback_queue_cap_refuses_at_cap_preserving_queue() {
     // queued entries are untouched.
     let revision = engine.state_revision;
     let highwater = engine.command_highwater;
-    match engine.handle_report(&refused_proof(
-        3,
-        vec![fact("win-a", "out-a", 0)],
-        "win-a",
-        true,
-        rev,
-        false,
-    )) {
+    match engine
+        .handle_report(
+            &refused_proof(
+                3,
+                vec![fact("win-a", "out-a", 0)],
+                "win-a",
+                true,
+                rev,
+                false,
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT);
             assert_eq!(message, "section-over-cap");
@@ -2451,14 +2457,20 @@ fn native_rollback_queue_cap_refuses_at_cap_preserving_queue() {
     }
     assert_eq!(engine.sticky_rollback_saves.len(), MAX_INTENT_WRITES);
     let revision = engine.state_revision;
-    match engine.handle_report(&refused_proof(
-        4,
-        vec![fact("win-a", "out-a", 0)],
-        "win-a",
-        true,
-        rev,
-        false,
-    )) {
+    match engine
+        .handle_report(
+            &refused_proof(
+                4,
+                vec![fact("win-a", "out-a", 0)],
+                "win-a",
+                true,
+                rev,
+                false,
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT);
             assert_eq!(message, "section-over-cap");
@@ -3040,8 +3052,8 @@ fn native_binding_cap_replacement_allowed_but_distinct_refused_atomic() {
     let mut control_obs = refused_obs.clone();
     control_obs.command = None;
     control_obs.command_seq = None;
-    let _ = control.handle_report(&control_obs);
-    match capped.handle_report(&refused_obs) {
+    let _ = control.handle_report(&control_obs, &[]).0;
+    match capped.handle_report(&refused_obs, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(crate::world_report::CommandResult::Rejected {

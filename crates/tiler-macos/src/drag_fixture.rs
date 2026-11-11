@@ -372,7 +372,7 @@ impl DragFixture {
             tiler_core::world_report_v4_checks::validate_report_v4_reason(&report).is_none(),
             "fixture report validates"
         );
-        match self.engine.handle_report(&report) {
+        match self.engine.handle_report(&report, &[]).0 {
             WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => reply,
             other => panic!("fixture report must apply, got {other:?}"),
         }

@@ -144,7 +144,7 @@ fn bootstrap_only_records_no_canonical_focus() {
         None,
     );
     incomplete.inventory_complete = false;
-    match engine.handle_report(&incomplete) {
+    match engine.handle_report(&incomplete, &[]).0 {
         WorldOutcome::Accepted(reply) => assert!(!reply.ready, "bootstrap stays unready"),
         other => panic!("expected bootstrap acceptance, got {other:?}"),
     }
@@ -185,7 +185,7 @@ fn rejected_report_leaves_canonical_focus_and_revision() {
         None,
         None,
     );
-    match engine.handle_report(&reused) {
+    match engine.handle_report(&reused, &[]).0 {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
         other => panic!("expected reused refusal, got {other:?}"),
     }
@@ -297,16 +297,22 @@ fn unchanged_raw_focus_preserves_command_selected_slot_without_cache() {
         window: WindowId("win-b".to_owned()),
         direction: "left".to_owned(),
     };
-    let reply = match engine.handle_report(&report_full(
-        2,
-        2,
-        vec![screen("out-a", 0)],
-        windows(),
-        Vec::new(),
-        "win-a",
-        Some(1),
-        Some(focus_b),
-    )) {
+    let reply = match engine
+        .handle_report(
+            &report_full(
+                2,
+                2,
+                vec![screen("out-a", 0)],
+                windows(),
+                Vec::new(),
+                "win-a",
+                Some(1),
+                Some(focus_b),
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted command, got {other:?}"),
     };
@@ -385,16 +391,22 @@ fn consumed_report_refreshes_prior_focus_and_empty_set() {
         window: WindowId("win-zzz".to_owned()),
         direction: "left".to_owned(),
     };
-    let empty_id = match engine.handle_report(&report_full(
-        1,
-        1,
-        vec![screen("out-a", 0)],
-        Vec::new(),
-        Vec::new(),
-        "win-a",
-        Some(1),
-        Some(refused()),
-    )) {
+    let empty_id = match engine
+        .handle_report(
+            &report_full(
+                1,
+                1,
+                vec![screen("out-a", 0)],
+                Vec::new(),
+                Vec::new(),
+                "win-a",
+                Some(1),
+                Some(refused()),
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => {
             let row = reply
                 .workspaces
@@ -423,7 +435,7 @@ fn consumed_report_refreshes_prior_focus_and_empty_set() {
         Some(1),
         Some(refused()),
     );
-    let occupied_id = match engine.handle_report(&redelivery) {
+    let occupied_id = match engine.handle_report(&redelivery, &[]).0 {
         WorldOutcome::CommandConsumed(reply) => {
             let row = reply
                 .workspaces

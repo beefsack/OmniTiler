@@ -683,9 +683,19 @@ acceptance or adopt the separate close-focus amendment.
   platform, not a second engine route. [Payloads](../decisions/contract.md#command-payloads),
   [R18](../decisions/contract.md#scripting-command-surface-r18).
 
-### Queued KDE ingress
+### Ordered command ingress
 
-- The command envelope remains
+- Every platform uses one core report ingress, taking a fresh report plus an
+  ordered list of `(command sequence, command)` pairs, empty when there are no
+  queued commands. The single admission outcome includes settlements aligned
+  with that list; a refused report adopts nothing and settles no queued
+  commands. Existing inline report-command encoding is unchanged.
+- User commands do not wait for batching. A ready command preempts any armed
+  native-event debounce; the 120 ms debounce applies only to native-event
+  bursts. An outstanding capture or filing acknowledgement still fences the
+  next command capture to preserve ordering.
+
+- The queued transport's command envelope remains
   `{"v":4,"gen":G,"client":C,"clientCmd":"N","command":{...}}`.
   The subject distinction belongs to the command's `win`, not a second queue
   envelope field. Existing explicit command bytes remain unchanged.
@@ -704,7 +714,7 @@ acceptance or adopt the separate close-focus amendment.
   `true`; extra keys, false and other types refuse. Implicit maximize uses core-resolved focus instead of
   a settled-native-focus equality check; explicit maximize keeps its gate.
 - The capture returns one final full actuator publication for the batch, with
-  per-command results retained on the requester-only take lane. Native
+  per-command results retained on the queued transport's requester-only take lane. Native
   application keeps only the newest pending publication and follows the
   [normative apply rule](#normative-apply-rule).
   Superseding native work never discards incoming `closed` or attempt evidence.

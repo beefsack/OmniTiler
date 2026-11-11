@@ -175,7 +175,7 @@ fn report_on(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -1389,7 +1389,7 @@ fn consumed_command_reports_still_carry_gesture_preview() {
         window: WindowId("win-a".to_owned()),
         direction: "right".to_owned(),
     });
-    match engine.handle_report(&resend) {
+    match engine.handle_report(&resend, &[]).0 {
         WorldOutcome::CommandConsumed(reply) => {
             preview_of(&reply);
         }
@@ -1445,7 +1445,7 @@ fn incarnation_reset_clears_the_session() {
     let mut stale_old_generation = old_generation.clone();
     stale_old_generation.adapter_incarnation = "adapter-2".to_owned();
     assert!(matches!(
-        engine.handle_report(&stale_old_generation),
+        engine.handle_report(&stale_old_generation, &[]).0,
         WorldOutcome::Rejected {
             kind: "generation-mismatch",
             ..
@@ -1986,7 +1986,7 @@ fn terminal_id_zero_never_binds() {
         true,
     );
     let _ = &mut bad;
-    match engine.handle_report(&bad) {
+    match engine.handle_report(&bad, &[]).0 {
         WorldOutcome::Rejected { .. } => {}
         other => panic!("expected rejection for id 0, got {other:?}"),
     }
@@ -2529,7 +2529,7 @@ fn terminal_does_not_leak_into_next_report() {
         released.gesture_settled.map(|t| (t.id, t.committed)),
         Some((1, true))
     );
-    match engine.handle_report(&terminal_report) {
+    match engine.handle_report(&terminal_report, &[]).0 {
         WorldOutcome::Duplicate(cached) => assert_eq!(
             cached.gesture_settled.map(|t| (t.id, t.committed)),
             Some((1, true)),
@@ -2628,7 +2628,7 @@ fn rejected_report_consumes_no_gesture_identity() {
         vec![],
         true,
     );
-    match engine.handle_report(&bad) {
+    match engine.handle_report(&bad, &[]).0 {
         WorldOutcome::Rejected { .. } => {}
         other => panic!("expected rejection, got {other:?}"),
     }

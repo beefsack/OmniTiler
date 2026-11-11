@@ -159,7 +159,7 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -1126,22 +1126,28 @@ fn dialog_hints_null_stays_float_member_without_frame_write() {
     assert!(back.transfers.is_empty(), "{:?}", back.transfers);
 
     // Dependent toggle stays fail-closed without replacing nulls.
-    match engine.handle_report(&report(
-        4,
-        4,
-        vec![
-            dialog_hints_null("win-d", "out-a", 0),
-            fact("win-t", "out-b", 800),
-        ],
-        vec![],
-        Some(11),
-        Some(WorldCommand::Operation(
-            crate::boundary::CoreCommand::ToggleFloat {
-                window: "win-d".to_owned(),
-                float_rect: None,
-            },
-        )),
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                4,
+                4,
+                vec![
+                    dialog_hints_null("win-d", "out-a", 0),
+                    fact("win-t", "out-b", 800),
+                ],
+                vec![],
+                Some(11),
+                Some(WorldCommand::Operation(
+                    crate::boundary::CoreCommand::ToggleFloat {
+                        window: "win-d".to_owned(),
+                        float_rect: None,
+                    },
+                )),
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {

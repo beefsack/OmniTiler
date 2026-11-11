@@ -220,7 +220,7 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -783,15 +783,21 @@ fn selection_native_arm_bracket_is_refused_before_adoption() {
         Some("w2"),
         vec![native],
     );
-    match engine.handle_report(&report(
-        6,
-        vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
-        vec![],
-        None,
-        None,
-        vec![row],
-        "",
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                6,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                None,
+                None,
+                vec![row],
+                "",
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Rejected { kind, message } => {
             assert_eq!(message, "arrival-host-mismatch");
             let _ = kind;
@@ -975,18 +981,24 @@ fn selection_refusal_consumed_and_envelope_keep_first_feedback() {
     check_latched(&engine);
     // A consumed (replayed) command reconciles observation only: the latch
     // survives with no duplicate effect.
-    match engine.handle_report(&report(
-        6,
-        vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
-        vec![],
-        Some(3),
-        Some(WorldCommand::SelectWorkspace {
-            output: OutputId("out-a".to_owned()),
-            workspace: away.clone(),
-        }),
-        vec![],
-        "",
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                6,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                Some(3),
+                Some(WorldCommand::SelectWorkspace {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: away.clone(),
+                }),
+                vec![],
+                "",
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::CommandConsumed(_) => {}
         other => panic!("expected consumed, got {other:?}"),
     }
@@ -1002,7 +1014,7 @@ fn selection_refusal_consumed_and_envelope_keep_first_feedback() {
         "",
     );
     bad.contract_version = 0;
-    match engine.handle_report(&bad) {
+    match engine.handle_report(&bad, &[]).0 {
         WorldOutcome::Rejected { .. } => {}
         other => panic!("expected envelope refusal, got {other:?}"),
     }
@@ -5158,7 +5170,7 @@ fn switch_pre_mutation_reserve_rejects_before_mutation_with_retry() {
         );
     }
     let before_rev = engine.state_revision;
-    match engine.handle_report(&big) {
+    match engine.handle_report(&big, &[]).0 {
         WorldOutcome::Rejected { kind, message } => {
             assert_eq!(
                 message, "reply exceeds size bound",
@@ -5183,7 +5195,7 @@ fn switch_pre_mutation_reserve_rejects_before_mutation_with_retry() {
         vec![],
         "",
     );
-    match engine.handle_report(&small) {
+    match engine.handle_report(&small, &[]).0 {
         WorldOutcome::Accepted(_) | WorldOutcome::CommandConsumed(_) => {}
         other => panic!("same-seq smaller retry must commit, got {other:?}"),
     }
@@ -5273,18 +5285,24 @@ fn switch_rejected_command_keeps_presettled_terminal_and_consumes_seq() {
     );
     // The refused seq is consumed: replaying it reconciles observation
     // only, with no revived terminal and no re-execution.
-    match engine.handle_report(&report(
-        5,
-        vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
-        vec![],
-        Some(4),
-        Some(WorldCommand::SelectWorkspace {
-            output: OutputId("out-a".to_owned()),
-            workspace: "ws-nope".to_owned(),
-        }),
-        vec![],
-        "",
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                5,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                Some(4),
+                Some(WorldCommand::SelectWorkspace {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: "ws-nope".to_owned(),
+                }),
+                vec![],
+                "",
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::CommandConsumed(consumed) => {
             assert!(consumed.switch_settled.is_empty(), "no revived terminal");
         }
@@ -5597,7 +5615,7 @@ fn switch_duplicate_replays_identical_event_then_next_report_empties() {
     );
     let reply = accepted(&mut engine, &settle);
     assert_eq!(reply.switch_settled.len(), 1);
-    match engine.handle_report(&settle) {
+    match engine.handle_report(&settle, &[]).0 {
         WorldOutcome::Duplicate(cached) => {
             assert_eq!(cached.switch_settled, reply.switch_settled);
             assert_eq!(cached, reply, "duplicate returns the cached event");
@@ -6854,7 +6872,7 @@ fn host_owned_focus_bearing_wrong_host_arms_refuse_at_ingress() {
         );
         let mut proof = host_native_report(4, host_proof_windows(true), "n0", None, None);
         proof.focus_feedback = vec![row];
-        match engine.handle_report(&proof) {
+        match engine.handle_report(&proof, &[]).0 {
             WorldOutcome::Rejected { .. } => {}
             other => panic!("{name}: wrong-host arm must refuse, got {other:?}"),
         }
@@ -9054,7 +9072,7 @@ fn focusless_issuing_terminal_duplicate_replays_cached_then_empties() {
         1,
         "zero members complete at issuing: {reply:?}"
     );
-    match engine.handle_report(&issuing) {
+    match engine.handle_report(&issuing, &[]).0 {
         WorldOutcome::Duplicate(cached) => {
             assert_eq!(cached.switch_settled, reply.switch_settled);
             assert_eq!(cached, reply, "duplicate returns the cached event");
@@ -9124,18 +9142,24 @@ fn focusless_issuing_terminal_consumed_replay_reconciles_empty() {
         "zero members complete at issuing: {reply:?}"
     );
     // The consumed seq reconciles only: no revived terminal, no re-execution.
-    match engine.handle_report(&report(
-        3,
-        vec![w1, w2],
-        vec![],
-        Some(2),
-        Some(WorldCommand::SelectWorkspace {
-            output: OutputId("out-a".to_owned()),
-            workspace: away.clone(),
-        }),
-        vec![],
-        "",
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                3,
+                vec![w1, w2],
+                vec![],
+                Some(2),
+                Some(WorldCommand::SelectWorkspace {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: away.clone(),
+                }),
+                vec![],
+                "",
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::CommandConsumed(consumed) => {
             assert!(
                 consumed.switch_settled.is_empty(),

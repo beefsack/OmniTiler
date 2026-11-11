@@ -1247,7 +1247,7 @@ fn engine_duplicate_and_reused_on_optional_spellings() {
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
 
     let first_report = decode_request(&one_window_request()).expect("decodes");
-    let accepted = match engine.handle_report(&first_report) {
+    let accepted = match engine.handle_report(&first_report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -1278,7 +1278,7 @@ fn engine_duplicate_and_reused_on_optional_spellings() {
         wired.wire,
         "metadata still differs"
     );
-    match engine.handle_report(&plain) {
+    match engine.handle_report(&plain, &[]).0 {
         WorldOutcome::Duplicate(cached) => {
             assert_eq!(
                 reply_wire(&cached),
@@ -1298,7 +1298,7 @@ fn engine_duplicate_and_reused_on_optional_spellings() {
         report_digest(&clocked_report),
         report_digest(&decode_request(&one_window_request()).expect("decodes")),
     );
-    match engine.handle_report(&clocked_report) {
+    match engine.handle_report(&clocked_report, &[]).0 {
         WorldOutcome::Rejected { kind, message } => {
             assert_eq!(kind, "request-reused");
             assert_eq!(message, "request sequence reused with different input");

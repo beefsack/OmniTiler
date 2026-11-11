@@ -680,7 +680,7 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -854,20 +854,25 @@ fn world_fullscreen_single_output_retains_without_effect() {
         ),
     );
     let key = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
-    let outcome = engine.handle_report(&report(
-        2,
-        one_screen(),
-        vec![
-            fullscreen_fact("win-a", "out-a", 0),
-            fact("win-b", "out-a", 200),
-        ],
-        "win-a",
-        Some(11),
-        Some(WorldCommand::FocusDirectional {
-            window: WindowId("win-a".to_owned()),
-            direction: "right".to_owned(),
-        }),
-    ));
+    let outcome = engine
+        .handle_report(
+            &report(
+                2,
+                one_screen(),
+                vec![
+                    fullscreen_fact("win-a", "out-a", 0),
+                    fact("win-b", "out-a", 200),
+                ],
+                "win-a",
+                Some(11),
+                Some(WorldCommand::FocusDirectional {
+                    window: WindowId("win-a".to_owned()),
+                    direction: "right".to_owned(),
+                }),
+            ),
+            &[],
+        )
+        .0;
     let reply = match outcome {
         WorldOutcome::Accepted(reply) => reply,
         WorldOutcome::Rejected { kind, .. } => {
@@ -915,21 +920,26 @@ fn world_fullscreen_vertical_is_noop() {
         ),
     );
     let key = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
-    let outcome = engine.handle_report(&report(
-        2,
-        two_screens(),
-        vec![
-            fullscreen_fact("win-a", "out-a", 0),
-            fact("win-b", "out-a", 200),
-            fact("win-c", "out-b", 900),
-        ],
-        "win-a",
-        Some(11),
-        Some(WorldCommand::FocusDirectional {
-            window: WindowId("win-a".to_owned()),
-            direction: "up".to_owned(),
-        }),
-    ));
+    let outcome = engine
+        .handle_report(
+            &report(
+                2,
+                two_screens(),
+                vec![
+                    fullscreen_fact("win-a", "out-a", 0),
+                    fact("win-b", "out-a", 200),
+                    fact("win-c", "out-b", 900),
+                ],
+                "win-a",
+                Some(11),
+                Some(WorldCommand::FocusDirectional {
+                    window: WindowId("win-a".to_owned()),
+                    direction: "up".to_owned(),
+                }),
+            ),
+            &[],
+        )
+        .0;
     let reply = match outcome {
         WorldOutcome::Accepted(reply) => reply,
         WorldOutcome::Rejected { kind, .. } => {

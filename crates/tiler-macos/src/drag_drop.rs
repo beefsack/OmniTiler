@@ -1732,7 +1732,7 @@ mod tests {
             gesture: Option<GestureIngress>,
         ) -> tiler_core::world_report::WorldReplyV4 {
             let report = self.report(w1, gesture);
-            match self.engine.handle_report(&report) {
+            match self.engine.handle_report(&report, &[]).0 {
                 WorldOutcome::Accepted(reply)
                 | WorldOutcome::Duplicate(reply)
                 | WorldOutcome::CommandConsumed(reply) => reply,

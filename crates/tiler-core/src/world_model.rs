@@ -2063,7 +2063,7 @@ mod prior_empty_scope_tests {
             None,
             None,
         );
-        match engine.handle_report(&reused) {
+        match engine.handle_report(&reused, &[]).0 {
             WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
             other => panic!("expected reused refusal, got {other:?}"),
         }
@@ -2090,7 +2090,7 @@ mod prior_empty_scope_tests {
             Some(1),
             Some(refused_focus),
         );
-        match engine.handle_report(&first) {
+        match engine.handle_report(&first, &[]).0 {
             WorldOutcome::Accepted(reply) => match reply.command_result {
                 Some(crate::world_report::CommandResult::Rejected { kind, .. }) => {
                     assert_eq!(kind, crate::world_report::CommandRejectKind::FocusUnknown)
@@ -2112,7 +2112,7 @@ mod prior_empty_scope_tests {
                 direction: "left".to_owned(),
             }),
         );
-        match engine.handle_report(&redelivery) {
+        match engine.handle_report(&redelivery, &[]).0 {
             WorldOutcome::CommandConsumed(reply) => {
                 let known_empty = reply
                     .workspaces

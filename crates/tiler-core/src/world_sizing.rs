@@ -3118,7 +3118,7 @@ mod effect_vocabulary_sizing_tests {
             "added reserve is the discriminator"
         );
         let revision = engine.state_revision;
-        match engine.handle_report(&report) {
+        match engine.handle_report(&report, &[]).0 {
             WorldOutcome::Rejected { kind, .. } => {
                 assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
             }

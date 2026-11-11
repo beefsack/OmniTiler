@@ -232,7 +232,7 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -962,7 +962,7 @@ fn no_focus_invalid_direction_rejects() {
         Some("out-a"),
         None,
     );
-    match engine.handle_report(&report) {
+    match engine.handle_report(&report, &[]).0 {
         WorldOutcome::Rejected { message, .. } => assert_eq!(message, "command-invalid"),
         other => panic!("expected validation refusal, got {other:?}"),
     }
@@ -1185,7 +1185,7 @@ fn no_focus_unreadable_source_refuses() {
         Some("out-a"),
         None,
     );
-    match engine.handle_report(&report) {
+    match engine.handle_report(&report, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(CommandResult::Rejected {

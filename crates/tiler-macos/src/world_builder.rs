@@ -851,7 +851,7 @@ mod tests {
         report: &WorldReportV4,
         engine: &mut WorldEngine,
     ) -> tiler_core::world_report::WorldReplyV4 {
-        match engine.handle_report(report) {
+        match engine.handle_report(report, &[]).0 {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),
         }
@@ -1307,7 +1307,7 @@ mod tests {
         assert_eq!(engine.state_revision(), 1);
 
         // Identical latest resend: duplicate, no new revision.
-        match engine.handle_report(&first) {
+        match engine.handle_report(&first, &[]).0 {
             WorldOutcome::Duplicate(cached) => {
                 assert_eq!(cached.state_revision, 1);
                 assert_eq!(engine.state_revision(), 1);
@@ -1661,20 +1661,20 @@ mod tests {
 
         // Older request sequence: superseded, never executed.
         let stale_req = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 6, 4);
-        match engine.handle_report(&stale_req) {
+        match engine.handle_report(&stale_req, &[]).0 {
             WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-superseded"),
             other => panic!("expected superseded, got {other:?}"),
         }
         // Older observation sequence on a fresh request: stale observation.
         let stale_obs = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 4, 6);
-        match engine.handle_report(&stale_obs) {
+        match engine.handle_report(&stale_obs, &[]).0 {
             WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "observation-stale"),
             other => panic!("expected observation-stale, got {other:?}"),
         }
         // Foreign core generation: mismatch without state.
         let mut foreign = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 6, 6);
         foreign.core_generation = "gen-2".to_owned();
-        match engine.handle_report(&foreign) {
+        match engine.handle_report(&foreign, &[]).0 {
             WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "generation-mismatch"),
             other => panic!("expected generation-mismatch, got {other:?}"),
         }
@@ -2687,7 +2687,7 @@ mod tests {
         let report = build_report(&mut input);
         assert!(validate_report_v4_reason(&report).is_none());
         let revision_before = engine.state_revision();
-        match engine.handle_report(&report) {
+        match engine.handle_report(&report, &[]).0 {
             WorldOutcome::Rejected { kind, .. } => {
                 assert_eq!(kind, "focus-unknown");
                 assert_eq!(engine.state_revision(), revision_before);
@@ -2828,7 +2828,7 @@ mod tests {
         });
         let report = build_report(&mut input);
         assert!(validate_report_v4_reason(&report).is_none());
-        match engine.handle_report(&report) {
+        match engine.handle_report(&report, &[]).0 {
             WorldOutcome::Accepted(reply) => {
                 assert!(
                     reply
@@ -2967,7 +2967,7 @@ mod tests {
                 assert!(!report.inventory_complete, "partial AX holds inventory");
             }
             let revision_before = engine.state_revision();
-            match engine.handle_report(&report) {
+            match engine.handle_report(&report, &[]).0 {
                 WorldOutcome::Rejected { kind, .. } => {
                     assert_eq!(kind, "focus-unknown", "{label}: rejected as focus-unknown");
                     assert_eq!(

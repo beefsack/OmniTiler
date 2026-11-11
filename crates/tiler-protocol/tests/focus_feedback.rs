@@ -286,7 +286,10 @@ fn wrong_host_arms_decode_then_engine_rejects() {
     ] {
         let mut engine = connected_engine(host_owned);
         let revision = engine.state_revision();
-        match engine.handle_report(&decode_request(&envelope(&rows)).expect("decodes")) {
+        match engine
+            .handle_report(&decode_request(&envelope(&rows)).expect("decodes"), &[])
+            .0
+        {
             WorldOutcome::Rejected { kind, message } => {
                 assert_eq!(kind, "snapshot-invalid");
                 assert_eq!(message, "arrival-host-mismatch");
@@ -302,7 +305,10 @@ fn wrong_host_arms_decode_then_engine_rejects() {
     // Cross-acceptance on the matching host: the same rows are facts there.
     for (rows, host_owned) in [(output_on_native, false), (native_on_tiler, true)] {
         let mut engine = connected_engine(host_owned);
-        match engine.handle_report(&decode_request(&envelope(&rows)).expect("decodes")) {
+        match engine
+            .handle_report(&decode_request(&envelope(&rows)).expect("decodes"), &[])
+            .0
+        {
             WorldOutcome::Accepted(_) => {}
             other => panic!("expected accepted, got {other:?}"),
         }

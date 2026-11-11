@@ -179,7 +179,7 @@ fn command_report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -753,18 +753,24 @@ fn focus_follows_stale_hit_refuses() {
     // A hit naming no reported window (stale or recycled id) refuses the
     // report instead of focusing blindly.
     let mut engine = rig();
-    match engine.handle_report(&report(
-        2,
-        2,
-        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
-        "win-a",
-        Some((110, 10)),
-        Some("win-ghost"),
-        true,
-        false,
-        true,
-        false,
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                2,
+                2,
+                vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+                "win-a",
+                Some((110, 10)),
+                Some("win-ghost"),
+                true,
+                false,
+                true,
+                false,
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
         other => panic!("expected rejection, got {other:?}"),
     }
@@ -775,18 +781,24 @@ fn focus_follows_hit_without_cursor_refuses() {
     // A hit without the cursor position it was resolved from refuses:
     // the two always travel together.
     let mut engine = rig();
-    match engine.handle_report(&report(
-        2,
-        2,
-        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
-        "win-a",
-        None,
-        Some("win-b"),
-        true,
-        false,
-        true,
-        false,
-    )) {
+    match engine
+        .handle_report(
+            &report(
+                2,
+                2,
+                vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+                "win-a",
+                None,
+                Some("win-b"),
+                true,
+                false,
+                true,
+                false,
+            ),
+            &[],
+        )
+        .0
+    {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
         other => panic!("expected rejection, got {other:?}"),
     }

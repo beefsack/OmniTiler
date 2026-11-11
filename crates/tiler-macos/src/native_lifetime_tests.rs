@@ -291,7 +291,7 @@ fn unknown_fullscreen_grounds_and_holds_without_actuation() {
     assert_eq!(row.native_workspace.as_deref(), None);
     assert_eq!(row.output.as_ref().unwrap().0, "macos-display-2");
     let engine = session.engine_mut();
-    match engine.handle_report(&report) {
+    match engine.handle_report(&report, &[]).0 {
         WorldOutcome::Accepted(reply) => {
             assert!(
                 reply.windows.iter().all(|w| w.lifetime.0 != "1001_1"

@@ -812,7 +812,7 @@ impl WorldBroker {
         let last_drag_command = drained
             .back()
             .is_some_and(|queued| command_is_drag_preview(&queued.command));
-        let (outcome, settlements) = self.engine.handle_report_batched(&plain_report, &batch);
+        let (outcome, settlements) = self.engine.handle_report(&plain_report, &batch);
         // Settle FIFO from the per-command settlements: a typed `Rejected`
         // result settles that command terminally as failed with the core
         // kind, any other result readies it with the encoded outcome.

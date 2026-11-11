@@ -320,7 +320,7 @@ fn held_plus_closed_same_id_refuses() {
     let mut report = two_output_report(1, vec![held_fact, fact("win-b", "out-b", 800)]);
     report.closed = vec![WindowId("win-a".to_owned())];
     assert!(matches!(
-        engine.handle_report(&report),
+        engine.handle_report(&report, &[]).0,
         WorldOutcome::Rejected { .. }
     ));
 }
@@ -889,7 +889,7 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
     report.command = Some(WorldCommand::MigrateDirectional {
         direction: "right".to_owned(),
     });
-    match eng.handle_report(&report) {
+    match eng.handle_report(&report, &[]).0 {
         WorldOutcome::Accepted(reply) => assert_eq!(
             reply.command_result,
             Some(crate::world_report::CommandResult::Rejected {
@@ -925,7 +925,7 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
     report.command = Some(WorldCommand::MigrateDirectional {
         direction: "right".to_owned(),
     });
-    match sticky_engine.handle_report(&report) {
+    match sticky_engine.handle_report(&report, &[]).0 {
         WorldOutcome::Accepted(reply) => match &reply.command_result {
             Some(crate::world_report::CommandResult::Migration { members, .. }) => {
                 assert!(members.is_empty(), "sticky stays: {members:?}");
@@ -948,7 +948,7 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
     report.command = Some(WorldCommand::MigrateDirectional {
         direction: "right".to_owned(),
     });
-    match proven_engine.handle_report(&report) {
+    match proven_engine.handle_report(&report, &[]).0 {
         WorldOutcome::Accepted(reply) => {
             assert!(reply.transfers.iter().any(|transfer| matches!(
                 transfer.kind,

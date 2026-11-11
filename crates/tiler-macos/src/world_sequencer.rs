@@ -1073,7 +1073,7 @@ mod tests {
             intent_records: Vec::new(),
             renderer_input: None,
         };
-        match unbound.handle_report(&report) {
+        match unbound.handle_report(&report, &[]).0 {
             tiler_core::world_engine::WorldOutcome::Rejected { .. } => {}
             tiler_core::world_engine::WorldOutcome::Accepted(_)
             | tiler_core::world_engine::WorldOutcome::Duplicate(_)

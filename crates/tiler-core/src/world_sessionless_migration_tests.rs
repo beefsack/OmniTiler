@@ -141,7 +141,7 @@ fn report_screens(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -343,7 +343,10 @@ fn sessionless_incomplete_screens_carry_no_placement() {
         }),
     ] {
         let (mut engine, _, _) = migrated_session(screens(), members());
-        match engine.handle_report(&report_screens(4, lossy, members(), None, None)) {
+        match engine
+            .handle_report(&report_screens(4, lossy, members(), None, None), &[])
+            .0
+        {
             WorldOutcome::Rejected { kind, message } => {
                 assert_eq!(kind, "snapshot-invalid", "{label}");
                 assert!(

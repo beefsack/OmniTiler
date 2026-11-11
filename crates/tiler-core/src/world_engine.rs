@@ -2549,39 +2549,19 @@ impl WorldEngine {
         self.history.previous(output)
     }
 
-    /// Accept one complete v4 report and publish one globally ordered v4
-    /// reply. This is the sole public report ingress: the caller supplies
-    /// the typed v4 report, and the admitted boundary owns admission (bound
-    /// owner plus request correlation) before delegating to the internal
-    /// v4 run. Missing bound owner refuses as owner-invalid; an invalid
-    /// request correlation refuses as correlation-invalid.
-    pub fn handle_report(&mut self, report: &WorldReportV4) -> WorldOutcome {
-        let Some(owner) = self.connection_owner.clone() else {
-            return V4RunOutcome::Rejected {
-                kind: KIND_OWNER,
-                message: MSG_OWNER,
-            };
-        };
-        let correlation = match CorrelationId::parse(&report.request_id) {
-            Some(correlation) => correlation,
-            None => {
-                return V4RunOutcome::Rejected {
-                    kind: KIND_CORRELATION,
-                    message: MSG_CORRELATION,
-                };
-            }
-        };
-        self.handle_report_v4(report, &EventIssue { owner, correlation })
-    }
-
-    /// Batched counterpart of [`WorldEngine::handle_report`]: one fresh
-    /// capture report plus the parked FIFO batch drained inside the same
-    /// capture/run/publication. Returns the single admission outcome plus
-    /// one per-command settlement index-aligned with `queued`. Any refusal
-    /// adopts nothing, settles nothing, and returns empty settlements so
-    /// the caller reparks the whole batch. Not a second public ingress:
-    /// same owner/correlation defense as [`WorldEngine::handle_report`].
-    pub fn handle_report_batched(
+    /// Accept one complete v4 report plus the parked FIFO command batch
+    /// drained inside the same capture/run/publication. This is the sole
+    /// public report ingress: the caller supplies the typed v4 report and
+    /// the ordered `(command sequence, command)` pairs, and the admitted
+    /// boundary owns admission (bound owner plus request correlation)
+    /// before delegating to the internal v4 run. An empty `queued` preserves
+    /// the existing inline report-command semantics. Returns the single
+    /// admission outcome plus one per-command settlement index-aligned with
+    /// `queued`. Any refusal adopts nothing, settles nothing, and returns
+    /// empty settlements so the caller reparks the whole batch. Missing
+    /// bound owner refuses as owner-invalid; an invalid request correlation
+    /// refuses as correlation-invalid.
+    pub fn handle_report(
         &mut self,
         report: &WorldReportV4,
         queued: &[(u64, WorldCommand)],

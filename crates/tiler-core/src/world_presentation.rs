@@ -314,7 +314,7 @@ mod tests {
     }
 
     fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
-        match engine.handle_report(report) {
+        match engine.handle_report(report, &[]).0 {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),
         }
@@ -677,16 +677,13 @@ mod tests {
             ),
         );
         let revision = first.state_revision;
-        match engine.handle_report(&report(
-            3,
-            3,
-            members,
-            "win-a",
-            None,
-            None,
-            None,
-            ingress("win-a"),
-        )) {
+        match engine
+            .handle_report(
+                &report(3, 3, members, "win-a", None, None, None, ingress("win-a")),
+                &[],
+            )
+            .0
+        {
             WorldOutcome::Duplicate(cached) => {
                 assert_eq!(cached.state_revision, revision);
                 assert_eq!(cached.presentation, first.presentation);
@@ -752,19 +749,25 @@ mod tests {
         // row equality is the v4 twin of the legacy byte-identity pin
         // (v4 has no core canonical presentation encoder; wire lives in
         // the protocol crate).
-        match engine.handle_report(&report(
-            5,
-            4,
-            members(),
-            "win-a",
-            None,
-            None,
-            None,
-            PresentationIngressV4 {
-                chord_held: false,
-                ..ingress("win-a")
-            },
-        )) {
+        match engine
+            .handle_report(
+                &report(
+                    5,
+                    4,
+                    members(),
+                    "win-a",
+                    None,
+                    None,
+                    None,
+                    PresentationIngressV4 {
+                        chord_held: false,
+                        ..ingress("win-a")
+                    },
+                ),
+                &[],
+            )
+            .0
+        {
             WorldOutcome::Duplicate(cached) => {
                 assert_eq!(cached.presentation.rev, third.presentation.rev);
                 assert_eq!(

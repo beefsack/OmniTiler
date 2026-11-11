@@ -147,7 +147,7 @@ fn codec_transact(
     };
     let report_wire = encode_report_v4(&decoded_report).map_err(|_| "codec-report-encode")?;
     let admitted = decode_report_v4(&report_wire).map_err(|_| "codec-report-decode")?;
-    let outcome = session.engine_mut().handle_report(&admitted.report);
+    let outcome = session.engine_mut().handle_report(&admitted.report, &[]).0;
     // Capability truth at reply decode: the production macOS host declares
     // above/warp/native-sticky false, and the engine gates all three rows
     // on those caps — so an honest reply never carries them and this gate
@@ -3965,7 +3965,7 @@ mod tests {
         }
 
         let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
-        let controlled = match engine.handle_report(&report(1, true)) {
+        let controlled = match engine.handle_report(&report(1, true), &[]).0 {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("controlled report must accept, got {other:?}"),
         };
@@ -3983,7 +3983,7 @@ mod tests {
                 .any(|row| row.lifetime.0 == "4242_7" && row.effective_frame.is_some()),
             "first reply carries geometry: {controlled:?}"
         );
-        let held = match engine.handle_report(&report(2, false)) {
+        let held = match engine.handle_report(&report(2, false), &[]).0 {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("incomplete-inventory report must accept held, got {other:?}"),
         };
@@ -4089,7 +4089,7 @@ mod tests {
 
         // Recovery refreshes once: a controlled reply for the same view
         // publishes fresh geometry again.
-        let recovered = match engine.handle_report(&report(3, true)) {
+        let recovered = match engine.handle_report(&report(3, true), &[]).0 {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("recovery report must accept, got {other:?}"),
         };
@@ -5409,11 +5409,13 @@ mod tests {
             }
         }
         let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
-        let accepted =
-            |engine: &mut WorldEngine, report: &WorldReportV4| match engine.handle_report(report) {
-                WorldOutcome::Accepted(reply) => reply,
-                other => panic!("expected accepted, got {other:?}"),
-            };
+        let accepted = |engine: &mut WorldEngine, report: &WorldReportV4| match engine
+            .handle_report(report, &[])
+            .0
+        {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("expected accepted, got {other:?}"),
+        };
         accepted(
             &mut engine,
             &report(
@@ -5708,11 +5710,13 @@ mod tests {
             crate::world_connection::macos_capabilities(),
         )
         .expect("producer binds the consumer handshake");
-        let accepted =
-            |engine: &mut WorldEngine, report: &WorldReportV4| match engine.handle_report(report) {
-                WorldOutcome::Accepted(reply) => reply,
-                other => panic!("expected accepted, got {other:?}"),
-            };
+        let accepted = |engine: &mut WorldEngine, report: &WorldReportV4| match engine
+            .handle_report(report, &[])
+            .0
+        {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("expected accepted, got {other:?}"),
+        };
         accepted(
             &mut engine,
             &report(
@@ -6021,7 +6025,7 @@ mod tests {
                 closed_ids,
                 focused,
             );
-            match session2.engine_mut().handle_report(&rep) {
+            match session2.engine_mut().handle_report(&rep, &[]).0 {
                 WorldOutcome::Accepted(_) => {}
                 other => panic!("expected accepted, got {other:?}"),
             }
@@ -6034,7 +6038,7 @@ mod tests {
             vec!["4242_8"],
             "4242_7",
         );
-        let closed2 = match session2.engine_mut().handle_report(&close_rep) {
+        let closed2 = match session2.engine_mut().handle_report(&close_rep, &[]).0 {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),
         };
@@ -6130,7 +6134,7 @@ mod tests {
             "4242_7",
         );
         retain_rep.focus_feedback = vec![first.clone()];
-        let retained_outcome = match session2.engine_mut().handle_report(&retain_rep) {
+        let retained_outcome = match session2.engine_mut().handle_report(&retain_rep, &[]).0 {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),
         };

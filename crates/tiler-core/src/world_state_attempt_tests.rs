@@ -1243,7 +1243,7 @@ fn offroute_diagnostics_survive_command_restage() {
         rows.clone(),
     );
     commanded.request_seq = 2;
-    let reply = match engine.handle_report(&commanded) {
+    let reply = match engine.handle_report(&commanded, &[]).0 {
         crate::world_engine::WorldOutcome::Accepted(reply) => reply,
         crate::world_engine::WorldOutcome::CommandConsumed(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
@@ -1710,7 +1710,7 @@ fn reply_bound_state_term_rejected_without_mutation() {
     assert!(without_state + state_term > WORLD_MAX_REPLY_BYTES);
     assert_eq!(crate::world_sizing::MAX_TARGET_LANES_PER_WINDOW, 626);
     let revision = engine.state_revision;
-    match engine.handle_report(&report) {
+    match engine.handle_report(&report, &[]).0 {
         crate::world_engine::WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
         }
@@ -1727,7 +1727,7 @@ fn reply_bound_state_term_rejected_without_mutation() {
         None,
         None,
     );
-    match engine.handle_report(&retry) {
+    match engine.handle_report(&retry, &[]).0 {
         crate::world_engine::WorldOutcome::Accepted(_)
         | crate::world_engine::WorldOutcome::CommandConsumed(_) => {}
         other => panic!("expected accepted retry, got {other:?}"),

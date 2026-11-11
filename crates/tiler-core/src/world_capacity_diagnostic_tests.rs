@@ -126,7 +126,7 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
-    match engine.handle_report(report) {
+    match engine.handle_report(report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
@@ -1694,7 +1694,7 @@ fn float_lost_result_recovers_stale_never_replays() {
         })),
         ..report(4, roomy, two_tiled(), "", None, None)
     };
-    match engine.handle_report(&replay) {
+    match engine.handle_report(&replay, &[]).0 {
         WorldOutcome::CommandConsumed(reply) => {
             assert_eq!(reply.command_result, None);
             assert_eq!(

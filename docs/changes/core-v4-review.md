@@ -286,7 +286,7 @@ generations of architecture.
 - KDE uses `handle_report_batched`, macOS `handle_report`
   (`world_engine.rs:2543`, `:2569`).
 - The contract section is titled
-  [Queued KDE ingress](../porting/world-contract.md#queued-kde-ingress).
+  [Queued KDE ingress](../porting/world-contract.md#ordered-command-ingress).
 - Proposal: one ingress taking a report plus an ordered command list on
   every platform.
 

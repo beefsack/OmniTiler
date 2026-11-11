@@ -162,7 +162,7 @@ function fakeSignal(): FakeSignal {
     };
 }
 
-function makeHarness(mode: unknown = "per-output-local", gesture = false, defaultTiled: unknown = true, refillFn?: () => unknown, optionsValue?: unknown, perOutputSeam = true, entryFn: typeof startWorldAdapterEntry = startWorldAdapterEntry, throwOnProbeLog = false, floatIntentSeam = false, queueHold?: { value: boolean }): Harness {
+function makeHarness(mode: unknown = "per-output-local", gesture = false, defaultTiled: unknown = true, refillFn?: () => unknown, optionsValue?: unknown, perOutputSeam = true, entryFn: typeof startWorldAdapterEntry = startWorldAdapterEntry, throwOnProbeLog = false, floatIntentSeam = false, queueHold?: { value: boolean }, holdReads?: { value: boolean }): Harness {
     const world = makeWorld();
     const calls: CapturedCall[] = [];
     const timers: Array<{ delay: number; cb: () => void }> = [];
@@ -383,6 +383,12 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
         callDbus: (_service, _path, _iface, method, payload, callback) => {
             calls.push({ method, payload, callback });
             if (method === "ReadFloatIntent" && floatIntentSeam) {
+                if (holdReads?.value === true) {
+                    // Held seed read: recorded with its callback for the
+                    // test to answer, so the store stays unhydrated and
+                    // gated filings park until the held verdict lands.
+                    return;
+                }
                 // Empty persisted-store read shape (ok outcome with
                 // matching stored/returned counts): hydrates empty so the
                 // first dispatch proceeds.
@@ -1610,7 +1616,7 @@ describe("world entry rapid directional FIFO", () => {
         h.lastCall("DescribeWorld").callback(acceptedReply(gen, req["source"] as string, req["nativeInvalid"] as string, rev));
     };
 
-    it("dispatches rapid left then right in order across a coalescing debounce", () => {
+    it("dispatches rapid left then right in order, preempting the native debounce with zero wait", () => {
         const h = makeHarness();
         discover(h);
         const describesBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
@@ -1639,12 +1645,18 @@ describe("world entry rapid directional FIFO", () => {
             describesBefore,
             "parking files no capture of its own",
         );
-        // The debounce drains the whole batch in exactly one fresh capture.
-        h.runTimers();
+        // The filed batch preempts the armed native debounce: it drains
+        // in exactly one fresh capture on the zero-delay path, without
+        // waiting for the 120 ms native timer (which never fires first).
+        h.runTimers(0);
+        assert.ok(
+            h.timers.some((t) => t.delay === 120),
+            "native 120 ms timer still unfired when the command batch drains",
+        );
         assert.equal(
             h.calls.filter((c) => c.method === "DescribeWorld").length,
             describesBefore + 1,
-            "exactly one fresh capture drains the batch",
+            "exactly one fresh capture drains the batch with zero debounce wait",
         );
         assert.equal(queueCalls(h).length, 2, "the drain files nothing further");
         acceptLast(h, "gen-1", "1");
@@ -4934,6 +4946,114 @@ describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
         );
     });
 
+    it("keeps the 120 ms debounce for native-only events with no commands", () => {
+        // Preemption is command-only: a native burst with nothing parked
+        // still waits out the full observation debounce (zero-delay
+        // timers drain nothing; the 120 ms timer carries the capture).
+        const h = makeHarness();
+        discover(h);
+        armDebounce(h);
+        const describesBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
+        h.runTimers(0);
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            describesBefore,
+            "no commandless capture on the zero-delay path",
+        );
+        h.runTimers();
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            describesBefore + 1,
+            "native-only burst still debounces exactly one capture",
+        );
+    });
+
+    it("drains a hydration-parked command with zero debounce wait once the store resolves", () => {
+        // Acceptance gap: a command parked unfiled behind the intent-store
+        // hydration gate must not wait out an armed native debounce once
+        // the correctness fence opens. The held seed read keeps the store
+        // unhydrated; the press parks without filing (gating preserved);
+        // answering the read must drain on the zero-delay path.
+        const hold = { value: true };
+        const h = makeHarness("per-output-local", false, true, undefined, undefined, true, startWorldAdapterEntry, false, true, undefined, hold);
+        answerHandshake(h);
+        answerSettings(h);
+        h.handle?.requestFocus("left");
+        assert.equal(queueCalls(h).length, 0, "hydration gate holds the filing: nothing files");
+        assert.ok(!h.logs.some((l) => l.includes("command-busy")), "no busy refusal while hydration-parked");
+        armDebounce(h);
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            0,
+            "no capture while hydration gates",
+        );
+        const seed = [...h.calls].reverse().find((c) => c.method === "ReadFloatIntent");
+        assert.ok(seed !== undefined, "seed read held");
+        const seedBody = JSON.parse((seed as CapturedCall).payload) as Record<string, unknown>;
+        (seed as CapturedCall).callback(JSON.stringify({
+            v: 2,
+            correlation_id: seedBody["correlation_id"],
+            outcome: "ok",
+            records: [],
+            stored: 0,
+            returned: 0,
+        }));
+        assert.equal(queueCalls(h).length, 0, "hydration kick files no capture of its own");
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            0,
+            "hydration kick dispatches nothing synchronously",
+        );
+        // Zero debounce wait: only zero-delay timers fire, yet the parked
+        // command files and drains in exactly one fresh capture.
+        h.runTimers(0);
+        assert.ok(
+            h.timers.some((t) => t.delay === 120),
+            "native 120 ms timer still unfired when the parked command drains",
+        );
+        assert.equal(queueCalls(h).length, 1, "parked command files exactly once after hydration");
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            1,
+            "exactly one fresh capture drains the hydration-parked batch",
+        );
+        h.handle?.stop();
+    });
+
+    it("a preempted 120 ms timer never dispatches a trailing capture", () => {
+        // Epoch proof: the test harness cancel is a noop, so the
+        // cancelled native timer still sits in the queue and fires on a
+        // full pump. The retired epoch must swallow it: no trailing
+        // commandless capture follows the zero-delay command drain.
+        const h = makeHarness();
+        discover(h);
+        armDebounce(h);
+        const describesBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
+        h.handle?.requestFocus("left");
+        assert.equal(queueCalls(h).length, 1, "press files");
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            describesBefore,
+            "parking files no capture of its own",
+        );
+        h.runTimers(0);
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            describesBefore + 1,
+            "zero-delay drain carries the command",
+        );
+        // Full pump fires the stale preempted 120 ms timer: it must be a
+        // noop, never a second capture.
+        h.runTimers();
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            describesBefore + 1,
+            "stale preempted debounce dispatches no trailing capture",
+        );
+        assert.equal(queueCalls(h).length, 1, "no replay from the stale timer");
+        h.handle?.stop();
+    });
+
     it("files the whole parked batch before ONE fresh capture drains it", () => {
         const h = makeHarness();
         discover(h);
@@ -4946,11 +5066,13 @@ describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
         // batch is filed before the single draining capture; the current
         // one-head-per-capture path files only the head at dispatch.
         assert.equal(queueCalls(h).length, 3, "whole batch filed before the capture");
-        h.runTimers();
+        // Preemption drains with zero debounce wait: only zero-delay
+        // timers fire, the armed 120 ms native timer never fires first.
+        h.runTimers(0);
         assert.equal(
             h.calls.filter((c) => c.method === "DescribeWorld").length,
             describesBefore + 1,
-            "exactly one fresh capture drains the batch",
+            "exactly one fresh capture drains the batch with zero debounce wait",
         );
         assert.equal(queueCalls(h).length, 3, "the drain files nothing further");
         acceptLast(h, "1");
@@ -5282,18 +5404,19 @@ describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
             v: 4, outcome: "queued", gen: "gen-1",
             client: headBody["client"], clientCmd: headBody["clientCmd"], globalCmd: "1",
         }));
-        // The accept defers to the invalidation-armed debounce (never a
-        // synchronous preempt from inside the filing kick).
+        // The accept preempts the invalidation-armed debounce on the
+        // zero-delay drain (never a synchronous capture from inside the
+        // filing kick, and never a 120 ms wait behind the native burst).
         assert.equal(
             h.calls.filter((c) => c.method === "DescribeWorld").length,
             sentBefore,
-            "queue accept never preempts the armed debounce",
+            "queue accept files no capture of its own",
         );
-        h.runTimers();
+        h.runTimers(0);
         assert.equal(
             h.calls.filter((c) => c.method === "DescribeWorld").length,
             sentBefore + 1,
-            "gap invalidation drains exactly one fresh capture",
+            "gap invalidation drains exactly one fresh capture with zero debounce wait",
         );
         const sent = requestOf(h);
         assert.notEqual(sent["nativeInvalid"], mark, "stale mark is never sent");

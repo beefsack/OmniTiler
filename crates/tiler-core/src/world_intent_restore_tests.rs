@@ -597,7 +597,7 @@ fn duplicate_and_oversize_are_non_mutating() {
     assert!(is_tiled(&engine, "win-a"));
 
     // Identical latest duplicate returns the cached reply with no revision.
-    match engine.handle_report(&first) {
+    match engine.handle_report(&first, &[]).0 {
         WorldOutcome::Duplicate(cached) => assert_eq!(cached.state_revision, revision),
         other => panic!("expected duplicate, got {other:?}"),
     }
@@ -619,7 +619,7 @@ fn duplicate_and_oversize_are_non_mutating() {
     );
     reused.request_id = "req-1".to_owned();
     assert!(matches!(
-        engine.handle_report(&reused),
+        engine.handle_report(&reused, &[]).0,
         WorldOutcome::Rejected { .. }
     ));
     assert!(is_tiled(&engine, "win-a"));
@@ -638,7 +638,7 @@ fn duplicate_and_oversize_are_non_mutating() {
     );
     big.screens = vec![screen("out-a", 0); 10_000];
     assert!(matches!(
-        engine.handle_report(&big),
+        engine.handle_report(&big, &[]).0,
         WorldOutcome::Rejected { .. }
     ));
     assert!(is_tiled(&engine, "win-a"));

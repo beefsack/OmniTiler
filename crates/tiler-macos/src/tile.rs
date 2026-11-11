@@ -5202,12 +5202,18 @@ mod tests {
             tiler_core::world_engine::WorldEngine::new_test_host_owned("gen-1", "adapter-1")
                 .expect("bound host engine");
         for seq in 1..=3u64 {
-            match engine.handle_report(&host_report(seq, "win-a", ingress("win-a"))) {
+            match engine
+                .handle_report(&host_report(seq, "win-a", ingress("win-a")), &[])
+                .0
+            {
                 WorldOutcome::Accepted(_) => {}
                 other => panic!("expected accepted, got {other:?}"),
             }
         }
-        let reply = match engine.handle_report(&host_report(4, "win-a", ingress("win-a"))) {
+        let reply = match engine
+            .handle_report(&host_report(4, "win-a", ingress("win-a")), &[])
+            .0
+        {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),
         };
@@ -5450,7 +5456,7 @@ mod tests {
             intent_records: Vec::new(),
             renderer_input: None,
         };
-        let reply = match engine.handle_report(&report) {
+        let reply = match engine.handle_report(&report, &[]).0 {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),
         };
