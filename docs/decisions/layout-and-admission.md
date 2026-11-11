@@ -92,7 +92,7 @@
 - Evidence: [release triage](../research/release-0.1-triage.md#user-decisions-2026-10-12).
 
 ### Admission-focus batch invariance
-- Decision: In a batch, core selects the last newcomer not withheld for automatic fixed-size handling, skipping and spending withheld fixed newcomers. If all newcomers are withheld, admission focus is unset.
+- Decision: In a batch, core selects the last newcomer not withheld for automatic fixed-size handling, skipping and spending withheld fixed newcomers. If all newcomers are withheld, admission focus is unset. Across causes in one report, precedence is explicit-command, then automatic-admission, then positive-close, then focus-follows-cursor: a close-selected MRU survivor loses to an eligible same-report newcomer. Retention uses the one global slot, not a selection-policy expansion. Approved 2026-11-11 ([design](../changes/retained-focus-requests.md)); not yet implemented.
 - Why: not recorded.
 - Assumes / revisit if: Windows adapter routing and native confirmation remain open.
 - Status: active, 2026-10-29

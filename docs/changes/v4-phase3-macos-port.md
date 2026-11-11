@@ -133,7 +133,7 @@
 | 1. Handshake and report/reply | Replace the baseline above with genuine handshake, revisioned settings, v4 capture/decode/apply and necessary attempt/storage plumbing. Prove real producer bytes through real core/protocol, readiness, narrow holds, generation/restart fences and ordinary signed-fixture admission/reflow; no repeated handshake on a bound wait. |
 | 2. Selection | Port native selector and view-attempt correlation; prove focusless terminal selection and continued ordinary tiling. Explicitly bound/document populated-selection limitations; no fabricated focus acknowledgement. |
 | 3. Arrival | Port W2 native before/after membership and settlement. Prove fixture transfer to the intended native home, refusal/unknown holds and arrival before follow/departure; setter acceptance alone never passes. |
-| 4. Focus feedback | Port causal one-shot focus evidence and anchored-descriptor consumption. Prove authorized focus/refusal without replay, exact lifetime joins and K5/M7 native event/render evidence, including stale/unwatched suppression. |
+| 4. Focus feedback | Port causal retained-request focus evidence and anchored-descriptor consumption under the approved unified design. Prove authorized focus/refusal without replay, exact lifetime joins and K5/M7 native event/render evidence, including stale/unwatched suppression. |
 | 5. State targets | Port fullscreen/sticky/stacking and composed-maximize frame application, attempts and recovery. Prove base restore, external-clear/fullscreen replacement, send/work-area changes and restart-to-base; retain durable intent/preimages where required. M4 implementation dependencies belong in shared core, not adapter-owned policy. Acceptance waits for both KDE ST/RC passes and absorption of resulting core changes. |
 | 6. Scaled metrics at scale 1 | Apply logical metrics once, separate native fractional-coordinate normalization from scaling, and recheck tiling/rendering on backing-scale changes while report scale stays 1. Do not absorb the Windows non-unit-scale prerequisite. |
 | 7. Physical reconnect/rehome | Supply M9 physical identity facts and prove user-run disconnect/return, ambiguous identity holds, FULL/work geometry and rehome behavior without regressing prior slices. Rehomed members are not new admissions. M8 crossing and two-display acceptance remain explicit gates. Acceptance waits for both KDE ST/RC passes and absorption of resulting core changes, including the RC fix/merge decision. |
@@ -234,8 +234,9 @@
   Apply CLI and per-drain refusal preservation also passed focused checks.
   Native first-run cost and holder refusal readback remain unrun.
 - Native readback, physical/visual proof and signed-fixture admission/reflow
-  remain unrun. Independent migration review identified the close/focus-loss
-  blocker below; its source checks are not native acceptance. Slice 1 is
+  remain unrun. The earlier close/focus-loss blocker is superseded by the
+  linked implementation below; the admission/explicit-focus mismatch remains
+  open. Source checks are not native acceptance. Slice 1 is
   incomplete; no usable native surface or conformance acceptance is claimed.
 - Neutral-fact follow-up: hidden-app and minimized rows now preserve available
   raw facts separately (`minimized` versus `host_hidden`), including process
@@ -323,13 +324,16 @@
 - Independent offline review instrumented an isolated source copy and reported
   the exact complete close report and shared sweep refusal: `focus-mismatch`,
   followed by `Hold(Unreadable)`, zero frames. No repository source was changed
-  for that probe. Direct source inspection confirms the focusless Reconcile
-  escape in `tiler-core/src/engine.rs` excludes reports with staged closes;
-  `world_publish.rs::classify_sweep_hold` maps the refusal to Unreadable.
-- The adapter must not fabricate survivor focus to bypass this gate. Whether
-  shared reconciliation should project the survivor layout with focus none, or
-  retain the hold until independently observed focus arrives, remains unresolved.
-  Native close/reflow and held-Space recovery acceptance are not established.
+  for that probe. Source inspection at that checkpoint confirmed the focusless
+  Reconcile escape in `tiler-core/src/engine.rs` excluded reports with staged
+  closes; `world_publish.rs::classify_sweep_hold` mapped the refusal to Unreadable.
+- Resolution: the [approved core-owned positive-close implementation](core-owned-close-refocus.md)
+  now reflows readable survivors without fabricated observed focus and retains
+  eligible close-refocus requests in the latest publication. All four scoped
+  close regressions pass in that record. The reproduction above is historical,
+  not a current unresolved design choice. Native close/reflow and held-Space
+  recovery acceptance remain unestablished; use the linked user-run procedure
+  for close/refocus, not the superseded automated preparation.
 - Other reviewed boundaries, source-only: ambiguous creation retains
   `created:null`; native retirement is guarded by core `exist:false` and fresh
   occupancy proof (currently unknown occupancy prevents removal); unsupported

@@ -42,6 +42,7 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 - 2026-11-10: User decision: host-settled geometry design after macOS slice 1, brought for approval before slice 3 and before any core change ([design timing](decisions/layout-and-admission.md#host-settled-geometry-design-timing)).
 - 2026-11-10: [Dynamic workspace lifecycle and KDE pager backing](decisions/workspaces.md#dynamic-workspace-lifecycle-and-kde-pager-backing) - eager spare backing, unshown-empty pruning (equal-count hosts keep equal logical lengths), globally safe deletion, KDE-only minimum two (User 2026-11-10).
 - 2026-11-10: [Native-only retirement intent](decisions/contract.md#native-only-retirement-intent) - existing `exist:false` rows, local-evidence re-adoption, core-only removal authority (User 2026-11-10).
+- 2026-11-11: User decision: one retained focus request for every cause with same-report precedence, any-batch non-focus/refused preservation, hover reentry identity and an execution-time logical cursor; macOS admission actuation through the generalized route; afterShown selection-dependency projection schema pending and core design not yet implemented ([focus](decisions/focus.md#automatic-focus-guards); [macOS](decisions/macos.md#complete-world-mapping); [admission precedence](decisions/layout-and-admission.md#admission-focus-batch-invariance)).
 
 ## Tentative decisions
 

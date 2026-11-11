@@ -7,6 +7,15 @@
   are implemented; post-correction offline verification and independent review
   are accepted. Native acceptance remains pending.
   KDE and Windows adapter adoption remain separate backlog work.
+- The [unified retained-focus design](retained-focus-requests.md), approved
+  2026-11-11 and not yet implemented, supersedes this note's close-only wire,
+  macOS explicit-only exception and blanket-command supersession. Non-focus
+  commands never cancel pending focus in any batch; only a newer focus decision,
+  observed user focus change or view change/target loss making the target
+  ineligible supersedes it, alongside normal settlement. The original design,
+  implementation checkpoints and evidence below remain historical; in particular
+  their command-cancellation tests and admission/hover nonactuation are not the
+  new target. Close candidate policy and native acceptance obligations remain.
 - Goal: consistently reflow and refocus after positive close of the focused
   window on KDE, macOS and Windows, without inventing observed foreground or
   fighting newer input. Follows consistency principle 1 and
