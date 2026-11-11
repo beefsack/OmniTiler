@@ -265,6 +265,7 @@ function acceptCapture(
         ready: true, consumed: false,
         source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "7",
         gestureSettled: null, gestureAssoc: null,
+        closeFocus: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
         intentWrites: [], switchSettled: [], diagnostics: [],

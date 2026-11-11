@@ -365,6 +365,7 @@ describe("v4 inner report shape", () => {
         const { value } = buildInner(makeSurface([makeWin({})]));
         assert.deepEqual(Object.keys(value), [
             "v", "screens", "windows", "closed", "native", "focused",
+            "foregroundKnown",
             "complete", "gesture", "cursor", "actionForeground",
             "actionCached", "actionOutputs", "presentation",
             "intentRecords", "stateAttempts", "focusFeedback",
@@ -820,5 +821,57 @@ describe("v4 local frame witness (adapter-local watermark)", () => {
         assert.ok(deriveLocalFrameWitness(first) !== null);
         assert.ok(deriveLocalFrameWitness(second) !== null);
         assert.equal(deriveLocalFrameWitness(first)?.obs, deriveLocalFrameWitness(second)?.obs);
+    });
+});
+
+describe("v4 foregroundKnown provenance bit", () => {
+    function innerFor(obs: ReturnType<typeof observe>) {
+        const json = buildWorldReportV4InnerJson({
+            observation: obs,
+            creationAttempts: [],
+            frameAttempts: [],
+            memberAttempts: [],
+            viewAttempts: [],
+            clearAttempts: [],
+            stateAttempts: [],
+            intentRecords: [],
+        });
+        return json === null ? null : JSON.parse(json) as Record<string, unknown>;
+    }
+
+    it("true with bound focused proves foreground", () => {
+        const obs = observe(makeSurface([makeWin({})]));
+        assert.equal(obs.focusedGlobal, "win-a");
+        assert.equal(obs.foregroundKnown, true);
+        const value = innerFor(obs);
+        assert.ok(value !== null);
+        assert.equal(value["focused"], "win-a");
+        assert.equal(value["foregroundKnown"], true);
+    });
+
+    it("true with empty focused proves no client", () => {
+        const obs = observe(makeSurface([]));
+        assert.equal(obs.focusedGlobal, "");
+        assert.equal(obs.foregroundKnown, true);
+        const value = innerFor(obs);
+        assert.ok(value !== null);
+        assert.equal(value["focused"], "");
+        assert.equal(value["foregroundKnown"], true);
+    });
+
+    it("false with empty focused means unknown", () => {
+        const obs = observe(makeSurface([makeWin({})]));
+        const unknown = { ...obs, focusedGlobal: "", foregroundKnown: false };
+        const value = innerFor(unknown);
+        assert.ok(value !== null);
+        assert.equal(value["focused"], "");
+        assert.equal(value["foregroundKnown"], false);
+    });
+
+    it("false with nonempty focused fails the report closed", () => {
+        const obs = observe(makeSurface([makeWin({})]));
+        assert.ok(obs.focusedGlobal !== "");
+        const invalid = { ...obs, foregroundKnown: false };
+        assert.equal(innerFor(invalid), null);
     });
 });

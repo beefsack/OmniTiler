@@ -84,6 +84,7 @@ function makeObservation(opts: {
         complete: true,
         gesture: false,
         focusedGlobal: "",
+        foregroundKnown: false,
         screens: [], windowFacts: [],
         floatIntent: [], tileIntent: [], views: [], closed: [],
         hostOwned: false, equalCount: true, native: [],

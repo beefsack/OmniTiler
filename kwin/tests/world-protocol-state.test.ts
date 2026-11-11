@@ -64,6 +64,7 @@ const ACCEPTED = (
     effects: [],
     result: null,
     gestureSettled: null, gestureAssoc: null,
+    closeFocus: null,
     operationSettled: [], nativeCreations: [],
     warpCursor: null,
     presentation: DISABLED_PRESENTATION,

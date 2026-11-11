@@ -219,6 +219,20 @@ export interface WorldReplyEffect {
     // Arrival-ready grant. Only an explicit selection may grant this.
     awaitShown: boolean;
 }
+// Retained positive-close focus request (world-contract.md "Retained
+// positive-close focus"): opaque request identity, frozen target lifetime,
+// immutable issuing revision, distinct `positive-close` cause, frozen source
+// domain. Null when no close intent rides this reply. The adapter applies
+// only the latest publication, spends once per bound id (including safety
+// no-calls), and correlates raw focusFeedback by exact (id,target,rev).
+export interface WorldCloseFocus {
+    id: string;
+    target: string;
+    rev: string;
+    cause: "positive-close";
+    out: string;
+    ws: string;
+}
 // Terminal retained-operation verdicts incorporated by this report, at most
 // one entry per retired operation (directional maximize-clear verdicts and
 // explicit float-placement verdicts). Only `float-frame-proven` means native
@@ -527,6 +541,9 @@ export interface WorldReply {
     windows: WorldReplyWindow[];
     transfers: WorldReplyTransfer[];
     effects: WorldReplyEffect[];
+    // Required nullable retained positive-close request (bootstrap and
+    // not-ready replies carry null). Missing or malformed refuses.
+    closeFocus: WorldCloseFocus | null;
     result: WorldReplyResult | null;
     gestureSettled: { id: string; committed: boolean } | null;
     // Broker-only bound actuator association for the actual normalized
@@ -1025,7 +1042,7 @@ export function parseDiscoveryReply(text: string): WorldReply | WorldRejection |
     if (typeof r["outcome"] === "string" || typeof r["ready"] !== "boolean") {
         return null;
     }
-    // The bootstrap lane carries exactly the 23 core keys (no capture has
+    // The bootstrap lane carries exactly the 24 core keys (no capture has
     // flown yet): parseCoreReply enforces the exact set and defaults the
     // absent transport bindings without validation, never a guess.
     const parsed = parseCoreReply(r, true);
@@ -1544,6 +1561,36 @@ function parseDiagnosticRow(e: unknown): WorldReplyDiagnostic {
     };
 }
 
+// Retained positive-close request row: exactly
+// {id,target,rev,cause,out,ws} with opaque identity/target/domain, a
+// canonical issuing revision and the closed `positive-close` cause. Null
+// carries no close intent (sole-close empty workspaces, bootstrap and
+// not-ready replies). Anything else refuses the whole reply.
+function parseCloseFocusRow(value: unknown): WorldCloseFocus | null {
+    if (value === null) {
+        return null;
+    }
+    if (typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("close-focus");
+    }
+    const o = value as Record<string, unknown>;
+    if (!hasExactKeys(o, ["id", "target", "rev", "cause", "out", "ws"])) {
+        throw new Error("close-focus-keys");
+    }
+    if (
+        !isOpaqueId(o["id"]) || !isOpaqueId(o["target"]) ||
+        typeof o["rev"] !== "string" || !isCanonicalU64(o["rev"] as string) ||
+        o["cause"] !== "positive-close" ||
+        !isOpaqueId(o["out"]) || !isOpaqueId(o["ws"])
+    ) {
+        throw new Error("close-focus-shape");
+    }
+    return {
+        id: o["id"] as string, target: o["target"] as string, rev: o["rev"] as string,
+        cause: "positive-close", out: o["out"] as string, ws: o["ws"] as string,
+    };
+}
+
 // Explicit native creation desire row: exactly {op,ws,out}, all non-empty
 // strings. Unknown keys refuse like every other core row.
 function parseNativeCreationRow(e: unknown): WorldNativeCreation {
@@ -1615,10 +1662,10 @@ export function parseIntentWrites(value: unknown): WorldIntentWrite[] | null {
 // and `diagnostics` lanes), plus source/nativeInvalid/clock/gestureAssoc
 // on the bound (capture) lane. Any unknown key refuses, and a
 // present-but-malformed `intentWrites` lane refuses the whole reply. The
-// bootstrap lane (no capture flown yet) carries exactly the 23 core keys;
+// bootstrap lane (no capture flown yet) carries exactly the 24 core keys;
 // the bindings default without validation.
 const CORE_REPLY_KEYS = ["v", "adapter", "gen", "req", "obs", "rev", "ready", "consumed",
-    "scopes", "workspaces", "outputs", "windows", "transfers", "effects", "result",
+    "scopes", "workspaces", "outputs", "windows", "transfers", "effects", "closeFocus", "result",
     "gestureSettled", "operationSettled", "nativeCreations", "warpCursor", "presentation",
     "intentWrites", "switchSettled", "diagnostics"] as const;
 const BOUND_REPLY_KEYS = [...CORE_REPLY_KEYS, "source", "nativeInvalid", "clock", "gestureAssoc"] as const;
@@ -1712,6 +1759,11 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
         unique(switchSettled, (s) => s.op, "duplicate-switch");
         // Diagnostics are independent evidence rows: no dedup.
         const diagnostics: WorldReplyDiagnostic[] = diagRaw.map(parseDiagnosticRow);
+        // Required nullable retained positive-close request: null carries
+        // no close intent; a row carries the opaque identity, frozen target
+        // and domain, immutable issuing revision and the distinct
+        // positive-close cause. Missing or malformed refuses.
+        const closeFocus = parseCloseFocusRow(r["closeFocus"]);
         // The parser decodes the correlated result truthfully (null or the
         // exact op shape). Actuator-side null-stripping is broker behavior
         // (strip_result), never a parser default.
@@ -1784,7 +1836,7 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
         return {
             adapter, gen, req, obs, rev,
             ready: r["ready"] as boolean, consumed: r["consumed"] as boolean,
-            scopes, workspaces, outputs, windows, transfers, effects, result,
+            scopes, workspaces, outputs, windows, transfers, effects, closeFocus, result,
             gestureSettled, gestureAssoc, operationSettled, nativeCreations, warpCursor, intentWrites, presentation,
             switchSettled, diagnostics,
             source, nativeInvalid, clock,
@@ -2998,10 +3050,18 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
         stateRows.push(bytes);
     }
     const stateLane = `"stateAttempts":[${stateRows.join(",")}]`;
+    // Required foreground provenance bit: true with nonempty focused proves
+    // bound foreground, true with empty proves no client, false (always with
+    // empty focus) means unknown. False with nonempty focus is invalid and
+    // fails the whole report closed, never a guessed bit.
+    const foregroundKnown = observation.foregroundKnown === true;
+    if (!foregroundKnown && observation.focusedGlobal !== "") {
+        return null;
+    }
     return `{"v":${WORLD_CONTRACT_VERSION},` +
         `"screens":[${screens.join(",")}],"windows":[${windows.join(",")}],` +
         `"closed":[${closed.join(",")}],"native":[${native.join(",")}],` +
-        `"focused":${focused},"complete":${encodeV4Bool(observation.complete)},` +
+        `"focused":${focused},"foregroundKnown":${encodeV4Bool(foregroundKnown)},"complete":${encodeV4Bool(observation.complete)},` +
         `"gesture":${encodeV4Bool(observation.gesture)},"cursor":${cursor},` +
         `"actionForeground":${actionForeground},"actionCached":${actionCached},` +
         `"actionOutputs":[${actionOutputs.join(",")}],` +

@@ -205,6 +205,39 @@ describe("world-reply-v4", () => {
         const oversizeBound = boundText(doc("reply-observe.json")) + " ".repeat(4 * 1024 * 1024);
         assert.equal(parseWorldReply(oversizeBound), null);
         assert.equal(parseDiscoveryReply(raw("reply-bootstrap.json") + " ".repeat(4 * 1024 * 1024)), null);
+        // Missing required nullable closeFocus refuses (historical
+        // old-shape rejection: pre-amendment replies carry no such key).
+        const noClose = clone("reply-observe.json");
+        delete noClose["closeFocus"];
+        assert.equal(parseWorldReply(bind(noClose)), null);
+        const noCloseBoot = JSON.parse(raw("reply-bootstrap.json")) as Record<string, unknown>;
+        delete noCloseBoot["closeFocus"];
+        assert.equal(parseDiscoveryReply(JSON.stringify(noCloseBoot)), null);
+        // Malformed closeFocus rows refuse: wrong cause, bad rev, extra key.
+        const badCloseCause = clone("reply-close-focus-pending.json");
+        (badCloseCause["closeFocus"] as Record<string, unknown>)["cause"] = "explicit-command";
+        assert.equal(parseWorldReply(bind(badCloseCause)), null);
+        const badCloseRev = clone("reply-close-focus-pending.json");
+        (badCloseRev["closeFocus"] as Record<string, unknown>)["rev"] = "07";
+        assert.equal(parseWorldReply(bind(badCloseRev)), null);
+        const badCloseKeys = clone("reply-close-focus-pending.json");
+        (badCloseKeys["closeFocus"] as Record<string, unknown>)["extra"] = 1;
+        assert.equal(parseWorldReply(bind(badCloseKeys)), null);
+    });
+
+    it("decodes the required nullable closeFocus lane", () => {
+        const pending = parseWorldReply(boundText(doc("reply-close-focus-pending.json")));
+        assert.ok(isCoreWorldReply(pending));
+        assert.deepEqual(pending.closeFocus, {
+            id: "close-focus-42", target: "C", rev: "42",
+            cause: "positive-close", out: "L", ws: "W1",
+        });
+        const idle = parseWorldReply(boundText(doc("reply-observe.json")));
+        assert.ok(isCoreWorldReply(idle));
+        assert.equal(idle.closeFocus, null);
+        const boot = parseDiscoveryReply(raw("reply-bootstrap.json"));
+        assert.ok(isCoreWorldReply(boot));
+        assert.equal(boot.closeFocus, null);
     });
 
     it("broker correlation: strip_result and gestureAssoc", () => {

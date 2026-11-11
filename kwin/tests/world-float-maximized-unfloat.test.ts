@@ -227,6 +227,7 @@ function makeHarness(mode: ClearMode) {
             nativeInvalid,
             clock: "1",
             gestureSettled: null, gestureAssoc: null,
+            closeFocus: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
             intentWrites: [], switchSettled: [], diagnostics: [],

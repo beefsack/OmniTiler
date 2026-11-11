@@ -287,7 +287,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         warpCursor: null, intentWrites: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
-        workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
+        workspaces: [], outputs: [], windows: [], transfers: [], effects: [], closeFocus: null, result: null,
     });
     const parsed = parseWorldReply(text);
     assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
@@ -570,7 +570,8 @@ describe("production-entry FrameWitness fence", () => {
         h.runTimers();
         const minimized = h.lastReport();
         assert.equal(witnessOf(minimized), null, "minimized foreground hides the witness");
-        assert.equal(minimized["focused"], "win-b", "report stays alive");
+        assert.equal(minimized["focused"], "win-b", "minimized foreground stays bound, report stays alive");
+        assert.equal(minimized["foregroundKnown"], true, "minimized foreground stays known");
         // Removed foreground hides narrowly.
         (h.wins[1] as FakeWindow).minimized = false;
         (h.wins[1] as FakeWindow).deleted = true;
@@ -578,7 +579,8 @@ describe("production-entry FrameWitness fence", () => {
         h.runTimers();
         const removed = h.lastReport();
         assert.equal(witnessOf(removed), null, "removed foreground hides the witness");
-        assert.equal(removed["focused"], "win-b", "report stays alive");
+        assert.equal(removed["focused"], "", "removed foreground is unknown, never a guessed id");
+        assert.equal(removed["foregroundKnown"], false, "removed foreground rides known-false");
         h.handle?.stop();
     });
 

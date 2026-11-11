@@ -2865,6 +2865,160 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             break;
         }
     }
+    // 5. Retained positive-close focus: ONE generic consumer keyed by the
+    // opaque request id, never cause-specific. Only the latest publication
+    // applies (an issuing reply may be skipped outright); the bound id
+    // spends once before the native attempt or the safety no-call, even
+    // then. A null envelope (or a newer publication on the next reply)
+    // cancels unstarted old work through the bounded current-record/
+    // retired-revision accounting in the adapter state; stale envelopes
+    // and late callbacks cannot reactivate it. No adapter supersession
+    // policy: commands, view changes and fences retire core-side and arrive
+    // here as null/newer envelopes. One mechanical last-moment safety gate
+    // only: the fresh foreground must still name the captured dispatch
+    // baseline (unknown baselines and moved foregrounds no-call
+    // informatively), never a new sampling or hook. Raw focusFeedback only (exact
+    // id/target/issuing-rev, empty arrival); never retried.
+    const closeReq = reply.closeFocus;
+    if (closeReq === null) {
+        state.observeCloseEnvelope(null, reply.gen);
+    } else if (state.observeCloseEnvelope(closeReq, reply.gen) === "fresh") {
+        // Spend before the attempt-or-no-call fork: exactly once per bound
+        // id, so reentrant native input can never double-dispatch.
+        state.spendClose(closeReq.id);
+        const recordCloseRow = (
+            setter: FocusSetter,
+            reason: FocusReason,
+            pre: string | null,
+            post: string | null,
+            proven: boolean,
+        ): void => {
+            state.recordFocusFeedback({
+                id: closeReq.id,
+                target: closeReq.target,
+                rev: closeReq.rev,
+                setter,
+                reason,
+                pre,
+                post,
+                foregroundProven: proven,
+                arrival: [],
+                attemptMs: stamp,
+            });
+            state.noteFollowup();
+        };
+        const closeTarget = byWin.get(closeReq.target);
+        // Frozen source domain: the target must still home where the
+        // request froze it. Anything else is a stale identity, never a
+        // guess at a new home.
+        const closeHomed = closeTarget !== undefined &&
+            closeTarget.out === closeReq.out && closeTarget.ws === closeReq.ws;
+        if (closeTarget === undefined || !closeHomed) {
+            const fg = readFgNow();
+            recordCloseRow("not-called", "identity-stale", fg, fg, false);
+            result.held += 1;
+        } else if (
+            closeTarget.fitExcluded || closeTarget.fullscreen ||
+            closeTarget.sticky || closeTarget.floating || closeTarget.minimized
+        ) {
+            // Existing overlay/visibility fences, unchanged: game/excluded,
+            // fullscreen, sticky, floating and minimized rows never take
+            // corrective focus. Spent above with explicit feedback, never
+            // retried on a later unrelated report.
+            const reason: FocusReason = closeTarget.minimized
+                ? "show-blocked"
+                : closeTarget.fitExcluded
+                    ? "unsupported"
+                    : closeTarget.fullscreen
+                        ? "fullscreen"
+                        : "scope-held";
+            const fg = readFgNow();
+            recordCloseRow("not-called", reason, fg, fg, false);
+            result.held += 1;
+        } else if (followUnproven) {
+            // A follow transfer's target view is not yet live: the
+            // correction waits for view proof, never fires behind it.
+            const fg = readFgNow();
+            recordCloseRow("not-called", "scope-held", fg, fg, false);
+            result.held += 1;
+        } else if (observation.gesture || !replyFresh(env, reply, entryObs)) {
+            if (midApplyStopped(env, entryObs) || observation.gesture) {
+                // A moved local fence supersedes (foreground stamps the
+                // fresh live read); a gesture barrier holds the scope.
+                const moved = midApplyStopped(env, entryObs) && !observation.gesture;
+                const fg = readFgNow();
+                recordCloseRow("not-called", moved ? "superseded" : "scope-held", fg, fg, false);
+                result.held += 1;
+            } else {
+                const fg = readFgNow();
+                recordCloseRow("not-called", "superseded", fg, fg, false);
+                result.stoppedMidApply = true;
+            }
+        } else {
+            const pre = readFgNow();
+            if (pre === null) {
+                // Unknown foreground never dispatches blind: informative
+                // safety no-call, spent, never retried.
+                recordCloseRow("not-called", "focus-unproven", pre, pre, false);
+                result.held += 1;
+            } else if (pre === closeReq.target && fgProvenFor(pre, closeTarget)) {
+                // Native fallback already at the winner: zero setters, the
+                // target equality satisfies first.
+                recordCloseRow("not-called", "", pre, pre, true);
+            } else if (observation.foregroundKnown !== true) {
+                // Captured baseline unknown: the dispatch observation never
+                // proved a foreground, so a stable-looking fresh read proves
+                // nothing. Informative safety no-call, spent, never retried.
+                recordCloseRow("not-called", "focus-unproven", pre, pre, false);
+                result.held += 1;
+            } else if (pre !== observation.focusedGlobal) {
+                // Last-moment foreground-baseline gate: the fresh read moved
+                // since the captured baseline, so newer native input
+                // intervened. Never steal focus back; informative safety
+                // no-call, spent, never retried.
+                recordCloseRow("not-called", "foreground-changed", pre, pre, false);
+                result.held += 1;
+            } else if (!preSetterOk(env, reply, entryObs, closeTarget, false)) {
+                const moved = midApplyStopped(env, entryObs);
+                const fg = readFgNow();
+                recordCloseRow("not-called", moved ? "superseded" : preSetterReason(closeTarget), pre, fg, false);
+                result.stoppedMidApply = true;
+            } else {
+                env.log(`omnitiler:world:close-focus-attempt req=${reply.req} rev=${reply.rev} target=${closeReq.target} reason=positive-close`);
+                let ok = false;
+                let threw = false;
+                try {
+                    ok = env.focusWindow(closeTarget.ref);
+                } catch (error) {
+                    void error;
+                    threw = true;
+                }
+                // Fresh exact post at the action instant, never inferred
+                // from the setter disposition; unknown post never proves.
+                const post = readFgNow();
+                const proven = fgProvenFor(post, closeTarget);
+                env.log(`omnitiler:world:close-focus-result req=${reply.req} rev=${reply.rev} target=${closeReq.target} reason=positive-close outcome=${threw ? "threw" : ok ? "setter-accepted" : "setter-refused"} proven=${proven ? "true" : "false"}`);
+                if (!threw && ok && proven) {
+                    recordCloseRow("accepted", "", pre, post, true);
+                    result.effects += 1;
+                } else if (threw) {
+                    recordCloseRow("threw", "", pre, post, proven);
+                    result.held += 1;
+                } else if (!ok) {
+                    recordCloseRow("refused", "native-refused", pre, post, proven);
+                    result.held += 1;
+                } else {
+                    recordCloseRow("accepted", "focus-unproven", pre, post, false);
+                    result.held += 1;
+                }
+                if (midApplyStopped(env, entryObs)) {
+                    result.stoppedMidApply = true;
+                }
+            }
+        }
+    }
+    // Stale and duplicate-spent envelopes stay silent: no row, no spend,
+    // no retry. A null envelope above already retired the record.
     return result;
 }
 

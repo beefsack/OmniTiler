@@ -181,7 +181,77 @@ describe("scope-class world observation", () => {
         const ids = obs.domains.flatMap((d) => d.windows.map((w) => w.win));
         assert.deepEqual(ids, ["win-a"]);
         assert.equal(obs.focusedGlobal, "");
+        assert.equal(obs.foregroundKnown, false);
         assert.ok(obs.domains.every((d) => d.focused === ""));
+    });
+
+    it("marks bound in-scope focus known", () => {
+        const obs = observe("OmniTilerTestWindow", wins, "win-a");
+        assert.ok(obs !== null);
+        assert.equal(obs.focusedGlobal, "win-a");
+        assert.equal(obs.foregroundKnown, true);
+    });
+
+    it("marks literal null activeWindow as proven no-client", () => {
+        // activeId unmatched by any ref reads literal null: known empty.
+        const obs = observe("OmniTilerTestWindow", wins, "no-such-window");
+        assert.ok(obs !== null);
+        assert.equal(obs.focusedGlobal, "");
+        assert.equal(obs.foregroundKnown, true);
+    });
+
+    it("keeps throw/undefined/unbound foreground unknown", () => {
+        const desktops = [{ id: "ws-1" }];
+        const screens = [{ name: "out-1", geometry: { x: 0, y: 0, width: 1920, height: 1080 } }];
+        const ref = {
+            internalId: "win-a", managed: true, deleted: false, transient: false, transientFor: null,
+            dialog: false, modal: false, wantsInput: true, normalWindow: true,
+            frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
+            output: { name: "out-1" }, desktops: [{ id: "ws-1" }],
+            minimized: false, hidden: false, fullScreen: false, maximizeMode: 0,
+            onAllDesktops: false, minSize: null, maxSize: null,
+        };
+        const env = {
+            workspace: null as unknown as object,
+            readMode: () => "per-output-local",
+            readGap: () => 8,
+            readOuterGap: () => 8,
+            gestureActive: () => false,
+            knownClosed: () => [],
+            logicalBindingOf: (nativeId: string) => ({ logical: `desk-${nativeId}`, out: "out-1", pin: false, disp: false, managed: true }),
+            isFloating: () => false,
+        };
+        const surfaceFor = (activeWindow: unknown) => ({
+            windowList: () => [ref],
+            screens,
+            desktops,
+            activeScreen: { name: "out-1" },
+            activeWindow,
+            clientArea: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+            currentDesktopForScreen: () => desktops[0],
+        });
+        // Undefined read: unknown.
+        const undef = captureWorldObservation({ ...env, workspace: surfaceFor(undefined) });
+        assert.ok(undef !== null);
+        assert.equal(undef.focusedGlobal, "");
+        assert.equal(undef.foregroundKnown, false);
+        // Throwing read: unknown.
+        const throwing = captureWorldObservation({
+            ...env,
+            workspace: Object.defineProperty(surfaceFor(null), "activeWindow", {
+                configurable: true,
+                get: () => { throw new Error("unreadable"); },
+            }),
+        });
+        assert.ok(throwing !== null);
+        assert.equal(throwing.focusedGlobal, "");
+        assert.equal(throwing.foregroundKnown, false);
+        // Named but unbound (no live lifetime): unknown, never the raw id.
+        const ghost = { internalId: "win-ghost" };
+        const unbound = captureWorldObservation({ ...env, workspace: surfaceFor(ghost) });
+        assert.ok(unbound !== null);
+        assert.equal(unbound.focusedGlobal, "");
+        assert.equal(unbound.foregroundKnown, false);
     });
 
     it("excludes identity-less windows under a scope", () => {

@@ -230,6 +230,7 @@ function accept(gen: string, source: string, nativeInvalid: string, rev: string)
         nativeInvalid,
         clock: "1",
         gestureSettled: null, gestureAssoc: null,
+        closeFocus: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
         intentWrites: [], switchSettled: [], diagnostics: [],

@@ -57,7 +57,7 @@ function loadReply(): WorldReply {
                 visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             },
         ],
-        transfers: [], effects: [], result: null,
+        transfers: [], effects: [], closeFocus: null, result: null,
         gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         presentation: {
             foreground: "win-a", rev: "1",
@@ -116,6 +116,7 @@ function makeObservation(world: FakeWorld): WorldObservation {
         complete: true,
         gesture: world.gesture,
         focusedGlobal: "",
+        foregroundKnown: false,
         screens: [], windowFacts: [], floatIntent: [], tileIntent: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
         cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
         focusFollowsCursor: false, cursorWarp: false,

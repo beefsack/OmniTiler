@@ -211,6 +211,7 @@ function acceptedAutoReply(gen: string, source: string, nativeInvalid: string, r
         ready: true, consumed: false,
         source, nativeInvalid, clock: "0",
         gestureSettled: null, gestureAssoc: null,
+        closeFocus: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
         intentWrites: [], switchSettled: [], diagnostics: [],

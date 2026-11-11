@@ -41,6 +41,17 @@ Mechanical API checks use `git show <pin>:<path>` and `git grep <pattern>
   changes current-desktop behavior. This is separate from `equalCount`.
   Connection vectors use `test-fixtures/world-wire/v4-active`; historical bytes
   stay unchanged. Current producer-byte checks use `test-fixtures/kde-v4-active`.
+- The retained close-focus amendment is implemented offline: required
+  `foregroundKnown` preserves literal no-client versus unknown/unbound/foreign;
+  the strict reader requires nullable `closeFocus`. The retained consumer spends
+  each bound opaque id once, including a safety no-call, from the latest
+  publication only. Already-target native fallback makes no setter call; a
+  different eligible survivor permits one fenced correction with raw feedback.
+  No extra input hook, adapter target selection or retry is added. The genuine
+  producer regression skips the issuing and two unchanged publications before
+  applying only the latest. Native acceptance remains separate.
+  [Adoption record](../changes/kde-retained-close-focus.md).
+
 - Physical output metadata: capture scripting `manufacturer`, `model` and
   `serialNumber` as neutral facts, normalizing native empty strings to
   null only at the KDE boundary; preserve other strings, including literal

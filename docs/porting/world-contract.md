@@ -36,9 +36,9 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 - The pre-release v4 close-focus amendment is an in-place breaking change:
   `foregroundKnown` and nullable `closeFocus` are required, with no version bump
   or dual-shape fallback. Core, codecs, fixtures and macOS implement the amended
-  shape; KDE's strict reply reader rejects it until updated, and Windows adopts
-  it during its v4 port. A matching component set is required for execution.
-
+  shape. KDE adopts the strict report/reply shape and retained consumer offline;
+  Windows adopts it during its v4 port. A matching component set is required
+  for execution; offline conformance is not native acceptance.
 - The pre-release shared-roster amendment also keeps version 4 and requires
   `sharedNativeRoster` on every handshake, without a missing-key default or
   dual-shape fallback. Current connection conformance uses

@@ -44,7 +44,14 @@ assert.deepEqual(
 );
 
 function loadReply(): WorldReply {
-    const parsed = parseWorldReply(fs.readFileSync(FIXTURE, "utf8"));
+    // The recorded drain capture predates the required nullable
+    // `closeFocus` lane (no close intent in this migration scenario):
+    // inject the truthful null without touching the frozen bytes.
+    const raw = JSON.parse(fs.readFileSync(FIXTURE, "utf8")) as Record<string, unknown>;
+    if (!("closeFocus" in raw)) {
+        raw["closeFocus"] = null;
+    }
+    const parsed = parseWorldReply(JSON.stringify(raw));
     assert.ok(parsed !== null && !isWorldRejection(parsed));
     return parsed as WorldReply;
 }
@@ -107,6 +114,7 @@ function makeObservation(world: FakeWorld): WorldObservation {
         complete: true,
         gesture: false,
         focusedGlobal: "",
+        foregroundKnown: false,
         screens: [], windowFacts: [], floatIntent: [], tileIntent: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
         cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
         focusFollowsCursor: false, cursorWarp: false,

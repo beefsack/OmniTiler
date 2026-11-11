@@ -256,6 +256,11 @@ export interface WorldObservation {
     complete: boolean;
     gesture: boolean;
     focusedGlobal: string;
+    // Foreground provenance for the v4 `foregroundKnown` bit: true with a
+    // nonempty focusedGlobal proves bound foreground, true with empty proves
+    // no client, false (always with empty focus) means unknown. Set only by
+    // the typed activeWindow sample above, never by plans or setter success.
+    foregroundKnown: boolean;
     // Raw KWin-shaped classification facts (Stage 4 broker-classified
     // lane). The broker normalizes these into projected v4 facts via the
     // shared Rust predicates; the adapter never preselects verdicts here.
@@ -835,6 +840,12 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     const tileIntent: string[] = [];
     let windowsReadable = true;
     let activeId = "";
+    // Foreground provenance for the v4 `foregroundKnown` bit: literal null
+    // proves windowless (known, empty); a bound in-scope lifetime proves
+    // foreground (known, nonempty). Throws, undefined/other shapes,
+    // unreadable ids, scope-foreign and unbound (no live lifetime) stay
+    // unknown (known false with empty focus), never a guess.
+    let foregroundKnown = false;
     // Fixed-size predicate resolves once per capture (startup config plus
     // deliberate Options reload), never per window.
     const predicate = (() => {
@@ -849,15 +860,23 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     })();
     try {
         const active = readProp(target, "activeWindow");
-        if (typeof active === "object" && active !== null) {
+        if (active === null) {
+            // Literal null names no client: proven windowless, known empty.
+            // No extra native read or input hook backs this: the read above
+            // is the single foreground sample for this capture.
+            foregroundKnown = true;
+        } else if (typeof active === "object") {
             const raw = normalizeNativeId(readProp(active as object, "internalId"));
             if (raw !== null) {
-                activeId = raw;
                 // A foreign focus never names an unmanaged window: under a
                 // scope the global and per-domain focus read as unfocused
-                // instead of pointing at foreign state.
-                if (!windowMatchesScopeClass(readProp, active as object, scope)) {
-                    activeId = "";
+                // instead of pointing at foreign state. Foreign stays
+                // unknown, never a guess.
+                if (windowMatchesScopeClass(readProp, active as object, scope)) {
+                    activeId = raw;
+                    // Bound proof lands below against the live inventory: an
+                    // id with no live lifetime stays unknown.
+                    foregroundKnown = true;
                 }
             }
         }
@@ -1661,6 +1680,12 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     })();
     const visibleCurrents = new Set(screenEntries.map((s) => s.current).filter((c) => c !== ""));
     const fgRecord = activeId !== "" ? liveById.get(activeId) ?? null : null;
+    if (activeId !== "" && fgRecord === null) {
+        // Named but unbound: no live lifetime proves the foreground, so the
+        // sample stays unknown with empty focus, never a guessed id.
+        activeId = "";
+        foregroundKnown = false;
+    }
     // Focused native Move subject (underlay move arm): the exact KWin
     // `Window.move` (isInteractiveMove) level on the proven foreground
     // lifetime, "" when the foreground is not in an interactive move.
@@ -1794,6 +1819,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             ? { instance: env.presentationFacts.instance, counter: env.presentationFacts.invalidation }
             : null,
         focusedGlobal: activeId,
+        foregroundKnown,
         screens: screenFacts, windowFacts, views, closed, hostOwned, equalCount, native,
         floatIntent: floatIntentDeduped, tileIntent: tileIntentDeduped,
         cursor, cursorWindow, actionForeground: activeName, actionCached: null,

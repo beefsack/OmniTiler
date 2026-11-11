@@ -94,6 +94,7 @@ function observationFor(homeWs: string, ref: object): ApplyEnv["observation"] {
         complete: true,
         gesture: false,
         focusedGlobal: "",
+        foregroundKnown: false,
         screens: [], windowFacts: [], floatIntent: [], tileIntent: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
         cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
         focusFollowsCursor: false, cursorWarp: false,
@@ -134,6 +135,7 @@ function coreReply(workspaces: Array<Record<string, unknown>>, transfers: Array<
         }],
         transfers: transfers.map((t) => ({ ...t, cmdSeq: null })),
         effects: [],
+        closeFocus: null,
         result: null,
         intentWrites: [], switchSettled: [], diagnostics: [],
     };

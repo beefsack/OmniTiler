@@ -302,6 +302,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         ready: true, consumed: false,
         source, nativeInvalid, clock: "1",
         gestureSettled: null, gestureAssoc: null,
+        closeFocus: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
         intentWrites: [], switchSettled: [], diagnostics: [],
