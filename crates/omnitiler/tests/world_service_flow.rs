@@ -111,7 +111,7 @@ fn inner_report_with_attempts(
           \"identity\":{{\"manufacturer\":null,\"model\":null,\
           \"serial\":null,\"connector\":null}}}}],\
           \"windows\":[{}],\"closed\":[],\"native\":[{native_json}],\
-          \"focused\":\"\",\
+          \"focused\":\"\",\"foregroundKnown\":false,\
           \"complete\":{complete},\"gesture\":false,\
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
@@ -3929,7 +3929,7 @@ fn two_output_all_mode_inner(window: &str) -> String {
           \"current\":\"{UUID_A}\",\"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}},{{\"native\":\"{UUID_B}\",\"count\":null}},{{\"native\":\"{UUID_C}\",\"count\":null}},{{\"native\":\"{UUID_D}\",\"count\":null}}]}},\
           {{\"out\":\"DP-2\",\"order\":[\"{UUID_A}\",\"{UUID_B}\",\"{UUID_C}\",\"{UUID_D}\"],\
           \"current\":\"{UUID_A}\",\"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}},{{\"native\":\"{UUID_B}\",\"count\":null}},{{\"native\":\"{UUID_C}\",\"count\":null}},{{\"native\":\"{UUID_D}\",\"count\":null}}]}}],\
-          \"focused\":\"\",\
+          \"focused\":\"\",\"foregroundKnown\":false,\
           \"complete\":true,\"gesture\":false,\
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\",\"DP-2\"],\

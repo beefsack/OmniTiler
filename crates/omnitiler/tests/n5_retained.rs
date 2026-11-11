@@ -158,7 +158,7 @@ fn inner_report(windows: &[String]) -> String {
           \"native\":[{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\"],\
           \"current\":\"{UUID_A}\",\
           \"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}}]}}],\
-          \"focused\":\"\",\"complete\":true,\"gesture\":false,\
+          \"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
           \"presentation\":{},\
@@ -189,7 +189,7 @@ fn two_output_inner(windows: &[String]) -> String {
           \"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}}]}},\
           {{\"out\":\"DP-2\",\"order\":[\"{UUID_B}\"],\"current\":\"{UUID_B}\",\
           \"occupancy\":[{{\"native\":\"{UUID_B}\",\"count\":null}}]}}],\
-          \"focused\":\"\",\"complete\":true,\"gesture\":false,\
+          \"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\",\"DP-2\"],\
           \"presentation\":{},\

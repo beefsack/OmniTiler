@@ -1318,7 +1318,7 @@ mod tests {
               \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
               \"windows\":[{win_a},{win_b},{win_c},{win_d}],\
               \"closed\":[],\"native\":[],\
-              \"focused\":\"{focused}\",\"complete\":true,\"gesture\":{gesture_lane},\
+              \"focused\":\"{focused}\",\"foregroundKnown\":{foreground_known},\"complete\":true,\"gesture\":{gesture_lane},\
               \"cursor\":{cursor},\"actionForeground\":null,\"actionCached\":null,\
               \"actionOutputs\":[],\
               \"presentation\":{{\"foreground\":\"{focused}\",\"minimized\":false,\"maximized\":false,\
@@ -1338,6 +1338,7 @@ mod tests {
             win_b = v4_win(WIN_B, "out-a", 100, false),
             win_c = v4_win(WIN_C, "out-b", 800, false),
             win_d = v4_win(WIN_D, "out-b", 900, false),
+            foreground_known = !focused.is_empty(),
         )
     }
 

@@ -1783,7 +1783,7 @@ fn command_shape_valid(generation: &str, command: &serde_json::Value) -> bool {
 fn minimal_skeleton() -> serde_json::Map<String, serde_json::Value> {
     serde_json::from_str::<serde_json::Value>(
         "{\"v\":4,\"screens\":[],\"windows\":[],\"closed\":[],\"native\":[],\
-          \"focused\":\"\",\"complete\":true,\"gesture\":false,\"cursor\":null,\
+          \"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\
           \"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[],\
           \"presentation\":{\"foreground\":\"\",\"minimized\":null,\"maximized\":null,\
           \"fullscreen\":null,\"hostHidden\":null,\"hiddenWorkspace\":null,\"frame\":null,\

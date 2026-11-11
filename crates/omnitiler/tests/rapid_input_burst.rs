@@ -80,7 +80,7 @@ fn inner_report_closed_focused(windows: &[String], closed: &[String], focused: &
           \"identity\":{{\"manufacturer\":null,\"model\":null,\
           \"serial\":null,\"connector\":null}}}}],\
           \"windows\":[{}],\"closed\":[{}],\"native\":[],\
-          \"focused\":\"{focused}\",\
+          \"focused\":\"{focused}\",\"foregroundKnown\":{},\
           \"complete\":true,\"gesture\":false,\
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
@@ -110,7 +110,7 @@ fn inner_report_host_native(windows: &[String], focused: &str) -> String {
           \"windows\":[{}],\"closed\":[],\
           \"native\":[{{\"out\":\"DP-1\",\"order\":[\"n-0\"],\
           \"current\":\"n-0\",\"occupancy\":[{{\"native\":\"n-0\",\"count\":1}}]}}],\
-          \"focused\":\"{focused}\",\
+          \"focused\":\"{focused}\",\"foregroundKnown\":{},\
           \"complete\":true,\"gesture\":false,\
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\

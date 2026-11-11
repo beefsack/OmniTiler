@@ -300,7 +300,7 @@ mod tests {
           \"identity\":{\"manufacturer\":null,\"model\":null,\
           \"serial\":null,\"connector\":null}}],\
           \"windows\":[],\"closed\":[],\"native\":[],\
-          \"focused\":\"\",\
+          \"focused\":\"\",\"foregroundKnown\":false,\
           \"complete\":true,\"gesture\":false,\
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
