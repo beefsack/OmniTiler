@@ -138,8 +138,17 @@ this model):
   - Platforms capture input, promptly report host facts and outside changes,
     converge the host to the latest desired state and draw what core
     describes. They never decide policy.
-  - Host differences reach core as platform-neutral capabilities, never as
-    platform checks.
+  - Core strives to stay platform agnostic: host differences reach core as
+    platform-neutral capabilities, never as platform checks or platform-specific
+    state.
+  - A platform that applies only the latest publication, skipping any earlier
+    ones, is fully consistent with core. Core carries every pending one-time
+    effect (such as a focus request) in each publication until it settles, so
+    nothing depends on seeing an intermediate publication.
+  - Platforms apply every published decision the host allows. A decision a
+    platform cannot or must not apply is a declared platform-neutral capability
+    or a contract-listed exception, never a silent local policy; the next report
+    shows the real host state and core continues from it.
   - Push shared logic down into core or a shared library; keep host-coupled
     code (scripts, effects, settings modules, OS hooks) thin.
   - A platform acts without a core round trip only where the round trip would cause visible jank, a performance cost or an unsafe effect. Such an exception is limited to mechanical safety vetoes or applying a core decision in the same turn, never policy, and each is listed in the contract document.
