@@ -179,6 +179,53 @@ Implement the 2026-11-10 [dynamic lifecycle decision](../decisions/workspaces.md
 - Global native current is not a per-output readback. The correct helper enumeration is `workspace.screens`, with `currentDesktopForScreen`; `workspace.outputs` was empty. The corrected helper and production trace explain why selecting A did not change the active B output where new fixture clients appeared. An earlier mismatch suspicion based only on global current was withdrawn, not treated as a product defect.
 - Both runs copied their current tmpfs logs before teardown and ended with fixture/helper cleanup and dev DOWN. Final native-switch records `z30-dev-off.txt`, `z31-devstatus-final.txt`, `z33-kwin-unloaded.txt` and `z32-kitty-final.txt` establish the controller unloaded, Planner unowned and the existing client alive. Checklist rows 15/52 remain open: exact D2, automatic post-leave retirement, retained close-focus publication/spend accounting, physical delivery and the complete inverse/repeated scope are not established.
 
+### Stepwise native lifecycle verification (2026-11-12)
+
+- Fixture-only, two-output, per-output-local checks ran at `f13d1fc7`.
+  A/B below name the two outputs, not native desktop ownership. Actions used
+  `QueueWorldCommand` and fixture spawn/close requests, not physical or injected
+  keys. A test desktop was appended beyond the existing roster before spawning.
+  Fixture PID/sentinel/UUID joins use native `getWindowInfo`; native desktop
+  IDs/names/order use `start-test.sh desktops`. Correlated production trace
+  records both output-local native currents; presentation records logical views,
+  bindings and the product pager. Artifact basenames refer to retained external
+  captures, not committed fixtures. Full operation-lane replies were not captured;
+  no no-pending-operations claim follows from presentation or trace counts.
+- Startup passed fresh `world:ready`, `world:discovered` and accepted/applied
+  revision 1 (`readiness.log`). No scripting-category error was captured
+  (`scripting-errors.log`). No new controller helper was loaded.
+
+| Remaining item | Exact actions, verdict and evidence |
+| --- | --- |
+| D2 exact X/Y/Z close sequence | **PASS, bounded command route.** Revision 22 has X on A/2 (`ws-5`), Y on B/2 (`ws-6`), Z on B/3 (`ws-8`), views A/2 and B/3, four native desktops (`20-D2-setup.json`, `20-D2-desktops.txt`). Close X -> revision 24; leave A for ordinal 1 -> revision 26; close Y -> revision 28; close Z -> revision 30 (`21`-`28` action/readback captures). Revision 27 applies `member=0 mk=0 rm=1`: the now globally empty/unshown middle native disappears from both rings and the native roster (`26-Y-closed.json`, `26-desktops.txt`). Revision 30 has three natives: A shows ordinal 1, B shows the former ordinal 3, now ordinal 2, empty; ordinal 3 is a distinct trailing spare. Both native currents match the published view bindings (`28-D2-final.json`, `28-desktops.txt`, `kwin-journal.log`:768-776). This is explained shown-empty retention, not the earlier unowned logical/native divergence. No terminal-two claim is made before B leaves. |
+| Automatic prune/delete after leaving shown-empty | **PASS.** From revision 30 above, select B ordinal 1, without manual native deletion. Revision 31 applies `views=1`; revision 32 applies `member=0 mk=0 rm=1`; revision 33 has two native desktops, two live bindings/pager entries on each output, both native currents on ordinal 1, and the left shown-empty identity absent (`29-leave-shown-empty-B.json`, `30-post-leave-B.json`, `30-desktops.txt`, `kwin-journal.log`:812-818). |
+| Repeated and inverse lifecycle | **PASS, bounded command route.** Three paired rounds below give each output three populate/empty/leave cycles, including reversed output order. Every populated, full, first-retired and final checkpoint joins exact native ID order to both logical binding orders and pager ID orders; all 12 comparisons pass and native count never falls below two (`124-cycle-agreement.jsonl`). Every round has exactly two single creations and two single removals, with no membership writes for cleanup (`122-lifecycle-lines.txt`). |
+| Retained close-focus setter/request/spend accounting | **NOT RUN.** Cheap trace inspection finds only six generic `automatic-focus-attempt ... reason=planned-focus` lines, not a full retained `closeFocus` publication or spend identity (`123-close-focus-lines.txt`). They cannot prove one native setter per retained request or spend-once. Earlier functional close-focus passes are unchanged and were not repeated. |
+
+| Round | Populate order; reverse close/leave order | Native counts and settled revisions | Creation/removal revisions; captures |
+| --- | --- | --- | --- |
+| 1 | Fixture `A1` on B/2, then `B1` on A/3; close `B1`, leave A to 1, close `A1`, leave B to 1 | 2 -> 3 (40) -> 4 (48) -> 3 (53) -> 2 (58) | Create 38/46; remove 52/57; `40`-`61` captures |
+| 2, output-order inverse | Fixture `A2` on A/2, then `B2` on B/3; close `B2`, leave B to 1, close `A2`, leave A to 1 | 2 -> 3 (65) -> 4 (73) -> 3 (78) -> 2 (83) | Create 63/71; remove 77/82; `70`-`91` captures |
+| 3 | Fixture `A3` on B/2, then `B3` on A/3; close `B3`, leave A to 1, close `A3`, leave B to 1 | 2 -> 3 (90) -> 4 (98) -> 3 (103) -> 2 (108) | Create 88/96; remove 102/107; `100`-`121` captures |
+
+- Each second fixture initially spawned beside the first, then a directional
+  send/follow placed it on the other output's selected trailing workspace before
+  the full checkpoint. Each close was followed by a shown-empty readback before
+  leaving. Round 2 reverses both the fill direction and close/leave output order.
+  The final idle read remains revision 108 with two native desktops and matching
+  currents (`125-idle.json`, `125-desktops.txt`, `kwin-journal.log`:2157-2163).
+  No create/remove oscillation or new product defect was observed.
+- Independent evidence review accepts these bounded lifecycle verdicts. Current
+  tmpfs combined/Planner logs were copied before teardown (`tmpfs-combined.log`,
+  `tmpfs-planner.log`). Fixture process/socket are absent; final status reports
+  Planner unowned/controller unloaded and no input daemon (`132`-`135` teardown
+  records). The existing non-fixture client process remained alive.
+- Checklist rows 15/52 remain unchecked: these command-route lifecycle results
+  do not establish physical delivery or row 15's full send matrix. The exact D2,
+  automatic post-leave retirement and three inverse/repeated lifecycle gaps from
+  the preceding partial record are now covered; retained close-focus accounting
+  remains separate and open.
+
 ## Units and dependencies
 
 1. Diagnosis and pinned reference comparison (retained below).
