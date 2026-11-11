@@ -1,0 +1,1 @@
+{"type":"settings","v":4,"adapter":"kwin-stage5-v4","gen":"gen-stage5-v4-active","req":"set-1","rev":"1","values":{"gap":8,"outer":8,"defaultTiled":true,"mode":"per-output-local","sameAxis":"group-with-neighbor","bornMaximized":"tile-on-launch","predicate":"both-axes-fixed","anchorFallback":"largest-splittable-window","noSpaceResult":"float","refill":"last-remaining-workspace"}}

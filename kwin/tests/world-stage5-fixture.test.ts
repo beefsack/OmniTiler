@@ -7,11 +7,15 @@
 // three methods). The regenerated full chain
 // (p5,p6,cover,preview,cover2,a2,a3,preview-b) and s2 chain
 // (p5,p6,cover,preview,s2) must equal the checked-in genuine counterpart
-// fixtures in `test-fixtures/stage5-v4/{full,s2}`: every step envelope and
+// fixtures in `test-fixtures/stage5-v4-active/{full,s2}`: every step envelope and
 // genesis-0 byte-exact after top-level `gen`/`source` nonce normalization
 // only (`sourceSeq`/`nativeInvalid`/clocks/rev/facts/witness stay exact),
 // projections `gen`-only normalized (`req` is scripted deterministic).
-// Genesis-1 is never byte-compared: its frame/member/view/clear/creation
+// The active family carries the required `sharedNativeRoster` handshake
+// capability, the `foregroundKnown` report bit, and the nullable
+// `closeFocus` reply lane; frozen `test-fixtures/stage5-v4` (hidden-border
+// lineage without those keys) and `test-fixtures/stage5-v2` stay untouched
+// history. Genesis-1 is never byte-compared: its frame/member/view/clear/creation
 // attempt stamps are adopted from the preceding broker reply clock
 // (`world-apply` stamps every mechanical attempt of an apply turn with
 // `state.lastClock`), so the test pins attempt target/readback bytes
@@ -36,10 +40,10 @@
 // formatter contract (never by calling the production formatter). The v2
 // border forwards the exact anchored descriptor (boolean `visible`).
 //
-// V2 dispatch siblings: `test-fixtures/stage5-v2/{full,s2}/dispatch-*.json`
-// are the genuine v2 subscriber renders of the checked-in v2 projections
-// (produced by the dispatch recorder through the same production
-// subscriber, `req` re-keyed, no direct formatter calls). Each v2 case
+// V2 dispatch siblings: `test-fixtures/stage5-v4-active/{full,s2}/dispatch-*.json`
+// are the genuine production-subscriber renders of the checked-in active
+// projections (produced by the dispatch recorder through the same production
+// subscriber, `req` re-keyed, no direct formatter calls). Each active case
 // below also byte-compares the paint to its dispatch sibling with only the
 // volatile `gen` normalized.
 //
@@ -64,6 +68,7 @@ import {
     type Stage5V4ChainResult,
 } from "./world-stage5-v4-record";
 import { createWorldPresentationSubscriber } from "../src/world-presentation";
+import { parseWorldReply } from "../src/world-report";
 import { isCanonicalU64 } from "../src/world-seq";
 
 type ChainName = "full" | "s2";
@@ -76,12 +81,14 @@ function v4Fixture(chain: ChainName, name: string): string {
 }
 
 // v2 producer lineage (adapter-local FrameWitness): genuine recordings via
-// the same actual entry/real-broker path, now carrying the local witness
-// and the visible anchored border. Producer re-record comparisons use this
-// sibling byte-exact (gen/source only normalized); legacy hidden-fixture
-// subscriber tests below stay on stage5-v4.
-function v2Fixture(chain: ChainName, name: string): string {
-    return readFileSync(resolve("..", "test-fixtures", "stage5-v2", chain, name), "utf8");
+// the same actual entry/real-broker path, now carrying the local witness,
+// the visible anchored border, and the required `sharedNativeRoster` /
+// `foregroundKnown` / `closeFocus` keys. Producer re-record comparisons use
+// the active family byte-exact (gen/source only normalized); legacy
+// hidden-fixture subscriber tests below stay on frozen stage5-v4, and frozen
+// stage5-v2 stays untouched history.
+function activeFixture(chain: ChainName, name: string): string {
+    return readFileSync(resolve("..", "test-fixtures", "stage5-v4-active", chain, name), "utf8");
 }
 
 // Volatile transport/correlation tokens (disclosed, shape-preserving):
@@ -272,7 +279,7 @@ interface V4Manifest {
 }
 
 function loadManifest(chain: ChainName): V4Manifest {
-    return JSON.parse(v2Fixture(chain, "manifest.json")) as V4Manifest;
+    return JSON.parse(activeFixture(chain, "manifest.json")) as V4Manifest;
 }
 
 const FULL_WITNESS: Record<string, ReadonlyArray<StepExpectation>> = {
@@ -314,7 +321,7 @@ function checkDiscovery(chain: ChainName): void {
     assert.equal(result.adapter, STAGE5_V4_ADAPTER);
     const handshake = normalizeTopLevel(
         result.discovery.handshakeRequest,
-        v2Fixture(chain, "discovery-handshake.request.json"),
+        activeFixture(chain, "discovery-handshake.request.json"),
         [],
     );
     assert.equal(handshake.actual, handshake.expected, `${chain} handshake request is byte-exact`);
@@ -324,7 +331,7 @@ function checkDiscovery(chain: ChainName): void {
     assert.equal(handshakeBody["req"], "disc-1");
     const settings = normalizeTopLevel(
         result.discovery.settingsRequest,
-        v2Fixture(chain, "discovery-settings.request.json"),
+        activeFixture(chain, "discovery-settings.request.json"),
         ["gen"],
     );
     assert.equal(settings.actual, settings.expected, `${chain} settings request matches gen-only normalized`);
@@ -350,14 +357,14 @@ function checkGenesis(chain: ChainName): void {
     assert.equal(genesis2.file, "envelope-genesis-2.json");
     const compared0 = normalizeTopLevel(
         genesis0.bytes,
-        v2Fixture(chain, "envelope-genesis-0.json"),
+        activeFixture(chain, "envelope-genesis-0.json"),
         ["gen", "source"],
     );
     assert.equal(compared0.actual, compared0.expected, `${chain} genesis-0 is byte-exact`);
     assertNoAttempts(parseReport(genesis0.bytes), `${chain} genesis-0`);
     const compared2 = normalizeTopLevel(
         genesis2.bytes,
-        v2Fixture(chain, "envelope-genesis-2.json"),
+        activeFixture(chain, "envelope-genesis-2.json"),
         ["gen", "source"],
     );
     assert.equal(compared2.actual, compared2.expected, `${chain} settled genesis-2 is byte-exact`);
@@ -372,7 +379,7 @@ function checkGenesis(chain: ChainName): void {
     const clock = (JSON.parse(reply1.bytes) as { clock: string }).clock;
     assertGenesisAttempts(
         genesis1.bytes,
-        v2Fixture(chain, "envelope-genesis-1.json"),
+        activeFixture(chain, "envelope-genesis-1.json"),
         expectedStamp,
         clock,
         `${chain} genesis-1`,
@@ -441,7 +448,7 @@ function checkSteps(
             const entry = envelopes[index] as { step: string; file: string; bytes: string } | undefined;
             assert.ok(entry !== undefined, `${chain} ${step.name} envelope ${index} exists`);
             assert.equal(entry.file, file, `${chain} ${step.name} envelope order`);
-            const compared = normalizeTopLevel(entry.bytes, v2Fixture(chain, file), ["gen", "source"]);
+            const compared = normalizeTopLevel(entry.bytes, activeFixture(chain, file), ["gen", "source"]);
             assert.equal(compared.actual, compared.expected, `${chain} ${step.name} ${file} is byte-exact`);
             const expected = expectations[index] as StepExpectation | undefined;
             assert.ok(expected !== undefined, `${chain} ${step.name} envelope ${index} expectation exists`);
@@ -465,7 +472,7 @@ function checkSteps(
         assert.equal(projection.file, step.projection, `${chain} ${step.name} projection order`);
         const projectionCompared = normalizeTopLevel(
             projection.bytes,
-            v2Fixture(chain, step.projection),
+            activeFixture(chain, step.projection),
             ["gen"],
         );
         assert.equal(
@@ -741,10 +748,6 @@ const GESTURE_A1 = { instance: GESTURE_A, serial: "1", coreId: "1" };
 const GESTURE_A2 = { instance: GESTURE_A, serial: "2", coreId: "9" };
 const GESTURE_B = { instance: B_INSTANCE, serial: "1", coreId: "2" };
 
-function dispatchFixture(chain: ChainName, name: string): string {
-    return readFileSync(resolve("..", "test-fixtures", "stage5-v2", chain, name), "utf8");
-}
-
 function assertPaintEqualsDispatchGenNormalized(paint: string, dispatchText: string, where: string): void {
     const actual = JSON.parse(paint) as Record<string, unknown>;
     const expected = JSON.parse(dispatchText) as Record<string, unknown>;
@@ -764,7 +767,7 @@ interface V2DispatchCase {
 }
 
 function runV2DispatchCase(spec: V2DispatchCase, where: string): void {
-    const proj = JSON.parse(v2Fixture(spec.chain, spec.projection)) as V4Projection;
+    const proj = JSON.parse(activeFixture(spec.chain, spec.projection)) as V4Projection;
     assert.equal(proj.coveredInstance, "effect-1", `${where} genuine coverage instance`);
     assert.equal(proj.coveredInvalid, spec.witness, `${where} genuine coverage witness`);
     const wantHold = proj.preview === null ? "" : "gesture-barrier";
@@ -777,12 +780,12 @@ function runV2DispatchCase(spec: V2DispatchCase, where: string): void {
     const live = dispatchLiveGesture(step, variant);
     assert.deepEqual(live, spec.gesture, `${where} shared live-gesture mapping matches the case`);
     const paint = renderPresentationDispatch(
-        v2Fixture(spec.chain, spec.projection),
+        activeFixture(spec.chain, spec.projection),
         { instance: "effect-1", counter: spec.witness },
         live,
     );
     assert.equal(paint, expectedNativePayload(proj, spec.expectPreview), `${where} native DTO bytes`);
-    assertPaintEqualsDispatchGenNormalized(paint, dispatchFixture(spec.chain, spec.dispatch), where);
+    assertPaintEqualsDispatchGenNormalized(paint, activeFixture(spec.chain, spec.dispatch), where);
     const rendered = JSON.parse(paint) as RenderedPayload;
     const expectedBorder = JSON.parse(expectedNativePayload(proj, spec.expectPreview)) as RenderedPayload;
     assert.deepEqual(rendered.border, expectedBorder.border, `${where} border forwarded`);
@@ -793,7 +796,7 @@ function checkDispatches(chain: ChainName): void {
     const result = requireChain(chain);
     assert.ok(result.dispatches.length > 0, `${chain} recorded dispatches exist`);
     for (const dispatch of result.dispatches) {
-        const sibling = dispatchFixture(chain, dispatch.file);
+        const sibling = activeFixture(chain, dispatch.file);
         assertPaintEqualsDispatchGenNormalized(dispatch.bytes, sibling, `${chain} ${dispatch.file} producer dispatch`);
         const projStep = dispatch.step === "a3-b" ? "a3" : dispatch.step;
         const projection = result.projections.find((entry) => entry.step === projStep);
@@ -820,14 +823,14 @@ function checkDispatches(chain: ChainName): void {
     }
 }
 
-// Internal fixture coherence: the checked-in manifest gen is the raw
-// single-session generation, so every recorded sibling carrying a gen
+// Internal fixture coherence: the checked-in manifest gen is the
+// harness-fixed generation, so every recorded sibling carrying a gen
 // (discovery settings/handshake reply, envelopes, replies, projections,
 // dispatches) must carry exactly that gen with no normalization.
 function checkManifestGenConsistency(chain: ChainName): void {
-    const manifest = JSON.parse(v2Fixture(chain, "manifest.json")) as { gen: unknown };
+    const manifest = JSON.parse(activeFixture(chain, "manifest.json")) as { gen: unknown };
     assert.ok(typeof manifest.gen === "string" && manifest.gen !== "", `${chain} manifest carries a gen`);
-    const dir = resolve("..", "test-fixtures", "stage5-v2", chain);
+    const dir = resolve("..", "test-fixtures", "stage5-v4-active", chain);
     const names = readdirSync(dir).filter((name) => name.endsWith(".json")).sort();
     let checked = 0;
     for (const name of names) {
@@ -1048,5 +1051,32 @@ describe("stage5 v2 recorded dispatches (production subscriber route)", () => {
             { chain: "s2", projection: "projection-s2.json", dispatch: "dispatch-s2.json", witness: "2", gesture: GESTURE_A2, expectPreview: true },
             "v2 s2",
         );
+    });
+});
+
+describe("stage5 active boundary (new keys required, frozen history rejects)", () => {
+    it("active handshake requires sharedNativeRoster, frozen history lacks it", () => {
+        const active = JSON.parse(activeFixture("full", "discovery-handshake.request.json")) as Record<string, unknown>;
+        const capabilities = active["capabilities"] as Record<string, unknown>;
+        assert.equal(capabilities["sharedNativeRoster"], true, "active handshake carries the roster capability");
+        const frozen = v4Fixture("full", "discovery-handshake.request.json");
+        assert.ok(!frozen.includes("sharedNativeRoster"), "frozen stage5-v4 handshake predates the key");
+    });
+
+    it("active envelope requires foregroundKnown, frozen history lacks it", () => {
+        const active = JSON.parse(activeFixture("full", "envelope-p5-0.json")) as Record<string, unknown>;
+        const report = active["report"] as Record<string, unknown>;
+        assert.equal(report["foregroundKnown"], true, "active capture proves bound foreground");
+        const frozen = v4Fixture("full", "envelope-p5-0.json");
+        assert.ok(!frozen.includes("foregroundKnown"), "frozen stage5-v4 envelope predates the bit");
+    });
+
+    it("active reply requires closeFocus, stripping it refuses the whole reply", () => {
+        const intact = activeFixture("full", "reply-p5-0.json");
+        assert.ok(parseWorldReply(intact) !== null, "genuine active reply parses");
+        const stripped = JSON.parse(intact) as Record<string, unknown>;
+        assert.ok("closeFocus" in stripped, "genuine active reply carries the lane");
+        delete stripped["closeFocus"];
+        assert.equal(parseWorldReply(JSON.stringify(stripped)), null, "reply without closeFocus refuses");
     });
 });

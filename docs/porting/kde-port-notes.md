@@ -84,11 +84,13 @@ Mechanical API checks use `git show <pin>:<path>` and `git grep <pattern>
 - Send initial settings before readiness and re-send on change under their
   independent revision rules. Settings never reset the connection. No dedicated
   settings method, capture-attached settings or broker-generated handshake exists.
-- The vertical slice must re-record v4 producer bytes for
+- The vertical slice re-records current v4 producer bytes for
   `stage5_fixture_route_matches_recorded_projections` and
-  `stage5_fixture_route_same_source_serial_b`. Both are explicitly ignored in the
-  phase-1 core gate, not passing v4 proof; preserve `test-fixtures/stage5` until
-  that migration. The legacy `world_wire_fixtures` generator was removed unrun.
+  `stage5_fixture_route_same_source_serial_b` under
+  `test-fixtures/stage5-v4-active`. Both production-route proofs are enabled and
+  pass exact gen-normalized projection comparisons; frozen `stage5` and
+  `stage5-v4` bytes remain historical with explicit old-shape rejection. The
+  legacy `world_wire_fixtures` generator was removed unrun.
 
 ## Recommended topology
 

@@ -1,10 +1,12 @@
-// KDE-v4 byte gate: the ACTUAL production entry's handshake/settings and
-// DescribeWorld payloads must equal the checked-in artifacts under
-// test-fixtures/kde-v4/bytes, and the recorded Observe reply must strict-
-// parse and apply through the production entry via the genuine Rust engine
-// (raw_world_eval). UPDATE_KDE_V4_BYTE_FIXTURES=1 writes ONLY the named new
-// files below; normal runs assert exactly. Legacy test-fixtures/world-wire
-// artifacts stay frozen and untouched.
+// KDE-v4 byte gate (ACTIVE producer family): the ACTUAL production entry's
+// handshake/settings and DescribeWorld payloads must equal the checked-in
+// artifacts under test-fixtures/kde-v4-active/bytes, and the recorded
+// Observe reply must strict-parse and apply through the production entry
+// via the genuine Rust engine (raw_world_eval).
+// UPDATE_KDE_V4_BYTE_FIXTURES=1 writes ONLY the named new files below;
+// normal runs assert exactly. The historical test-fixtures/kde-v4/bytes
+// family is preserved untouched. Legacy test-fixtures/world-wire artifacts
+// stay frozen and untouched.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -17,7 +19,7 @@ import { startWorldAdapterEntry } from "../src/world-entry";
 import { parseWorldReply, isCoreWorldReply } from "../src/world-report";
 import { createMiniBroker } from "./world-wire-harness";
 
-const FIXTURE_DIR = join("..", "test-fixtures", "kde-v4", "bytes");
+const FIXTURE_DIR = join("..", "test-fixtures", "kde-v4-active", "bytes");
 const UPDATE = process.env["UPDATE_KDE_V4_BYTE_FIXTURES"] === "1";
 const ALLOWED_FIXTURES = new Set([
     "handshake.json",

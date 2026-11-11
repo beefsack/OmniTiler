@@ -19,7 +19,10 @@
 //   kwin/node_modules/.bin/esbuild kwin/tests/world-stage5-v4-record-cli.ts --bundle --platform=node --format=cjs --target=es2020 --define:__OMNITILER_TRACE__='"1"' --outfile="$RECORDER_JS"
 //   node "$RECORDER_JS" --out-dir "$OUT_DIR" --chain both --bridge-binary "$BRIDGE_BIN"
 // BRIDGE_BIN follows Cargo's configured target directory. Existing per-chain
-// output directories refuse instead of overwriting.
+// output directories refuse instead of overwriting. Scheduling-only seam: the
+// first capture send waits one bounded 100ms so the broker-epoch creation
+// receipt stamps solidly positive (see the pump seam note); every byte stays
+// genuine.
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -740,6 +743,14 @@ export async function recordStage5V4Chain(options: Stage5V4RecordOptions): Promi
         settingsRequest: "",
         settingsReply: "",
     };
+    // Scheduling-only seam (no byte changes, no synthetic clocks): the first
+    // capture send waits one bounded 100ms so the serving broker clock is
+    // safely positive when genesis-0 evaluates. The entry learns the broker
+    // epoch from the reply clock and stamps its native-creation fulfillment
+    // receipt with it, so the genesis-1 receipt carries a solidly positive
+    // stamp that the mint-before-receipt replay order can rely on without
+    // sub-ms luck. Genuine report ingestion, only later.
+    let describedWorld = false;
     const pumpBridge = async (): Promise<boolean> => {
         let progressed = false;
         for (const call of calls) {
@@ -750,6 +761,10 @@ export async function recordStage5V4Chain(options: Stage5V4RecordOptions): Promi
                 continue;
             }
             call.answered = true;
+            if (call.method === "DescribeWorld" && !describedWorld) {
+                describedWorld = true;
+                await new Promise<void>((resolve) => setTimeout(resolve, 100));
+            }
             const replyText = await bridge.send(call.method, call.payload);
             let replyValue: unknown;
             try {

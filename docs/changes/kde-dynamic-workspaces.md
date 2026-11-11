@@ -11,6 +11,73 @@ Implement the 2026-11-10 [dynamic lifecycle decision](../decisions/workspaces.md
 - Preserve migration, disconnect/reconnect and complete-inventory identity rules. No membership moves merely to compact gaps.
 - Complete sequential core/protocol/CLI/KWin/runner checks, independent review and fixture-scoped native verification. Native verification must preserve helper receipts, full operation state and exact desktop names/IDs/order plus global and per-output currents before/after.
 
+## Shared-roster correction (2026-11-11, offline verification)
+
+- Manual native reproduction found count-only padding selecting different native
+  subsets on different outputs. Local retirement markers then suppressed the
+  missing counterparts, while sibling-live-binding protection correctly vetoed
+  deletion. The resulting fixed point left globally empty native desktops in
+  the pager and navigation skipped unmodelled pager entries. Independently
+  minted pure-spare backing caused create/create/remove churn without membership
+  writes. Earlier offline results below do not establish these cases.
+- The approved required `sharedNativeRoster` connection capability separates
+  shared native identity from equal logical lengths and linked selectors. The
+  implementation chooses joint native retirement identities, holds divergent observations,
+  elects one pure-spare creation coordinator and fans backing out to waiting
+  spares. Migration still requires fresh backing and after-current insertion;
+  native reordering remains observable. No aligned-grid replacement returns.
+- KWin `1f543de908`, `src/virtualdesktops.cpp:577-615,990-1003`, keeps one
+  `m_desktops` roster in both selector modes. The per-output flag changes
+  `m_currentDesktops` selection, not desktop identity ownership. KDE therefore
+  declares true independently of native selector coupling.
+- Targeted regressions cover D1-D4, split readback, three-output election,
+  backing fan-out, external native reorder, migration settlement and dependent
+  migration anchors. A chained-migration regression exposed a pin replay-order
+  error; dependency-aware placement corrects it. A genuine disconnect journey
+  exposed a memberless orphan logical row becoming a second spare after
+  displacement. The first cleanup dropped protected rows and left stale
+  native bindings; review rejected it. The corrected cleanup protects retained,
+  held and hosted rows, requires complete identical survivor evidence and
+  known-empty occupancy, and clears dropped bindings for fresh return adoption.
+  Serial readbacks exposed one remaining bypass: the removed ring's tail was
+  retained unconditionally before those guards. The tail now passes the same
+  redundancy proof as every other candidate; only an unprotected, known-empty
+  native alias already represented on a survivor drops. Member-carrying,
+  displaced, held and retained units remain protected. Independent roster
+  journeys retain their original assertions.
+- Current connection vectors are encoder-generated under
+  `test-fixtures/world-wire/v4-active`, with explicit strict rejection of frozen
+  old handshakes and unchanged generic scenario assertions. Explicit capability
+  profiles distinguish shared-native KDE from independent native hosts and
+  output-local Spaces; `hostOwned` never implies identity sharing. Genuine
+  producer bytes use `test-fixtures/kde-v4-active`; both stage5 chains were
+  re-recorded under `test-fixtures/stage5-v4-active`, and both production-route
+  proofs remain enabled. Existing historical fixture bytes are unchanged.
+- Minimal pre-existing close-focus amendment fallout was corrected in broker
+  validation skeletons and Rust test inputs: a nonempty focused identity must
+  carry known foreground, and every report needs the required field. This is
+  distinct from the separately implemented
+  [KDE close-focus adoption](kde-retained-close-focus.md), which now permits
+  genuine current entry recording without a wire compatibility shim.
+- Final sequential offline checks: Rust core/protocol/CLI 3283 passed, zero
+  failed or ignored, with only the unsafe-posture test filtered; KWin 1272/1272,
+  zero cancelled/skipped; both TypeScript configurations, Rust formatting and
+  whitespace checks pass. The native-retirement target passes 52 tests, and the
+  genuine disconnect/return target passes all four journeys without weakening
+  its assertions. Stage5 includes exact projection, witness-chain, historical
+  rejection and delayed-discovery replay checks. Frozen `world-wire/v4`,
+  `stage5` and existing `stage5-v4` diffs are empty; the final disconnect fix
+  changes none of the active recorded byte expectations.
+- The core serial regression delivers one creation receipt per report through
+  3 -> 4 -> 5 native identities, pins the intermediate desire and displaced
+  binding, then proves quiescence with no orphan backing. Independent review
+  verified the final unchanged regression fails with the former unconditional
+  tail retention in a disposable source copy. It accepts the whole shared-roster
+  lifecycle diff, including protection, fresh return adoption, migration anchors,
+  fail-closed evidence and capability boundaries. No offline blocker remains.
+  Native lifecycle acceptance and checklist rows 15/52 remain open; the live
+  recheck below found a settle-time discrepancy. Retain this active note.
+
 ## Units and dependencies
 
 1. Diagnosis and pinned reference comparison (retained below).

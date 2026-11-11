@@ -1,0 +1,168 @@
+{
+  "tool": "world-stage5-v4-record",
+  "bridge": "broker_world_eval",
+  "dispatchProvenance": {
+    "tool": "world-stage5-v4-record+production-subscriber",
+    "route": "broker-projection->createWorldPresentationSubscriber->SetPresentation",
+    "reqRekeyed": true,
+    "crossed": "dispatch-a3-b.json renders projection-a3.json with B/1 live gesture"
+  },
+  "chain": "full",
+  "adapter": "kwin-stage5-v4",
+  "gen": "gen-stage5-v4-active",
+  "volatile": [
+    "gen",
+    "source",
+    "sourceSeq",
+    "nativeInvalid",
+    "req"
+  ],
+  "internalReads": 13,
+  "parkedWaits": 1,
+  "steps": [
+    {
+      "name": "p5",
+      "projection": "projection-p5.json",
+      "dispatches": [
+        "dispatch-p5.json"
+      ],
+      "envelopes": [
+        "envelope-p5-0.json"
+      ],
+      "replies": [
+        "reply-p5-0.json"
+      ],
+      "facts": [
+        "facts-p5-0.json"
+      ],
+      "gestures": []
+    },
+    {
+      "name": "p6",
+      "projection": "projection-p6.json",
+      "dispatches": [
+        "dispatch-p6.json"
+      ],
+      "envelopes": [
+        "envelope-p6-0.json"
+      ],
+      "replies": [
+        "reply-p6-0.json"
+      ],
+      "facts": [],
+      "gestures": []
+    },
+    {
+      "name": "cover",
+      "projection": "projection-cover.json",
+      "dispatches": [
+        "dispatch-cover.json"
+      ],
+      "envelopes": [
+        "envelope-cover-0.json"
+      ],
+      "replies": [
+        "reply-cover-0.json"
+      ],
+      "facts": [
+        "facts-cover-0.json"
+      ],
+      "gestures": []
+    },
+    {
+      "name": "preview",
+      "projection": "projection-preview.json",
+      "dispatches": [
+        "dispatch-preview.json"
+      ],
+      "envelopes": [
+        "envelope-preview-0.json"
+      ],
+      "replies": [
+        "reply-preview-0.json"
+      ],
+      "facts": [],
+      "gestures": [
+        "gesture-preview-0.json"
+      ]
+    },
+    {
+      "name": "cover2",
+      "projection": "projection-cover2.json",
+      "dispatches": [
+        "dispatch-cover2.json"
+      ],
+      "envelopes": [
+        "envelope-cover2-0.json",
+        "envelope-cover2-1.json"
+      ],
+      "replies": [
+        "reply-cover2-0.json",
+        "reply-cover2-1.json"
+      ],
+      "facts": [
+        "facts-cover2-0.json"
+      ],
+      "gestures": [
+        "gesture-cover2-0.json"
+      ]
+    },
+    {
+      "name": "a2",
+      "projection": "projection-a2.json",
+      "dispatches": [
+        "dispatch-a2.json"
+      ],
+      "envelopes": [
+        "envelope-a2-0.json"
+      ],
+      "replies": [
+        "reply-a2-0.json"
+      ],
+      "facts": [],
+      "gestures": [
+        "gesture-a2-0.json"
+      ]
+    },
+    {
+      "name": "a3",
+      "projection": "projection-a3.json",
+      "dispatches": [
+        "dispatch-a3.json",
+        "dispatch-a3-b.json"
+      ],
+      "envelopes": [
+        "envelope-a3-0.json"
+      ],
+      "replies": [
+        "reply-a3-0.json"
+      ],
+      "facts": [
+        "facts-a3-0.json"
+      ],
+      "gestures": []
+    },
+    {
+      "name": "preview-b",
+      "projection": "projection-preview-b.json",
+      "dispatches": [
+        "dispatch-preview-b.json"
+      ],
+      "envelopes": [
+        "envelope-preview-b-0.json"
+      ],
+      "replies": [
+        "reply-preview-b-0.json"
+      ],
+      "facts": [],
+      "gestures": [
+        "gesture-preview-b-0.json"
+      ]
+    }
+  ],
+  "genesisEnvelopes": [
+    "envelope-genesis-0.json",
+    "envelope-genesis-1.json",
+    "envelope-genesis-2.json"
+  ]
+}
