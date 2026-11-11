@@ -18,3 +18,23 @@
 
 - Core/protocol already implement the retained amendment. Minimal required-field repairs in broker validation skeletons and Rust test helpers are separate from this adapter adoption.
 - Current recordings require both this adoption and the required `sharedNativeRoster` handshake amendment. Frozen `world-wire/v4`, `stage5` and `stage5-v4` families remain historical; no compatibility shape is introduced.
+
+## Live recheck (2026-11-11, incomplete)
+
+- The shown-workspace sample had three tiled clients, not the required two:
+  two test windows plus a pre-existing client (`cont-e12-pres.json`, revision
+  79). Native traces show focused test window -> surviving test window ->
+  pre-existing client on successive closes (`lead-final-dev-log`:2574,2634).
+  This is bounded focus-succession evidence, not acceptance of the exact
+  two-window/MRU/spend-once case.
+- A separate sole-test-window close produced one automatic correction to the
+  pre-existing client on the other output, without repeated attempts in the
+  captured interval (`cont-sole-journal.txt`, `lead-final-dev-log`:2832-2855).
+  The claimed post-close presentation was not retained. Global foreground
+  alone does not prove the empty output stayed shown and unfocused.
+- Independent evidence review leaves native acceptance open. The saved close
+  journals and full trace do not establish the retained request's issuing
+  identity, MRU-target equality or complete spend accounting; absence of a
+  focus line in a filtered capture is not zero-setter proof. Repeat the exact
+  two-client shown-workspace case and retain before/after per-output native
+  currents, foreground and correlated close-focus publications.

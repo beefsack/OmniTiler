@@ -78,6 +78,83 @@ Implement the 2026-11-10 [dynamic lifecycle decision](../decisions/workspaces.md
   Native lifecycle acceptance and checklist rows 15/52 remain open; the live
   recheck below found a settle-time discrepancy. Retain this active note.
 
+## Live recheck (2026-11-11, incomplete)
+
+- Two-output, per-output-local command-route checks used native roster and
+  binding readbacks. These are not physical-key delivery evidence. Artifact
+  names below identify the retained raw captures, not committed fixtures.
+- Startup emitted `world:ready`, `world:discovered` and accepted/applied
+  revision 1. The current Planner log has no malformed-report rejection;
+  the initial presentation `not-ready` response is bootstrap, not a malformed
+  report (`lead-final-kwin-journal.log`, `lead-final-planner-log`).
+
+| Check | Result and evidence |
+|---|---|
+| D1, each output | PASS: fills created one native each, with no create/create/remove flash. Revisions 35, 109 and 115 have `mk=1 rm=0`; subsequent settled replies have zero creation/removal (`cont-d1b-transfers.txt`, `lead-final-dev-log`). |
+| D2, exact X/Y/Z close sequence | FAIL: revision 66 establishes X on A ordinal 2, Y on B ordinal 2 and Z on B ordinal 3. After close/leave/close/close, revision 74 still has three natives after 30 seconds. Both ordinal-2 rows are logically empty/unshown, but B's native cursor still names their backing while its logical view names ordinal 1. Deletion occurs only after the later send-follow, at revision 102. The captured view mismatch is diagnosed below (`cont-d2full-pres.json`, `cont-d2-settle-pres.json`, `cont-idle30-desktops.txt`, `lead-final-dev-log`:2333-2357,3195-3225). |
+| D3, identity and navigation | PASS for the sampled three-native roster: every ID has a live binding on each output; relative commands cycle all three identities and wrap on each output, with native cursor readbacks (`cont-d3-summary.json`, `cont-d1b-transfers.txt`:15-20, `lead-final-dev-log`:1209,1266,1326,1381,1436,1498). |
+| D4, sole directional send and leave | PASS for transfer and occupancy protection: the sole source window crosses outputs and the source view leaves. Its backing remains occupied/shown on the destination, so this is not independent globally-empty deletion evidence (`cont-d4a-pres.json`, `lead-final-dev-log`:3016-3123). |
+| Previous-workspace send-follow | PASS: sole mover and view arrive on the previous destination workspace; the unshown, globally empty source backing retires once at revision 102 (`cont-d4b-pres.json`, `lead-final-dev-log`:3195-3245). This later result does not repair D2 acceptance. |
+| Steps 9/12, both-output fill/close/idle | PASS for the bounded command-route leg: one trailing spare per output after fills, then two natives after closing test windows and leaving the shown empty source. The pre-existing client survives. Revision 126 remains unchanged over 15 seconds, with no dispatch/applied churn (`lead-final-dev-log`:3448,3649,3954-3986, `lead-final-desktops.txt`, `cont-idle-journal.txt`). |
+
+- Independent evidence review rejects the initial D2 settle PASS and accepts
+  the discrepancy above. No product correction is included in this recheck.
+  The diagnosis below explains the view mismatch; do not treat later unrelated
+  activity as settle-time success.
+- The exact two-window close-focus leg and complete sole-close readbacks are
+  still open; see [close-focus evidence limits](kde-retained-close-focus.md#live-recheck-2026-11-11-incomplete).
+  Checklist rows 15/52 remain unchecked: the physical send matrix and complete
+  inverse/repeated lifecycle scope are not established by these bounded results.
+
+### D2 diagnosis (2026-11-11, no product correction)
+
+- The first native mismatch follows external activation, not a failed commanded
+  view write. Revision 61 reads B's native current as ordinal 3; the focus helper
+  activates Z while Z still belongs to ordinal 2, and revision 62 reads ordinal
+  2 with Z focused and `views=0`. The later send of Z to ordinal 3 uses
+  `follow=false`, so it does not switch B back (`cont-focus-helper.js`:27,
+  `lead-final-dev-log`:1901-1906,1972-2041). Revision 66 still publishes ordinal
+  3 as B's logical view. Logical state at revisions 61/62 is inferred from the
+  endpoints and operations; intermediate presentations were not retained.
+- On Z's close, ordinary pruning removes that now natively unshown row.
+  `world_model.rs:369-399,442-460` resets the removed retained view to the ring
+  head without creating a view transfer. Output publication reads a pending
+  view transfer or the retained map (`world_publish.rs:1828-1843`), whereas
+  pruning/retirement uses the known native echo (`world_observe.rs:154-176`,
+  `world_native.rs:1252-1261`). No idle path reconciles those two views.
+- The adapter reads genuine per-output currents
+  (`workspace-native.ts:473-497`) and only actuates explicit retained view
+  transfers (`world-apply.ts:1755-1846`). Its any-output visibility veto
+  (`world-native.ts:884-917`) correctly protects the actually shown ordinal-2
+  native. Thus this is a persistent publication/reconciliation defect, not
+  evidence that a displayed native should be deleted or a setter retried.
+- Earlier global-current staging is not the immediate trigger: the later
+  output-local sequence had aligned native/logical views before activation.
+  KWin at `1f543de908`, `src/scripting/workspace_wrapper.cpp:260-263` and
+  `src/activation.cpp:294-317`, routes the helper through ordinary activation;
+  its switch-to-other-desktop branch changes the window's output-local current.
+  The native-activation class is user-reachable. The exact physical step-8
+  action was not captured, so occurrence in that particular sequence remains
+  unverified; no fresh live reproduction is claimed.
+- One policy-neutral red regression was appended to
+  `world_native_retirement.rs`:
+  `idle_external_current_move_leaves_no_unexplained_view_divergence`.
+  After three complete idle reports with current and focus moved together,
+  it requires either publication matching the native current or an explicit
+  view transfer owning convergence. It separately preserves shown-native
+  protection. The permitted filtered core/protocol/CLI run fails at the intended
+  convergence assertion, with retained publication on the old desktop and no
+  view transfer (`d2-diagnosis-red-final.log`:261-275). Independent review accepts
+  the invariant and causal diagnosis; no production behavior was changed.
+- Recommended follow-up, not an adopted policy: reconcile a complete known
+  idle native echo into retained view state when no competing transfer owns
+  selection, preserving held/unknown/flight fences. This avoids fighting a
+  native user switch. Explicit bounded reassertion is an alternative requiring
+  a selection-authority decision; diagnostics alone leave the mismatch, and
+  weakening deletion visibility guards is unsafe. Echo adoption can legitimately
+  retain the shown empty ordinal-2 desktop; it does not promise deletion of that
+  identity or a two-native roster before the user leaves it.
+
 ## Units and dependencies
 
 1. Diagnosis and pinned reference comparison (retained below).
