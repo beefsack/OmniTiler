@@ -1,5 +1,13 @@
 // Eager-spare lifecycle for per-output workspaces.
-// Producer-shaped regression through the real `WorldEngine` (via the
+// GENERIC INDEPENDENT host variant (test-only sharedNativeRoster:false
+// seam): the long journey below exercises the independent per-output
+// local-retire lifecycle (locally-retired middles fenced by native-only
+// absence intents, reshow readopts fresh with one shared trailing spare,
+// occupancy arrival extends with independent spare desires). Genuine KWin
+// (KDE production, handshake always sharedNativeRoster:true) mirrors one
+// shared native roster on every output, so globally occupied/shown natives
+// never retire locally; that shape is pinned by the shared test at the end
+// of this file. Producer-shaped regression through the real `WorldEngine` (via the
 // test-only `raw_world_eval` example) plus the production entry/apply path
 // with fresh serial replies: showing an empty end creates no spare and no
 // native (the rings stay minimal with locally-retired middles fenced by
@@ -634,7 +642,7 @@ function deadRows(reply: Record<string, unknown>, out: string): Array<Record<str
 }
 
 describe("world spare eager-backing", () => {
-    it("showing empty ends creates no spare on either output, forward next wraps, occupancy still extends", { timeout: 240000 }, async () => {
+    it("showing empty ends creates no spare on either output, forward next wraps, occupancy still extends (GENERIC INDEPENDENT variant)", { timeout: 240000 }, async () => {
         const h = await makeSpareHarness();
         try {
             // Authentic v4 connection pump: the handshake binds the producer
@@ -645,7 +653,14 @@ describe("world spare eager-backing", () => {
             const hsBody = JSON.parse((h.calls[hsIndex] as CapturedCall).payload) as Record<string, unknown>;
             assert.equal(hsBody["type"], "handshake", "first discovery is the handshake");
             assert.equal(hsBody["adapter"], "test-adapter", "handshake carries the producer adapter");
-            const hsReplyText = await h.bridge.send("DiscoverWorld", (h.calls[hsIndex] as CapturedCall).payload);
+            // GENERIC INDEPENDENT variant seam: the production handshake
+            // always carries sharedNativeRoster:true (asserted so a
+            // production change fails loudly); this journey rewrites the
+            // bit to false before the engine binds, exercising the
+            // explicit independent-roster path only, never genuine KDE.
+            assert.equal((hsBody["capabilities"] as Record<string, unknown>)["sharedNativeRoster"], true, "production handshake carries sharedNativeRoster:true");
+            (hsBody["capabilities"] as Record<string, unknown>)["sharedNativeRoster"] = false;
+            const hsReplyText = await h.bridge.send("DiscoverWorld", JSON.stringify(hsBody));
             const hsReply = JSON.parse(hsReplyText) as Record<string, unknown>;
             assert.equal(hsReply["type"], "handshake-reply", "engine answers the handshake");
             assert.equal(hsReply["ready"], false, "accepted handshake carries ready:false");
@@ -1050,6 +1065,81 @@ describe("world spare eager-backing", () => {
             const rightAfter = counters(h);
             await h.settle();
             assert.deepEqual(counters(h), rightAfter, "filled lifecycle does not oscillate");
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("shared roster mirrors every occupied/shown native on both outputs with no local retire (genuine KWin)", { timeout: 240000 }, async () => {
+        // Genuine shared policy (production handshake untouched): the
+        // shared roster represents every native occupied or shown anywhere
+        // on every output, so the unmanaged-occupied ws-3 never retires
+        // locally. Both rings mirror the full four-native order with
+        // distinct logicals per cell, every row stays bound, wrap and
+        // selection switch views with no spare churn (no creations,
+        // removals, member moves, or retained transfers).
+        const h = await makeSpareHarness();
+        try {
+            const hsIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
+            assert.ok(hsIndex >= 0, "entry discovers on start");
+            const hsBody = JSON.parse((h.calls[hsIndex] as CapturedCall).payload) as Record<string, unknown>;
+            assert.equal(hsBody["type"], "handshake", "first discovery is the handshake");
+            assert.equal((hsBody["capabilities"] as Record<string, unknown>)["sharedNativeRoster"], true, "production handshake carries sharedNativeRoster:true");
+            const hsReplyText = await h.bridge.send("DiscoverWorld", (h.calls[hsIndex] as CapturedCall).payload);
+            const hsReply = JSON.parse(hsReplyText) as Record<string, unknown>;
+            assert.equal(hsReply["type"], "handshake-reply", "engine answers the handshake");
+            const boundHs = h.broker.bindDiscovery(hsReplyText);
+            (h.calls[hsIndex] as CapturedCall).callback(boundHs);
+            const setIndex = h.calls.findIndex((call, at) => at > hsIndex && call.method === "DiscoverWorld");
+            assert.ok(setIndex >= 0, "revisioned settings follow the handshake");
+            const setReplyText = await h.bridge.send("DiscoverWorld", (h.calls[setIndex] as CapturedCall).payload);
+            (h.calls[setIndex] as CapturedCall).callback(setReplyText);
+            await h.settle();
+            assert.equal(h.desktops.length, 4, "no native appended while showing empty ends");
+            assert.deepEqual(h.creations, [], "showing ends creates no native");
+            assert.deepEqual(h.removals, [], "showing ends removes no native");
+            let reply = lastReply(h);
+            // Shared mirror: every native on every output with replicated
+            // bindings (distinct logical per cell), all rows bound, and no
+            // local-retire tombstone anywhere (ws-3 stays live on both).
+            assert.equal(liveRows(reply, LEFT).length, 4, `left ring mirrors all four natives, got ${JSON.stringify(liveRows(reply, LEFT))}`);
+            assert.equal(liveRows(reply, RIGHT).length, 4, `right ring mirrors all four natives, got ${JSON.stringify(liveRows(reply, RIGHT))}`);
+            assert.deepEqual(liveRows(reply, LEFT).map((row) => row["bind"]), ["ws-1", "ws-2", "ws-3", "ws-4"], "left bindings replicate the shared order");
+            assert.deepEqual(liveRows(reply, RIGHT).map((row) => row["bind"]), ["ws-1", "ws-2", "ws-3", "ws-4"], "right bindings replicate the shared order");
+            assert.ok(workspacesOf(reply).every((row) => (row["bind"] as string) !== ""), "no unbound spare rows");
+            assert.deepEqual(deadRows(reply, LEFT), [], "no local retire on the left under the shared roster");
+            assert.deepEqual(deadRows(reply, RIGHT), [], "no local retire on the right under the shared roster");
+            assert.ok(liveRows(reply, LEFT).some((row) => (row["bind"] as string) === "ws-3"), "occupied ws-3 stays live on the left");
+            assert.ok(liveRows(reply, RIGHT).some((row) => (row["bind"] as string) === "ws-3"), "occupied ws-3 stays live on the right");
+            // Wrap still works with the opposite view unchanged and no moves.
+            const wrapBase = counters(h);
+            h.activeScreen = { name: LEFT };
+            h.activeRef = h.wins[0] as FakeWindow;
+            h.handle.requestWorkspaceRelative(1);
+            h.runTimers();
+            await h.settle();
+            reply = lastReply(h);
+            assert.equal(h.currents.get(LEFT), "ws-1", "relative next wraps from the shown empty end");
+            assert.equal(h.currents.get(RIGHT), "ws-2", "opposite view unchanged by left wrap");
+            assert.equal(counters(h).members - wrapBase.members, 0, "wrap moves no windows");
+            assert.deepEqual(deadRows(reply, LEFT), [], "wrap retires nothing under the shared roster");
+            // Selecting the live ws-3 is a plain view switch: no fresh
+            // adoption, no trailing-spare backing, no removal, no transfer.
+            const selBase = counters(h);
+            h.currents.set(LEFT, "ws-3");
+            h.fire("currentDesktopChanged");
+            await h.settle();
+            reply = lastReply(h);
+            assert.equal(h.currents.get(LEFT), "ws-3", "selection lands on the live ws-3");
+            assert.equal(h.currents.get(RIGHT), "ws-2", "opposite view unchanged by left selection");
+            assert.equal(counters(h).creations - selBase.creations, 0, "live selection backs no spare");
+            assert.equal(counters(h).removals - selBase.removals, 0, "live selection removes no native");
+            assert.equal(counters(h).members - selBase.members, 0, "live selection moves no windows");
+            assert.deepEqual(deadRows(reply, LEFT), [], "live selection retires nothing");
+            assert.ok(transfersOf(reply).length === 0, "live selection retains no transfers");
+            const selAfter = counters(h);
+            await h.settle();
+            assert.deepEqual(counters(h), selAfter, "shared lifecycle does not oscillate");
         } finally {
             await h.stop();
         }

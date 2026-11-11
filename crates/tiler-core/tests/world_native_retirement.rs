@@ -12,10 +12,19 @@ use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    NativeObservation, NativeOccupancy, ScreenReport, WindowFact, WorldCommand, WorldReportV4,
+    FrameSetter, NativeCreationAttempt, NativeObservation, NativeOccupancy, ScreenReport,
+    WindowFact, WorldCommand, WorldReportV4,
 };
 
 fn engine_host_owned(mode: WorkspaceMode, equal_count: bool) -> WorldEngine {
+    engine_host_owned_with_shared(mode, equal_count, false)
+}
+
+fn engine_host_owned_with_shared(
+    mode: WorkspaceMode,
+    equal_count: bool,
+    shared_native_roster: bool,
+) -> WorldEngine {
     let token = match mode {
         WorkspaceMode::PerOutputLocal => "per-output-local",
         WorkspaceMode::GlobalUnique => "global-unique",
@@ -27,6 +36,7 @@ fn engine_host_owned(mode: WorkspaceMode, equal_count: bool) -> WorldEngine {
         HostCapabilities {
             host_owned: true,
             equal_count,
+            shared_native_roster,
             // Fixtures carry native sticky and maximize facts (including a
             // sticky homing probe); the lane under test is the native route.
             native_sticky: true,
@@ -2057,4 +2067,2535 @@ fn staggered_joint_absence_retains_padding_identity_until_balanced_readback() {
             assert_eq!(row.order, index);
         }
     }
+}
+
+/// Identical native rosters on both outputs under equal counts; views both
+/// n1 with windows on A's n1 and B's n3.
+fn setup_kde_identical_divergence(
+    engine: &mut WorldEngine,
+) -> tiler_core::world_report::WorldReplyV4 {
+    // Reports carry windows, so foreground is known.
+    let mut first = report(
+        1,
+        1,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("n1")),
+            fact_native("win-b3", "out-b", Some("n3")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["n1", "n2", "n3", "n4"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["n1", "n2", "n3", "n4"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    first.foreground_known = true;
+    accepted(engine, &first)
+}
+
+fn bound_natives(reply: &tiler_core::world_report::WorldReplyV4, output: &str) -> Vec<String> {
+    bound_ids(reply, output)
+        .into_iter()
+        .map(|(_, native)| native)
+        .collect()
+}
+
+#[test]
+fn kde_identical_roster_d2_globally_empty_retires_jointly() {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let reply = setup_kde_identical_divergence(&mut engine);
+    let natives_a = bound_natives(&reply, "out-a");
+    let natives_b = bound_natives(&reply, "out-b");
+    assert_eq!(
+        ring_ids(&reply, "out-a").len(),
+        ring_ids(&reply, "out-b").len(),
+        "equal lengths hold: {reply:?}"
+    );
+    // D2: n2 reads globally empty and unshown on the shared roster, so both
+    // outputs retire the same native identity jointly: live nowhere,
+    // tombstoned on both outputs with no fence (deletable).
+    assert!(
+        !natives_a.contains(&"n2".to_owned()),
+        "n2 retired on out-a: {reply:?}"
+    );
+    assert!(
+        !natives_b.contains(&"n2".to_owned()),
+        "n2 retired on out-b: {reply:?}"
+    );
+    for output in ["out-a", "out-b"] {
+        let row = tombstone_row(&reply, output, "n2").expect("n2 tombstone");
+        assert!(
+            row.hold.is_none(),
+            "D2: globally retired n2 fenced on {output}: {reply:?}"
+        );
+    }
+    // Globally occupied (n3), viewed (n1), and trailing spare (n4) stay live
+    // on both outputs with identical identities.
+    for native in ["n1", "n3", "n4"] {
+        assert!(
+            natives_a.contains(&native.to_owned()) && natives_b.contains(&native.to_owned()),
+            "D2: {native} stays live on both ({natives_a:?} vs {natives_b:?}): {reply:?}"
+        );
+    }
+    assert_eq!(reply.transfers.len(), 0, "no membership writes");
+}
+
+#[test]
+fn kde_identical_roster_d3_logical_successor_matches_native() {
+    // Ring-representation pin: navigation follows the ring. The globally
+    // empty n2 retires jointly (D2), so the surviving bound prefix must
+    // still track the native pager order: n1 -> n3 -> n4 on both outputs.
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let reply = setup_kde_identical_divergence(&mut engine);
+    for output in ["out-a", "out-b"] {
+        let natives = bound_natives(&reply, output);
+        assert_eq!(
+            natives,
+            vec!["n1".to_owned(), "n3".to_owned(), "n4".to_owned()],
+            "D3: survivors track pager order on {output}: {reply:?}"
+        );
+        let pos = natives.iter().position(|n| n == "n1").expect("n1 bound");
+        assert_eq!(
+            natives.get(pos + 1).cloned().unwrap_or_default(),
+            "n3",
+            "D3: logical successor of n1 is n3 on {output}: {natives:?}"
+        );
+    }
+}
+
+#[test]
+fn kde_dual_spare_creations_d1_no_excess_create() {
+    // Candidate coalescing regression under a shared observed roster with
+    // equal counts: one spare per output mints one creation desire each. Two
+    // desires need not mean two actuations, but the pair is the excess
+    // behind the observed create/prune churn.
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    // Reports carry windows, so foreground is known.
+    let mut setup = report(
+        1,
+        1,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("d2")),
+            fact_native("win-b", "out-b", Some("d2")),
+        ],
+        vec![
+            native_obs_occ("out-a", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+            native_obs_occ("out-b", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+        ],
+        None,
+        None,
+        true,
+    );
+    setup.foreground_known = true;
+    let reply = accepted(&mut engine, &setup);
+    assert_eq!(
+        reply.native_creations.len(),
+        1,
+        "D1: single shared backing for dual spares, got {}: {reply:?}",
+        reply.native_creations.len()
+    );
+}
+
+/// D4: cross-output send then re-observe under the shared roster. The
+/// moved window arrives on the target's bound trailing spare (n4), native
+/// identities stay aligned on both outputs (n2 retired jointly per D2),
+/// and no fresh backing is minted (the target row is already bound).
+#[test]
+fn kde_shared_roster_d4_cross_output_send_then_reobserve() {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let mut first = report(
+        1,
+        1,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("n1")),
+            fact_native("win-b3", "out-b", Some("n3")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["n1", "n2", "n3", "n4"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["n1", "n2", "n3", "n4"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    first.foreground_known = true;
+    let boot = accepted(&mut engine, &first);
+    // Sanity: the shared roster retires n2 jointly (D2); survivors track
+    // the pager order on both outputs with equal lengths.
+    for output in ["out-a", "out-b"] {
+        let natives: Vec<String> = bound_ids(&boot, output)
+            .into_iter()
+            .map(|(_, native)| native)
+            .collect();
+        assert_eq!(
+            natives,
+            vec!["n1", "n3", "n4"],
+            "D4: boot survivors native on {output}: {boot:?}"
+        );
+    }
+    assert_eq!(
+        ring_ids(&boot, "out-a").len(),
+        ring_ids(&boot, "out-b").len(),
+        "D4: equal lengths: {boot:?}"
+    );
+    let target = logical_for(&boot, "out-b", "n4").expect("out-b n4 bound");
+    // Cross-output window send onto the neighbor output (direction-only
+    // targets the neighbor's current view). The send flight retains while
+    // the shared roster stays aligned.
+    let mut flight_report = report(
+        2,
+        2,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("n1")),
+            fact_native("win-b3", "out-b", Some("n3")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["n1", "n2", "n3", "n4"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["n1", "n2", "n3", "n4"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0)],
+            ),
+        ],
+        Some(1),
+        Some(WorldCommand::SendDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "right".to_owned(),
+            follow: false,
+        }),
+        true,
+    );
+    flight_report.foreground_known = true;
+    let flight = accepted(&mut engine, &flight_report);
+    assert_eq!(
+        flight.transfers.len(),
+        1,
+        "D4: cross-output send retains one flight: {flight:?}"
+    );
+    assert!(
+        existence(&flight, "out-b", &target) == Some(true),
+        "D4: shared spare stays live in flight: {flight:?}"
+    );
+    // Re-observe with win-a arrived on out-b/n1 (the neighbor current);
+    // the roster is unchanged.
+    let mut arrival = report(
+        3,
+        3,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-b", Some("n1")),
+            fact_native("win-b3", "out-b", Some("n3")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["n1", "n2", "n3", "n4"],
+                Some("n1"),
+                &[Some(0), Some(0), Some(1), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["n1", "n2", "n3", "n4"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    arrival.foreground_known = true;
+    let reply = accepted(&mut engine, &arrival);
+    for output in ["out-a", "out-b"] {
+        let natives: Vec<String> = bound_ids(&reply, output)
+            .into_iter()
+            .map(|(_, native)| native)
+            .collect();
+        assert_eq!(
+            natives,
+            vec!["n1", "n3", "n4"],
+            "D4: shared identities aligned on {output}: {reply:?}"
+        );
+    }
+    assert_eq!(
+        ring_ids(&reply, "out-a").len(),
+        ring_ids(&reply, "out-b").len(),
+        "D4: equal lengths survive the send: {reply:?}"
+    );
+    assert!(
+        reply.native_creations.is_empty(),
+        "D4: arrival needs no fresh backing: {reply:?}"
+    );
+    assert_eq!(reply.transfers.len(), 0, "no membership writes");
+}
+
+/// Migration compatibility under the shared roster: migrating out-a's n3
+/// workspace to out-b inserts the moved logical immediately after the
+/// destination current (authoritative, never resorted back to native
+/// order) and mints exactly one fresh backing desire for the moved
+/// logical on the target (genuine migration need, never coalesced away
+/// as a pure spare). Equal lengths hold via the authoritative insert.
+#[test]
+fn kde_shared_roster_migration_inserts_after_destination_current() {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let mut first = report(
+        1,
+        1,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("n1")),
+            fact_native("win-b3", "out-b", Some("n3")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["n1", "n2", "n3", "n4"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["n1", "n2", "n3", "n4"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    first.foreground_known = true;
+    let boot = accepted(&mut engine, &first);
+    let moved = logical_for(&boot, "out-a", "n3").expect("out-a n3 bound");
+    let dest_current = boot
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-b")
+        .and_then(|row| row.logical_view.clone())
+        .expect("out-b current");
+    let mut migrate_report = report(
+        2,
+        2,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("n1")),
+            fact_native("win-b3", "out-b", Some("n3")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["n1", "n2", "n3", "n4"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["n1", "n2", "n3", "n4"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0)],
+            ),
+        ],
+        Some(1),
+        Some(WorldCommand::MigrateWorkspace {
+            source_output: OutputId("out-a".to_owned()),
+            target_output: OutputId("out-b".to_owned()),
+            workspace: moved.clone(),
+        }),
+        true,
+    );
+    migrate_report.foreground_known = true;
+    let flight = accepted(&mut engine, &migrate_report);
+    let target_ring = ring_ids(&flight, "out-b");
+    let at = target_ring
+        .iter()
+        .position(|id| id == &moved)
+        .expect("migrated logical lands on target");
+    let current_at = target_ring
+        .iter()
+        .position(|id| id == &dest_current)
+        .expect("destination current stays ringed");
+    assert_eq!(
+        at,
+        current_at + 1,
+        "migration inserts after destination current: {target_ring:?} flight: {flight:?}"
+    );
+    // Fresh backing invariant: the moved logical is unbound on the target,
+    // so exactly one creation desire names it there (never coalesced as a
+    // pure spare, never duplicated).
+    let backing: Vec<_> = flight
+        .native_creations
+        .iter()
+        .filter(|desire| desire.logical_workspace == moved && desire.target_output.0 == "out-b")
+        .collect();
+    assert_eq!(
+        backing.len(),
+        1,
+        "migration mints one fresh backing: {flight:?}"
+    );
+}
+
+/// Split async readbacks under the shared roster: while the first output's
+/// spare creation is still pending (no new desktop yet), a repeat readback
+/// mints no duplicate.
+#[test]
+fn kde_dual_spare_split_readback_no_duplicate() {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let mut setup = report(
+        1,
+        1,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("d2")),
+            fact_native("win-b", "out-b", Some("d2")),
+        ],
+        vec![
+            native_obs_occ("out-a", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+            native_obs_occ("out-b", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+        ],
+        None,
+        None,
+        true,
+    );
+    setup.foreground_known = true;
+    let first = accepted(&mut engine, &setup);
+    assert_eq!(
+        first.native_creations.len(),
+        1,
+        "one shared backing: {first:?}"
+    );
+    // Repeat readback with no new desktop: still exactly one desire (no
+    // duplicate mint while pending).
+    let mut repeat = report(
+        2,
+        2,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("d2")),
+            fact_native("win-b", "out-b", Some("d2")),
+        ],
+        vec![
+            native_obs_occ("out-a", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+            native_obs_occ("out-b", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+        ],
+        None,
+        None,
+        true,
+    );
+    repeat.foreground_known = true;
+    let second = accepted(&mut engine, &repeat);
+    assert_eq!(
+        second.native_creations.len(),
+        1,
+        "pending creation never duplicates: {second:?}"
+    );
+}
+
+fn three_screens() -> Vec<ScreenReport> {
+    vec![
+        screen("out-a", 0),
+        screen("out-b", 800),
+        screen("out-c", 1600),
+    ]
+}
+
+fn creation_accepted(
+    operation_id: &str,
+    logical: &str,
+    output: &str,
+    before: &[&str],
+    after: &[&str],
+    created: Option<&str>,
+) -> NativeCreationAttempt {
+    NativeCreationAttempt {
+        operation_id: operation_id.to_owned(),
+        logical_workspace: logical.to_owned(),
+        target_output: tiler_core::directional::OutputId(output.to_owned()),
+        setter: FrameSetter::Accepted,
+        order_before: before.iter().map(|s| (*s).to_owned()).collect(),
+        order_after: after.iter().map(|s| (*s).to_owned()).collect(),
+        created_native: created.map(str::to_owned),
+        attempt_ms: 0,
+    }
+}
+
+fn dual_spare_boot(engine: &mut WorldEngine) -> tiler_core::world_report::WorldReplyV4 {
+    let setup = report(
+        1,
+        1,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("d2")),
+            fact_native("win-b", "out-b", Some("d2")),
+        ],
+        vec![
+            native_obs_occ("out-a", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+            native_obs_occ("out-b", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+        ],
+        None,
+        None,
+        true,
+    );
+    accepted(engine, &setup)
+}
+
+/// Split async readback: out-a observes the newly created native while
+/// out-b is still stale. The stale sibling must hold, never mint a
+/// duplicate backing for the same shared spare.
+#[test]
+fn kde_shared_split_stale_sibling_no_duplicate() {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let first = dual_spare_boot(&mut engine);
+    assert_eq!(
+        first.native_creations.len(),
+        1,
+        "one shared backing: {first:?}"
+    );
+    let desire = first.native_creations.first().expect("desire").clone();
+    assert_eq!(
+        desire.target_output.0, "out-a",
+        "first sorted output mints: {first:?}"
+    );
+    let mut split = report(
+        2,
+        2,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("d2")),
+            fact_native("win-b", "out-b", Some("d2")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+            native_obs_occ("out-b", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+        ],
+        None,
+        None,
+        true,
+    );
+    split.creation_attempts = vec![creation_accepted(
+        &desire.operation_id,
+        &desire.logical_workspace,
+        "out-a",
+        &["d1", "d2"],
+        &["d1", "d2", "d3"],
+        Some("d3"),
+    )];
+    let second = accepted(&mut engine, &split);
+    assert!(
+        second.native_creations.is_empty(),
+        "split readback: stale sibling holds, no duplicate mint: {second:?}"
+    );
+}
+
+/// Three outputs: out-a settles its shared backing while out-b/out-c are
+/// still stale. Neither lagging output may mint; the fixed-first check
+/// used to let both B and C duplicate once A was backed.
+#[test]
+fn kde_shared_three_outputs_first_backed_no_duplicate() {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let setup = report(
+        1,
+        1,
+        three_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("d2")),
+            fact_native("win-b", "out-b", Some("d2")),
+            fact_native("win-c", "out-c", Some("d2")),
+        ],
+        vec![
+            native_obs_occ("out-a", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+            native_obs_occ("out-b", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+            native_obs_occ("out-c", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+        ],
+        None,
+        None,
+        true,
+    );
+    let first = accepted(&mut engine, &setup);
+    assert_eq!(
+        first.native_creations.len(),
+        1,
+        "one shared backing: {first:?}"
+    );
+    let desire = first.native_creations.first().expect("desire").clone();
+    let mut split = report(
+        2,
+        2,
+        three_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("d2")),
+            fact_native("win-b", "out-b", Some("d2")),
+            fact_native("win-c", "out-c", Some("d2")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+            native_obs_occ("out-b", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+            native_obs_occ("out-c", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+        ],
+        None,
+        None,
+        true,
+    );
+    split.creation_attempts = vec![creation_accepted(
+        &desire.operation_id,
+        &desire.logical_workspace,
+        "out-a",
+        &["d1", "d2"],
+        &["d1", "d2", "d3"],
+        Some("d3"),
+    )];
+    let second = accepted(&mut engine, &split);
+    assert!(
+        second.native_creations.is_empty(),
+        "three-output split: lagging outputs hold, no B/C duplicate: {second:?}"
+    );
+}
+
+/// Shared fan-out: once every output observes the shared backing, lagging
+/// outputs bind it to their own spares without minting fresh creations.
+#[test]
+fn kde_shared_fanout_binds_without_mint() {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let first = dual_spare_boot(&mut engine);
+    let desire = first.native_creations.first().expect("desire").clone();
+    let mut split = report(
+        2,
+        2,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("d2")),
+            fact_native("win-b", "out-b", Some("d2")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+            native_obs_occ("out-b", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+        ],
+        None,
+        None,
+        true,
+    );
+    split.creation_attempts = vec![creation_accepted(
+        &desire.operation_id,
+        &desire.logical_workspace,
+        "out-a",
+        &["d1", "d2"],
+        &["d1", "d2", "d3"],
+        Some("d3"),
+    )];
+    let _ = accepted(&mut engine, &split);
+    let converged = report(
+        3,
+        3,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("d2")),
+            fact_native("win-b", "out-b", Some("d2")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    let third = accepted(&mut engine, &converged);
+    assert!(
+        third.native_creations.is_empty(),
+        "converged shared backing needs no fresh mints: {third:?}"
+    );
+    for output in ["out-a", "out-b"] {
+        assert!(
+            logical_for(&third, output, "d3").is_some(),
+            "shared d3 binds on {output} without a fresh logical: {third:?}"
+        );
+    }
+    assert_eq!(
+        ring_ids(&third, "out-a").len(),
+        ring_ids(&third, "out-b").len(),
+        "equal lengths after fan-out: {third:?}"
+    );
+}
+
+/// Genuine external reorder of the same shared set must propagate to the
+/// rings; the old blanket suppression kept stale insertion order.
+#[test]
+fn kde_shared_external_reorder_propagates() {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let boot = setup_kde_identical_divergence(&mut engine);
+    for output in ["out-a", "out-b"] {
+        assert_eq!(
+            bound_natives(&boot, output),
+            vec!["n1".to_owned(), "n3".to_owned(), "n4".to_owned()],
+            "boot survivors: {boot:?}"
+        );
+    }
+    let reordered = report(
+        2,
+        2,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("n3")),
+            fact_native("win-b3", "out-b", Some("n3")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["n3", "n1", "n4"],
+                Some("n3"),
+                &[Some(1), Some(1), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["n3", "n1", "n4"],
+                Some("n3"),
+                &[Some(1), Some(1), Some(0)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    let reply = accepted(&mut engine, &reordered);
+    for output in ["out-a", "out-b"] {
+        assert_eq!(
+            bound_natives(&reply, output),
+            vec!["n3".to_owned(), "n1".to_owned(), "n4".to_owned()],
+            "external reorder propagates on {output}: {reply:?}"
+        );
+    }
+}
+
+/// Divergent rosters must hold pruning entirely: one-sided empties never
+/// retire independently to different identities.
+#[test]
+fn kde_shared_divergent_orders_hold_no_prune() {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let reply = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("n1")),
+                fact_native("win-b", "out-b", Some("n1")),
+            ],
+            vec![
+                native_obs_occ(
+                    "out-a",
+                    &["n1", "n2", "n3"],
+                    Some("n1"),
+                    &[Some(1), Some(0), Some(0)],
+                ),
+                native_obs_occ(
+                    "out-b",
+                    &["n1", "n2", "n4"],
+                    Some("n1"),
+                    &[Some(1), Some(0), Some(0)],
+                ),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    for (output, native) in [
+        ("out-a", "n3"),
+        ("out-b", "n4"),
+        ("out-a", "n2"),
+        ("out-b", "n2"),
+    ] {
+        assert!(
+            tombstone_row(&reply, output, native).is_none(),
+            "divergent hold: no {native} tombstone on {output}: {reply:?}"
+        );
+    }
+    assert_eq!(
+        ring_ids(&reply, "out-a").len(),
+        ring_ids(&reply, "out-b").len(),
+        "divergent hold keeps equal lengths without pruning: {reply:?}"
+    );
+}
+
+/// Migration insertion after the destination current survives creation
+/// settlement and re-observation: the moved row stays put while its fresh
+/// backing binds, with no duplicate mint.
+#[test]
+fn kde_shared_migration_survives_settlement() {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let boot = setup_kde_identical_divergence(&mut engine);
+    let moved = logical_for(&boot, "out-a", "n3").expect("out-a n3 bound");
+    let dest_current = boot
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-b")
+        .and_then(|row| row.logical_view.clone())
+        .expect("out-b current");
+    let migrate_report = report(
+        2,
+        2,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("n1")),
+            fact_native("win-b3", "out-b", Some("n3")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["n1", "n2", "n3", "n4"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["n1", "n2", "n3", "n4"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0)],
+            ),
+        ],
+        Some(1),
+        Some(WorldCommand::MigrateWorkspace {
+            source_output: tiler_core::directional::OutputId("out-a".to_owned()),
+            target_output: tiler_core::directional::OutputId("out-b".to_owned()),
+            workspace: moved.clone(),
+        }),
+        true,
+    );
+    let flight = accepted(&mut engine, &migrate_report);
+    let backing: Vec<_> = flight
+        .native_creations
+        .iter()
+        .filter(|desire| desire.logical_workspace == moved && desire.target_output.0 == "out-b")
+        .collect();
+    assert_eq!(
+        backing.len(),
+        1,
+        "migration mints one fresh backing: {flight:?}"
+    );
+    let op = backing[0].operation_id.clone();
+    let target_ring = ring_ids(&flight, "out-b");
+    let at = target_ring
+        .iter()
+        .position(|id| id == &moved)
+        .expect("moved lands");
+    let current_at = target_ring
+        .iter()
+        .position(|id| id == &dest_current)
+        .expect("current");
+    assert_eq!(
+        at,
+        current_at + 1,
+        "insertion immediately after current: {target_ring:?}"
+    );
+    // Host creates the backing desktop; both outputs observe it identically.
+    let mut settled = report(
+        3,
+        3,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("n1")),
+            fact_native("win-b3", "out-b", Some("n3")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["n1", "n2", "n3", "n4", "n5"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["n1", "n2", "n3", "n4", "n5"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0), Some(0)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    settled.creation_attempts = vec![creation_accepted(
+        &op,
+        &moved,
+        "out-b",
+        &["n1", "n2", "n3", "n4"],
+        &["n1", "n2", "n3", "n4", "n5"],
+        Some("n5"),
+    )];
+    let reply = accepted(&mut engine, &settled);
+    let ring = ring_ids(&reply, "out-b");
+    let at = ring
+        .iter()
+        .position(|id| id == &moved)
+        .expect("moved still ringed");
+    let current_at = ring
+        .iter()
+        .position(|id| id == &dest_current)
+        .expect("current");
+    assert_eq!(
+        at,
+        current_at + 1,
+        "migration insertion survives settlement: {ring:?} reply: {reply:?}"
+    );
+    assert_eq!(
+        logical_for(&reply, "out-b", "n5"),
+        Some(moved.clone()),
+        "backing binds the moved logical: {reply:?}"
+    );
+    assert!(
+        reply.native_creations.is_empty(),
+        "settled migration mints nothing further: {reply:?}"
+    );
+}
+
+/// Chained migration pins under the shared roster: two successive
+/// migrations to the same target settle in between, so the second pin
+/// anchors on the first moved row (view target becomes L1). Opaque
+/// logical ids sort arbitrarily, so the dependent pin (L2->L1) can sort
+/// before its anchor pin (L1->A). Dependency-oblivious BTreeMap replay
+/// then tails L2 before L1 lands, yielding [A,L1,D,L2] instead of the
+/// authoritative [A,L1,L2,..,D].
+#[test]
+fn kde_shared_migration_chained_anchor_reverse_lexical() {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let boot = setup_kde_identical_divergence(&mut engine);
+    let dest_current = boot
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-b")
+        .and_then(|row| row.logical_view.clone())
+        .expect("out-b current");
+    let trailing = logical_for(&boot, "out-b", "n3").expect("out-b n3 base");
+    let cand3 = logical_for(&boot, "out-a", "n3").expect("out-a n3 bound");
+    let cand4 = logical_for(&boot, "out-a", "n4").expect("out-a n4 bound");
+    // Force the reverse-lexical dependency regardless of opaque ids: the
+    // anchor (first moved) sorts after the dependent (second moved).
+    let (first, second) = if cand3 > cand4 {
+        (cand3, cand4)
+    } else {
+        (cand4, cand3)
+    };
+    assert!(
+        second < first,
+        "reverse lexical premise: {second} < {first}"
+    );
+    // First migration to out-b, then settle its fresh backing.
+    let flight1 = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            two_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("n1")),
+                fact_native("win-b3", "out-b", Some("n3")),
+            ],
+            vec![
+                native_obs_occ(
+                    "out-a",
+                    &["n1", "n2", "n3", "n4"],
+                    Some("n1"),
+                    &[Some(1), Some(0), Some(1), Some(0)],
+                ),
+                native_obs_occ(
+                    "out-b",
+                    &["n1", "n2", "n3", "n4"],
+                    Some("n1"),
+                    &[Some(1), Some(0), Some(1), Some(0)],
+                ),
+            ],
+            Some(1),
+            Some(WorldCommand::MigrateWorkspace {
+                source_output: OutputId("out-a".to_owned()),
+                target_output: OutputId("out-b".to_owned()),
+                workspace: first.clone(),
+            }),
+            true,
+        ),
+    );
+    let op1 = flight1
+        .native_creations
+        .iter()
+        .find(|desire| desire.logical_workspace == first && desire.target_output.0 == "out-b")
+        .expect("first migration mints backing")
+        .operation_id
+        .clone();
+    let mut settled1 = report(
+        3,
+        3,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("n1")),
+            fact_native("win-b3", "out-b", Some("n3")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["n1", "n2", "n3", "n4", "n5"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["n1", "n2", "n3", "n4", "n5"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0), Some(1)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    settled1.creation_attempts = vec![creation_accepted(
+        &op1,
+        &first,
+        "out-b",
+        &["n1", "n2", "n3", "n4"],
+        &["n1", "n2", "n3", "n4", "n5"],
+        Some("n5"),
+    )];
+    let reply1 = accepted(&mut engine, &settled1);
+    assert!(
+        reply1.native_creations.is_empty(),
+        "first settlement mints nothing: {reply1:?}"
+    );
+    let view1 = reply1
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-b")
+        .and_then(|row| row.logical_view.clone())
+        .expect("out-b view after first");
+    assert_eq!(view1, first, "view target becomes L1: {reply1:?}");
+    // Second migration anchors on the first moved row: the host current
+    // follows the migrated desktop on the target, so the staged echo (and
+    // thus the authoritative anchor) is L1.
+    let flight2 = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            two_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("n1")),
+                fact_native("win-b3", "out-b", Some("n3")),
+            ],
+            vec![
+                native_obs_occ(
+                    "out-a",
+                    &["n1", "n2", "n3", "n4", "n5"],
+                    Some("n1"),
+                    &[Some(1), Some(0), Some(1), Some(0), Some(0)],
+                ),
+                native_obs_occ(
+                    "out-b",
+                    &["n1", "n2", "n3", "n4", "n5"],
+                    Some("n5"),
+                    &[Some(1), Some(0), Some(1), Some(0), Some(1)],
+                ),
+            ],
+            Some(2),
+            Some(WorldCommand::MigrateWorkspace {
+                source_output: OutputId("out-a".to_owned()),
+                target_output: OutputId("out-b".to_owned()),
+                workspace: second.clone(),
+            }),
+            true,
+        ),
+    );
+    let op2 = flight2
+        .native_creations
+        .iter()
+        .find(|desire| desire.logical_workspace == second && desire.target_output.0 == "out-b")
+        .expect("second migration mints backing")
+        .operation_id
+        .clone();
+    let flight2_ring = ring_ids(&flight2, "out-b");
+    let flight2_l1 = flight2_ring
+        .iter()
+        .position(|id| id == &first)
+        .expect("L1 ringed in flight");
+    let flight2_l2 = flight2_ring
+        .iter()
+        .position(|id| id == &second)
+        .expect("L2 lands in flight");
+    assert_eq!(
+        flight2_l2,
+        flight2_l1 + 1,
+        "second migration lands after L1: {flight2_ring:?}"
+    );
+    let mut settled2 = report(
+        5,
+        5,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("n1")),
+            fact_native("win-b3", "out-b", Some("n3")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["n1", "n2", "n3", "n4", "n5", "n6"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0), Some(0), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["n1", "n2", "n3", "n4", "n5", "n6"],
+                Some("n1"),
+                &[Some(1), Some(0), Some(1), Some(0), Some(1), Some(0)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    settled2.creation_attempts = vec![creation_accepted(
+        &op2,
+        &second,
+        "out-b",
+        &["n1", "n2", "n3", "n4", "n5"],
+        &["n1", "n2", "n3", "n4", "n5", "n6"],
+        Some("n6"),
+    )];
+    let reply2 = accepted(&mut engine, &settled2);
+    let ring = ring_ids(&reply2, "out-b");
+    let at_a = ring
+        .iter()
+        .position(|id| id == &dest_current)
+        .unwrap_or_else(|| panic!("anchor A ringed: {ring:?} reply: {reply2:?}"));
+    let at_l1 = ring
+        .iter()
+        .position(|id| id == &first)
+        .unwrap_or_else(|| panic!("L1 ringed: {ring:?} reply: {reply2:?}"));
+    let at_l2 = ring
+        .iter()
+        .position(|id| id == &second)
+        .unwrap_or_else(|| panic!("L2 ringed: {ring:?} reply: {reply2:?}"));
+    let at_d = ring
+        .iter()
+        .position(|id| id == &trailing)
+        .unwrap_or_else(|| panic!("trailing D ringed: {ring:?} reply: {reply2:?}"));
+    assert_eq!(at_l1, at_a + 1, "L1 stays after anchor A: {ring:?}");
+    assert_eq!(
+        at_l2,
+        at_l1 + 1,
+        "L2 stays after current L1 (chained pin): {ring:?}"
+    );
+    assert!(
+        at_d > at_l2,
+        "unrelated base row stays after chained pins: {ring:?}"
+    );
+    assert!(
+        reply2.native_creations.is_empty(),
+        "settled chain mints nothing further: {reply2:?}"
+    );
+}
+
+/// Shared-roster output disconnect (ws-6 duplicate-spare regression):
+/// two outputs share one identical native roster; when one output
+/// disconnects, the removed output's memberless orphan logicals must not
+/// linger on the survivor as unbound rows and get backed as extra trailing
+/// spares. Only the member-carrying displaced unit rides onto the survivor
+/// and wants backing: the survivor keeps its own rows plus that unit, with
+/// at most its one creation.
+#[test]
+fn kde_shared_disconnect_drops_memberless_orphan_no_duplicate_spare() {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("d2")),
+                fact_native("win-b", "out-b", Some("d2")),
+            ],
+            vec![
+                native_obs_occ("out-a", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+                native_obs_occ("out-b", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert_eq!(
+        first.native_creations.len(),
+        1,
+        "one shared spare backing: {first:?}"
+    );
+    let desire = first.native_creations.first().expect("desire").clone();
+    let mut converged = report(
+        2,
+        2,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("d2")),
+            fact_native("win-b", "out-b", Some("d2")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    converged.creation_attempts = vec![creation_accepted(
+        &desire.operation_id,
+        &desire.logical_workspace,
+        &desire.target_output.0,
+        &["d1", "d2"],
+        &["d1", "d2", "d3"],
+        Some("d3"),
+    )];
+    let second = accepted(&mut engine, &converged);
+    assert!(
+        second.native_creations.is_empty(),
+        "converged shared roster mints nothing further: {second:?}"
+    );
+    assert_eq!(
+        ring_ids(&second, "out-a").len(),
+        3,
+        "survivor boot ring: {second:?}"
+    );
+    assert_eq!(
+        ring_ids(&second, "out-b").len(),
+        3,
+        "removed boot ring: {second:?}"
+    );
+    // Disconnect out-b: both members rehome to the survivor output while
+    // native membership stays put.
+    let stale_b1 = logical_for(&second, "out-b", "d1").expect("B1 bound d1");
+    let stale_b2 = logical_for(&second, "out-b", "d2").expect("B2 bound d2");
+    let stale_b3 = logical_for(&second, "out-b", "d3").expect("B3 bound d3");
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![
+                fact_native("win-a", "out-a", Some("d2")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(2), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    let ring = ring_ids(&third, "out-a");
+    assert!(
+        !ring.iter().any(|id| id == &stale_b1),
+        "memberless non-trailing orphan drops instead of lingering: {third:?}"
+    );
+    assert!(
+        ring.iter().any(|id| id == &stale_b2),
+        "member-carrying unit rides onto the survivor: {third:?}"
+    );
+    assert!(
+        !ring.iter().any(|id| id == &stale_b3),
+        "redundant same-native trailing orphan drops instead of duplicating the survivor spare: {third:?}"
+    );
+    assert!(
+        tombstone_id(&third, "out-a", "d3").is_some(),
+        "retired spare native publishes its absence: {third:?}"
+    );
+    assert!(
+        third
+            .native_creations
+            .iter()
+            .all(|desire| desire.logical_workspace != stale_b1),
+        "no duplicate spare backing for the dropped orphan: {third:?}"
+    );
+    assert!(
+        third.native_creations.len() <= 2,
+        "at most the member unit plus the trailing spare want backing: {third:?}"
+    );
+}
+
+/// Shared-roster boot plus convergence for three outputs: identical
+/// `[d1, d2]` with one occupant each, then one coordinated `d3` backing.
+/// Returns the engine and the converged reply.
+fn shared_three_boot_converged() -> (WorldEngine, tiler_core::world_report::WorldReplyV4) {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            three_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("d2")),
+                fact_native("win-b", "out-b", Some("d2")),
+                fact_native("win-c", "out-c", Some("d2")),
+            ],
+            vec![
+                native_obs_occ("out-a", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+                native_obs_occ("out-b", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+                native_obs_occ("out-c", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert_eq!(
+        first.native_creations.len(),
+        1,
+        "one shared backing: {first:?}"
+    );
+    let desire = first.native_creations.first().expect("desire").clone();
+    let mut converged = report(
+        2,
+        2,
+        three_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("d2")),
+            fact_native("win-b", "out-b", Some("d2")),
+            fact_native("win-c", "out-c", Some("d2")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+            native_obs_occ(
+                "out-c",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    converged.creation_attempts = vec![creation_accepted(
+        &desire.operation_id,
+        &desire.logical_workspace,
+        &desire.target_output.0,
+        &["d1", "d2"],
+        &["d1", "d2", "d3"],
+        Some("d3"),
+    )];
+    let second = accepted(&mut engine, &converged);
+    assert!(
+        second.native_creations.is_empty(),
+        "converged shared roster mints nothing further: {second:?}"
+    );
+    (engine, second)
+}
+
+/// Shared-roster disconnect with a retained migration refill naming the
+/// memberless non-trailing orphan: migrating B2 away leaves B1 (the source
+/// current) as the refill, so the row must ride onto the survivor even
+/// though its native reads empty. Dropping it would strand the retained
+/// migration's refill on a removed output.
+#[test]
+fn kde_shared_disconnect_retained_refill_orphan_survives() {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("d2")),
+                fact_native("win-b", "out-b", Some("d2")),
+            ],
+            vec![
+                native_obs_occ("out-a", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+                native_obs_occ("out-b", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert_eq!(
+        first.native_creations.len(),
+        1,
+        "one shared spare backing: {first:?}"
+    );
+    let desire = first.native_creations.first().expect("desire").clone();
+    let mut converged = report(
+        2,
+        2,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("d2")),
+            fact_native("win-b", "out-b", Some("d2")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    converged.creation_attempts = vec![creation_accepted(
+        &desire.operation_id,
+        &desire.logical_workspace,
+        &desire.target_output.0,
+        &["d1", "d2"],
+        &["d1", "d2", "d3"],
+        Some("d3"),
+    )];
+    let second = accepted(&mut engine, &converged);
+    assert!(
+        second.native_creations.is_empty(),
+        "converged shared roster mints nothing further: {second:?}"
+    );
+    let stale_b1 = logical_for(&second, "out-b", "d1").expect("B1 bound d1");
+    let moved_b2 = logical_for(&second, "out-b", "d2").expect("B2 bound d2");
+    // Refill-pin the orphan: migrating B2 away leaves B1 (the source
+    // current) as the migration refill, and win-b stays observed on
+    // out-b/d2, so the flight never proves arrival.
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            two_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("d2")),
+                fact_native("win-b", "out-b", Some("d2")),
+            ],
+            vec![
+                native_obs_occ(
+                    "out-a",
+                    &["d1", "d2", "d3"],
+                    Some("d1"),
+                    &[Some(0), Some(1), Some(0)],
+                ),
+                native_obs_occ(
+                    "out-b",
+                    &["d1", "d2", "d3"],
+                    Some("d1"),
+                    &[Some(0), Some(1), Some(0)],
+                ),
+            ],
+            Some(1),
+            Some(WorldCommand::MigrateWorkspace {
+                source_output: OutputId("out-b".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                workspace: moved_b2.clone(),
+            }),
+            true,
+        ),
+    );
+    assert!(
+        ring_ids(&third, "out-b").iter().any(|id| id == &stale_b1),
+        "migration refill still ringed pre-disconnect: {third:?}"
+    );
+    assert!(
+        third.transfers.iter().any(|flight| {
+            flight.target_output.0 == "out-a" && flight.target_workspace == moved_b2
+        }),
+        "migration flight retained pre-disconnect: {third:?}"
+    );
+    // Disconnect out-b with the orphan's native provably empty: only the
+    // retained migration refill keeps it alive.
+    let fourth = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![screen("out-a", 0)],
+            vec![
+                fact_native("win-a", "out-a", Some("d2")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(2), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert!(
+        ring_ids(&fourth, "out-a").iter().any(|id| id == &stale_b1),
+        "retained-refill orphan rides onto the survivor: {fourth:?}"
+    );
+}
+
+/// Shared-roster disconnect with an occupied orphan native: win-c sits on
+/// the survivor's copy of the desktop, so the removed output's memberless
+/// alias must ride instead of dropping as presumed-empty padding.
+#[test]
+fn kde_shared_disconnect_occupied_orphan_native_survives() {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("d2")),
+                fact_native("win-b", "out-b", Some("d2")),
+                fact_native("win-c", "out-a", Some("d1")),
+            ],
+            vec![
+                native_obs_occ("out-a", &["d1", "d2"], Some("d1"), &[Some(1), Some(1)]),
+                native_obs_occ("out-b", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert_eq!(
+        first.native_creations.len(),
+        1,
+        "one shared spare backing: {first:?}"
+    );
+    let desire = first.native_creations.first().expect("desire").clone();
+    let mut converged = report(
+        2,
+        2,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("d2")),
+            fact_native("win-b", "out-b", Some("d2")),
+            fact_native("win-c", "out-a", Some("d1")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(1), Some(1), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    converged.creation_attempts = vec![creation_accepted(
+        &desire.operation_id,
+        &desire.logical_workspace,
+        &desire.target_output.0,
+        &["d1", "d2"],
+        &["d1", "d2", "d3"],
+        Some("d3"),
+    )];
+    let second = accepted(&mut engine, &converged);
+    assert!(
+        second.native_creations.is_empty(),
+        "converged shared roster mints nothing further: {second:?}"
+    );
+    let stale_b1 = logical_for(&second, "out-b", "d1").expect("B1 bound d1");
+    // Disconnect out-b: d1 reads occupied on the survivor, so the
+    // memberless alias rides instead of dropping.
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![
+                fact_native("win-a", "out-a", Some("d2")),
+                fact_native("win-b", "out-a", Some("d2")),
+                fact_native("win-c", "out-a", Some("d1")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(1), Some(2), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert!(
+        ring_ids(&third, "out-a").iter().any(|id| id == &stale_b1),
+        "occupied-native orphan rides onto the survivor: {third:?}"
+    );
+}
+
+/// Shared-roster chained disconnect: out-c's units are hosted on out-b,
+/// then out-b disconnects. The memberless hosted guest C2 must ride onto
+/// out-a via its prior displaced record instead of dropping as a
+/// memberless non-trailing row.
+#[test]
+fn kde_shared_chained_disconnect_hosted_guest_survives() {
+    let (mut engine, second) = shared_three_boot_converged();
+    let guest_c2 = logical_for(&second, "out-c", "d2").expect("C2 bound d2");
+    let member_b2 = logical_for(&second, "out-b", "d2").expect("B2 bound d2");
+    // Disconnect out-c: the nearest survivor out-b hosts C2/C3.
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen("out-a", 0), screen("out-b", 800)],
+            vec![
+                fact_native("win-a", "out-a", Some("d2")),
+                fact_native("win-b", "out-b", Some("d2")),
+                fact_native("win-c", "out-b", Some("d2")),
+            ],
+            vec![
+                native_obs_occ(
+                    "out-a",
+                    &["d1", "d2", "d3"],
+                    Some("d1"),
+                    &[Some(0), Some(1), Some(0)],
+                ),
+                native_obs_occ(
+                    "out-b",
+                    &["d1", "d2", "d3"],
+                    Some("d1"),
+                    &[Some(0), Some(2), Some(0)],
+                ),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert!(
+        ring_ids(&third, "out-b").iter().any(|id| id == &guest_c2),
+        "hosted guest lands on out-b: {third:?}"
+    );
+    // Disconnect the host out-b: the memberless guest must ride on.
+    // win-c closes alongside (its d2 unit B2 keeps win-b): C2's prior
+    // displaced record is what must carry it, not membership.
+    let mut last = report(
+        4,
+        4,
+        vec![screen("out-a", 0)],
+        vec![
+            fact_native("win-a", "out-a", Some("d2")),
+            fact_native("win-b", "out-a", Some("d2")),
+        ],
+        vec![native_obs_occ(
+            "out-a",
+            &["d1", "d2", "d3"],
+            Some("d1"),
+            &[Some(0), Some(2), Some(0)],
+        )],
+        None,
+        None,
+        true,
+    );
+    last.closed = vec![WindowId("win-c".to_owned())];
+    let fourth = accepted(&mut engine, &last);
+    let ring = ring_ids(&fourth, "out-a");
+    assert!(
+        ring.iter().any(|id| id == &guest_c2),
+        "memberless hosted guest survives chained disconnect: {fourth:?}"
+    );
+    assert!(
+        ring.iter().any(|id| id == &member_b2),
+        "host member unit rides too: {fourth:?}"
+    );
+}
+
+/// Shared-roster dropped orphan cleans its native binding: when the same
+/// panel name returns without a physical identity match, the native
+/// re-adopts under a fresh logical id instead of resurrecting the stale
+/// dropped row.
+#[test]
+fn kde_shared_disconnect_dropped_orphan_return_mints_fresh_no_resurrection() {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("d2")),
+                fact_native("win-b", "out-b", Some("d2")),
+            ],
+            vec![
+                native_obs_occ("out-a", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+                native_obs_occ("out-b", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert_eq!(
+        first.native_creations.len(),
+        1,
+        "one shared spare backing: {first:?}"
+    );
+    let desire = first.native_creations.first().expect("desire").clone();
+    let mut converged = report(
+        2,
+        2,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("d2")),
+            fact_native("win-b", "out-b", Some("d2")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    converged.creation_attempts = vec![creation_accepted(
+        &desire.operation_id,
+        &desire.logical_workspace,
+        &desire.target_output.0,
+        &["d1", "d2"],
+        &["d1", "d2", "d3"],
+        Some("d3"),
+    )];
+    let second = accepted(&mut engine, &converged);
+    assert!(
+        second.native_creations.is_empty(),
+        "converged shared roster mints nothing further: {second:?}"
+    );
+    let stale_b1 = logical_for(&second, "out-b", "d1").expect("B1 bound d1");
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![
+                fact_native("win-a", "out-a", Some("d2")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(2), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert!(
+        !ring_ids(&third, "out-a").iter().any(|id| id == &stale_b1),
+        "ordinary padding drops at disconnect: {third:?}"
+    );
+    // Same-name return with unknown identities: no physical match, so the
+    // native must adopt fresh rather than resurrect the dropped row.
+    let fourth = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            two_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("d2")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![
+                native_obs_occ(
+                    "out-a",
+                    &["d1", "d2", "d3"],
+                    Some("d1"),
+                    &[Some(0), Some(2), Some(0)],
+                ),
+                native_obs_occ(
+                    "out-b",
+                    &["d1", "d2", "d3"],
+                    Some("d1"),
+                    &[Some(0), Some(0), Some(0)],
+                ),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    let ring_b = ring_ids(&fourth, "out-b");
+    assert!(
+        !ring_b.iter().any(|id| id == &stale_b1),
+        "no stale logical resurrection on return: {fourth:?}"
+    );
+    assert!(
+        !ring_ids(&fourth, "out-a").iter().any(|id| id == &stale_b1),
+        "stale row stays gone on the survivor: {fourth:?}"
+    );
+    let fresh_b1 = logical_for(&fourth, "out-b", "d1").expect("fresh d1 binding");
+    assert_ne!(
+        fresh_b1, stale_b1,
+        "same-name return adopts fresh: {fourth:?}"
+    );
+}
+
+/// Shared-roster disconnect with an incomplete survivor screen: unknown
+/// evidence fails closed, so the memberless orphan rides instead of
+/// dropping.
+#[test]
+fn kde_shared_disconnect_incomplete_survivor_holds_orphan() {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("d2")),
+                fact_native("win-b", "out-b", Some("d2")),
+            ],
+            vec![
+                native_obs_occ("out-a", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+                native_obs_occ("out-b", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert_eq!(
+        first.native_creations.len(),
+        1,
+        "one shared spare backing: {first:?}"
+    );
+    let desire = first.native_creations.first().expect("desire").clone();
+    let mut converged = report(
+        2,
+        2,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("d2")),
+            fact_native("win-b", "out-b", Some("d2")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    converged.creation_attempts = vec![creation_accepted(
+        &desire.operation_id,
+        &desire.logical_workspace,
+        &desire.target_output.0,
+        &["d1", "d2"],
+        &["d1", "d2", "d3"],
+        Some("d3"),
+    )];
+    let second = accepted(&mut engine, &converged);
+    assert!(
+        second.native_creations.is_empty(),
+        "converged shared roster mints nothing further: {second:?}"
+    );
+    let stale_b1 = logical_for(&second, "out-b", "d1").expect("B1 bound d1");
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![incomplete_screen("out-a", 0)],
+            vec![
+                fact_native("win-a", "out-a", Some("d2")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3"],
+                Some("d1"),
+                &[Some(0), Some(2), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert!(
+        ring_ids(&third, "out-a").iter().any(|id| id == &stale_b1),
+        "incomplete survivor evidence holds the orphan: {third:?}"
+    );
+}
+
+/// Shared-roster disconnect with divergent survivor readbacks: without one
+/// identical roster the orphan drop holds, so the memberless row rides.
+#[test]
+fn kde_shared_disconnect_divergent_survivors_hold_orphan() {
+    let (mut engine, second) = shared_three_boot_converged();
+    let stale_c1 = logical_for(&second, "out-c", "d1").expect("C1 bound d1");
+    // Disconnect out-c while out-a and out-b report different native
+    // orders: no identical roster, no orphan drop.
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen("out-a", 0), screen("out-b", 800)],
+            vec![
+                fact_native("win-a", "out-a", Some("d2")),
+                fact_native("win-b", "out-b", Some("d2")),
+                fact_native("win-c", "out-b", Some("d2")),
+            ],
+            vec![
+                native_obs_occ(
+                    "out-a",
+                    &["d1", "d2", "d3"],
+                    Some("d1"),
+                    &[Some(0), Some(1), Some(0)],
+                ),
+                native_obs_occ(
+                    "out-b",
+                    &["d3", "d2", "d1"],
+                    Some("d3"),
+                    &[Some(0), Some(2), Some(0)],
+                ),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    let hosted: Vec<String> = ring_ids(&third, "out-a")
+        .into_iter()
+        .chain(ring_ids(&third, "out-b"))
+        .collect();
+    assert!(
+        hosted.iter().any(|id| id == &stale_c1),
+        "divergent survivors hold the orphan: {third:?}"
+    );
+}
+
+/// Core-level replication of the genuine-producer two-native disconnect
+/// journey (`world-producer-disconnect`, first test): two shared natives
+/// `ws1`/`ws2`, two windows per output, spare converge, then disconnect.
+/// The removed output's `ws1` row is a memberless occupied alias of the
+/// survivor's viewed desktop.
+#[test]
+fn kde_shared_disconnect_two_native_occupied_alias_journey() {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("ws1")),
+                fact_native("win-b", "out-a", Some("ws1")),
+                fact_native("win-c", "out-b", Some("ws2")),
+                fact_native("win-d", "out-b", Some("ws2")),
+            ],
+            vec![
+                native_obs_occ("out-a", &["ws1", "ws2"], Some("ws1"), &[Some(2), Some(0)]),
+                native_obs_occ("out-b", &["ws1", "ws2"], Some("ws2"), &[Some(0), Some(2)]),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert_eq!(
+        first.native_creations.len(),
+        1,
+        "one shared spare backing: {first:?}"
+    );
+    let desire = first.native_creations.first().expect("desire").clone();
+    let mut converged = report(
+        2,
+        2,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("ws1")),
+            fact_native("win-b", "out-a", Some("ws1")),
+            fact_native("win-c", "out-b", Some("ws2")),
+            fact_native("win-d", "out-b", Some("ws2")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["ws1", "ws2", "ws-3"],
+                Some("ws1"),
+                &[Some(2), Some(0), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["ws1", "ws2", "ws-3"],
+                Some("ws2"),
+                &[Some(0), Some(2), Some(0)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    converged.creation_attempts = vec![creation_accepted(
+        &desire.operation_id,
+        &desire.logical_workspace,
+        &desire.target_output.0,
+        &["ws1", "ws2"],
+        &["ws1", "ws2", "ws-3"],
+        Some("ws-3"),
+    )];
+    let second = accepted(&mut engine, &converged);
+    assert!(
+        second.native_creations.is_empty(),
+        "converged shared roster mints nothing further: {second:?}"
+    );
+    let alias = logical_for(&second, "out-b", "ws1").expect("alias bound ws1");
+    let member = logical_for(&second, "out-b", "ws2").expect("member bound ws2");
+    // Disconnect out-b: members rehome, alias fate decided by guards.
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![
+                fact_native("win-a", "out-a", Some("ws1")),
+                fact_native("win-b", "out-a", Some("ws1")),
+                fact_native("win-c", "out-a", Some("ws2")),
+                fact_native("win-d", "out-a", Some("ws2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["ws1", "ws2", "ws-3"],
+                Some("ws1"),
+                &[Some(2), Some(2), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    let ring = ring_ids(&third, "out-a");
+    assert!(
+        ring.iter().any(|id| id == &member),
+        "member unit rides: {third:?}"
+    );
+    assert!(
+        ring.iter().any(|id| id == &alias),
+        "occupied alias rides: {third:?}"
+    );
+    let backed: Vec<String> = third
+        .native_creations
+        .iter()
+        .map(|desire| desire.logical_workspace.clone())
+        .collect();
+    assert!(
+        !backed.iter().any(|id| id == &alias),
+        "occupied alias wants no duplicate backing: {third:?} backed={backed:?}"
+    );
+    // Settle the member backing plus the eager spare, then re-observe:
+    // the lingering unbound alias must never mint a follow-up backing.
+    let mut settled = report(
+        4,
+        4,
+        vec![screen("out-a", 0)],
+        vec![
+            fact_native("win-a", "out-a", Some("ws1")),
+            fact_native("win-b", "out-a", Some("ws1")),
+            fact_native("win-c", "out-a", Some("ws2")),
+            fact_native("win-d", "out-a", Some("ws2")),
+        ],
+        vec![native_obs_occ(
+            "out-a",
+            &["ws1", "ws2", "ws-3", "ws-4", "ws-5"],
+            Some("ws1"),
+            &[Some(2), Some(2), Some(0), Some(0), Some(0)],
+        )],
+        None,
+        None,
+        true,
+    );
+    settled.creation_attempts = third
+        .native_creations
+        .iter()
+        .map(|desire| {
+            creation_accepted(
+                &desire.operation_id,
+                &desire.logical_workspace,
+                &desire.target_output.0,
+                &["ws1", "ws2", "ws-3"],
+                &["ws1", "ws2", "ws-3", "ws-4", "ws-5"],
+                None,
+            )
+        })
+        .collect();
+    let fourth = accepted(&mut engine, &settled);
+    let fifth = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            vec![screen("out-a", 0)],
+            vec![
+                fact_native("win-a", "out-a", Some("ws1")),
+                fact_native("win-b", "out-a", Some("ws1")),
+                fact_native("win-c", "out-a", Some("ws2")),
+                fact_native("win-d", "out-a", Some("ws2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["ws1", "ws2", "ws-3", "ws-4", "ws-5"],
+                Some("ws1"),
+                &[Some(2), Some(2), Some(0), Some(0), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert!(
+        fifth.native_creations.is_empty(),
+        "settled alias mints no follow-up backing: {fifth:?}"
+    );
+    assert!(
+        ring_ids(&fifth, "out-a").iter().any(|id| id == &alias),
+        "settled alias still ringed: {fifth:?}"
+    );
+}
+
+/// Independent rosters keep the legacy adopt-everything disconnect path:
+/// the removed output's memberless rows ride onto the survivor untouched.
+#[test]
+fn kde_disconnect_independent_roster_adopts_everything_unchanged() {
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, true);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("d2")),
+                fact_native("win-b", "out-b", Some("d2")),
+            ],
+            vec![
+                native_obs_occ("out-a", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+                native_obs_occ("out-b", &["d1", "d2"], Some("d1"), &[Some(0), Some(1)]),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    let stale_b1 = logical_for(&first, "out-b", "d1").expect("B1 bound d1");
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![
+                fact_native("win-a", "out-a", Some("d2")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2"],
+                Some("d1"),
+                &[Some(0), Some(2)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert!(
+        ring_ids(&second, "out-a").iter().any(|id| id == &stale_b1),
+        "independent path still adopts everything: {second:?}"
+    );
+}
+
+/// Serial-receipt regression for the genuine-producer disconnect journey:
+/// the adapter applies creation receipts one native at a time
+/// (`3->4`, then `4->5`). The removed output's trailing-spare orphan
+/// (same native `ws-3` as the survivor's own spare) must not become the
+/// live ring tail at the `ws-4`-only intermediate and mint an extra
+/// backing desire (the `ws-6` duplicate). One receipt per report.
+#[test]
+fn kde_shared_disconnect_serial_receipts_no_duplicate_spare() {
+    let mut engine = engine_host_owned_with_shared(WorkspaceMode::PerOutputLocal, true, true);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("ws1")),
+                fact_native("win-b", "out-a", Some("ws1")),
+                fact_native("win-c", "out-b", Some("ws2")),
+                fact_native("win-d", "out-b", Some("ws2")),
+            ],
+            vec![
+                native_obs_occ("out-a", &["ws1", "ws2"], Some("ws1"), &[Some(2), Some(0)]),
+                native_obs_occ("out-b", &["ws1", "ws2"], Some("ws2"), &[Some(0), Some(2)]),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert_eq!(
+        first.native_creations.len(),
+        1,
+        "one shared spare backing: {first:?}"
+    );
+    let desire = first.native_creations.first().expect("desire").clone();
+    let mut converged = report(
+        2,
+        2,
+        two_screens(),
+        vec![
+            fact_native("win-a", "out-a", Some("ws1")),
+            fact_native("win-b", "out-a", Some("ws1")),
+            fact_native("win-c", "out-b", Some("ws2")),
+            fact_native("win-d", "out-b", Some("ws2")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["ws1", "ws2", "ws-3"],
+                Some("ws1"),
+                &[Some(2), Some(0), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["ws1", "ws2", "ws-3"],
+                Some("ws2"),
+                &[Some(0), Some(2), Some(0)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    converged.creation_attempts = vec![creation_accepted(
+        &desire.operation_id,
+        &desire.logical_workspace,
+        &desire.target_output.0,
+        &["ws1", "ws2"],
+        &["ws1", "ws2", "ws-3"],
+        Some("ws-3"),
+    )];
+    let second = accepted(&mut engine, &converged);
+    assert!(
+        second.native_creations.is_empty(),
+        "converged shared roster mints nothing further: {second:?}"
+    );
+    let survivor_spare = logical_for(&second, "out-a", "ws-3").expect("survivor spare bound ws-3");
+    let orphan_spare = logical_for(&second, "out-b", "ws-3").expect("orphan spare bound ws-3");
+    assert_ne!(
+        survivor_spare, orphan_spare,
+        "pre-disconnect spares are distinct logicals on one native: {second:?}"
+    );
+    let member = logical_for(&second, "out-b", "ws2").expect("member bound ws2");
+    // Disconnect out-b: members rehome, orphan-spare fate decided by guards.
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![
+                fact_native("win-a", "out-a", Some("ws1")),
+                fact_native("win-b", "out-a", Some("ws1")),
+                fact_native("win-c", "out-a", Some("ws2")),
+                fact_native("win-d", "out-a", Some("ws2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["ws1", "ws2", "ws-3"],
+                Some("ws1"),
+                &[Some(2), Some(2), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    let ring3 = ring_ids(&third, "out-a");
+    assert!(
+        ring3.iter().any(|id| id == &member),
+        "member unit rides: {third:?}"
+    );
+    assert!(
+        !ring3.iter().any(|id| id == &orphan_spare),
+        "redundant same-native orphan spare drops instead of lingering: {third:?}"
+    );
+    assert_eq!(
+        tombstone_id(&third, "out-a", "ws-3"),
+        Some(survivor_spare.clone()),
+        "survivor spare retires as the globally empty mid-row: {third:?}"
+    );
+    let backed3: Vec<String> = third
+        .native_creations
+        .iter()
+        .map(|desire| desire.logical_workspace.clone())
+        .collect();
+    assert!(
+        !backed3.iter().any(|id| id == &orphan_spare),
+        "dropped orphan wants no backing: {third:?} backed={backed3:?}"
+    );
+    assert_eq!(
+        third.native_creations.len(),
+        1,
+        "only the member unit wants backing at disconnect: {third:?}"
+    );
+    assert_eq!(
+        third.native_creations[0].logical_workspace, member,
+        "the disconnect desire backs the member unit: {third:?}"
+    );
+    // Serial intermediate: only the first creation (displaced backing
+    // `ws-4`) has arrived; the eager spare `ws-5` is still pending.
+    let member_desire = third
+        .native_creations
+        .iter()
+        .find(|desire| desire.logical_workspace == member)
+        .unwrap_or_else(|| panic!("member backing desired: {third:?}"))
+        .clone();
+    let mut intermediate = report(
+        4,
+        4,
+        vec![screen("out-a", 0)],
+        vec![
+            fact_native("win-a", "out-a", Some("ws1")),
+            fact_native("win-b", "out-a", Some("ws1")),
+            fact_native("win-c", "out-a", Some("ws2")),
+            fact_native("win-d", "out-a", Some("ws2")),
+        ],
+        vec![native_obs_occ(
+            "out-a",
+            &["ws1", "ws2", "ws-3", "ws-4"],
+            Some("ws1"),
+            &[Some(2), Some(2), Some(0), Some(0)],
+        )],
+        None,
+        None,
+        true,
+    );
+    intermediate.creation_attempts = vec![creation_accepted(
+        &member_desire.operation_id,
+        &member_desire.logical_workspace,
+        &member_desire.target_output.0,
+        &["ws1", "ws2", "ws-3"],
+        &["ws1", "ws2", "ws-3", "ws-4"],
+        Some("ws-4"),
+    )];
+    let fourth = accepted(&mut engine, &intermediate);
+    let ring4 = ring_ids(&fourth, "out-a");
+    assert!(
+        ring4.iter().any(|id| id == &member),
+        "member stays ringed at the serial intermediate: {fourth:?}"
+    );
+    assert!(
+        !ring4.iter().any(|id| id == &orphan_spare),
+        "dropped orphan stays gone at the serial intermediate: {fourth:?}"
+    );
+    let backed4: Vec<String> = fourth
+        .native_creations
+        .iter()
+        .map(|desire| desire.logical_workspace.clone())
+        .collect();
+    assert!(
+        !backed4.iter().any(|id| id == &orphan_spare),
+        "serial intermediate backs no orphan spare: {fourth:?} backed={backed4:?}"
+    );
+    assert_eq!(
+        fourth.native_creations.len(),
+        1,
+        "serial intermediate wants only the fresh trailing spare: {fourth:?}"
+    );
+    assert_eq!(
+        logical_for(&fourth, "out-a", "ws-4"),
+        Some(member.clone()),
+        "member binds its serial backing without moving occupants: {fourth:?}"
+    );
+    // Final convergence: `ws-5` arrives for the remaining spare desire;
+    // the orphan spare must never mint a follow-up backing.
+    let mut settled = report(
+        5,
+        5,
+        vec![screen("out-a", 0)],
+        vec![
+            fact_native("win-a", "out-a", Some("ws1")),
+            fact_native("win-b", "out-a", Some("ws1")),
+            fact_native("win-c", "out-a", Some("ws2")),
+            fact_native("win-d", "out-a", Some("ws2")),
+        ],
+        vec![native_obs_occ(
+            "out-a",
+            &["ws1", "ws2", "ws-3", "ws-4", "ws-5"],
+            Some("ws1"),
+            &[Some(2), Some(2), Some(0), Some(0), Some(0)],
+        )],
+        None,
+        None,
+        true,
+    );
+    settled.creation_attempts = fourth
+        .native_creations
+        .iter()
+        .map(|desire| {
+            creation_accepted(
+                &desire.operation_id,
+                &desire.logical_workspace,
+                &desire.target_output.0,
+                &["ws1", "ws2", "ws-3"],
+                &["ws1", "ws2", "ws-3", "ws-4", "ws-5"],
+                Some("ws-5"),
+            )
+        })
+        .collect();
+    let fifth = accepted(&mut engine, &settled);
+    let backed5: Vec<String> = fifth
+        .native_creations
+        .iter()
+        .map(|desire| desire.logical_workspace.clone())
+        .collect();
+    assert!(
+        !backed5.iter().any(|id| id == &orphan_spare),
+        "settled orphan spare mints no follow-up backing: {fifth:?}"
+    );
+    assert!(
+        fifth.native_creations.is_empty(),
+        "settled serial journey quiesces: {fifth:?}"
+    );
+    assert_eq!(
+        logical_for(&fifth, "out-a", "ws-4"),
+        Some(member.clone()),
+        "member keeps its serial backing at quiescence: {fifth:?}"
+    );
+    assert_eq!(
+        logical_for(&fifth, "out-a", "ws-5"),
+        fourth
+            .native_creations
+            .first()
+            .map(|desire| desire.logical_workspace.clone()),
+        "fresh spare binds its serial backing at quiescence: {fifth:?}"
+    );
 }

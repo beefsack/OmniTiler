@@ -19,6 +19,14 @@ New reference-WM findings use latest stable release tags and inline source-versi
 labels under the [reference source policy](../decisions/reference-and-shortcuts.md#reference-outcome-authority).
 Existing citation keys retain historical pins until relied on again; KDE policy is unchanged.
 
+### Shared native roster lifecycle
+
+| Minimal action sequence | Selected outcome | Unproven outcome |
+| --- | --- | --- |
+| Declare a shared native roster on A/B, observe natives 1..4 with A occupying 1 and B occupying 3, then send A's window to B and re-observe | User 2026-11-11: choose retirement/padding by native identity, retaining the same surviving native set on both rings. Globally empty/unshown 2 retires jointly; occupied/shown 1/3 and the trailing spare remain represented. No occupant moves for compaction; ordinary navigation uses the logical ring | Native replay of this correction and exact reference-WM counterparts remain TBD; [decision](../decisions/workspaces.md#dynamic-workspace-lifecycle-and-kde-pager-backing) |
+| Fill the final backed spare on outputs sharing one native roster; deliver one creation, repeat unchanged and staggered readbacks; separately migrate a workspace after destination current | One native creation covers the pure-spare need without a create/create/remove cycle. Migration still needs fresh backing and preserves after-current insertion, including after settlement; it does not replace an aligned cell | Native creation/readback delivery and reference counterparts TBD; independent native rosters retain their own backing needs |
+| Disconnect B from shared-roster A/B with one backed trailing spare per output; deliver displaced backing and the next spare as separate 3 -> 4 -> 5 native readbacks | A redundant unprotected known-empty same-native tail does not ride onto A and later acquire duplicate backing. Displaced members retain their separate unit; retained/held/hosted rows and unknown or divergent evidence prevent orphan removal. Core serial regression and genuine producer disconnect journey pass | Live disconnect/return and exact reference-WM counterparts remain TBD |
+
 ### Pager order before window facts
 
 | Minimal action sequence | Selected outcome / implementation evidence | Unproven native/reference outcome |

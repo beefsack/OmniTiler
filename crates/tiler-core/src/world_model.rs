@@ -318,6 +318,34 @@ impl WorldEngine {
                 let plan = plan_trailing(&facts);
                 plans.insert(output.clone(), (ring, plan));
             }
+            // Shared identical roster: prune one GLOBAL native set on every
+            // output (identity-based, not count-based). Intersect the local
+            // ordinary-empty plan with the globally eligible natives so a
+            // globally occupied/shown/protected native stays everywhere and
+            // all outputs choose the same removal identities with equal
+            // lengths. Any shared-active state without one computable
+            // global set (divergent split async, partial, or different
+            // orders, or otherwise unresolved coverage) holds all pruning
+            // instead of falling back to independent per-output identity
+            // removal. No window moves to compact.
+            if let Some(global) = self.shared_global_prunable_natives() {
+                for (output, (ring, plan)) in plans.iter_mut() {
+                    let global_here: BTreeSet<usize> = ring
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, id)| {
+                            self.native_binding_for(output, id)
+                                .is_some_and(|native| global.contains(&native))
+                        })
+                        .map(|(index, _)| index)
+                        .collect();
+                    plan.remove.retain(|index| global_here.contains(index));
+                }
+            } else if self.shared_roster_active() {
+                for (_, plan) in plans.values_mut() {
+                    plan.remove.clear();
+                }
+            }
             if self.host_owned_workspace_domains() && self.equal_workspace_count() {
                 // Partial native retirement readback must not replace an old
                 // logical identity with freshly minted equal-count padding.
@@ -839,6 +867,57 @@ impl WorldEngine {
                         if !candidates.iter().any(|kept| kept == id) {
                             candidates.push(id.clone());
                         }
+                    }
+                }
+                // Shared native roster: memberless non-trailing rows drop
+                // only as proven redundant empty padding (ws-6). They
+                // would otherwise arrive unbound (bindings key the live
+                // output), escape both pruners (which require bindings),
+                // linger mid-ring, and get backed as duplicate trailing
+                // spares once pruning ahead of them settles. The removed
+                // ring's trailing row rides along too unless it is itself
+                // proven redundant: same-native alias of a live survivor
+                // row, known-empty, unprotected. A redundant tail would
+                // otherwise push the survivor's own spare mid-ring, retire
+                // it, then inherit the live tail and mint the duplicate
+                // backing the serial receipts expose. The drop
+                // needs the identical-roster gate (divergent, partial,
+                // incomplete, or held evidence holds everything) plus
+                // per-row proof: retained target/source/refill, retained
+                // creation, pending source release, displaced
+                // hosting/affinity, creation hold, live views, member
+                // homing, and occupied/unknown natives all keep the row;
+                // only a bound, survivor-aliased, known-empty ordinary
+                // row drops. Dropped rows also leave the displaced record
+                // (return never reclaims them) and lose only their own
+                // origin native pair, so a same-name return adopts fresh
+                // instead of resurrecting the stale logical. Independent
+                // rosters keep the legacy adopt-everything path untouched.
+                if self.shared_native_roster() && self.shared_disconnect_prune_ready() {
+                    let pre: Vec<String> = candidates.clone();
+                    candidates.retain(|id| {
+                        if self.members.values().any(|state| {
+                            state.home.output.0 == origin && state.home.workspace.0 == *id
+                        }) {
+                            return true;
+                        }
+                        if self
+                            .staged
+                            .homing
+                            .values()
+                            .any(|key| key.output.0 == origin && key.workspace.0 == *id)
+                        {
+                            return true;
+                        }
+                        !self.shared_disconnect_orphan_droppable(&origin, id)
+                    });
+                    let kept: BTreeSet<String> = candidates.iter().cloned().collect();
+                    let dropped: Vec<String> =
+                        pre.into_iter().filter(|id| !kept.contains(id)).collect();
+                    if !dropped.is_empty() {
+                        self.native_map.retain(|(out, _), logical| {
+                            out != &origin || !dropped.iter().any(|id| id == logical)
+                        });
                     }
                 }
                 candidates.sort();

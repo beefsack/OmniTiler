@@ -1225,6 +1225,14 @@ pub struct WorldEngine {
     /// never silently settled away with a retired flight. Cleared on
     /// generation/incarnation reset like the other native state.
     pub(crate) pending_source_releases: Vec<(String, String)>,
+    /// Migration insertion anchors under the shared native roster:
+    /// `(target output, moved logical)` to the destination-current logical
+    /// the move landed after at commit. Keeps the authoritative
+    /// after-current position across creation settlement and re-observation
+    /// while genuine external native reorders still propagate around the
+    /// pinned row. Pruned when either side leaves the target ring; reset
+    /// with the generation like the other native state.
+    pub(crate) migration_anchors: BTreeMap<(String, String), String>,
     pub(crate) last_views: BTreeMap<OutputId, String>,
     /// Core-owned logical workspace rings (D2): per-screen ordered lists of
     /// stable logical workspace ids, retained across reports. Rings converge
@@ -1891,6 +1899,7 @@ impl WorldEngine {
             native_creation_seq: 0,
             retained_creations: Vec::new(),
             pending_source_releases: Vec::new(),
+            migration_anchors: BTreeMap::new(),
             gesture: None,
             consumed_gesture_seq: 0,
             gesture_terminal: None,
@@ -2132,6 +2141,12 @@ impl WorldEngine {
         self.capabilities
             .as_ref()
             .is_some_and(|caps| caps.equal_count)
+    }
+
+    pub(crate) fn shared_native_roster(&self) -> bool {
+        self.capabilities
+            .as_ref()
+            .is_some_and(|caps| caps.host_owned && caps.shared_native_roster)
     }
 
     pub(crate) fn birth_clear(&self) -> bool {

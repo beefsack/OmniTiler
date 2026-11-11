@@ -630,6 +630,23 @@ Hosts declaring `equalCount` keep equal logical ring lengths as an explicit
 ordinary-empty pruning exception; eligible padding prunes when the longest ring
 shrinks. This is distinct from the adapter's native minimum-count floor.
 
+Hosts additionally declaring `sharedNativeRoster:true` reconcile live padding
+and retirement by native identity across outputs, not independent removal
+counts. A native retained by one projection stays represented by the other
+projections; globally eligible empty/unshown identities retire jointly. Pure
+trailing-spare backing is coordinated so one creation serves the shared need.
+Incomplete or contradictory shared-roster evidence cannot authorize independent
+pruning or duplicate spare creation. Migration backing still requires fresh
+creation, and migration inserts after destination current rather than replacing
+an aligned cell. No occupant moves merely to compact gaps. False preserves the
+independent-roster behavior; `equalCount` alone never declares identity sharing.
+
+KDE declares true in both native selector modes. Output-local macOS Spaces and
+the tiler-owned Windows workspace route declare false. This required connection
+shape must be adopted by every adapter; old strict readers reject an amended
+handshake until updated. These declaration updates do not establish native port
+acceptance or adopt the separate close-focus amendment.
+
 - Core continues publishing an existing workspace row with `exist:false` and
   `bind` naming that native desktop for each locally retired output/native pair.
   The removed logical `id` identifies the absence record, not a live binding or

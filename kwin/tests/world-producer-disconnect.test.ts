@@ -82,6 +82,42 @@ function rowByWin(reply: Record<string, unknown>, win: string): Record<string, u
     return found;
 }
 
+// Test-only handshake-capability seam: runs the genuine entry discovery
+// pump but downgrades the producer handshake's sharedNativeRoster bit in
+// the encoded bytes before the broker binds the engine. The observation/
+// capture route stays genuine; only the capability bit is rewritten, and
+// the production value (always true) is asserted before the rewrite so a
+// production change fails loudly instead of silently testing the wrong
+// configuration. Never a claim of genuinely native KDE behavior: this
+// exercises the explicit independent-roster path only.
+async function discoverAs(h: Harness, shared: boolean): Promise<void> {
+    const hsIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
+    assert.ok(hsIndex >= 0, "entry discovers on start");
+    const sent = JSON.parse((h.calls[hsIndex] as { payload: string }).payload) as Record<string, unknown>;
+    assert.equal(sent["type"], "handshake");
+    const caps = (sent["capabilities"] as Record<string, unknown>);
+    assert.equal(caps["sharedNativeRoster"], true, "production handshake carries sharedNativeRoster:true");
+    if (!shared) {
+        caps["sharedNativeRoster"] = false;
+    }
+    const payload = JSON.stringify(sent);
+    const hsReplyText = await h.bridge.send("DiscoverWorld", payload);
+    const hsReply = JSON.parse(hsReplyText) as Record<string, unknown>;
+    assert.equal(hsReply["type"], "handshake-reply");
+    assert.equal(hsReply["ready"], false);
+    (h.calls[hsIndex] as { callback: (r: string) => void }).callback(hsReplyText);
+    const gen = hsReply["gen"] as string;
+    const setIndex = h.calls.findIndex((call, at) => at > hsIndex && call.method === "DiscoverWorld");
+    assert.ok(setIndex >= 0, "revisioned settings follow the handshake");
+    const setReplyText = await h.bridge.send("DiscoverWorld", (h.calls[setIndex] as { payload: string }).payload);
+    const setReply = JSON.parse(setReplyText) as Record<string, unknown>;
+    assert.equal(setReply["type"], "settings-reply");
+    assert.equal(setReply["status"], "accepted");
+    assert.equal(setReply["gen"], gen);
+    (h.calls[setIndex] as { callback: (r: string) => void }).callback(setReplyText);
+    await h.settle();
+}
+
 describe("world genuine-producer output disconnect and return journeys", () => {
     it("relocates a disconnected output's members onto the survivor with no command traffic", async () => {
         const h = await makeTwoOutputHarness("win-c");
@@ -297,8 +333,56 @@ describe("world genuine-producer output disconnect and return journeys", () => {
         }
     });
 
-    it("reconnects the leg-2 survivor-focus journey with a settled explicit send (P1 reproduction)", async () => {
-        // Exact 2026-11-09 leg-2 topology, no merge decision taken: A holds
+    it("disconnects under the independent roster with no duplicate spare (independent variant)", async () => {
+        // Same journey as the first test but through the test-only
+        // sharedNativeRoster:false seam: the independent roster never
+        // adopted the memberless orphan (its per-output prune dropped it
+        // pre-disconnect), so this pins the independent converged shape
+        // the shared path now matches: three live rows, three creations,
+        // no outstanding desire.
+        const h = await makeTwoOutputHarness("win-c");
+        try {
+            winById(h, "win-c").desktops = [deskById(h, "ws2")];
+            winById(h, "win-d").desktops = [deskById(h, "ws2")];
+            await discoverAs(h, false);
+            h.removeOutput("out-right");
+            h.runTimers();
+            await h.settle();
+            const reply = lastDescribeReply(h);
+            assert.equal(reply["outcome"] ?? "accepted", "accepted", "disconnect capture accepted");
+            const ids = windowRows(reply).map((w) => w["win"] as string).sort();
+            assert.deepEqual(ids, ["win-a", "win-b", "win-c", "win-d"], "published window set exact");
+            for (const win of ["win-a", "win-b"]) {
+                assert.equal(rowByWin(reply, win)["out"], "out-left", `${win} re-homes to the survivor`);
+                assert.equal(rowByWin(reply, win)["ws"], "ws-1", `${win} keeps its workspace`);
+            }
+            for (const win of ["win-c", "win-d"]) {
+                assert.equal(rowByWin(reply, win)["out"], "out-left", `${win} re-homes to the survivor`);
+                assert.equal(rowByWin(reply, win)["ws"], "ws-4", `${win} rides the separate displaced unit, never the survivor's own`);
+            }
+            assert.deepEqual(
+                (h.workspace["desktops"] as Array<{ id: string }>).map((d) => d.id),
+                ["ws1", "ws2", "ws-3", "ws-4", "ws-5"],
+                "independent disconnect creates the displaced backing plus the eager trailing spare",
+            );
+            const live = (reply["workspaces"] as Array<Record<string, unknown>>)
+                .filter((u) => u["out"] === "out-left" && u["exist"] !== false)
+                .sort((a, b) => (a["order"] as number) - (b["order"] as number));
+            assert.deepEqual(
+                live.map((u) => `${u["id"]}@${u["bind"]}`),
+                ["ws-1@ws1", "ws-4@ws-4", "ws-5@ws-5"],
+                "independent converged ring holds three live rows",
+            );
+            appliedMatchesReply(h, reply);
+            assert.deepEqual(reply["transfers"] ?? [], [], "displacement leaves no in-flight transfer");
+            assert.deepEqual(reply["nativeCreations"] ?? [], [], "displacement leaves no outstanding creation");
+            assert.equal(reply["result"], null, "actuator lane carries a null result");
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("reconnects the leg-2 survivor-focus journey with a settled explicit send (P1 reproduction)", async () => {        // Exact 2026-11-09 leg-2 topology, no merge decision taken: A holds
         // T1 on ws1 with focus; B holds T2 on ws1 and F/T3 on ws2. Removal
         // re-homes every B window onto separate hosted units on A; T3 is
         // then sent to ws1 with settled membership before B returns under

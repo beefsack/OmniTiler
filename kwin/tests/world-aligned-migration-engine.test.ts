@@ -666,6 +666,19 @@ async function lagDirection(options: {
         assert.ok(!nativeOrderBefore.includes(createdNative), `backing is a fresh desktop (got ${createdNative})`);
         const refillNative = boundRows.find((b) => b["out"] === options.refillOut && b["id"] === refillLogical)?.["bind"] ?? "";
         assert.ok(refillNative !== "", "refill logical stays bound");
+        // Shared-roster view actuation lands one genuine native round
+        // after the binding reply is observed: wait boundedly for the
+        // proven view writes (observed currents only, no invented
+        // state) before modelling lag. The flight still holds (members
+        // arrived, views unproven) until the proof capture settles, so
+        // the rewind below still reports mid-flight.
+        for (let round = 0; round < 8; round += 1) {
+            if (h.currents.get(options.targetOut) === createdNative && h.currents.get(options.refillOut) === refillNative) {
+                break;
+            }
+            h.runTimers();
+            await h.flushAll();
+        }
         // Native actuation landed: members moved, both views followed.
         assert.equal(h.currents.get(options.targetOut), createdNative, "target view follows the created backing");
         assert.equal(h.currents.get(options.refillOut), refillNative, "source refills to the core choice");
@@ -909,6 +922,18 @@ describe("world migration engine", () => {
             const boundRows = (boundReply["workspaces"] as Array<Record<string, string>>);
             const createdNative = boundRows.find((b) => b["out"] === "out-b" && b["id"] === migratedLogical)?.["bind"] ?? "";
             assert.ok(createdNative !== "", "migrated logical publishes fresh backing once created");
+            // Shared-roster view actuation lands one genuine native round
+            // after the binding reply is observed: wait boundedly for the
+            // proven target-view write (observed currents only) before
+            // modelling the both-views lag. The flight still holds until
+            // the proof capture settles.
+            for (let round = 0; round < 8; round += 1) {
+                if (h.currents.get("out-b") === createdNative) {
+                    break;
+                }
+                h.runTimers();
+                await h.flushAll();
+            }
             // Native actuation landed: members moved, both views followed.
             assert.equal(h.currents.get("out-b"), createdNative, "target view follows the created backing");
             // Rewind both views to the pre-move currents.

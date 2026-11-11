@@ -367,6 +367,372 @@ impl WorldEngine {
                 .is_some_and(|screen| screen.complete)
     }
 
+    /// Shared native roster fast path: every live output shares one
+    /// identical native list. Returns that common order when the
+    /// `shared_native_roster` capability is on, the inventory is
+    /// complete, every live screen is complete, no held screens linger,
+    /// and every live output's native order is nonempty and exactly
+    /// equal. Anything else yields `None`: divergent readbacks (active
+    /// but unordered) must hold via `shared_roster_divergent`, never
+    /// falling back to independent per-output behavior; truly inactive
+    /// setups fall back. Unknown fails closed.
+    pub(crate) fn shared_identical_roster_order(&self) -> Option<Vec<String>> {
+        if !self.shared_native_roster() {
+            return None;
+        }
+        if !self.staged.observation.inventory_complete {
+            return None;
+        }
+        if !self.staged.held_screens.is_empty() {
+            return None;
+        }
+        let mut live: Vec<String> = self
+            .staged
+            .screens
+            .iter()
+            .map(|screen| screen.output.0.clone())
+            .collect();
+        live.sort();
+        if live.is_empty() {
+            return None;
+        }
+        if live.iter().any(|output| !self.native_list_complete(output)) {
+            return None;
+        }
+        let mut first: Option<Vec<String>> = None;
+        for output in &live {
+            let order = self
+                .staged
+                .observation
+                .native
+                .iter()
+                .find(|entry| entry.output.0 == *output)
+                .map(|entry| entry.native_order.clone())?;
+            if order.is_empty() {
+                return None;
+            }
+            match &first {
+                None => first = Some(order),
+                Some(expected) if *expected == order => {}
+                _ => return None,
+            }
+        }
+        first
+    }
+
+    /// Sorted live outputs for shared-roster coordination.
+    pub(crate) fn shared_roster_live_sorted(&self) -> Vec<String> {
+        let mut live: Vec<String> = self
+            .staged
+            .screens
+            .iter()
+            .map(|screen| screen.output.0.clone())
+            .collect();
+        live.sort();
+        live
+    }
+
+    /// Shared roster active: the capability is on with a complete
+    /// inventory, no held screens, at least one live output, and every
+    /// live screen complete. True for both identical and divergent
+    /// (split/partial) readbacks; identical adds exact native-order
+    /// equality on top.
+    pub(crate) fn shared_roster_active(&self) -> bool {
+        if !self.shared_native_roster() {
+            return false;
+        }
+        if !self.staged.observation.inventory_complete {
+            return false;
+        }
+        if !self.staged.held_screens.is_empty() {
+            return false;
+        }
+        let live = self.shared_roster_live_sorted();
+        if live.is_empty() {
+            return false;
+        }
+        live.iter().all(|output| {
+            self.staged
+                .screens
+                .iter()
+                .find(|screen| screen.output.0 == *output)
+                .is_some_and(|screen| screen.complete)
+        })
+    }
+
+    /// Shared roster divergent: active but without one identical native
+    /// order (split async readbacks, partial rows, or genuinely different
+    /// rosters). Callers must fail closed here: never fall back to the
+    /// independent per-output identity pruning or duplicate spare mints
+    /// that the identical fast path was built to replace.
+    pub(crate) fn shared_roster_divergent(&self) -> bool {
+        self.shared_roster_active() && self.shared_identical_roster_order().is_none()
+    }
+
+    /// One shared backing already visible on a sibling but unmapped here:
+    /// the first native in this output's order that is bound on another
+    /// live output and not locally retired. Lets a lagging output adopt
+    /// the shared desktop onto its own spare instead of minting a second
+    /// creation after convergence.
+    fn shared_unmapped_bound_elsewhere(&self, output: &str) -> Option<String> {
+        let order: Vec<String> = self
+            .staged
+            .observation
+            .native
+            .iter()
+            .find(|entry| entry.output.0 == output)
+            .map(|entry| entry.native_order.clone())
+            .unwrap_or_default();
+        let out = OutputId(output.to_owned());
+        let live = self.shared_roster_live_sorted();
+        for native in order {
+            if self.native_logical(&out, &native).is_some() {
+                continue;
+            }
+            if self.is_locally_retired(output, &native) {
+                continue;
+            }
+            let elsewhere = live.iter().any(|sibling| {
+                sibling != output
+                    && self
+                        .native_map
+                        .contains_key(&(sibling.clone(), native.clone()))
+            });
+            if elsewhere {
+                return Some(native);
+            }
+        }
+        None
+    }
+
+    /// Outputs with a live pure-spare need or a clean pending pure-spare
+    /// creation under an identical shared roster. The coordinator is the
+    /// smallest eligible output; every other eligible output defers so N
+    /// spares mint exactly one backing. Clean pending outranks live need:
+    /// when any eligible output already holds a clean pending creation,
+    /// outputs without one defer to it instead of minting beside it.
+    fn shared_spare_coordinator(&self) -> Option<String> {
+        let live = self.shared_roster_live_sorted();
+        let mut pending: Vec<String> = Vec::new();
+        let mut needy: Vec<String> = Vec::new();
+        for output in &live {
+            let tail_pure = self
+                .mapping
+                .get(output)
+                .and_then(|ring| ring.last().cloned())
+                .is_some_and(|tail| self.is_pure_spare_needing_backing(output, &tail));
+            let pending_clean = self.retained_creations.iter().any(|retained| {
+                retained.target_output.0 == *output
+                    && !retained.ambiguous
+                    && !self.creation_hold_for(&output, &retained.logical_workspace)
+                    && self.is_pure_spare_needing_backing(output, &retained.logical_workspace)
+            });
+            if pending_clean {
+                pending.push(output.clone());
+            }
+            if tail_pure || pending_clean {
+                needy.push(output.clone());
+            }
+        }
+        if needy.is_empty() {
+            return None;
+        }
+        if !pending.is_empty() {
+            pending.sort();
+            return pending.into_iter().next();
+        }
+        needy.sort();
+        needy.into_iter().next()
+    }
+
+    /// Prune migration anchors whose moved row or anchor row left the
+    /// target ring (or whose output left the live set). Keeps the
+    /// authoritative after-current pin exactly while both rows are ringed.
+    fn prune_migration_anchors(&mut self) {
+        let live: BTreeSet<String> = self
+            .staged
+            .screens
+            .iter()
+            .map(|screen| screen.output.0.clone())
+            .collect();
+        self.migration_anchors.retain(|(output, moved), anchor| {
+            live.contains(output)
+                && self
+                    .mapping
+                    .get(output)
+                    .is_some_and(|ring| ring.iter().any(|id| id == moved))
+                && self
+                    .mapping
+                    .get(output)
+                    .is_some_and(|ring| ring.iter().any(|id| id == anchor))
+        });
+    }
+
+    /// Identity-based GLOBAL eligible set for trailing-lifecycle pruning
+    /// under a shared identical roster: natives bound and ringed on every
+    /// live output whose per-output logical is ordinary-empty (unviewed,
+    /// untrailing, unhomed, no retained flight/source/refill/creation, no
+    /// pending source release, no displaced hosting, no creation hold,
+    /// readable unheld domain) and whose native occupancy reads `Some(0)`
+    /// on every observing projection with exact coverage. Viewed,
+    /// occupied, targeted, or protected natives stay everywhere; trailing
+    /// spare identities stay; unknown occupancy fails closed (`None`
+    /// yields no set); divergent or otherwise unresolved shared-active
+    /// states yield `None` and callers hold all pruning via
+    /// `shared_roster_active` (no independent fallback). Choosing one native set for all outputs keeps equal
+    /// lengths without counts selecting different identities, and no
+    /// window moves to compact (row removal only, settlement fences
+    /// membership writes elsewhere).
+    pub(crate) fn shared_global_prunable_natives(&self) -> Option<BTreeSet<String>> {
+        let order = self.shared_identical_roster_order()?;
+        let mut live: Vec<String> = self
+            .staged
+            .screens
+            .iter()
+            .map(|screen| screen.output.0.clone())
+            .collect();
+        live.sort();
+        if live.is_empty() {
+            return None;
+        }
+        let mut eligible: BTreeSet<String> = BTreeSet::new();
+        'native: for native in &order {
+            for output in &live {
+                let Some(logical) = self
+                    .native_map
+                    .get(&(output.clone(), native.clone()))
+                    .cloned()
+                else {
+                    continue 'native;
+                };
+                if !self
+                    .mapping
+                    .get(output)
+                    .is_some_and(|ring| ring.contains(&logical))
+                {
+                    continue 'native;
+                }
+                if !self.retirement_guards(output, &logical) {
+                    continue 'native;
+                }
+                let Some(entry) = self
+                    .staged
+                    .observation
+                    .native
+                    .iter()
+                    .find(|entry| entry.output.0 == *output)
+                else {
+                    return None;
+                };
+                if entry.occupancy.len() != entry.native_order.len() {
+                    return None;
+                }
+                if !entry.native_order.iter().any(|id| id == native) {
+                    continue 'native;
+                }
+                match entry.occupancy.iter().find(|row| row.native == *native) {
+                    Some(row) if row.count == Some(0) => {}
+                    _ => continue 'native,
+                }
+            }
+            eligible.insert(native.clone());
+        }
+        // Floors first, globally: dropping the set must leave every output
+        // above its bound and ring floors; trim earliest canonical natives
+        // so all outputs keep the same removal set and equal lengths.
+        let mut kept: Vec<String> = order
+            .iter()
+            .filter(|id| eligible.contains(*id))
+            .cloned()
+            .collect();
+        loop {
+            let mut over = false;
+            for output in &live {
+                let bound_len = self
+                    .mapping
+                    .get(output)
+                    .map(|ring| {
+                        ring.iter()
+                            .filter(|id| self.native_binding_for(output, id).is_some())
+                            .count()
+                    })
+                    .unwrap_or(0);
+                let ring_len = self.mapping.get(output).map(Vec::len).unwrap_or(0);
+                let removed = kept
+                    .iter()
+                    .filter(|native| {
+                        self.native_map
+                            .get(&(output.clone(), (*native).clone()))
+                            .is_some()
+                    })
+                    .count();
+                if removed > bound_len.saturating_sub(MIN_WORKSPACES)
+                    || removed > ring_len.saturating_sub(MIN_WORKSPACES)
+                {
+                    over = true;
+                    break;
+                }
+            }
+            if !over {
+                break;
+            }
+            if kept.is_empty() {
+                break;
+            }
+            kept.remove(0);
+        }
+        Some(kept.into_iter().collect())
+    }
+
+    /// Whether one logical row is a pure trailing spare needing backing
+    /// for shared-roster coordination: unbound, the trailing row,
+    /// needed only via the trailing-spare rule (unviewed, untargeted,
+    /// unoccupied). Viewed, targeted, or occupied unbound rows are
+    /// genuine per-output needs (e.g. migration fresh backing) and
+    /// never coordinate.
+    fn is_pure_spare_needing_backing(&self, output: &str, logical: &str) -> bool {
+        if self.native_binding_for(output, logical).is_some() {
+            return false;
+        }
+        if self
+            .mapping
+            .get(output)
+            .and_then(|ring| ring.last())
+            .is_none_or(|tail| tail != logical)
+        {
+            return false;
+        }
+        if !self.logical_needs_backing(output, logical) {
+            return false;
+        }
+        if self.effective_view(&OutputId(output.to_owned())).as_deref() == Some(logical) {
+            return false;
+        }
+        if self.retained.iter().any(|retained| {
+            retained.target.target_output.0 == output && retained.target.target_workspace == logical
+        }) {
+            return false;
+        }
+        for (window, state) in &self.members {
+            if state.home.output.0 != output || state.home.workspace.0 != logical {
+                continue;
+            }
+            if !self.staged.facts.contains_key(window) {
+                continue;
+            }
+            if self.staged.closes.contains(window) {
+                continue;
+            }
+            if let Some(homed) = self.staged.homing.get(window)
+                && (homed.output.0 != output || homed.workspace.0 != logical)
+            {
+                continue;
+            }
+            return false;
+        }
+        true
+    }
+
     /// Adopt native bindings before ring/view settlement.
     ///
     /// Capability-named notes: late desktops belong to pending creations,
@@ -608,6 +974,13 @@ impl WorldEngine {
     pub(crate) fn retirement_deletion_set(&self) -> BTreeSet<(String, String)> {
         let mut doomed: BTreeSet<(String, String)> = BTreeSet::new();
         if !self.host_owned_workspace_domains() || !self.staged.observation.inventory_complete {
+            return doomed;
+        }
+        // Shared roster divergent readbacks (split async, partial, or
+        // genuinely different orders) fail closed: no independent
+        // per-output identity pruning while the roster is not one
+        // identical order.
+        if self.shared_roster_divergent() {
             return doomed;
         }
         if self.staged.gesture_barrier {
@@ -938,6 +1311,120 @@ impl WorldEngine {
             .iter()
             .find(|domain| domain.key == homed)
             .is_some_and(|domain| domain.readable && domain.hold.is_none())
+    }
+
+    /// Shared-roster disconnect prune gate: one identical native order
+    /// across the current survivors (implies the capability, a complete
+    /// inventory, no held screens, and every live screen complete with a
+    /// nonempty equal order) plus no held window/native rows. Anything
+    /// else (independent rosters, divergent split readbacks, partial or
+    /// incomplete evidence, held rows) holds every orphan on the legacy
+    /// adopt-everything path. Inspected: `shared_roster_active` needs
+    /// only one live output, not two, so a lone post-disconnect survivor
+    /// still gates here; the identical-order check is what fails closed
+    /// on divergence.
+    pub(crate) fn shared_disconnect_prune_ready(&self) -> bool {
+        if self.shared_identical_roster_order().is_none() {
+            return false;
+        }
+        if !self.staged.held_windows.is_empty() || !self.staged.held_native.is_empty() {
+            return false;
+        }
+        true
+    }
+
+    /// Whether one removed origin's logical row may drop as redundant
+    /// shared-roster padding during disconnect displacement. True only
+    /// for a bound row whose native stays bound on a live survivor
+    /// (redundant alias, never the last global binding), reads known
+    /// occupancy with `Some(0)` on every live projection listing it
+    /// (unknown or occupied fails closed), and carries no protection: no
+    /// live view, no retained target/source/refill, no retained creation,
+    /// no pending source release, no displaced hosting/affinity, and no
+    /// creation hold. The removed origin stages no readable domain, so
+    /// `retirement_guards` cannot gate here directly (it would retain
+    /// everything); these are its checks adapted to prior state plus
+    /// survivor ingress. The origin's dead view never protects (it would
+    /// retain every viewed orphan and the ws-6 duplicate would return).
+    pub(crate) fn shared_disconnect_orphan_droppable(&self, origin: &str, logical: &str) -> bool {
+        for screen in &self.staged.screens {
+            if self.effective_view(&screen.output).as_deref() == Some(logical) {
+                return false;
+            }
+        }
+        if self
+            .retained
+            .iter()
+            .any(|retained| retained.target.target_workspace == logical)
+        {
+            return false;
+        }
+        if self.retained.iter().any(|retained| {
+            (!retained.source_workspace.is_empty() && retained.source_workspace == logical)
+                || retained.migration_refill.as_deref() == Some(logical)
+        }) {
+            return false;
+        }
+        if self
+            .retained_creations
+            .iter()
+            .any(|retained| retained.logical_workspace == logical)
+        {
+            return false;
+        }
+        if self
+            .pending_source_releases
+            .iter()
+            .any(|(_, workspace)| workspace == logical)
+        {
+            return false;
+        }
+        if self
+            .displaced
+            .values()
+            .any(|entry| entry.workspaces.iter().any(|id| id == logical))
+        {
+            return false;
+        }
+        if self.creation_hold_for(origin, logical) {
+            return false;
+        }
+        let Some(native) = self.native_binding_for(origin, logical) else {
+            return false;
+        };
+        let live_bound = self.staged.screens.iter().any(|screen| {
+            self.native_map
+                .contains_key(&(screen.output.0.clone(), native.clone()))
+        });
+        if !live_bound {
+            return false;
+        }
+        if !self.native_occupancy_known(&native) {
+            return false;
+        }
+        let mut listed = false;
+        for entry in &self.staged.observation.native {
+            if !self
+                .staged
+                .screens
+                .iter()
+                .any(|screen| screen.output == entry.output)
+            {
+                continue;
+            }
+            if !entry.native_order.iter().any(|id| id == &native) {
+                continue;
+            }
+            listed = true;
+            if entry.occupancy.len() != entry.native_order.len() {
+                return false;
+            }
+            match entry.occupancy.iter().find(|row| row.native == native) {
+                Some(row) if row.count == Some(0) => {}
+                _ => return false,
+            }
+        }
+        listed
     }
 
     /// Exact-correlated raw creation attempt for one retained op (op plus
@@ -1371,6 +1858,19 @@ impl WorldEngine {
     ) {
         self.native_map
             .insert((output.to_owned(), native.to_owned()), logical.to_owned());
+        // Shared roster: the ring position is authoritative (migration
+        // after-current insertion, spare tail). Binding only records the
+        // pair and never re-sorts the already-ringed logical; the reorder
+        // pass below moves bound rows for genuine external reorders while
+        // pinned migration rows stay put.
+        if self.shared_roster_active()
+            && self
+                .mapping
+                .get(output)
+                .is_some_and(|ring| ring.iter().any(|id| id == logical))
+        {
+            return;
+        }
         let position = order
             .iter()
             .take_while(|id| id.as_str() != native)
@@ -1400,8 +1900,19 @@ impl WorldEngine {
     /// native order; unbound rows (spare, pending, migrated-awaiting)
     /// keep their existing relative order after the bound prefix. A host
     /// reorder with no new ids reorders logical rows instead of keeping a
-    /// stale insertion order. No-op on partial snapshots.
+    /// stale insertion order. No-op on partial snapshots. Under an
+    /// identical shared roster the same bound sort runs, but pinned
+    /// migration rows stay immediately after their anchors while the
+    /// remaining bound rows still track genuine external reorders.
+    /// Divergent shared readbacks hold without reordering.
     fn reorder_ring_to_native(&mut self, output: &str) {
+        if self.shared_roster_divergent() {
+            return;
+        }
+        let shared_identical = self.shared_identical_roster_order().is_some();
+        if shared_identical {
+            self.prune_migration_anchors();
+        }
         if !self.native_list_complete(output) {
             return;
         }
@@ -1440,6 +1951,78 @@ impl WorldEngine {
                 next.push(id.clone());
             }
         }
+        if shared_identical {
+            // Pin migration rows immediately after their anchors: pull
+            // pinned ids out of the native-sorted prefix and re-insert
+            // them after the anchor (which itself tracks external
+            // reorders). Pins form chains (a second migration anchors on
+            // the first), so replay in dependency order: a pin whose
+            // anchor is itself pinned waits for that anchor to land,
+            // otherwise the dependent tails and the anchor later lands
+            // before it. Ready pins share an anchor in current ring
+            // order; each insert skips already-placed descendants of the
+            // anchor so siblings keep ring order. Unpinned bound rows
+            // keep native order; unbound rows keep their existing
+            // relative tail order.
+            let anchor_of: std::collections::BTreeMap<String, String> = self
+                .migration_anchors
+                .iter()
+                .filter(|((out, _), _)| out == output)
+                .map(|((_, moved), anchor)| (moved.clone(), anchor.clone()))
+                .collect();
+            let mut pending: Vec<(String, String)> = anchor_of
+                .iter()
+                .filter(|(moved, _)| ring.iter().any(|id| id == *moved))
+                .map(|(moved, anchor)| (moved.clone(), anchor.clone()))
+                .collect();
+            if !pending.is_empty() {
+                let pinned_ids: BTreeSet<String> =
+                    pending.iter().map(|(moved, _)| moved.clone()).collect();
+                next.retain(|id| !pinned_ids.contains(id));
+                pending.sort_by_key(|(moved, _)| {
+                    ring.iter().position(|id| id == moved).unwrap_or(usize::MAX)
+                });
+                let mut placed: BTreeSet<String> = BTreeSet::new();
+                while !pending.is_empty() {
+                    let ready = pending
+                        .iter()
+                        .position(|(_, anchor)| next.iter().any(|id| id == anchor));
+                    let Some(index) = ready else {
+                        // Anchors gone (or pinned cycle): keep current ring
+                        // order at the tail.
+                        for (moved, _) in pending {
+                            next.push(moved);
+                        }
+                        break;
+                    };
+                    let (moved, anchor) = pending.remove(index);
+                    let mut at = next
+                        .iter()
+                        .position(|id| id == &anchor)
+                        .expect("ready anchor ringed");
+                    at += 1;
+                    while at < next.len() && placed.contains(&next[at]) && {
+                        let mut cursor = &next[at];
+                        let mut descendant = false;
+                        while let Some(parent) = anchor_of.get(cursor) {
+                            if parent == &anchor {
+                                descendant = true;
+                                break;
+                            }
+                            if parent == cursor {
+                                break;
+                            }
+                            cursor = parent;
+                        }
+                        descendant
+                    } {
+                        at += 1;
+                    }
+                    next.insert(at, moved.clone());
+                    placed.insert(moved);
+                }
+            }
+        }
         if next != ring {
             self.mapping.insert(output.to_owned(), next);
         }
@@ -1472,6 +2055,42 @@ impl WorldEngine {
         for logical in ring {
             if !self.logical_needs_backing(output, &logical) {
                 continue;
+            }
+            // Shared-roster pure-spare coordination: one native backs every
+            // output's pure trailing spare. Elect one coordinator among
+            // eligible outputs (clean pending outranks live need); all
+            // other eligible outputs defer so N spares mint exactly one
+            // creation. Genuine per-output needs (viewed, targeted,
+            // occupied, e.g. migration fresh backing) still mint locally.
+            // Split/divergent readbacks hold without minting, and a
+            // lagging output adopts the already-visible shared backing
+            // instead of minting beside it.
+            if self.is_pure_spare_needing_backing(output, &logical) && self.shared_roster_active() {
+                if self.shared_roster_divergent() {
+                    continue;
+                }
+                if self.retained_creations.iter().any(|retained| {
+                    retained.target_output.0 == output && retained.logical_workspace == logical
+                }) {
+                    continue;
+                }
+                if let Some(shared) = self.shared_unmapped_bound_elsewhere(output) {
+                    self.bind_native_at_order(output, &shared, &logical, &order);
+                    continue;
+                }
+                if self.retained_creations.iter().any(|retained| {
+                    retained.ambiguous
+                        && self.is_pure_spare_needing_backing(
+                            &retained.target_output.0,
+                            &retained.logical_workspace,
+                        )
+                }) {
+                    continue;
+                }
+                let coordinator = self.shared_spare_coordinator();
+                if coordinator.as_deref() != Some(output) {
+                    continue;
+                }
             }
             let exists = self.retained_creations.iter().any(|retained| {
                 retained.target_output.0 == output && retained.logical_workspace == logical
@@ -1610,12 +2229,30 @@ impl WorldEngine {
         // a vanished id within the generation, which is forbidden. The
         // retired logical is lifecycle removal; the newcomer is adoption.
         // Locally retired natives suppress here until cleared by positive
-        // output-local evidence.
+        // output-local evidence. Shared identical roster: a desktop
+        // already bound on a sibling output is the shared spare backing,
+        // not an outside desktop, while this output still holds a pure
+        // spare needing backing. Skip adoption so the creation pass binds
+        // it onto that spare instead of minting a fresh row beside it.
+        let shared_spare_waiting = self.shared_identical_roster_order().is_some()
+            && self
+                .mapping
+                .get(output)
+                .and_then(|ring| ring.last().cloned())
+                .is_some_and(|tail| self.is_pure_spare_needing_backing(output, &tail));
         for (index, native) in order.iter().enumerate() {
             if self.native_logical(&out, native).is_some() {
                 continue;
             }
             if self.is_locally_retired(output, native) {
+                continue;
+            }
+            if shared_spare_waiting
+                && self
+                    .native_map
+                    .iter()
+                    .any(|((sibling, bound), _)| sibling != output && bound == native)
+            {
                 continue;
             }
             let predecessors = order[..index]

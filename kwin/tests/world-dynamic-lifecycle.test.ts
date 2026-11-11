@@ -1,4 +1,11 @@
 // Dynamic workspace lifecycle: producer -> real Engine -> publish -> apply.
+// The retired-reselect journey below runs as a GENERIC INDEPENDENT host
+// variant (test-only sharedNativeRoster:false seam): independent per-output
+// rosters retire locally empty natives while the native survives on a
+// foreign occupant, and reselect readopts fresh. Genuine KWin (KDE
+// production, handshake always sharedNativeRoster:true) shares one native
+// roster on every output, so globally occupied/shown natives never retire;
+// that shape is pinned by the shared test at the end of this file.
 // Covers the 2026-11-10 decision through the production entry/apply path
 // with a fake host and fresh serial replies: adapter bootstrap pads an
 // unoccupied single native desktop to the two-desktop floor with no core
@@ -569,11 +576,25 @@ async function discoverOnly(h: Harness): Promise<void> {
 }
 
 async function discoverAndSettle(h: Harness): Promise<void> {
+    await discoverAndSettleAs(h, true);
+}
+
+// Test-only handshake-capability seam (mirrors the disconnect suite):
+// runs the genuine entry discovery pump but downgrades the producer
+// handshake's sharedNativeRoster bit in the encoded bytes before the
+// engine binds it when shared=false. The production value (always true)
+// is asserted before any rewrite so a production change fails loudly.
+// shared=false exercises the explicit independent-roster path only and is
+// labelled GENERIC INDEPENDENT, never genuine KWin (KDE production is
+// always true).
+async function discoverAndSettleAs(h: Harness, shared: boolean): Promise<void> {
     const hsIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
     assert.ok(hsIndex >= 0, "entry discovers on start");
     const hsBody = JSON.parse((h.calls[hsIndex] as CapturedCall).payload) as Record<string, unknown>;
     assert.equal(hsBody["type"], "handshake", "first discovery is the handshake");
-    const hsReplyText = await h.bridge.send("DiscoverWorld", (h.calls[hsIndex] as CapturedCall).payload);
+    assert.equal((hsBody["capabilities"] as Record<string, unknown>)["sharedNativeRoster"], true, "production handshake carries sharedNativeRoster:true");
+    const hsPayload = shared ? (h.calls[hsIndex] as CapturedCall).payload : JSON.stringify({ ...hsBody, capabilities: { ...(hsBody["capabilities"] as Record<string, unknown>), sharedNativeRoster: false } });
+    const hsReplyText = await h.bridge.send("DiscoverWorld", hsPayload);
     const hsReply = JSON.parse(hsReplyText) as Record<string, unknown>;
     assert.equal(hsReply["type"], "handshake-reply", "engine answers the handshake");
     const gen = hsReply["gen"] as string;
@@ -915,7 +936,7 @@ describe("world dynamic lifecycle", () => {
         }
     });
 
-    it("retired reselect readopts fresh at the native position and admits normally", { timeout: 240000 }, async () => {
+    it("retired reselect readopts fresh at the native position and admits normally (GENERIC INDEPENDENT variant)", { timeout: 240000 }, async () => {
         // The retired native survives on a foreign occupant while the ring
         // trailing stays occupied, so reselect converges with no spare churn:
         // adoption lands before an occupied trailing and no new spare is
@@ -932,7 +953,7 @@ describe("world dynamic lifecycle", () => {
             ],
         });
         try {
-            await discoverAndSettle(h);
+            await discoverAndSettleAs(h, false);
             // Settle until the left middle (ws-3, empty on the left) retires
             // locally while its native survives on the foreign occupant. The
             // tombstone reuses the removed logical id plus its native
@@ -1051,6 +1072,56 @@ describe("world dynamic lifecycle", () => {
             );
             await h.settle();
             assert.deepEqual(counters(h), afterFill, "shared lifecycle does not oscillate");
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("shared roster keeps globally occupied natives live with one pure-spare backing (genuine KWin)", { timeout: 240000 }, async () => {
+        // Genuine shared policy (production handshake untouched): every
+        // native is occupied or shown somewhere, so nothing retires
+        // locally on either output. Both rings mirror the four natives
+        // plus the one eagerly-backed pure trailing spare (a single shared
+        // native trails both rings), every row stays bound, and a further
+        // settle is quiescent (no churn).
+        const h = await makeLifecycleHarness({
+            desktops: ["ws-1", "ws-2", "ws-3", "ws-4"],
+            outputs: ["out-left", "out-right"],
+            currents: { "out-left": "ws-1", "out-right": "ws-2" },
+            wins: [
+                { id: "win-a", out: "out-left", ws: "ws-1" },
+                { id: "win-b", out: "out-right", ws: "ws-2" },
+                { id: "win-d", out: "out-right", ws: "ws-3" },
+                { id: "win-c", out: "out-left", ws: "ws-4" },
+            ],
+        });
+        try {
+            await discoverAndSettle(h);
+            const reply = lastReply(h);
+            // No local retire anywhere: globally occupied/shown natives
+            // stay live on both outputs (independent local retire invalid).
+            assert.deepEqual(tombstonesOf(reply, "out-left"), [], `no left absence intent under the shared roster, got ${JSON.stringify(workspacesOf(reply))}`);
+            assert.deepEqual(tombstonesOf(reply, "out-right"), [], `no right absence intent under the shared roster, got ${JSON.stringify(workspacesOf(reply))}`);
+            const liveLeft = workspacesOf(reply).filter((row) => row["out"] === "out-left" && row["exist"] !== false);
+            const liveRight = workspacesOf(reply).filter((row) => row["out"] === "out-right" && row["exist"] !== false);
+            assert.ok(liveLeft.some((row) => row["bind"] === "ws-3"), "occupied ws-3 stays live on the left");
+            assert.ok(liveRight.some((row) => row["bind"] === "ws-3"), "occupied ws-3 stays live on the right");
+            assert.ok(
+                workspacesOf(reply).every((row) => (row["bind"] as string) !== ""),
+                "every shared row carries its native bind (no unbound logicals)",
+            );
+            // One pure-spare backing: a single shared trailing native backs
+            // both rings and no member moved to mint it.
+            const trailLeft = liveLeft[liveLeft.length - 1]?.["bind"] as string;
+            const trailRight = liveRight[liveRight.length - 1]?.["bind"] as string;
+            assert.equal(trailLeft, trailRight, `one shared native trails both rings, got left=${trailLeft} right=${trailRight}`);
+            assert.ok(!["ws-1", "ws-2", "ws-3", "ws-4"].includes(trailLeft), `trailing spare is fresh backing, got ${trailLeft}`);
+            assert.ok(h.desktops.some((d) => d.id === trailLeft), "trailing backing exists natively");
+            assert.equal(h.memberWrites.length, 0, `spare backing moves no windows, got ${JSON.stringify(h.memberWrites)}`);
+            // Quiescence: a further settle creates, removes, and moves nothing.
+            const base = counters(h);
+            await h.settle();
+            assert.deepEqual(counters(h), base, `shared lifecycle does not oscillate, got creations=${JSON.stringify(h.creations)} removals=${JSON.stringify(h.removals)}`);
         } finally {
             await h.stop();
         }

@@ -1520,8 +1520,9 @@ impl WorldEngine {
         if let Some(ring) = self.mapping.get_mut(&source_output.0) {
             ring.retain(|id| id != workspace);
         }
-        let insert_at = self
-            .effective_view(target_output)
+        let anchor_view = self.effective_view(target_output);
+        let insert_at = anchor_view
+            .clone()
             .and_then(|view| {
                 self.mapping
                     .get(&target_output.0)
@@ -1538,6 +1539,15 @@ impl WorldEngine {
             let ring = self.mapping.entry(target_output.0.clone()).or_default();
             let at = insert_at.min(ring.len());
             ring.insert(at, workspace.to_owned());
+        }
+        // Shared roster: pin the authoritative after-current position so
+        // creation settlement and re-observation keep the moved row put
+        // while genuine external native reorders still move the rest.
+        if self.shared_native_roster()
+            && let Some(anchor) = anchor_view
+        {
+            self.migration_anchors
+                .insert((target_output.0.clone(), workspace.to_owned()), anchor);
         }
         self.carry_tiling(workspace, &source_output.0, &target_output.0);
         // Floating scope follows the id exactly like the tiling mode
