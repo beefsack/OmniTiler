@@ -36,5 +36,10 @@
   journals and full trace do not establish the retained request's issuing
   identity, MRU-target equality or complete spend accounting; absence of a
   focus line in a filtered capture is not zero-setter proof. Repeat the exact
-  two-client shown-workspace case and retain before/after per-output native
-  currents, foreground and correlated close-focus publications.
+   two-client shown-workspace case and retain before/after per-output native
+   currents, foreground and correlated close-focus publications.
+
+### Post-correction bounded close sample (2026-11-11)
+
+- The [dynamic-workspace recheck](kde-dynamic-workspaces.md#post-correction-native-checks-2026-11-11-partial) now has exactly two tiled members on one logical output/workspace: closing the natively activated member leaves its sole survivor focused and reflowed at revision 38 (`c32-pres-after-closep.json`). Sole close at revision 40 leaves the workspace shown with no managed focused client; both native per-output currents and zero pending plans/transfers are present in the post-close trace (`d03`, `d05`). No retry loop is observed in the bounded capture.
+- Native focus-application acceptance remains open. The run did not retain the full `closeFocus` publication or immutable request identity, and filtered absence of attempt lines does not prove zero setter, one bounded correction or spend-once accounting. Generic presentation setter lines are not focus setter evidence. No broader PASS or checklist closure follows from this sample.
