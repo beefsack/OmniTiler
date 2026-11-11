@@ -89,6 +89,12 @@ this model):
   - Add no timeout, expiry, retry cap or other limit unless it solves a
     specific, identified problem or provides tangible value; state that
     reason where the limit is defined.
+  - When a design replaces another, remove the replaced mechanism in the same
+    change or as a tracked backlog item with an owner; never leave it running
+    underneath as a layer, shim or fallback. Before 0.1, keep no
+    compatibility paths.
+  - One mechanism per job: store each fact once and give each kind of work
+    one path. Extend the existing mechanism before adding a parallel one.
 - Yields to: the requirements themselves. Never simplify away authenticity,
   consistency, reliability or the `absolute` parts of
   [Gaming Compatibility](#gaming-compatibility).
@@ -141,6 +147,8 @@ this model):
   - Core strives to stay platform agnostic: host differences reach core as
     platform-neutral capabilities, never as platform checks or platform-specific
     state.
+  - Core is independent of the wire format: it exchanges typed values, and
+    encoding, field names and byte limits belong to the transport.
   - A platform that applies only the latest publication, skipping any earlier
     ones, is fully consistent with core. Core carries every pending one-time
     effect (such as a focus request) in each publication until it settles, so
@@ -204,6 +212,8 @@ this model):
     reason where the timer is defined.
   - Core cost per report stays within a stated latency budget, guarded by a
     regression check; input that has not changed costs little.
+  - User input is never delayed for batching: a command reaches core as soon
+    as it is captured. Debounce only bursts of host events.
 - Yields to: authenticity, consistency and reliability
   ([Priorities](#priorities)), except the performance guarantee in
   [Gaming Compatibility](#gaming-compatibility), which is `absolute`.
