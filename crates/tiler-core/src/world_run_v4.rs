@@ -1,9 +1,8 @@
 //! Parallel core-internal v4 accepted-run/finish and command dispatch
 //! (unit 6 sub-increment 7d).
 //!
-//! [`WorldEngine::run_accepted_v4`] is the typed v4 counterpart of the
-//! legacy [`WorldEngine::run_accepted`](crate::world_engine::WorldEngine::run_accepted):
-//! an internal accepted run over an already admitted v4 candidate. It
+//! [`WorldEngine::run_accepted_v4`] is an internal accepted run over an
+//! already admitted v4 candidate. It
 //! captures the original raw v4 facts once, ingests intent exactly once
 //! before capability-graded classification, then reuses every shared
 //! report-free settlement/sweep/gesture helper in legacy order. Command

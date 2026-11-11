@@ -438,13 +438,7 @@ impl WorldBroker {
 
     fn fresh() -> Self {
         let generation = crate::world_service::mint_core_generation();
-        // The Linux service carrier opts in to neutral focused-fullscreen
-        // presentation suspension: KWin only offers truthful `fullScreen`,
-        // never game identity, so the core suspends on the focused
-        // fullscreen output only. No game/app/size heuristics.
-        let engine = WorldEngine::new(&generation)
-            .expect("minted generation is valid")
-            .with_focused_fullscreen_presentation_suspension();
+        let engine = WorldEngine::new(&generation).expect("minted generation is valid");
         Self {
             engine,
             clock_base: Instant::now(),

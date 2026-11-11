@@ -3020,7 +3020,7 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
 #[test]
 fn migrate_directional_freezes_source_view_pre_observation() {
     // The direction-only source (output plus its current view) freezes at
-    // run_accepted entry, before staging can converge views or settle
+    // accepted-run entry (`freeze_command_sources`), before staging can converge views or settle
     // rehoming: first-tick unbootstrapped migration refuses like the old
     // pre-tick logical_view lookup, while the same command after a prior
     // observation applies.

@@ -43,7 +43,7 @@
 //! Sticky transitions retain owner/latch; sticky-off releases only via
 //! the tile path.
 //!
-//! Runs once per [`crate::world_engine::WorldEngine::publish`], after all
+//! Runs once per [`WorldEngine::publish_v4`](crate::world_engine::WorldEngine::publish_v4), after all
 //! rows assemble and before the sticky/fullscreen/maximize decorators.
 
 use std::collections::BTreeSet;

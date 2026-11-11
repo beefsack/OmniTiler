@@ -6,6 +6,12 @@
 //! search over one domain tree: ordinary-anchor-first splittability,
 //! largest/closest/no-search selection, and the candidate split shape.
 //! Float/overlap actuation and session lifecycle gating live elsewhere.
+//!
+//! Host compensation in the best-effort admission search: output geometry
+//! is finite and clients enforce their own minimum sizes, so insertion can
+//! be geometrically impossible without any policy choice. The D2 fallback
+//! search (and the D3 float/overlap result) places the window anyway
+//! instead of refusing it.
 
 use std::collections::{BTreeMap, BTreeSet};
 

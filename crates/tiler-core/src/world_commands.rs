@@ -786,7 +786,7 @@ impl WorldEngine {
                 };
                 let current = source_row.workspace.0.clone();
                 // Implicit sources arrive frozen from pre-observation
-                // retained homing (see `run_accepted`); explicit outputs
+                // retained homing (see `run_accepted_v4`); explicit outputs
                 // pass through unchanged. An unfrozen implicit source
                 // refuses here: nothing was invented, so there is no
                 // source scope to resolve a ring over.

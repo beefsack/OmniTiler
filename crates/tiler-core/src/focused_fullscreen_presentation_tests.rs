@@ -1,4 +1,4 @@
-//! Opt-in neutral focused-fullscreen presentation suspension (stage 5):
+//! Neutral focused-fullscreen presentation suspension (stage 5):
 //! when the focused surface is truthfully fullscreen on its observed
 //! output, published border/underlay/pager shapes suspend on that output
 //! only. KWin only offers truthful `fullScreen`, never game identity, so
@@ -206,14 +206,8 @@ fn fullscreen_members(focused: &str) -> Vec<WindowFact> {
 
 /// Admitted pair with managed focus latched, like the presentation suite:
 /// a second identical report lets managed focus latch behind the newcomer.
-fn admitted(optin: bool) -> WorldEngine {
-    let mut engine = if optin {
-        WorldEngine::new_test_bound("gen-1", "adapter-1")
-            .expect("generation")
-            .with_focused_fullscreen_presentation_suspension()
-    } else {
-        WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation")
-    };
+fn admitted() -> WorldEngine {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
         &report(1, 1, members(), "win-a", None, None, ingress("win-a")),
@@ -234,9 +228,9 @@ fn border_hidden_suspended(border: &BorderPresentationV4) -> bool {
 #[test]
 fn default_engine_suspends_focused_fullscreen() {
     // v4 suspension is unconditional (contract 1225-1228; world-rendering
-    // rejects the opt-in/paused lane): the default engine suspends on the
-    // same truthful-fullscreen inputs as the opted-in engine.
-    let mut engine = admitted(false);
+    // rejects the opt-in/paused lane): the default engine suspends on
+    // truthful-fullscreen inputs.
+    let mut engine = admitted();
     let reply = accepted(
         &mut engine,
         &report(
@@ -270,8 +264,8 @@ fn default_engine_suspends_focused_fullscreen() {
 }
 
 #[test]
-fn optin_suspends_border_underlay_and_output_pager_only() {
-    let mut engine = admitted(true);
+fn suspends_border_underlay_and_output_pager_only() {
+    let mut engine = admitted();
     // Sanity: a non-fullscreen focus publishes no verdict.
     let baseline = accepted(
         &mut engine,
@@ -342,7 +336,7 @@ fn optin_suspends_border_underlay_and_output_pager_only() {
 
 #[test]
 fn unfocused_fullscreen_never_suspends() {
-    let mut engine = admitted(true);
+    let mut engine = admitted();
     // win-a is fullscreen but focus rests on win-b: no suspension.
     let reply = accepted(
         &mut engine,
@@ -362,7 +356,7 @@ fn unfocused_fullscreen_never_suspends() {
 
 #[test]
 fn focus_departure_and_fullscreen_exit_restore() {
-    let mut engine = admitted(true);
+    let mut engine = admitted();
     let suspended = accepted(
         &mut engine,
         &report(
@@ -430,7 +424,7 @@ fn focus_departure_and_fullscreen_exit_restore() {
 #[test]
 fn fullscreen_fact_arriving_before_or_after_focus_suspends() {
     // Flag first, focus second.
-    let mut engine = admitted(true);
+    let mut engine = admitted();
     let unfocused = accepted(
         &mut engine,
         &report(
@@ -462,7 +456,7 @@ fn fullscreen_fact_arriving_before_or_after_focus_suspends() {
     );
 
     // Focus first, flag second (fresh engine, same shape reversed).
-    let mut engine = admitted(true);
+    let mut engine = admitted();
     let plain = accepted(
         &mut engine,
         &report(3, 3, members(), "win-b", None, None, ingress("win-b")),
@@ -487,136 +481,120 @@ fn fullscreen_fact_arriving_before_or_after_focus_suspends() {
 }
 
 #[test]
-fn window_actions_and_shortcuts_match_default_during_suspension() {
-    // Identical report streams through the default and opted-in engines:
-    // sends, view switches, and focus effects actuate identically; only
-    // the presentation verdict differs.
-    let run = |optin: bool| {
-        let mut engine = if optin {
-            WorldEngine::new_test_bound("gen-1", "adapter-1")
-                .expect("generation")
-                .with_focused_fullscreen_presentation_suspension()
-        } else {
-            WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation")
-        };
-        accepted(
-            &mut engine,
-            &report(1, 1, members(), "win-a", None, None, ingress("win-a")),
-        );
-        accepted(
-            &mut engine,
-            &report(2, 2, members(), "win-a", None, None, ingress("win-a")),
-        );
-        // Focus effect shortcut under suspension.
-        let focused = accepted(
-            &mut engine,
-            &report(
-                3,
-                3,
-                fullscreen_members("win-a"),
-                "win-a",
-                Some(7),
-                Some(WorldCommand::Focus {
-                    window: WindowId("win-b".to_owned()),
-                    direction: "left".to_owned(),
-                }),
-                ingress_fullscreen("win-a"),
-            ),
-        );
-        // Same-output send of the focused surface under suspension.
-        let ring: Vec<String> = engine.logical_ring("out-a").into_iter().collect();
-        assert!(ring.len() > 1);
-        let sent = accepted(
-            &mut engine,
-            &report(
-                4,
-                4,
-                fullscreen_members("win-a"),
-                "win-a",
-                Some(8),
-                Some(WorldCommand::Send {
-                    window: WindowId("win-a".to_owned()),
-                    target_output: OutputId("out-a".to_owned()),
-                    target_workspace: ring[1].clone(),
-                    follow: false,
-                }),
-                ingress_fullscreen("win-a"),
-            ),
-        );
-        // View switch shortcut under suspension: a real transfer to a
-        // non-current workspace on the fullscreen window's own output
-        // (out-a), never the current-view no-op fallback.
-        let ring_a: Vec<String> = engine.logical_ring("out-a").into_iter().collect();
-        let current_a = engine.logical_view("out-a").expect("out-a retains a view");
-        let target_a = ring_a
-            .iter()
-            .find(|id| *id != &current_a)
-            .cloned()
-            .expect("out-a ring holds a non-current workspace");
-        let switched = accepted(
-            &mut engine,
-            &report(
-                5,
-                5,
-                fullscreen_members("win-a"),
-                "win-a",
-                Some(9),
-                Some(WorldCommand::SwitchView {
-                    output: OutputId("out-a".to_owned()),
-                    workspace: target_a.clone(),
-                }),
-                ingress_fullscreen("win-a"),
-            ),
-        );
-        (focused, sent, switched, target_a)
-    };
-    let (focus_plain, send_plain, switch_plain, target_plain) = run(false);
-    let (focus_opt, send_opt, switch_opt, target_opt) = run(true);
-    assert_eq!(
-        target_opt, target_plain,
-        "same non-current target both lanes"
+fn window_actions_and_shortcuts_during_suspension() {
+    // Window actions and shortcuts keep working during suspension: the
+    // focus shortcut still mints effects, the send still retains, the
+    // view switch moves the desired view, and member homing is unchanged.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(1, 1, members(), "win-a", None, None, ingress("win-a")),
     );
-    assert_eq!(focus_opt.effects, focus_plain.effects);
-    assert!(!focus_opt.effects.is_empty(), "focus shortcut still mints");
-    assert_eq!(send_opt.transfers, send_plain.transfers);
-    assert!(!send_opt.transfers.is_empty(), "send still retains");
-    assert_eq!(send_opt.windows, send_plain.windows);
+    accepted(
+        &mut engine,
+        &report(2, 2, members(), "win-a", None, None, ingress("win-a")),
+    );
+    // Focus effect shortcut under suspension.
+    let focused = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            fullscreen_members("win-a"),
+            "win-a",
+            Some(7),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-b".to_owned()),
+                direction: "left".to_owned(),
+            }),
+            ingress_fullscreen("win-a"),
+        ),
+    );
+    // Same-output send of the focused surface under suspension.
+    let ring: Vec<String> = engine.logical_ring("out-a").into_iter().collect();
+    assert!(ring.len() > 1);
+    let sent = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            fullscreen_members("win-a"),
+            "win-a",
+            Some(8),
+            Some(WorldCommand::Send {
+                window: WindowId("win-a".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: ring[1].clone(),
+                follow: false,
+            }),
+            ingress_fullscreen("win-a"),
+        ),
+    );
+    // View switch shortcut under suspension: a real transfer to a
+    // non-current workspace on the fullscreen window's own output
+    // (out-a), never the current-view no-op fallback.
+    let ring_a: Vec<String> = engine.logical_ring("out-a").into_iter().collect();
+    let current_a = engine.logical_view("out-a").expect("out-a retains a view");
+    let target_a = ring_a
+        .iter()
+        .find(|id| *id != &current_a)
+        .cloned()
+        .expect("out-a ring holds a non-current workspace");
+    let switched = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            fullscreen_members("win-a"),
+            "win-a",
+            Some(9),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: target_a.clone(),
+            }),
+            ingress_fullscreen("win-a"),
+        ),
+    );
+    assert!(!focused.effects.is_empty(), "focus shortcut still mints");
+    assert!(!sent.transfers.is_empty(), "send still retains");
     // Real view transfer on the fullscreen window's output: the desired
-    // view actually moves, and the member homing is unchanged.
-    let view_a_opt = switch_opt
+    // view actually moves to the selected non-current workspace, and the
+    // member homing is unchanged.
+    let view_a = switched
         .outputs
         .iter()
         .find(|row| row.output.0 == "out-a")
         .expect("out-a desired view publishes");
     assert_eq!(
-        view_a_opt.logical_view.as_deref(),
-        Some(target_opt.as_str()),
+        view_a.logical_view.as_deref(),
+        Some(target_a.as_str()),
         "switch moves the desired view off the current workspace"
     );
-    assert_eq!(switch_opt.outputs, switch_plain.outputs);
-    assert_eq!(switch_opt.transfers, switch_plain.transfers);
-    assert_eq!(switch_opt.windows, switch_plain.windows);
-    let win_a_opt = switch_opt
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == "win-a")
-        .expect("win-a row publishes");
-    let win_a_plain = switch_plain
+    let win_a = switched
         .windows
         .iter()
         .find(|row| row.lifetime.0 == "win-a")
         .expect("win-a row publishes");
     assert_eq!(
-        win_a_opt.output, win_a_plain.output,
+        sent.windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-a")
+            .expect("win-a row publishes")
+            .output,
+        win_a.output,
         "member output unchanged"
     );
     assert_eq!(
-        win_a_opt.workspace, win_a_plain.workspace,
+        sent.windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-a")
+            .expect("win-a row publishes")
+            .workspace,
+        win_a.workspace,
         "member workspace unchanged"
     );
-    // Cross-lane verdict difference has no v4 expression: suspension is
-    // unconditional (contract 1225-1228), so both lanes suspend alike.
-    // The identical actuation pinned above is the port.
+    // Suspension is unconditional (contract 1225-1228) and carries no
+    // actuation of its own: only the presentation verdict suspends.
 }
 
 #[test]
@@ -625,55 +603,49 @@ fn missing_focused_lifetime_invents_no_verdict() {
     // foreground flag: no output verdict is invented, the existing
     // fullscreen hides still apply, and every other output is retained.
     // No new inference or semantics: the verdict needs a staged fact.
-    for optin in [false, true] {
-        let mut engine = admitted(optin);
-        let reply = accepted(
-            &mut engine,
-            &report(
-                3,
-                3,
-                members(),
-                "ghost",
-                None,
-                None,
-                PresentationIngressV4 {
-                    foreground: "ghost".to_owned(),
-                    foreground_frame: None,
-                    foreground_fullscreen: Some(true),
-                    ..ingress("ghost")
-                },
-            ),
-        );
-        assert_eq!(
-            reply.presentation.suspended_output, None,
-            "no staged fact, no verdict (optin={optin})"
-        );
-        assert_eq!(
-            reply.presentation.border.reason,
-            Some(BorderHideReasonV4::Fullscreen),
-            "existing fullscreen hide applies (optin={optin})"
-        );
-        assert_eq!(
-            reply.presentation.underlay,
-            PresentationUnderlay::Hidden {
-                base_revision: None,
-                reason: GroupHideReason::Fullscreen,
+    let mut engine = admitted();
+    let reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            members(),
+            "ghost",
+            None,
+            None,
+            PresentationIngressV4 {
+                foreground: "ghost".to_owned(),
+                foreground_frame: None,
+                foreground_fullscreen: Some(true),
+                ..ingress("ghost")
             },
-            "existing fullscreen hide applies (optin={optin})"
-        );
-        assert_eq!(
-            reply.presentation.pager.len(),
-            2,
-            "other outputs retained (optin={optin})"
-        );
-        // No verdict on the typed reply (optin={optin}); wire omission
-        // lives in the protocol crate (no v4 canonical encoder in core).
-    }
+        ),
+    );
+    assert_eq!(
+        reply.presentation.suspended_output, None,
+        "no staged fact, no verdict"
+    );
+    assert_eq!(
+        reply.presentation.border.reason,
+        Some(BorderHideReasonV4::Fullscreen),
+        "existing fullscreen hide applies"
+    );
+    assert_eq!(
+        reply.presentation.underlay,
+        PresentationUnderlay::Hidden {
+            base_revision: None,
+            reason: GroupHideReason::Fullscreen,
+        },
+        "existing fullscreen hide applies"
+    );
+    assert_eq!(reply.presentation.pager.len(), 2, "other outputs retained");
+    // No verdict on the typed reply; wire omission lives in the protocol
+    // crate (no v4 canonical encoder in core).
 }
 
 #[test]
 fn empty_focus_and_non_fullscreen_focus_carry_no_verdict() {
-    let mut engine = admitted(true);
+    let mut engine = admitted();
     // Empty focus: no verdict even with a truthful fullscreen flag on an
     // unrelated ingress foreground.
     let empty = accepted(
@@ -705,54 +677,43 @@ fn empty_focus_and_non_fullscreen_focus_carry_no_verdict() {
 
 #[test]
 fn other_output_foreground_shapes_match_unsuspended_publication() {
-    let run = |optin| {
-        let mut engine = admitted(optin);
-        accepted(
-            &mut engine,
-            &report(
-                3,
-                3,
-                fullscreen_members("win-a"),
-                "win-a",
-                None,
-                None,
-                ingress("win-c"),
-            ),
-        )
-    };
-    let plain = run(false);
-    let suspended = run(true);
+    let mut engine = admitted();
+    let suspended = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            fullscreen_members("win-a"),
+            "win-a",
+            None,
+            None,
+            ingress("win-c"),
+        ),
+    );
     assert_eq!(
         suspended.presentation.suspended_output,
         Some(OutputId("out-a".to_owned()))
     );
-    // Witness-free visible has no v4 row (see baseline note); the shape
-    // equalities below port (both lanes compute the same v4 verdicts).
-    assert_eq!(suspended.presentation.border, plain.presentation.border);
-    assert_eq!(suspended.presentation.underlay, plain.presentation.underlay);
-    assert_eq!(
-        suspended.presentation.pager,
-        plain
-            .presentation
-            .pager
-            .into_iter()
-            .filter(|screen| screen.output == "out-b")
-            .collect::<Vec<_>>()
+    // Witness-free visible has no v4 row (see baseline note); the verdict
+    // suspends only the focused output, so the pager keeps the other
+    // output with its content.
+    assert_eq!(suspended.presentation.pager.len(), 1);
+    assert_eq!(suspended.presentation.pager[0].output, "out-b");
+    assert!(
+        !suspended.presentation.pager[0].workspaces.is_empty(),
+        "the unaffected output keeps pager content"
     );
 }
 
 #[test]
 fn default_constructor_publication_bytes_stay_stable() {
-    // The same non-fullscreen stream encodes identically with and without
-    // the opt-in, and omits the suspension key in both cases.
-    let run = |optin: bool| {
-        let mut engine = if optin {
-            WorldEngine::new_test_bound("gen-1", "adapter-1")
-                .expect("generation")
-                .with_focused_fullscreen_presentation_suspension()
-        } else {
-            WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation")
-        };
+    // The same non-fullscreen stream publishes identically on repeat runs
+    // and carries no suspension verdict. Legacy pinned canonical wire
+    // bytes; v4 has no full-reply canonical encoder in core, so the port
+    // pins typed-reply equality (the canonical wire is a deterministic
+    // function of the typed reply).
+    let run = || {
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         let first = accepted(
             &mut engine,
             &report(1, 1, members(), "win-a", None, None, ingress("win-a")),
@@ -763,47 +724,10 @@ fn default_constructor_publication_bytes_stay_stable() {
         );
         (first, second)
     };
-    let (first_plain, second_plain) = run(false);
-    let (first_opt, second_opt) = run(true);
-    // The same non-fullscreen stream publishes identically with and
-    // without the opt-in and carries no suspension verdict in either
-    // case. Legacy pinned canonical wire bytes; v4 has no full-reply
-    // canonical encoder in core, so the port pins typed-reply equality
-    // (the canonical wire is a deterministic function of the typed
-    // reply).
-    assert_eq!(first_opt, first_plain);
-    assert_eq!(second_opt, second_plain);
-    assert_eq!(second_plain.presentation.suspended_output, None);
-    assert_eq!(second_opt.presentation.suspended_output, None);
-}
-
-#[test]
-fn handshake_preserves_focused_fullscreen_optin_across_rehandshake() {
-    use crate::connection::{ApplicationIdentity, HandshakeRequest, HostCapabilities};
-    fn req(adapter: &str, id: &str) -> HandshakeRequest {
-        HandshakeRequest {
-            adapter: adapter.to_owned(),
-            request: id.to_owned(),
-            application_identity: ApplicationIdentity {
-                app_id: None,
-                executable: None,
-                process_id: None,
-            },
-            capabilities: HostCapabilities::without_native_identity(),
-        }
-    }
-    let mut engine = WorldEngine::new("gen-1")
-        .expect("generation")
-        .with_focused_fullscreen_presentation_suspension();
-    assert!(engine.focused_fullscreen_presentation_suspension);
-    let first = engine.handshake(&req("adapter-1", "handshake-1"));
-    assert!(first.kind.is_none());
-    assert!(engine.focused_fullscreen_presentation_suspension);
-    // Wrong/foreign requests still refuse without mutation.
-    let bad = engine.handshake(&req("adapter-1", "bad id!!"));
-    assert!(bad.kind.is_some());
-    assert!(engine.focused_fullscreen_presentation_suspension);
-    let second = engine.handshake(&req("adapter-1", "handshake-2"));
-    assert!(second.kind.is_none());
-    assert!(engine.focused_fullscreen_presentation_suspension);
+    let (first_a, second_a) = run();
+    let (first_b, second_b) = run();
+    assert_eq!(first_b, first_a);
+    assert_eq!(second_b, second_a);
+    assert_eq!(second_a.presentation.suspended_output, None);
+    assert_eq!(second_b.presentation.suspended_output, None);
 }

@@ -124,9 +124,6 @@ impl WorldEngine {
     /// the exact reply-size gate pass; pre-ready reports stage intent
     /// retention on a candidate and return an empty bootstrap reply with no
     /// authority and no revision advance.
-    // allow(dead_code): pending later public cutover owns this entry;
-    // tests drive it.
-    #[allow(dead_code)]
     pub(crate) fn handle_report_v4(
         &mut self,
         report: &WorldReportV4,

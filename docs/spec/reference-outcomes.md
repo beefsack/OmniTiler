@@ -287,7 +287,8 @@ Current OmniTiler source (2026-10-29):
   frames unless held/suppressed. `kwin/src/world-apply.ts:694-752` checks live
   safety/authority and writes a mismatched controlled target once per apply.
   Existing shared hint projection, learned minima and stable-pair/backoff
-  suppression still apply (`crates/tiler-core/src/world_frames.rs:244-321,353-421,600-617`);
+  suppression (host compensation for client-side frame size selection and
+  asynchronous native writes) still apply ([frame policy](../../crates/tiler-core/src/world_frames.rs));
   a report is not an unconditional retry or proof the client obeys.
 - Windows already includes `EVENT_OBJECT_LOCATIONCHANGE` for window objects
   in its wake rule (`crates/tiler-windows/src/tiling_sys/observe.rs:416-453`);

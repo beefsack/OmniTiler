@@ -7638,8 +7638,9 @@ fn v4_staging_drives_convergence_homing_and_resweep() {
 }
 
 fn admission_known_before(engine: &WorldEngine) -> BTreeMap<DomainKey, BTreeSet<String>> {
-    // Mirrors the run_accepted pre-sweep snapshot positions: retained
-    // sessions per readable staged domain only.
+    // Mirrors the `run_accepted_v4_batched` pre-sweep snapshot (`known_before`
+    // in `world_run_v4.rs`): retained sessions per readable staged domain
+    // only.
     let mut known_before: BTreeMap<DomainKey, BTreeSet<String>> = BTreeMap::new();
     for domain in &engine.staged.domains {
         if !domain.readable {

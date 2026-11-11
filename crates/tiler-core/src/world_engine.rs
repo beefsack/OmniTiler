@@ -945,9 +945,6 @@ impl<'a> RawRouting<'a> {
     /// directly from the typed v4 report, never through a v4-to-legacy
     /// conversion. The caller passes the original v4 rows so the freeze
     /// below captures against prior retained state.
-    // allow(dead_code): pending 7d accepted-run assembly owns this
-    // constructor; tests drive it.
-    #[allow(dead_code)]
     pub(crate) fn from_v4(report: &'a WorldReportV4) -> Self {
         Self {
             inventory_complete: report.inventory_complete,
@@ -1326,7 +1323,7 @@ pub struct WorldEngine {
     /// Per-scope sweep failure classification for the report currently
     /// being staged: [`WorldEngine::classify_sweep_hold`] reasons for scope
     /// keys in the staged held set. Cleared at the start of every accepted
-    /// run and published by [`WorldEngine::publish`]; never survives across
+    /// run and published by [`WorldEngine::publish_v4`]; never survives across
     /// reports, incarnations, or generations.
     pub(crate) hold_reasons: BTreeMap<DomainKey, HoldReason>,
     /// Retained gesture session (stage 4a): one open native move/size
@@ -1343,7 +1340,7 @@ pub struct WorldEngine {
     /// on Updated/Started replays).
     pub(crate) consumed_gesture_seq: u64,
     /// Precise result of the latest incorporated gesture terminal, staged
-    /// for the reply being published ([`WorldEngine::publish`] takes it
+    /// for the reply being published ([`WorldEngine::publish_v4`] takes it
     /// into [`WorldReplyV4::gesture_settled`](crate::world_report::WorldReplyV4)). Single slot: each terminal
     /// overwrites; each publish takes. Never drained by the adapter; the
     /// reply carries the per-report result and the next unrelated report
@@ -1371,13 +1368,13 @@ pub struct WorldEngine {
     pub(crate) command_result: Option<CommandResult>,
     /// Terminal retained-operation lifecycle events staged by settlement
     /// ([`WorldEngine::settle_clears`], [`WorldEngine::settle_floats`]) and
-    /// consumed once by [`WorldEngine::publish`] for the reply being built.
+    /// consumed once by [`WorldEngine::publish_v4`] for the reply being built.
     /// Empty on holds and on replies with no operation settlement. Cleared
     /// at the start of every staged run so a previous report's events never
     /// leak.
     pub(crate) operation_settled: Vec<crate::world_report::OperationEvent>,
     /// Terminal selection events staged by switch settlement
-    /// and consumed once by [`WorldEngine::publish`] for the reply being
+    /// and consumed once by [`WorldEngine::publish_v4`] for the reply being
     /// built. Empty on holds and on reports with no switch settlement.
     /// Cleared at the start of every staged run so a previous report's
     /// events never leak.
@@ -1654,14 +1651,6 @@ pub struct WorldEngine {
     /// slot. Explicit seams never set it. `None` outside implicit
     /// execution; refusal rollback restores the pre-command image with it.
     pub(crate) implicit_event_focus: Option<WindowId>,
-    /// Opt-in neutral focused-fullscreen presentation suspension (stage 5):
-    /// when set, a focused surface that is truthfully fullscreen on its
-    /// observed output suspends published border/underlay/pager shapes on
-    /// that output only. KWin only offers truthful `fullScreen`, never game
-    /// identity, so this names the observation (focused fullscreen), never a
-    /// platform or product. Off by default; the Linux service carrier opts
-    /// in explicitly. Never mapping, membership, or command semantics.
-    pub(crate) focused_fullscreen_presentation_suspension: bool,
 }
 
 /// Platform opt-ins for [`WorldEngine`] construction: the only Engine
@@ -1966,7 +1955,6 @@ impl WorldEngine {
             batch_base_focus: BTreeMap::new(),
             batch_command_focus: BTreeSet::new(),
             implicit_event_focus: None,
-            focused_fullscreen_presentation_suspension: false,
         })
     }
 
@@ -2058,8 +2046,6 @@ impl WorldEngine {
         };
         fresh.generation_seed.clone_from(&self.generation_seed);
         fresh.connection_number = next_number;
-        fresh.focused_fullscreen_presentation_suspension =
-            self.focused_fullscreen_presentation_suspension;
         fresh.adapter = Some(request.adapter.clone());
         fresh.connection_owner = Some(owner);
         fresh.engine.sync_binding(
@@ -2276,18 +2262,6 @@ impl WorldEngine {
         &self.core_generation_str
     }
 
-    /// Opt in to neutral focused-fullscreen presentation suspension (stage 5).
-    /// KWin only offers truthful `fullScreen`, never game identity: when the
-    /// focused surface is fullscreen on its observed output, published
-    /// presentation suspends on that output only. No game/app/size
-    /// heuristics; no hotkey/input suppression; normal fullscreen window
-    /// actions, membership, and shortcuts are unchanged.
-    #[must_use]
-    pub fn with_focused_fullscreen_presentation_suspension(mut self) -> Self {
-        self.focused_fullscreen_presentation_suspension = true;
-        self
-    }
-
     /// Advance the consumed gesture id watermark to at least `id`.
     /// Monotonic: replays can never move it backward.
     pub(crate) fn consume_gesture_id(&mut self, id: u64) {
@@ -2299,7 +2273,7 @@ impl WorldEngine {
     /// or without commit, cancel, Esc, explicit-close clear), including
     /// terminals that refuse without binding: the identity is consumed so
     /// a retry can never commit. Stages the result for the reply being
-    /// published; [`WorldEngine::publish`] takes it exactly once.
+    /// published; [`WorldEngine::publish_v4`] takes it exactly once.
     pub(crate) fn record_gesture_terminal(&mut self, id: u64, committed: bool) {
         self.consume_gesture_id(id);
         self.gesture_terminal = Some(GestureSettled { id, committed });

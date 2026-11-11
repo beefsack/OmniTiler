@@ -1,7 +1,6 @@
 //! Parallel v4 desired-state publication: a genuine v4 reply assembled
-//! from staged/retained state, mirroring the legacy [`WorldEngine::publish`]
-//! path through the shared [`crate::world_publish::PublicationRows`]
-//! assembly. Reads no accepted-run identity: the caller supplies the
+//! from staged/retained state through the shared
+//! [`PublicationRows`](crate::world_publish::PublicationRows) assembly. Reads no accepted-run identity: the caller supplies the
 //! envelope directly, and the issuing revision stamps both the reply and
 //! the latest-published presentation revision for later renderer-input
 //! validation. The narrow producer style hold applies before any write
@@ -21,8 +20,6 @@ use crate::world_report::{
 /// from the accepted report, plus the issuing presentation revision that
 /// stamps the reply and the latest-published record. No accepted run, no
 /// ingress replay, no budget wiring.
-// allow(dead_code): pending 7d command dispatch; tests drive it.
-#[allow(dead_code)]
 pub(crate) struct PublishEnvelopeV4 {
     pub adapter_incarnation: String,
     pub request_id: String,
@@ -44,8 +41,6 @@ impl WorldEngine {
     /// pause lane. View echoes always pass empty: the unknown-echo guard
     /// stays on the legacy path. Never retains pager presentation (7d) and
     /// never touches candidate adoption (7e).
-    // allow(dead_code): pending 7d command dispatch; tests drive it.
-    #[allow(dead_code)]
     pub(crate) fn publish_v4(
         &mut self,
         envelope: PublishEnvelopeV4,

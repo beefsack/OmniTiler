@@ -1,6 +1,6 @@
 # World contract (v4 target)
 
-Status: normative target approved at phase 0c, 2026-11-02; not implemented authority.
+Status: normative v4 target approved at phase 0c, 2026-11-02; implemented in core and KDE, with remaining adapter ports and release acceptance tracked by the [migration decision](../decisions/contract.md#contract-authority-and-v4-migration).
 v4 is the implemented v3 wire plus the approved deltas below, nothing else.
 Inline OPEN points carry [port evidence gates](../changes/v4-migration.md#b-reconciliations-and-open-points), not outstanding shape approval.
 

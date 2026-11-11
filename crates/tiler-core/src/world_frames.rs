@@ -7,6 +7,13 @@
 //! clamp/suppress verdict, and a setter success alone never proves geometry
 //! completion: only an exact desired/observed match clears.
 //!
+//! Host compensation, not reference policy: native setters can refuse or
+//! throw, and clients can move, resize, or clamp frames asynchronously
+//! (animations, toolkit-driven sizes), so the core backs off and budgets
+//! retries instead of hammering writes. Applications likewise enforce
+//! their own minimum sizes, which the core cannot override; proven floors
+//! are learned into the hint path instead of forced.
+//!
 //! Two suppression lanes, a persistent floor, and a burst budget, all keyed
 //! by exact window lifetime:
 //!

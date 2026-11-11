@@ -537,8 +537,6 @@ impl WorldEngine {
 
     /// Retain v4 pager facts from the currently staged observation and
     /// presentation row. Reads `staged` only, never a caller report copy.
-    // allow(dead_code): pending sub-7 publish assembly; tests drive this.
-    #[allow(dead_code)]
     pub(crate) fn retain_pager_presentation_v4(&mut self) {
         let (fresh_order, fresh_frames) = match &self.staged.presentation_v4 {
             Some(PresentationRowV4::Valid(ingress)) => (
@@ -732,8 +730,6 @@ impl WorldEngine {
     /// tree there. No ordinal, trailing, binding, label, occupancy, or
     /// member comparison, and no rendered-row history. Returns `None`
     /// when valid, otherwise the rejection kind.
-    // allow(dead_code): pending sub-7 stamp+dispatch wiring; tests drive this.
-    #[allow(dead_code)]
     pub(crate) fn validate_renderer_input_v4(
         &self,
         input: Option<&RendererInput>,

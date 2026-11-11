@@ -119,9 +119,10 @@ pub(super) fn workspace_migrate_tick(
 /// Dispatch one migration intent: shared-mode guard, then a single
 /// direction-only world command with an unresolved source. The core
 /// freezes the action source (neutral report facts plus the
-/// pre-observation retained view) at run_accepted entry, then resolves
-/// the strict target and runs the world migration path. Same-report view
-/// settlement never retargets the intent; the adapter never preselects.
+/// pre-observation retained view) at accepted-run entry
+/// (`freeze_command_sources`), then resolves the strict target and runs
+/// the world migration path. Same-report view settlement never retargets
+/// the intent; the adapter never preselects.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn workspace_migrate_one(
     state: &mut TileLoop,

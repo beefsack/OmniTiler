@@ -551,7 +551,7 @@ impl WorldEngine {
     /// Resolve an omitted send source from the pre-observation retained
     /// home, else the migration/control action context. `None` only when
     /// both are unknown: callers refuse without inventing focus. Call with
-    /// pre-sweep engine state only (see `run_accepted`): the retained home
+    /// pre-sweep engine state only (see `run_accepted_v4`): the retained home
     /// must predate staging, settle, and reconcile for the comparison
     /// against the staged mover to preserve the retired adapter contract
     /// exactly.
