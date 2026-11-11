@@ -1887,7 +1887,7 @@ fn native_reorder_reorders_bound_rows() {
                 fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(D1)),
                 fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(D2)),
             ],
-            vec![native_obs("out-a", &[D2, D1], Some(D2))],
+            vec![native_obs("out-a", &[D2, D1], Some(D1))],
             vec![],
             None,
             None,
@@ -1911,9 +1911,52 @@ fn native_reorder_reorders_bound_rows() {
         .find(|row| row.output.0 == "out-a")
         .and_then(|row| row.logical_view.clone())
         .expect("first view");
-    // Order follows the host; the retained core view does not move on a
-    // native reorder alone (views move through transfers and commands).
-    assert_eq!(view, view_first, "reorder never moves the retained view");
+    // Reorder alone keeps the retained view: order follows the host while
+    // selection stays where the user left it.
+    assert_eq!(
+        view, view_first,
+        "reorder alone never moves the retained view"
+    );
+    let moved = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            one_screen(),
+            vec![
+                fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(D1)),
+                fact_native("win-b", "out-a", rect(400, 0, 200, 560), Some(D2)),
+            ],
+            vec![native_obs("out-a", &[D2, D1], Some(D2))],
+            vec![],
+            None,
+            None,
+            true,
+        ),
+    );
+    let d2_logical = bound_ids(&moved, "out-a")
+        .into_iter()
+        .find(|(_, n)| n == D2)
+        .map(|(id, _)| id)
+        .expect("D2 bound");
+    let moved_view = moved
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-a")
+        .and_then(|row| row.logical_view.clone())
+        .expect("moved view");
+    assert_eq!(
+        moved_view, d2_logical,
+        "reorder plus external selection adopts the shown logical"
+    );
+    assert!(
+        moved
+            .transfers
+            .iter()
+            .all(|flight| !matches!(flight.kind, TransferKind::View | TransferKind::Migration)),
+        "adoption observes without a view/migration transfer: {:?}",
+        moved.transfers
+    );
 }
 
 #[test]

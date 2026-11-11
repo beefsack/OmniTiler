@@ -155,6 +155,15 @@ Implement the 2026-11-10 [dynamic lifecycle decision](../decisions/workspaces.md
   retain the shown empty ordinal-2 desktop; it does not promise deletion of that
   identity or a two-native roster before the user leaves it.
 
+### Idle native selection correction (2026-11-11)
+
+- User 2026-11-11 selected [idle echo adoption](../decisions/workspaces.md#idle-external-native-selection), superseding the diagnosis's unselected alternatives. Core now adopts a complete known output-local native current into its retained view when no view/migration transfer owns selection. It emits no selection transfer or reassertion. Unknown current, missing native rows, incomplete inventories/screens and pending stale echoes do not gain authority.
+- View sanity now prefers the known shown logical row over a different ring head after lifecycle invalidates a retained view. Existing unknown fallback is unchanged: absent proof of a current, this change neither invents a selection nor adds a hold. Gesture holds still fence writes/deletion, not observation-only adoption. Shared mirroring, scoped separate rings and history remain unchanged.
+- Local retired-native selection first clears the local marker and adopts fresh logical identity; idle reconciliation then observes that live identity. Shown-native deletion protection is unchanged. Closing on the adopted desktop retains it empty while shown; leaving permits ordinary pruning and safe native deletion.
+- Fourteen idle regressions include the original red invariant, unknown/incomplete evidence, known-echo fallback after third-location flight retirement, pending view and migration/refill flights, shared/global-unique scope, close/leave retirement and a two-output activation/send-stay/close journey. That journey uses independent synthetic native rosters and adjusted spare placement: it is trace-shaped logic coverage, not exact shared-roster revision-62-to-74 replay. Existing retired-native reselect regressions remain enabled. The reorder regression now independently proves reorder-only stability and simultaneous native-selection adoption rather than treating a changed current as reorder alone.
+- Verification: `cargo test -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture` passes 3297 tests, zero failed/ignored; only the unsafe-posture test is filtered. `npm test` in `kwin` passes 1272/1272 with no skips; `npm run typecheck` passes both configurations. Rust formatting passes. Frozen and active recorded fixtures are unchanged; no recording is required by current byte expectations.
+- Independent review accepts core adoption, fallback, retired-marker ordering, stale-flight protection and added unknown/scope/migration coverage; it explicitly retains the trace-fidelity limit above. Initial verification found a reversed completeness flag in a new test and an obsolete reorder/current-change oracle; both test inputs/oracles are corrected. Native recheck remains pending; prior D2 failure and checklist rows 15/52 stay open until fresh evidence establishes their scope.
+
 ## Units and dependencies
 
 1. Diagnosis and pinned reference comparison (retained below).

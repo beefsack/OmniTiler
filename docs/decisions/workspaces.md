@@ -14,6 +14,14 @@
 - Status: active, 2026-10-16
 - Evidence: [full-state replies](../changes/archive/core-full-state-replies.md).
 
+### Idle external native selection
+- Decision: When complete, known output-local native evidence reports a selection outside core and no retained core view or migration transfer owns that output's selection, adopt the observed selection into the retained view and ordinary scoped history. Never reassert the former core selection against that native switch. Unknown or incomplete selection evidence adopts nothing; existing write/deletion holds and in-flight transfer authority remain unchanged. Shared views retain their common mirrored selection; separate modes adopt only within the output's ring.
+- Decision: If lifecycle removes an invalid retained view, prefer a complete known native current in the surviving ring over the ring head when no transfer owns selection. Do not publish a known-unshown fallback without an owning transfer. With no known echo, preserve existing unknown-evidence fallback and holds. Positive local selection of a locally retired native still clears its marker and adopts a fresh logical identity before view reconciliation.
+- Why: The next host report is reality for core to continue from, not an instruction to undo native user input. A retained/published view must not disagree indefinitely with known native selection while no effect owns convergence.
+- Assumes / revisit if: No new wire shape or native-removal authority. Shown empty desktops remain while shown and become ordinary prune candidates after leaving; the shown-native deletion veto stays.
+- Status: active, User 2026-11-11.
+- Evidence: [native-selection discriminator](../spec/reference-outcomes.md#idle-external-native-selection); [D2 correction](../changes/kde-dynamic-workspaces.md#idle-native-selection-correction-2026-11-11).
+
 ### Focusless switch completion
 - Decision: A selection with no required focus target reports `focus:"unproven"` and `outcome:"complete"` once all visibility obligations are satisfied, with `failed:[]` when nothing failed. The same rule covers empty-to-empty selections with zero visibility members and native-owned focusless selections. An explicit selection whose resolved focus target fails route eligibility freezes a binding with no required focus target; visibility completes through the common path and focus reports `unproven`. Under the approved retained-focus target, independent focus authority uses the one global request, never a parallel direct focus effect; eligibility gates are unchanged. Focus-bearing switches still require proven focus for complete; empty/minimized-only workspaces retain no focused client.
 - Why: use the existing completion rule without unnecessary branching or new wire vocabulary.

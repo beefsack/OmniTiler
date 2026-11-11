@@ -439,20 +439,16 @@ impl WorldEngine {
                 }
             }
         }
-        // View sanity after lifecycle.
+        // View sanity after lifecycle: invalid views use the known-echo fallback.
         for output in &live {
-            let head = self
-                .mapping
-                .get(output)
-                .and_then(|ring| ring.first().cloned());
             let valid = self.views.get(output).is_some_and(|view| {
                 self.mapping
                     .get(output)
                     .is_some_and(|ring| ring.contains(view))
             });
             if !valid {
-                if let Some(head) = head {
-                    self.views.insert(output.clone(), head);
+                if let Some(fallback) = self.preferred_view_fallback(output) {
+                    self.views.insert(output.clone(), fallback);
                 } else {
                     self.views.remove(output);
                 }
@@ -1221,20 +1217,16 @@ impl WorldEngine {
         for key in ringed {
             self.tiling.entry(key).or_insert(seed);
         }
-        // View sanity: every live screen shows a ring member.
+        // View sanity: invalid views use the known-echo fallback.
         for output in &live {
-            let head = self
-                .mapping
-                .get(output)
-                .and_then(|ring| ring.first().cloned());
             let valid = self.views.get(output).is_some_and(|view| {
                 self.mapping
                     .get(output)
                     .is_some_and(|ring| ring.contains(view))
             });
             if !valid {
-                if let Some(head) = head {
-                    self.views.insert(output.clone(), head);
+                if let Some(fallback) = self.preferred_view_fallback(output) {
+                    self.views.insert(output.clone(), fallback);
                 } else {
                     self.views.remove(output);
                 }

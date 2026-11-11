@@ -329,6 +329,81 @@ impl WorldEngine {
         }
     }
 
+    /// Whether a view/migration flight owns one output's selection.
+    /// Idle echo adoption skips these; `settle_views_pre` reconciles them.
+    fn view_flight_owns(&self, output: &str) -> bool {
+        self.retained.iter().any(|retained| {
+            retained.target.target_output.0 == output
+                && matches!(
+                    retained.target.kind,
+                    crate::world_report::TransferKind::View
+                        | crate::world_report::TransferKind::Migration
+                )
+        })
+    }
+
+    /// Fallback when the retained view left the ring: the known native
+    /// echo if it names a ringed logical and no flight owns the output,
+    /// else the ring head. Without an owning flight, the head path needs an
+    /// unknown echo (legacy behavior); a known echo matches the shown view.
+    /// Shared mode keeps the ring head.
+    pub(crate) fn preferred_view_fallback(&self, output: &str) -> Option<String> {
+        if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
+            return self
+                .mapping
+                .get(output)
+                .and_then(|ring| ring.first().cloned());
+        }
+        if !self.view_flight_owns(output) {
+            let out = OutputId(output.to_owned());
+            if let Some(echo) = self.native_echo_for(&out) {
+                return Some(echo);
+            }
+        }
+        self.mapping
+            .get(output)
+            .and_then(|ring| ring.first().cloned())
+    }
+
+    /// Idle adoption (separate-view only): a complete known echo naming a
+    /// ringed logical is observed into the retained view when no flight owns
+    /// the output. Observation only: no transfer, no reassertion, no
+    /// deletion. Unknown/incomplete evidence adopts nothing. Existing holds
+    /// gate writes/deletion, not the observed idle view, so adoption stays
+    /// ungated on the gesture barrier.
+    fn adopt_idle_native_echoes(&mut self) {
+        if !self.host_owned_workspace_domains() {
+            return;
+        }
+        if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
+            return;
+        }
+        if !self.staged.observation.inventory_complete {
+            return;
+        }
+        let outputs: Vec<String> = self
+            .staged
+            .screens
+            .iter()
+            .map(|screen| screen.output.0.clone())
+            .collect();
+        for output in &outputs {
+            if self.view_flight_owns(output) {
+                continue;
+            }
+            let out = OutputId(output.clone());
+            let Some(echo) = self.native_echo_for(&out) else {
+                continue;
+            };
+            if self.views.get(output) == Some(&echo) {
+                continue;
+            }
+            self.views.insert(output.clone(), echo.clone());
+            let ring = self.mapping.get(output).cloned().unwrap_or_default();
+            self.history.observe(output, &echo, &ring);
+        }
+    }
+
     /// Stage-only native last-view retention: the host-owned branch of
     /// `finish` proof retention over staged screens only (no source
     /// report read). Unknown proof removes, exactly like the previous
@@ -803,6 +878,11 @@ impl WorldEngine {
                 }
             }
         }
+        // Idle external-selection adoption: a complete known native
+        // current with no owning core view transfer is adopted into the
+        // retained view, never reasserted against. Runs before lifecycle
+        // so pruning sees the adopted (shown) row as viewed.
+        self.adopt_idle_native_echoes();
         if !shared {
             let live: Vec<String> = self
                 .staged

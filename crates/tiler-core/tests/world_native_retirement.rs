@@ -4599,3 +4599,1359 @@ fn kde_shared_disconnect_serial_receipts_no_duplicate_spare() {
         "fresh spare binds its serial backing at quiescence: {fifth:?}"
     );
 }
+
+fn published_view(reply: &tiler_core::world_report::WorldReplyV4, output: &str) -> Option<String> {
+    reply
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == output)
+        .and_then(|row| row.logical_view.clone())
+}
+
+fn view_transfer_pending(
+    reply: &tiler_core::world_report::WorldReplyV4,
+    output: &str,
+    logical: &str,
+) -> bool {
+    reply.transfers.iter().any(|flight| {
+        flight.target_output.0 == output
+            && flight.target_workspace == logical
+            && matches!(flight.kind, tiler_core::world_report::TransferKind::View)
+    })
+}
+
+fn native_ref(native: &str) -> tiler_core::world_report::WorkspaceRef {
+    tiler_core::world_report::WorkspaceRef::Native {
+        output: OutputId("out-a".to_owned()),
+        workspace: tiler_core::ids::NativeWorkspaceId::parse(native).expect("valid native"),
+    }
+}
+
+/// Idle adoption publishes the complete known echo with no transfer:
+/// the external move converges into the retained view and the shown
+/// row stays live without any core reassertion.
+#[test]
+fn idle_complete_echo_adopts_into_retained_view_without_transfer() {
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            single_screen(),
+            vec![
+                fact_native("win-a", "out-a", Some("d1")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3", "d4"],
+                Some("d1"),
+                &[Some(1), Some(1), Some(0), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
+    let mut reply = first;
+    for seq in 2..=3 {
+        let mut moved = report(
+            seq,
+            seq,
+            single_screen(),
+            vec![
+                fact_native("win-a", "out-a", Some("d1")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3", "d4"],
+                Some("d2"),
+                &[Some(1), Some(1), Some(0), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        );
+        moved.focused_global = "win-b".to_owned();
+        reply = accepted(&mut engine, &moved);
+    }
+    assert_eq!(
+        published_view(&reply, "out-a"),
+        Some(d2.clone()),
+        "idle echo owns publication: {reply:?}"
+    );
+    assert_eq!(reply.transfers.len(), 0, "adoption actuates nothing");
+    assert_eq!(
+        existence(&reply, "out-a", &d2),
+        Some(true),
+        "shown row stays live: {reply:?}"
+    );
+}
+
+/// Shown-but-empty native stays until the user leaves it: closing the
+/// window on the adopted desktop keeps the row live with no tombstone.
+#[test]
+fn idle_adopted_shown_empty_stays_until_leaving() {
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            single_screen(),
+            vec![
+                fact_native("win-a", "out-a", Some("d1")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3", "d4"],
+                Some("d1"),
+                &[Some(1), Some(1), Some(0), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
+    let mut moved = report(
+        2,
+        2,
+        single_screen(),
+        vec![
+            fact_native("win-a", "out-a", Some("d1")),
+            fact_native("win-b", "out-a", Some("d2")),
+        ],
+        vec![native_obs_occ(
+            "out-a",
+            &["d1", "d2", "d3", "d4"],
+            Some("d2"),
+            &[Some(1), Some(1), Some(0), Some(0)],
+        )],
+        None,
+        None,
+        true,
+    );
+    moved.focused_global = "win-b".to_owned();
+    let adopted = accepted(&mut engine, &moved);
+    assert_eq!(published_view(&adopted, "out-a"), Some(d2.clone()));
+    let mut closed = report(
+        3,
+        3,
+        single_screen(),
+        vec![fact_native("win-a", "out-a", Some("d1"))],
+        vec![native_obs_occ(
+            "out-a",
+            &["d1", "d2", "d3", "d4"],
+            Some("d2"),
+            &[Some(1), Some(0), Some(0), Some(0)],
+        )],
+        None,
+        None,
+        true,
+    );
+    closed.closed = vec![WindowId("win-b".to_owned())];
+    let reply = accepted(&mut engine, &closed);
+    assert_eq!(
+        published_view(&reply, "out-a"),
+        Some(d2.clone()),
+        "shown empty keeps the view: {reply:?}"
+    );
+    assert_eq!(
+        existence(&reply, "out-a", &d2),
+        Some(true),
+        "shown empty stays live: {reply:?}"
+    );
+    assert!(
+        tombstone_id(&reply, "out-a", "d2").is_none(),
+        "no deletion intent for the shown native: {reply:?}"
+    );
+    assert_eq!(reply.transfers.len(), 0, "no membership writes");
+}
+
+/// Leaving the shown empty prunes the row and authorizes native
+/// deletion: the tombstone publishes and the fake host may delete.
+#[test]
+fn idle_leave_prunes_row_and_authorizes_native_deletion() {
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            single_screen(),
+            vec![
+                fact_native("win-a", "out-a", Some("d1")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3", "d4"],
+                Some("d1"),
+                &[Some(1), Some(1), Some(0), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
+    let mut moved = report(
+        2,
+        2,
+        single_screen(),
+        vec![
+            fact_native("win-a", "out-a", Some("d1")),
+            fact_native("win-b", "out-a", Some("d2")),
+        ],
+        vec![native_obs_occ(
+            "out-a",
+            &["d1", "d2", "d3", "d4"],
+            Some("d2"),
+            &[Some(1), Some(1), Some(0), Some(0)],
+        )],
+        None,
+        None,
+        true,
+    );
+    moved.focused_global = "win-b".to_owned();
+    let _ = accepted(&mut engine, &moved);
+    let mut closed = report(
+        3,
+        3,
+        single_screen(),
+        vec![fact_native("win-a", "out-a", Some("d1"))],
+        vec![native_obs_occ(
+            "out-a",
+            &["d1", "d2", "d3", "d4"],
+            Some("d2"),
+            &[Some(1), Some(0), Some(0), Some(0)],
+        )],
+        None,
+        None,
+        true,
+    );
+    closed.closed = vec![WindowId("win-b".to_owned())];
+    let _ = accepted(&mut engine, &closed);
+    let reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            single_screen(),
+            vec![fact_native("win-a", "out-a", Some("d1"))],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3", "d4"],
+                Some("d1"),
+                &[Some(1), Some(0), Some(0), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    let tomb = tombstone_id(&reply, "out-a", "d2").expect("left empty retires");
+    assert_eq!(existence(&reply, "out-a", &tomb), Some(false));
+    assert!(
+        !ring_ids(&reply, "out-a").contains(&d2),
+        "left row leaves the ring: {reply:?}"
+    );
+    let native = vec![native_obs_occ(
+        "out-a",
+        &["d1", "d2", "d3", "d4"],
+        Some("d1"),
+        &[Some(1), Some(0), Some(0), Some(0)],
+    )];
+    assert!(
+        host_would_delete(&reply, &native, &[], true, false, "out-a", "d2"),
+        "globally empty unshown native deletes: {reply:?}"
+    );
+    assert_eq!(reply.transfers.len(), 0, "no membership writes");
+}
+
+/// Unknown occupancy still adopts the complete known current into the
+/// view (adoption needs only the complete list) while retirement stays
+/// fail-closed: the shown row is never a tombstone.
+#[test]
+fn idle_unknown_occupancy_adopts_view_without_retiring() {
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
+    let first = setup_four_unpruned(&mut engine);
+    let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
+    let moved = report(
+        2,
+        2,
+        single_screen(),
+        vec![],
+        vec![native_obs_occ(
+            "out-a",
+            &["d1", "d2", "d3", "d4"],
+            Some("d2"),
+            &[Some(0), None, None, Some(0)],
+        )],
+        None,
+        None,
+        true,
+    );
+    let reply = accepted(&mut engine, &moved);
+    assert_eq!(
+        published_view(&reply, "out-a"),
+        Some(d2.clone()),
+        "complete current adopts despite unknown occupancy: {reply:?}"
+    );
+    assert_eq!(
+        existence(&reply, "out-a", &d2),
+        Some(true),
+        "unknown occupancy never retires: {reply:?}"
+    );
+    assert!(
+        tombstone_id(&reply, "out-a", "d2").is_none(),
+        "no tombstone under unknown occupancy: {reply:?}"
+    );
+}
+
+/// Incomplete evidence never adopts: an incomplete screen or a partial
+/// inventory keeps the retained view.
+#[test]
+fn idle_incomplete_evidence_keeps_retained_view() {
+    for incomplete in [true, false] {
+        let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
+        let first = accepted(
+            &mut engine,
+            &report(
+                1,
+                1,
+                single_screen(),
+                vec![fact_native("win-a", "out-a", Some("d1"))],
+                vec![native_obs_occ(
+                    "out-a",
+                    &["d1", "d2", "d3", "d4"],
+                    Some("d1"),
+                    &[Some(1), Some(0), Some(0), Some(0)],
+                )],
+                None,
+                None,
+                true,
+            ),
+        );
+        let d1 = logical_for(&first, "out-a", "d1").expect("d1 bound");
+        let screens = if incomplete {
+            vec![incomplete_screen("out-a", 0)]
+        } else {
+            single_screen()
+        };
+        let reply = accepted(
+            &mut engine,
+            &report(
+                2,
+                2,
+                screens,
+                vec![fact_native("win-a", "out-a", Some("d1"))],
+                vec![native_obs_occ(
+                    "out-a",
+                    &["d1", "d2", "d3", "d4"],
+                    Some("d2"),
+                    &[Some(1), Some(0), Some(0), Some(0)],
+                )],
+                None,
+                None,
+                incomplete,
+            ),
+        );
+        assert_eq!(
+            published_view(&reply, "out-a"),
+            Some(d1.clone()),
+            "incomplete evidence never adopts (screen-incomplete={incomplete}): {reply:?}"
+        );
+    }
+}
+
+/// A pending view transfer is never overridden by a stale echo: the
+/// flight stays pending and publication names its target until fresh
+/// evidence reconciles it.
+#[test]
+fn idle_stale_echo_never_overrides_pending_view_transfer() {
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            single_screen(),
+            vec![
+                fact_native("win-a", "out-a", Some("d1")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3", "d4"],
+                Some("d1"),
+                &[Some(1), Some(1), Some(0), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
+    let flight = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            single_screen(),
+            vec![
+                fact_native("win-a", "out-a", Some("d1")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3", "d4"],
+                Some("d1"),
+                &[Some(1), Some(1), Some(0), Some(0)],
+            )],
+            Some(1),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: d2.clone(),
+            }),
+            true,
+        ),
+    );
+    assert!(
+        view_transfer_pending(&flight, "out-a", &d2),
+        "flight retained: {flight:?}"
+    );
+    // Stale repeat: the host still reports the old current while the
+    // flight is outstanding. The flight holds; nothing reverts.
+    let reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            single_screen(),
+            vec![
+                fact_native("win-a", "out-a", Some("d1")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3", "d4"],
+                Some("d1"),
+                &[Some(1), Some(1), Some(0), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert!(
+        view_transfer_pending(&reply, "out-a", &d2),
+        "stale echo keeps the flight: {reply:?}"
+    );
+    assert_eq!(
+        published_view(&reply, "out-a"),
+        Some(d2.clone()),
+        "stale echo never overrides the pending target: {reply:?}"
+    );
+}
+
+/// Adoption is observation-only and mints no actuation, so it stays
+/// ungated on the gesture barrier: existing holds gate writes and
+/// deletion, not the observed idle view.
+#[test]
+fn idle_adoption_ignores_gesture_barrier_without_actuation() {
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            single_screen(),
+            vec![
+                fact_native("win-a", "out-a", Some("d1")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3", "d4"],
+                Some("d1"),
+                &[Some(1), Some(1), Some(0), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
+    let mut moved = report(
+        2,
+        2,
+        single_screen(),
+        vec![
+            fact_native("win-a", "out-a", Some("d1")),
+            fact_native("win-b", "out-a", Some("d2")),
+        ],
+        vec![native_obs_occ(
+            "out-a",
+            &["d1", "d2", "d3", "d4"],
+            Some("d2"),
+            &[Some(1), Some(1), Some(0), Some(0)],
+        )],
+        None,
+        None,
+        true,
+    );
+    moved.gesture_barrier = true;
+    moved.focused_global = "win-b".to_owned();
+    let reply = accepted(&mut engine, &moved);
+    assert_eq!(
+        published_view(&reply, "out-a"),
+        Some(d2.clone()),
+        "gesture never strands the view: {reply:?}"
+    );
+    assert_eq!(reply.transfers.len(), 0, "adoption actuates nothing");
+}
+
+/// D2 prune fallback: a third-location drop retires the flight without
+/// adopting, then ordinary pruning removes the abandoned target row.
+/// The view-sanity fallback must publish the complete known echo the
+/// host shows (d4), never the ring head (d1).
+#[test]
+fn idle_prune_fallback_prefers_known_echo_over_ring_head() {
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            single_screen(),
+            vec![
+                fact_native("win-a", "out-a", Some("d1")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3", "d4"],
+                Some("d1"),
+                &[Some(1), Some(1), None, Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
+    let d4 = logical_for(&first, "out-a", "d4").expect("d4 bound");
+    let flight = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            single_screen(),
+            vec![
+                fact_native("win-a", "out-a", Some("d1")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3", "d4"],
+                Some("d1"),
+                &[Some(1), Some(1), Some(0), Some(0)],
+            )],
+            Some(1),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: d2.clone(),
+            }),
+            true,
+        ),
+    );
+    assert!(
+        view_transfer_pending(&flight, "out-a", &d2),
+        "flight retained: {flight:?}"
+    );
+    // The user moved to d4 after the proven write path diverged: raw
+    // post names d4 (ringed, neither target d2 nor baseline d1), so the
+    // flight drops as third-location external input without adopting.
+    // win-b closes alongside, so ordinary pruning removes the abandoned
+    // d2 row in the same pass.
+    let mut external = report(
+        3,
+        3,
+        single_screen(),
+        vec![fact_native("win-a", "out-a", Some("d1"))],
+        vec![native_obs_occ(
+            "out-a",
+            &["d1", "d2", "d3", "d4"],
+            Some("d4"),
+            &[Some(1), Some(0), Some(0), Some(0)],
+        )],
+        None,
+        None,
+        true,
+    );
+    external.closed = vec![WindowId("win-b".to_owned())];
+    external.view_attempts = vec![tiler_core::world_report::ViewAttempt {
+        operation_id: "op-1".to_owned(),
+        target_output: OutputId("out-a".to_owned()),
+        target_workspace: d2.clone(),
+        setter: FrameSetter::Accepted,
+        pre: Some(native_ref("d1")),
+        post: Some(native_ref("d4")),
+        baseline: Some(native_ref("d1")),
+        attempt_ms: 0,
+    }];
+    let reply = accepted(&mut engine, &external);
+    assert!(
+        !view_transfer_pending(&reply, "out-a", &d2),
+        "third-location external input drops the flight: {reply:?}"
+    );
+    assert_eq!(
+        published_view(&reply, "out-a"),
+        Some(d4.clone()),
+        "fallback publishes the known echo, never the ring head: {reply:?}"
+    );
+    assert!(
+        tombstone_id(&reply, "out-a", "d2").is_some(),
+        "abandoned row prunes: {reply:?}"
+    );
+    assert_eq!(reply.transfers.len(), 0, "no membership writes");
+}
+
+/// D2 idle-divergence invariant (policy-neutral): a complete, known native
+/// current that moves with no outstanding command or retained flight must
+/// not leave a settled published/native view divergence. Either the
+/// published view's native binding matches the known current (adoption) or
+/// an explicit view transfer owns convergence to the published view
+/// (bounded re-assertion). The actually-shown native stays live either way:
+/// the raw-current veto is preserved, never weakened, and no deletion of
+/// the shown native is required.
+#[test]
+fn idle_external_current_move_leaves_no_unexplained_view_divergence() {
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
+    // Both occupied rows stay live; unrelated empty rows may retire.
+    // The only view change below is the external current move.
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            single_screen(),
+            vec![
+                fact_native("win-a", "out-a", Some("d1")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3", "d4"],
+                Some("d1"),
+                &[Some(1), Some(1), Some(0), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
+    // Idle external move: compositor current d1 -> d2 with no core command
+    // and no membership change. Repeated complete reports settle the state,
+    // so any divergence is idle steady state rather than one-frame lag.
+    let mut reply = first;
+    for seq in 2..=4 {
+        let mut moved = report(
+            seq,
+            seq,
+            single_screen(),
+            vec![
+                fact_native("win-a", "out-a", Some("d1")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3", "d4"],
+                Some("d2"),
+                &[Some(1), Some(1), Some(0), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        );
+        // The real trigger activates win-b on d2: focus follows the move.
+        moved.focused_global = "win-b".to_owned();
+        reply = accepted(&mut engine, &moved);
+    }
+    // Shown-native protection holds: the echo-named row stays live.
+    assert_eq!(
+        existence(&reply, "out-a", &d2),
+        Some(true),
+        "actually-shown native stays live: {reply:?}"
+    );
+    // Policy-neutral convergence: either the published view is bound to the
+    // known idle current, or a view transfer explicitly owns convergence to
+    // the published view.
+    let published = reply
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-a")
+        .and_then(|row| row.logical_view.clone())
+        .expect("published view");
+    let published_native = bound_ids(&reply, "out-a")
+        .into_iter()
+        .find(|(id, _)| id == &published)
+        .map(|(_, native)| native);
+    let view_owned = reply.transfers.iter().any(|flight| {
+        flight.target_output.0 == "out-a"
+            && flight.target_workspace == published
+            && matches!(flight.kind, tiler_core::world_report::TransferKind::View)
+    });
+    assert!(
+        published_native.as_deref() == Some("d2") || view_owned,
+        "settled idle current d2 must match the published view binding ({published_native:?}) or own it with a view transfer: {reply:?}"
+    );
+}
+
+/// Unknown current (`None`) and a missing native row hold the retained
+/// view; the next complete current adopts with no transfer.
+#[test]
+fn idle_unknown_current_none_then_missing_row_hold_then_adopt() {
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            single_screen(),
+            vec![
+                fact_native("win-a", "out-a", Some("d1")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3", "d4"],
+                Some("d1"),
+                &[Some(1), Some(1), Some(0), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    let d1 = logical_for(&first, "out-a", "d1").expect("d1 bound");
+    let d2 = logical_for(&first, "out-a", "d2").expect("d2 bound");
+    // `None` current is unknown: the retained view holds.
+    let none_reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            single_screen(),
+            vec![
+                fact_native("win-a", "out-a", Some("d1")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![native_obs_occ(
+                "out-a",
+                &["d1", "d2", "d3", "d4"],
+                None,
+                &[Some(1), Some(1), Some(0), Some(0)],
+            )],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert_eq!(
+        published_view(&none_reply, "out-a"),
+        Some(d1.clone()),
+        "None current holds: {none_reply:?}"
+    );
+    // A missing native row is also unknown: the retained view holds.
+    let missing_reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            single_screen(),
+            vec![
+                fact_native("win-a", "out-a", Some("d1")),
+                fact_native("win-b", "out-a", Some("d2")),
+            ],
+            vec![],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert_eq!(
+        published_view(&missing_reply, "out-a"),
+        Some(d1.clone()),
+        "missing native row holds: {missing_reply:?}"
+    );
+    // The next complete current adopts with no transfer.
+    let mut moved = report(
+        4,
+        4,
+        single_screen(),
+        vec![
+            fact_native("win-a", "out-a", Some("d1")),
+            fact_native("win-b", "out-a", Some("d2")),
+        ],
+        vec![native_obs_occ(
+            "out-a",
+            &["d1", "d2", "d3", "d4"],
+            Some("d2"),
+            &[Some(1), Some(1), Some(0), Some(0)],
+        )],
+        None,
+        None,
+        true,
+    );
+    moved.focused_global = "win-b".to_owned();
+    let reply = accepted(&mut engine, &moved);
+    assert_eq!(
+        published_view(&reply, "out-a"),
+        Some(d2.clone()),
+        "complete current adopts after unknown legs: {reply:?}"
+    );
+    assert_eq!(reply.transfers.len(), 0, "adoption actuates nothing");
+}
+
+/// D2 live-trace shape (per-output-local, two outputs): X on A/ws2, Y+Z
+/// on B/ws2 while B shows ws3; external activation moves B to ws2;
+/// send-stay moves Z to ws3; X closes and A is left; Y closes leaving B
+/// showing an empty ws2 with no mismatch; leaving B retires the surplus
+/// with host deletion allowed. Real send command; closes via `closed`.
+#[test]
+fn idle_d2_two_output_activation_send_close_leave_journey() {
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![
+                fact_native("win-w", "out-a", Some("a1")),
+                fact_native("win-x", "out-a", Some("a2")),
+                fact_native("win-y", "out-b", Some("b2")),
+                fact_native("win-z", "out-b", Some("b2")),
+                fact_native("win-q", "out-b", Some("b4")),
+            ],
+            vec![
+                native_obs_occ(
+                    "out-a",
+                    &["a1", "a2", "a3"],
+                    Some("a2"),
+                    &[Some(1), Some(1), Some(0)],
+                ),
+                native_obs_occ(
+                    "out-b",
+                    &["b2", "b4", "b3"],
+                    Some("b3"),
+                    &[Some(2), Some(1), Some(0)],
+                ),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    let a2 = logical_for(&first, "out-a", "a2").expect("a2 bound");
+    let b2 = logical_for(&first, "out-b", "b2").expect("b2 bound");
+    let b3 = logical_for(&first, "out-b", "b3").expect("b3 bound");
+    assert_eq!(published_view(&first, "out-a"), Some(a2.clone()));
+    assert_eq!(
+        published_view(&first, "out-b"),
+        logical_for(&first, "out-b", "b3"),
+        "B shows ws3 while Y/Z sit on ws2: {first:?}"
+    );
+    // External activation: B current ws3 -> ws2 with no core command.
+    // Send-stay Z to ws3 rides the same report as a real command.
+    let mut send_report = report(
+        2,
+        2,
+        two_screens(),
+        vec![
+            fact_native("win-w", "out-a", Some("a1")),
+            fact_native("win-x", "out-a", Some("a2")),
+            fact_native("win-y", "out-b", Some("b2")),
+            fact_native("win-z", "out-b", Some("b2")),
+            fact_native("win-q", "out-b", Some("b4")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["a1", "a2", "a3"],
+                Some("a2"),
+                &[Some(1), Some(1), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["b2", "b4", "b3"],
+                Some("b2"),
+                &[Some(2), Some(1), Some(0)],
+            ),
+        ],
+        Some(1),
+        Some(WorldCommand::Send {
+            window: WindowId("win-z".to_owned()),
+            target_output: OutputId("out-b".to_owned()),
+            target_workspace: b3.clone(),
+            follow: false,
+        }),
+        true,
+    );
+    send_report.focused_global = "win-z".to_owned();
+    let activated = accepted(&mut engine, &send_report);
+    assert_eq!(
+        published_view(&activated, "out-b"),
+        Some(b2.clone()),
+        "external activation adopts ws2: {activated:?}"
+    );
+    assert!(
+        activated
+            .transfers
+            .iter()
+            .any(|flight| { flight.target_output.0 == "out-b" && flight.target_workspace == b3 }),
+        "send-stay retained: {activated:?}"
+    );
+    // Arrival: Z lands on ws3, follow=false keeps the B view on ws2.
+    let arrived = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            two_screens(),
+            vec![
+                fact_native("win-w", "out-a", Some("a1")),
+                fact_native("win-x", "out-a", Some("a2")),
+                fact_native("win-y", "out-b", Some("b2")),
+                fact_native("win-z", "out-b", Some("b3")),
+                fact_native("win-q", "out-b", Some("b4")),
+            ],
+            vec![
+                native_obs_occ(
+                    "out-a",
+                    &["a1", "a2", "a3"],
+                    Some("a2"),
+                    &[Some(1), Some(1), Some(0)],
+                ),
+                native_obs_occ(
+                    "out-b",
+                    &["b2", "b4", "b3"],
+                    Some("b2"),
+                    &[Some(1), Some(1), Some(1)],
+                ),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert_eq!(
+        published_view(&arrived, "out-b"),
+        Some(b2.clone()),
+        "send-stay keeps the source view: {arrived:?}"
+    );
+    // Close X and leave A: A current ws2 -> ws1, the emptied ws2 retires.
+    let mut leave_a = report(
+        4,
+        4,
+        two_screens(),
+        vec![
+            fact_native("win-w", "out-a", Some("a1")),
+            fact_native("win-y", "out-b", Some("b2")),
+            fact_native("win-z", "out-b", Some("b3")),
+            fact_native("win-q", "out-b", Some("b4")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["a1", "a2", "a3"],
+                Some("a1"),
+                &[Some(1), Some(0), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["b2", "b4", "b3"],
+                Some("b2"),
+                &[Some(1), Some(1), Some(1)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    leave_a.closed = vec![WindowId("win-x".to_owned())];
+    let left_a = accepted(&mut engine, &leave_a);
+    assert!(
+        tombstone_id(&left_a, "out-a", "a2").is_some(),
+        "left ws2 retires on A: {left_a:?}"
+    );
+    assert_eq!(
+        existence(&left_a, "out-a", &a2),
+        Some(false),
+        "left row is removal intent: {left_a:?}"
+    );
+    // Close Y: B shows an empty ws2 that stays adopted with no mismatch
+    // and no deletion intent for the shown native.
+    let mut close_y = report(
+        5,
+        5,
+        two_screens(),
+        vec![
+            fact_native("win-w", "out-a", Some("a1")),
+            fact_native("win-z", "out-b", Some("b3")),
+            fact_native("win-q", "out-b", Some("b4")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["a1", "a2", "a3"],
+                Some("a1"),
+                &[Some(1), Some(0), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["b2", "b4", "b3"],
+                Some("b2"),
+                &[Some(0), Some(1), Some(1)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    close_y.closed = vec![WindowId("win-y".to_owned())];
+    let shown_empty = accepted(&mut engine, &close_y);
+    assert_eq!(
+        published_view(&shown_empty, "out-b"),
+        Some(b2.clone()),
+        "B shown-empty ws2 stays adopted: {shown_empty:?}"
+    );
+    assert_eq!(
+        existence(&shown_empty, "out-b", &b2),
+        Some(true),
+        "shown empty stays live: {shown_empty:?}"
+    );
+    assert!(
+        tombstone_id(&shown_empty, "out-b", "b2").is_none(),
+        "no deletion intent for the shown native: {shown_empty:?}"
+    );
+    let shown_native = bound_ids(&shown_empty, "out-b")
+        .into_iter()
+        .find(|(id, _)| id == &published_view(&shown_empty, "out-b").expect("view"))
+        .map(|(_, native)| native);
+    assert_eq!(
+        shown_native.as_deref(),
+        Some("b2"),
+        "no unowned publish mismatch: {shown_empty:?}"
+    );
+    assert_eq!(shown_empty.transfers.len(), 0, "no membership writes");
+    // Close Z and leave B: the unshown, globally empty ws2 retires and
+    // the fake host may delete it.
+    let mut leave_b = report(
+        6,
+        6,
+        two_screens(),
+        vec![
+            fact_native("win-w", "out-a", Some("a1")),
+            fact_native("win-q", "out-b", Some("b4")),
+        ],
+        vec![
+            native_obs_occ(
+                "out-a",
+                &["a1", "a2", "a3"],
+                Some("a1"),
+                &[Some(1), Some(0), Some(0)],
+            ),
+            native_obs_occ(
+                "out-b",
+                &["b2", "b4", "b3"],
+                Some("b3"),
+                &[Some(0), Some(1), Some(0)],
+            ),
+        ],
+        None,
+        None,
+        true,
+    );
+    leave_b.closed = vec![WindowId("win-z".to_owned())];
+    let left_b = accepted(&mut engine, &leave_b);
+    let tomb = tombstone_id(&left_b, "out-b", "b2").expect("left ws2 retires");
+    assert_eq!(existence(&left_b, "out-b", &tomb), Some(false));
+    assert!(
+        !ring_ids(&left_b, "out-b").contains(&b2),
+        "left row leaves the ring: {left_b:?}"
+    );
+    let native_rows = vec![
+        native_obs_occ(
+            "out-a",
+            &["a1", "a2", "a3"],
+            Some("a1"),
+            &[Some(1), Some(0), Some(0)],
+        ),
+        native_obs_occ(
+            "out-b",
+            &["b2", "b4", "b3"],
+            Some("b3"),
+            &[Some(0), Some(1), Some(0)],
+        ),
+    ];
+    assert!(
+        host_would_delete(
+            &left_b,
+            &native_rows,
+            &[
+                fact_native("win-w", "out-a", Some("a1")),
+                fact_native("win-q", "out-b", Some("b4"))
+            ],
+            true,
+            false,
+            "out-b",
+            "b2"
+        ),
+        "globally empty unshown ws2 deletes: {left_b:?}"
+    );
+}
+
+/// Pending migration target and source refill survive a stale echo: both
+/// flights stay pending with unchanged publication, and the refill child
+/// exists throughout the interval.
+#[test]
+fn idle_migration_target_and_refill_hold_through_stale_echo() {
+    let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal, false);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("a1")),
+                fact_native("win-b", "out-b", Some("b1")),
+            ],
+            vec![
+                native_obs_occ("out-a", &["a1", "a2"], Some("a1"), &[Some(1), Some(0)]),
+                native_obs_occ("out-b", &["b1", "b2"], Some("b1"), &[Some(1), Some(0)]),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    let migrated = logical_for(&first, "out-a", "a1").expect("a1 bound");
+    let drained = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            two_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("a1")),
+                fact_native("win-b", "out-b", Some("b1")),
+            ],
+            vec![
+                native_obs_occ("out-a", &["a1", "a2"], Some("a1"), &[Some(1), Some(0)]),
+                native_obs_occ("out-b", &["b1", "b2"], Some("b1"), &[Some(1), Some(0)]),
+            ],
+            Some(1),
+            Some(WorldCommand::MigrateWorkspace {
+                source_output: OutputId("out-a".to_owned()),
+                target_output: OutputId("out-b".to_owned()),
+                workspace: migrated.clone(),
+            }),
+            true,
+        ),
+    );
+    let migration_op = drained
+        .transfers
+        .iter()
+        .find(|flight| {
+            matches!(
+                flight.kind,
+                tiler_core::world_report::TransferKind::Migration
+            )
+        })
+        .expect("migration retained")
+        .operation_id
+        .clone();
+    let refill_op = format!("{migration_op}-refill");
+    let refill_ws = drained
+        .transfers
+        .iter()
+        .find(|flight| flight.operation_id == refill_op)
+        .expect("refill child retained")
+        .target_workspace
+        .clone();
+    let view_before_a = published_view(&drained, "out-a");
+    let view_before_b = published_view(&drained, "out-b");
+    // Stale repeat: both currents still name the pre-migration views while
+    // the flights are outstanding. Neither flight settles and the refill
+    // child still exists; publication does not move.
+    let reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            two_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("a1")),
+                fact_native("win-b", "out-b", Some("b1")),
+            ],
+            vec![
+                native_obs_occ("out-a", &["a1", "a2"], Some("a1"), &[Some(1), Some(0)]),
+                native_obs_occ("out-b", &["b1", "b2"], Some("b1"), &[Some(1), Some(0)]),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert!(
+        reply
+            .transfers
+            .iter()
+            .any(|flight| flight.operation_id == migration_op),
+        "stale echo keeps the migration target: {reply:?}"
+    );
+    assert!(
+        reply
+            .transfers
+            .iter()
+            .any(|flight| flight.operation_id == refill_op),
+        "stale echo keeps the source refill child: {reply:?}"
+    );
+    assert_eq!(
+        published_view(&reply, "out-a"),
+        view_before_a,
+        "stale echo never overrides the refill: {reply:?}"
+    );
+    assert_eq!(
+        published_view(&reply, "out-b"),
+        view_before_b,
+        "stale echo never overrides the migration target: {reply:?}"
+    );
+    let _ = refill_ws;
+}
+
+/// GlobalUnique keeps per-output native bindings disjoint: the same native
+/// name on two outputs maps to different logicals, so idle adoption on
+/// both outputs cannot publish a duplicate logical view.
+#[test]
+fn idle_global_unique_adopts_distinct_logicals_per_output() {
+    let mut engine = engine_host_owned(WorkspaceMode::GlobalUnique, false);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("g2")),
+                fact_native("win-b", "out-b", Some("g2")),
+            ],
+            vec![
+                native_obs_occ("out-a", &["g1", "g2"], Some("g1"), &[Some(0), Some(1)]),
+                native_obs_occ("out-b", &["g1", "g2"], Some("g1"), &[Some(0), Some(1)]),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    let la2 = logical_for(&first, "out-a", "g2").expect("g2 bound a");
+    let lb2 = logical_for(&first, "out-b", "g2").expect("g2 bound b");
+    assert_ne!(la2, lb2, "scoped bindings are disjoint: {first:?}");
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            two_screens(),
+            vec![
+                fact_native("win-a", "out-a", Some("g2")),
+                fact_native("win-b", "out-b", Some("g2")),
+            ],
+            vec![
+                native_obs_occ("out-a", &["g1", "g2"], Some("g2"), &[Some(0), Some(1)]),
+                native_obs_occ("out-b", &["g1", "g2"], Some("g2"), &[Some(0), Some(1)]),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert_eq!(
+        published_view(&reply, "out-a"),
+        Some(la2.clone()),
+        "out-a adopts its own g2 logical: {reply:?}"
+    );
+    assert_eq!(
+        published_view(&reply, "out-b"),
+        Some(lb2.clone()),
+        "out-b adopts its own g2 logical: {reply:?}"
+    );
+    assert_ne!(
+        published_view(&reply, "out-a"),
+        published_view(&reply, "out-b"),
+        "no duplicate logical view across outputs: {reply:?}"
+    );
+    assert_eq!(reply.transfers.len(), 0, "adoption actuates nothing");
+}
+
+/// Shared mode keeps one mirrored view: an idle external current change
+/// stays mirrored on both outputs with no swap policy.
+#[test]
+fn idle_shared_external_change_stays_mirrored() {
+    let mut engine = engine_host_owned(WorkspaceMode::Shared, false);
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![fact_native("win-a", "out-a", Some("g2"))],
+            vec![
+                native_obs_occ("out-a", &["g1", "g2"], Some("g1"), &[Some(0), Some(1)]),
+                native_obs_occ("out-b", &["g1", "g2"], Some("g1"), &[Some(0), Some(1)]),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    let g2 = logical_for(&first, "out-a", "g2").expect("g2 bound");
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            two_screens(),
+            vec![fact_native("win-a", "out-a", Some("g2"))],
+            vec![
+                native_obs_occ("out-a", &["g1", "g2"], Some("g2"), &[Some(0), Some(1)]),
+                native_obs_occ("out-b", &["g1", "g2"], Some("g2"), &[Some(0), Some(1)]),
+            ],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert_eq!(
+        published_view(&reply, "out-a"),
+        Some(g2.clone()),
+        "shared mirrors the external change on out-a: {reply:?}"
+    );
+    assert_eq!(
+        published_view(&reply, "out-b"),
+        Some(g2.clone()),
+        "shared mirrors the external change on out-b: {reply:?}"
+    );
+    assert_eq!(reply.transfers.len(), 0, "no swap or actuation");
+}

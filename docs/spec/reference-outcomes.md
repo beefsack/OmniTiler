@@ -19,6 +19,12 @@ New reference-WM findings use latest stable release tags and inline source-versi
 labels under the [reference source policy](../decisions/reference-and-shortcuts.md#reference-outcome-authority).
 Existing citation keys retain historical pins until relied on again; KDE policy is unchanged.
 
+### Idle external native selection
+
+| Minimal action sequence | Selected outcome | Unproven outcome |
+| --- | --- | --- |
+| Show native 3 on B; externally activate Z on native 2 without a core selection transfer; send Z away without follow, close the remaining occupant of 2, then leave 2. Repeat with unknown current, incomplete evidence and a pending core view transfer's stale echo | User 2026-11-11: adopt complete known native 2 into retained view/history, without a selection write. Keep shown-empty 2; after leaving, ordinary pruning and globally safe native deletion apply. Unknown/incomplete evidence does not adopt and a pending core transfer retains authority over stale echoes. Invalid retained-view fallback uses the known current, not a different ring head | Exact Tier 1 external-host-selection counterparts remain TBD; those WMs own selection directly. Synthetic idle/fallback, multi-output journey, migration/refill and scope regressions pass offline, not a byte-exact replay of historical revisions 62-74. [Decision](../decisions/workspaces.md#idle-external-native-selection) |
+
 ### Shared native roster lifecycle
 
 | Minimal action sequence | Selected outcome | Unproven outcome |
