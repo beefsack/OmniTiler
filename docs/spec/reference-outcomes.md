@@ -19,6 +19,85 @@ New reference-WM findings use latest stable release tags and inline source-versi
 labels under the [reference source policy](../decisions/reference-and-shortcuts.md#reference-outcome-authority).
 Existing citation keys retain historical pins until relied on again; KDE policy is unchanged.
 
+### Core platform switch discriminators
+
+- Evidence awaiting separate C6 choices, 2026-11-12; source inspection at
+  OmniTiler `4c419cee`, not native acceptance or a new behavior selection.
+  [Switch evidence/options](../changes/core-platform-switch-evidence.md).
+- Extend [R-WS-05](reference-outcomes/workspaces.md#r-ws-05-floating-transfer)
+  with automatic origin, and reuse the focus-only leg of
+  [R-MAX-08](reference-outcomes/maximize-fullscreen.md#r-max-08-focus-and-move-while-maximized)
+  plus [R-OUT-11](reference-outcomes/multi-output.md#r-out-11-directional-focus-between-fullscreen-or-maximized-outputs).
+  Existing manual-float, workspace-migration and fullscreen findings do not
+  establish these automatic-float or maximize legs.
+
+| Stable discriminator | Given / When | Observe |
+| --- | --- | --- |
+| C6-SEND (R-WS-05 automatic-origin variant) | Given an ordinary, ownerless, focused F automatically floated by equal nonzero min/max 640x480, not fullscreen/maximized/sticky, on tiled WS1; WS2 tiled with ordinary A. When explicitly send F to WS2 without follow. Fresh repeat to an occupied adjacent output's tiled workspace, equal work area/scale with room for F. | Refusal versus transfer; float class, size and destination A's allocation. No manual float override; do not substitute a transient dialog or whole-workspace migration. |
+| C6-FOCUS-LOCAL (R-MAX-08 focus-only) | Given one output, retained tiled `H[A,B*,C]` and focused per-window maximized non-fullscreen B. When directional focus Left once at defaults (COSMIC default vertical workspace layout). | B retained versus sibling focus; overlay state. No subsequent move, fullscreen, sole-tile or width-preset substitute. |
+| C6-FOCUS-CROSS (R-OUT-11 maximize leg) | Given occupied adjacent L/R, maximized tiled A focused on L, maximized tiled B on R, readable ordinary safety facts. When directional focus Right once; fresh repeat without R. | Final focused member/output and both overlays; absence of R must not be mistaken for evidence about crossing. |
+
+| Then, per reference | C6-SEND | C6-FOCUS-LOCAL | C6-FOCUS-CROSS |
+| --- | --- | --- | --- |
+| i3 | i3 4.25.1: transfer retains float/size; same-output no coordinate fix; output leg adjusts coordinates (`C6-I`) | i3 4.25.1: unsupported per-window maximize fixture; derived maximize hint is not an overlay (`C6-I`) | i3 4.25.1: unsupported maximize fixture; no outcome inferred from fullscreen |
+| sway | sway 1.12: transfer retains float/size; output leg adjusts coordinates (`C6-S`) | sway 1.12: unsupported maximize fixture; request only schedules configure (`C6-S`) | sway 1.12: unsupported maximize fixture; no outcome inferred from fullscreen |
+| Hyprland/Dwindle | Hyprland v0.56.2: transfer retains float and target size at monitor-relative position (`C6-H`) | Hyprland v0.56.2: stays at shipped defaults; covering maximize excludes ordinary sibling targets (`C6-H`) | Hyprland v0.56.2: query/monitor fallback exists; final eligible target and overlay preservation TBD (`C6-H`) |
+| COSMIC | COSMIC epoch-1.10.0: transfer to tiling-enabled target goes through fresh tiling map, not retained floating placement; actual fixed client pixels TBD (`C6-C`) | COSMIC epoch-1.10.0: tiled maximize returns no local target; Left output fallback has no other output, so stays (`C6-C`) | COSMIC epoch-1.10.0: local miss falls back to output switch with default vertical layout; final target/overlay state TBD. Horizontal layout uses NextWorkspace for Right, not this same output-switch route (`C6-C`) |
+| bspwm | TBD: automatic-origin send not rechecked | TBD: unsupported maximize fixture in R-MAX-08 | TBD: unsupported maximize fixture in R-OUT-11 |
+| xmonad/Tall+Navigation2D | TBD: automatic-origin send not rechecked | TBD: unsupported per-window maximize fixture in R-MAX-08 | TBD: unsupported maximize fixture in R-OUT-11 |
+| qtile/Columns | TBD: automatic-origin send not rechecked | TBD: this isolated fresh leg not rechecked | TBD |
+| awesome/tile | TBD: automatic-origin send not rechecked | TBD: this isolated fresh leg not rechecked | TBD |
+| niri | TBD | TBD: no new tag check of this isolated leg | TBD |
+| PaperWM | TBD | TBD: native-overlay fixture unsupported in existing R-MAX-08; no width-preset substitution | TBD |
+| karousel/Lazy | TBD | TBD: this isolated fresh leg not rechecked | TBD: single-screen profile has no second-output fixture |
+| paneru | TBD | TBD: no native maximize verb; host-Zoom journey not substituted | TBD |
+| Ours KDE | At `4c419cee`, default send=false refuses this tiled-boundary automatic float; floating-workspace boundary bypasses flag. Native outcome TBD | Native v4 universal early refusal keeps B for either flag value | Native v4 early refusal keeps A for either flag value, contrary to selected cross policy; native acceptance TBD |
+| Ours Windows | At `4c419cee`, constructor send=true permits deferred carry; complete v4/native adoption not established here | Native v4 early refusal keeps B even with constructor fence=false; native acceptance TBD | Native v4 early refusal keeps A even with fence=false; selected cross policy/native acceptance remain distinct |
+
+- Ours code evidence: `crates/tiler-core/src/session/world.rs:710-735`,
+  `world_sends.rs:584-634,671-697,829-877,911-937`,
+  `world_directional.rs:154-164`, `world_operations.rs:535-572,620-703`.
+  Fresh composed-maximize variant: tiled base skips local and may cross;
+  float base refuses, both independent of the constructor fence. macOS reports
+  native maximize null (`crates/tiler-macos/src/runtime_core.rs:326-352`), not
+  a fictitious false fact; composed focus/native delivery remains TBD.
+- Source evidence below establishes routing/classification, not runtime pixels,
+  focus settlement, transient-owner coupling or host capability truth values.
+  Cross-focus user tests must record the final focused member/output and both
+  overlay states; no Tier 1 cross result is guessed from a local refusal.
+
+Stable-tag source citations (paths/lines belong to these tags, not checkout HEAD):
+
+- `C6-I`, i3 **4.25.1**: `src/manage.c:469-471,528-532` auto-floats fixed
+  clients; [src/con.c:1382-1395](https://github.com/i3/i3/blob/4.25.1/src/con.c#L1382-L1395)
+  keeps the floating wrapper, output send reuses workspace transfer
+  (`:1587-1592`); `src/con.c:429-441` explains the derived maximize hint.
+- `C6-S`, sway **1.12**: `sway/desktop/xdg_shell.c:228-235` fixed/parent
+  auto-float; `sway/tree/view.c:911-913` applies it;
+  [sway/commands/move.c:198-239](https://github.com/swaywm/sway/blob/1.12/sway/commands/move.c#L198-L239)
+  retains floating, workspace/output destinations share it (`:562-574`);
+  `sway/desktop/xdg_shell.c:385-393` maximize request only configures.
+- `C6-H`, Hyprland **v0.56.2**: `src/managers/XWaylandManager.cpp:110-143`
+  detects fixed clients; `src/desktop/view/Window.cpp:2129-2131` floats them;
+  [src/desktop/state/GlobalWindowController.cpp:35-80](https://github.com/hyprwm/Hyprland/blob/v0.56.2/src/desktop/state/GlobalWindowController.cpp#L35-L80)
+  carries float with unchanged target size and monitor-relative position.
+  `src/managers/fullscreen/FullscreenController.hpp:12-16` includes MAXIMIZED
+  in fullscreen modes; `src/managers/fullscreen/handler/FullscreenHandler.cpp:49-58,195-198`
+  treats non-NONE modes as overlays and maximizes to the work area.
+  `src/config/values/ConfigValues.cpp:180,534-538` shipped no-focus-fallback=false,
+  cycle=false/monitor-fallback=true; `src/config/shared/actions/ConfigActions.cpp:368-454`
+  queries, tries monitors, then either stays at the spanning-edge check or
+  wraps through the same query; `src/desktop/state/WindowQuery.cpp:98-128`
+  applies covering-overlay candidate gates to both queries.
+- `C6-C`, COSMIC **epoch-1.10.0**: `src/shell/layout/mod.rs:46-52` fixed-size
+  dialog predicate and `src/shell/mod.rs:2957-2999` automatic floating admission;
+  [src/shell/mod.rs:3515-3623](https://github.com/pop-os/cosmic-comp/blob/epoch-1.10.0/src/shell/mod.rs#L3515-L3623)
+  transfer sends tiling-enabled destinations to tiling map (`:3597-3602`),
+  whose `src/shell/layout/tiling/mod.rs:396-435` maps/updates a tree rather than
+  restoring float placement. `src/shell/mod.rs:4140-4143` tiled-maximize local
+  refusal; `src/input/actions.rs:745-802` fallback;
+  `cosmic-comp-config/src/workspace.rs:40-45` default vertical layout.
+
 ### Idle external native selection
 
 | Minimal action sequence | Selected outcome | Unproven outcome |
