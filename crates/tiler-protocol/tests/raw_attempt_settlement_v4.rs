@@ -36,6 +36,15 @@ fn fixture_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/world-wire/v4")
 }
 
+/// Current active handshake/scenario family root. Frozen `v4` bytes predate
+/// the required `sharedNativeRoster` capability key and stay byte-immutable;
+/// strict ordered execution reads genuinely encoder-generated handshakes and
+/// scenarios from here, never inferring the new capability from `hostOwned`.
+fn active_fixture_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/world-wire/v4-active")
+}
+
 /// Evaluate one literal fixture jq assertion: `Ok(())` on a strict JSON
 /// `true` result, `Err(detail)` on a literal JSON `false`. Anything else
 /// (bad exit, syntax or runtime error, non-boolean output) panics: a broken
@@ -1464,9 +1473,17 @@ impl VisibilityHostDriver {
 }
 
 fn load_scenario_value(scenario_id: &str) -> serde_json::Value {
-    let text =
+    // Strict current conformance resolves scenarios from the active family;
+    // scenarios without an encoder-generated active counterpart fall back to
+    // the frozen bytes for unchanged non-handshake data. No in-memory
+    // migration or default decoding ever fills the new capability key.
+    let active = active_fixture_root().join(format!("scenarios/{scenario_id}.json"));
+    let text = if active.exists() {
+        std::fs::read_to_string(&active).expect("active scenario reads")
+    } else {
         std::fs::read_to_string(fixture_root().join(format!("scenarios/{scenario_id}.json")))
-            .expect("scenario reads");
+            .expect("scenario reads")
+    };
     serde_json::from_str(&text).expect("scenario parses")
 }
 
@@ -2230,10 +2247,8 @@ fn persistent_above_capacity_actual_fixture_input_prefix_passes() {
 /// the initial handshake afterwards.
 #[test]
 fn test_bridge_refuses_unbound_engine() {
-    let text =
-        std::fs::read_to_string(fixture_root().join("scenarios/raw-attempt-settlement.json"))
-            .expect("scenario reads");
-    let scenario: serde_json::Value = serde_json::from_str(&text).expect("scenario parses");
+    // Strict current shape: the active encoder-generated handshake vector.
+    let scenario = load_scenario_value("raw-attempt-settlement");
     let steps = scenario
         .get("steps")
         .and_then(serde_json::Value::as_array)

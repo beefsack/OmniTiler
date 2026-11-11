@@ -36,6 +36,11 @@ Mechanical API checks use `git show <pin>:<path>` and `git grep <pattern>
 
 ## V4 connection and recovery
 
+- Declare required `sharedNativeRoster:true` for both per-output and linked
+  native selectors: the native desktop roster is global while selector coupling
+  changes current-desktop behavior. This is separate from `equalCount`.
+  Connection vectors use `test-fixtures/world-wire/v4-active`; historical bytes
+  stay unchanged. Current producer-byte checks use `test-fixtures/kde-v4-active`.
 - Physical output metadata: capture scripting `manufacturer`, `model` and
   `serialNumber` as neutral facts, normalizing native empty strings to
   null only at the KDE boundary; preserve other strings, including literal

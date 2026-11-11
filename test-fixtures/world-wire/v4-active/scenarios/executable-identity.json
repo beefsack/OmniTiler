@@ -1,0 +1,1351 @@
+{
+  "format": "world-wire-v4-ordered-scenario",
+  "id": "executable-identity",
+  "driver": "core",
+  "initial": {
+    "freshEngine": true,
+    "generationSequence": [
+      "generation-a"
+    ],
+    "adapter": "adapter-a",
+    "native": {}
+  },
+  "steps": [
+    {
+      "id": "handshake",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "type": "handshake",
+          "v": 4,
+          "adapter": "adapter-a",
+          "req": "handshake-a",
+          "applicationIdentity": {
+            "appId": null,
+            "executable": "c:\\synthetic\\omnitiler.exe",
+            "processId": "pid-own-1"
+          },
+          "capabilities": {
+            "hostOwned": false,
+            "equalCount": false,
+            "sharedNativeRoster": false,
+            "birthClear": true,
+            "nativeSelectorScope": "per-output",
+            "windowSuppression": true,
+            "maximize": true,
+            "fullscreen": true,
+            "nativeSticky": false,
+            "above": true,
+            "warp": true,
+            "tiledFloatTransfer": true,
+            "unavailableFacts": []
+          }
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message == {type:\"handshake-reply\",v:4,adapter:\"adapter-a\",req:\"handshake-a\",gen:\"generation-a\",ready:false,kind:\"\"}"
+        ]
+      },
+      "rules": [
+        "handshake-and-lifetime"
+      ]
+    },
+    {
+      "id": "settings",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "type": "settings",
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "req": "settings-1",
+          "rev": "1",
+          "values": {
+            "gap": 8,
+            "outer": 8,
+            "defaultTiled": true,
+            "mode": "per-output-local",
+            "sameAxis": "group-with-neighbor",
+            "bornMaximized": "tile-on-launch",
+            "predicate": "both-axes-fixed",
+            "anchorFallback": "largest-splittable-window",
+            "noSpaceResult": "float",
+            "refill": "last-remaining-workspace",
+            "switchTarget": "cursor-output",
+            "freshPlacement": "cursor-output-last-focused",
+            "focusFollowsCursor": false,
+            "cursorWarp": false,
+            "borderEnabled": true,
+            "underlayEnabled": true,
+            "borderWidth": 3,
+            "borderGap": 0,
+            "borderRadius": 6,
+            "underlayExtension": -1
+          }
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.status == \"accepted\" and .output.message.diagnostics == []",
+          ".output.actions == []"
+        ]
+      },
+      "rules": [
+        "revisioned-settings"
+      ]
+    },
+    {
+      "id": "shell-xaml-popup",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "obs": "1",
+          "reqSeq": "1",
+          "req": "request-1",
+          "cmdSeq": null,
+          "command": null,
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": "Example",
+                "model": "Panel",
+                "serial": "serial-a",
+                "connector": "connector-a"
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "identity-1",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "managed": true,
+              "acceptsInput": true,
+              "activationInhibited": false,
+              "toolWindow": false,
+              "owned": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "above": false,
+              "below": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "appId": "example.app",
+              "executable": "c:\\synthetic\\searchhost.exe",
+              "processId": "pid-foreign-1",
+              "class": "Windows.UI.Core.CoreWindow",
+              "title": "Window",
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [],
+          "native": [],
+          "focused": "identity-1",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "identity-1",
+            "minimized": false,
+            "maximized": false,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "identity-1"
+            ],
+            "pagerFrames": [
+              {
+                "win": "identity-1",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "identity-1",
+              "obs": "1",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "identity-1"
+            },
+            "foregroundOut": "out-a"
+          },
+          "monotonicMs": "100",
+          "intentRecords": [],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null,
+          "foregroundKnown": true
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.presentation.border.reason == \"shell\"",
+          ".output.actions == []",
+          ".output.message.windows | any(.win == \"identity-1\" and .member_auth == \"controlled\")"
+        ]
+      },
+      "rules": [
+        "executable-identity",
+        "neutral-classification-vocabulary-and-applicability"
+      ]
+    },
+    {
+      "id": "foreign-xaml-class",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "obs": "2",
+          "reqSeq": "2",
+          "req": "request-2",
+          "cmdSeq": null,
+          "command": null,
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": "Example",
+                "model": "Panel",
+                "serial": "serial-a",
+                "connector": "connector-a"
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "identity-2",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "managed": true,
+              "acceptsInput": true,
+              "activationInhibited": false,
+              "toolWindow": false,
+              "owned": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "above": false,
+              "below": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
+              "processId": "pid-foreign-2",
+              "class": "Windows.UI.Core.CoreWindow",
+              "title": "Window",
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [
+            "identity-1"
+          ],
+          "native": [],
+          "focused": "identity-2",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "identity-2",
+            "minimized": false,
+            "maximized": false,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "identity-2"
+            ],
+            "pagerFrames": [
+              {
+                "win": "identity-2",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "identity-2",
+              "obs": "2",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "identity-2"
+            },
+            "foregroundOut": "out-a"
+          },
+          "monotonicMs": "200",
+          "intentRecords": [],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null,
+          "foregroundKnown": true
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.presentation.border.visible == true and .output.message.presentation.border.reason == \"\"",
+          ".output.actions == []",
+          ".output.message.windows | any(.win == \"identity-2\" and .member_auth == \"controlled\")"
+        ]
+      },
+      "rules": [
+        "executable-identity",
+        "neutral-classification-vocabulary-and-applicability"
+      ]
+    },
+    {
+      "id": "explorer-not-shell-popup",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "obs": "3",
+          "reqSeq": "3",
+          "req": "request-3",
+          "cmdSeq": null,
+          "command": null,
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": "Example",
+                "model": "Panel",
+                "serial": "serial-a",
+                "connector": "connector-a"
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "identity-3",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "managed": true,
+              "acceptsInput": true,
+              "activationInhibited": false,
+              "toolWindow": false,
+              "owned": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "above": false,
+              "below": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "appId": "example.app",
+              "executable": "c:\\synthetic\\explorer.exe",
+              "processId": "pid-foreign-3",
+              "class": "Windows.UI.Core.CoreWindow",
+              "title": "Window",
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [
+            "identity-2"
+          ],
+          "native": [],
+          "focused": "identity-3",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "identity-3",
+            "minimized": false,
+            "maximized": false,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "identity-3"
+            ],
+            "pagerFrames": [
+              {
+                "win": "identity-3",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "identity-3",
+              "obs": "3",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "identity-3"
+            },
+            "foregroundOut": "out-a"
+          },
+          "monotonicMs": "300",
+          "intentRecords": [],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null,
+          "foregroundKnown": true
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.presentation.border.visible == true and .output.message.presentation.border.reason == \"\"",
+          ".output.actions == []",
+          ".output.message.windows | any(.win == \"identity-3\" and .member_auth == \"controlled\")"
+        ]
+      },
+      "rules": [
+        "executable-identity",
+        "neutral-classification-vocabulary-and-applicability"
+      ]
+    },
+    {
+      "id": "own-settings",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "obs": "4",
+          "reqSeq": "4",
+          "req": "request-4",
+          "cmdSeq": null,
+          "command": null,
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": "Example",
+                "model": "Panel",
+                "serial": "serial-a",
+                "connector": "connector-a"
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "identity-4",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "managed": true,
+              "acceptsInput": true,
+              "activationInhibited": false,
+              "toolWindow": false,
+              "owned": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "above": false,
+              "below": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "appId": "example.app",
+              "executable": "c:\\synthetic\\omnitiler.exe",
+              "processId": "pid-settings-2",
+              "class": "OmniTilerSettings",
+              "title": "Window",
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [
+            "identity-3"
+          ],
+          "native": [],
+          "focused": "identity-4",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "identity-4",
+            "minimized": false,
+            "maximized": false,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "identity-4"
+            ],
+            "pagerFrames": [
+              {
+                "win": "identity-4",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "identity-4",
+              "obs": "4",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "identity-4"
+            },
+            "foregroundOut": "out-a"
+          },
+          "monotonicMs": "400",
+          "intentRecords": [],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null,
+          "foregroundKnown": true
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.presentation.border.visible == true and .output.message.presentation.border.reason == \"\"",
+          ".output.actions == []",
+          ".output.message.windows | any(.win == \"identity-4\" and .member_auth == \"controlled\")"
+        ]
+      },
+      "rules": [
+        "executable-identity",
+        "neutral-classification-vocabulary-and-applicability"
+      ]
+    },
+    {
+      "id": "foreign-settings-class",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "obs": "5",
+          "reqSeq": "5",
+          "req": "request-5",
+          "cmdSeq": null,
+          "command": null,
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": "Example",
+                "model": "Panel",
+                "serial": "serial-a",
+                "connector": "connector-a"
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "identity-5",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "managed": true,
+              "acceptsInput": true,
+              "activationInhibited": false,
+              "toolWindow": false,
+              "owned": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "above": false,
+              "below": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "appId": "example.app",
+              "executable": "c:\\synthetic\\foreign.exe",
+              "processId": "pid-foreign-5",
+              "class": "OmniTilerSettings",
+              "title": "Window",
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [
+            "identity-4"
+          ],
+          "native": [],
+          "focused": "identity-5",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "identity-5",
+            "minimized": false,
+            "maximized": false,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "identity-5"
+            ],
+            "pagerFrames": [
+              {
+                "win": "identity-5",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "identity-5",
+              "obs": "5",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "identity-5"
+            },
+            "foregroundOut": "out-a"
+          },
+          "monotonicMs": "500",
+          "intentRecords": [],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null,
+          "foregroundKnown": true
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.presentation.border.visible == true and .output.message.presentation.border.reason == \"\"",
+          ".output.actions == []",
+          ".output.message.windows | any(.win == \"identity-5\" and .member_auth == \"controlled\")"
+        ]
+      },
+      "rules": [
+        "executable-identity",
+        "neutral-classification-vocabulary-and-applicability"
+      ]
+    },
+    {
+      "id": "own-other-class",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "obs": "6",
+          "reqSeq": "6",
+          "req": "request-6",
+          "cmdSeq": null,
+          "command": null,
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": "Example",
+                "model": "Panel",
+                "serial": "serial-a",
+                "connector": "connector-a"
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "identity-6",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "managed": true,
+              "acceptsInput": true,
+              "activationInhibited": false,
+              "toolWindow": false,
+              "owned": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "above": false,
+              "below": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "appId": "example.app",
+              "executable": "c:\\synthetic\\omnitiler.exe",
+              "processId": "pid-foreign-6",
+              "class": "Example",
+              "title": "Window",
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [
+            "identity-5"
+          ],
+          "native": [],
+          "focused": "identity-6",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "identity-6",
+            "minimized": false,
+            "maximized": false,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "identity-6"
+            ],
+            "pagerFrames": [
+              {
+                "win": "identity-6",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "identity-6",
+              "obs": "6",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "identity-6"
+            },
+            "foregroundOut": "out-a"
+          },
+          "monotonicMs": "600",
+          "intentRecords": [],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null,
+          "foregroundKnown": true
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.presentation.border.visible == true and .output.message.presentation.border.reason == \"\"",
+          ".output.actions == []",
+          ".output.message.windows | any(.win == \"identity-6\" and .member_auth == \"controlled\")"
+        ]
+      },
+      "rules": [
+        "executable-identity",
+        "neutral-classification-vocabulary-and-applicability"
+      ]
+    },
+    {
+      "id": "unowned-generic-dialog",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "obs": "7",
+          "reqSeq": "7",
+          "req": "request-7",
+          "cmdSeq": null,
+          "command": null,
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": "Example",
+                "model": "Panel",
+                "serial": "serial-a",
+                "connector": "connector-a"
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "identity-7",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "managed": true,
+              "acceptsInput": true,
+              "activationInhibited": false,
+              "toolWindow": false,
+              "owned": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "above": false,
+              "below": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
+              "processId": "pid-foreign-7",
+              "class": "#32770",
+              "title": "Window",
+              "type": "dialog",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            },
+            {
+              "win": "win-control",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "managed": true,
+              "acceptsInput": true,
+              "activationInhibited": false,
+              "toolWindow": false,
+              "owned": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "above": false,
+              "below": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
+              "processId": "pid-foreign-8",
+              "class": "Example",
+              "title": "Window",
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [
+            "identity-6"
+          ],
+          "native": [],
+          "focused": "identity-7",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "identity-7",
+            "minimized": false,
+            "maximized": false,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "identity-7"
+            ],
+            "pagerFrames": [
+              {
+                "win": "identity-7",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "identity-7",
+              "obs": "7",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "identity-7"
+            },
+            "foregroundOut": "out-a"
+          },
+          "monotonicMs": "700",
+          "intentRecords": [],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null,
+          "foregroundKnown": true
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.presentation.border.reason != \"shell\"",
+          ".output.actions == []",
+          ".output.message.windows | all(.win != \"identity-7\" or .member_auth != \"controlled\")",
+          ".output.message.windows | any(.win == \"win-control\" and .member_auth == \"controlled\")"
+        ]
+      },
+      "rules": [
+        "executable-identity",
+        "neutral-classification-vocabulary-and-applicability"
+      ]
+    }
+  ]
+}

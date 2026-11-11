@@ -91,6 +91,7 @@ pub enum NativeSelectorScope {
 pub struct HostCapabilities {
     pub host_owned: bool,
     pub equal_count: bool,
+    pub shared_native_roster: bool,
     pub birth_clear: bool,
     pub native_selector_scope: NativeSelectorScope,
     pub window_suppression: bool,
@@ -108,6 +109,7 @@ impl Default for HostCapabilities {
         Self {
             host_owned: false,
             equal_count: false,
+            shared_native_roster: false,
             birth_clear: false,
             native_selector_scope: NativeSelectorScope::PerOutput,
             window_suppression: false,

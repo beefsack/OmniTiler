@@ -8,7 +8,7 @@ use tiler_core::connection::{
 use tiler_core::settings_state::SettingsState;
 
 fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/world-wire/v4")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/world-wire/v4-active")
 }
 
 #[test]
@@ -70,11 +70,34 @@ fn manifest_connection_fixtures_round_trip_or_reject() {
         }
     }
     assert_eq!(
-        count, 89,
+        count, 92,
         "manifest fixture selection changed; update explicit family coverage deliberately"
     );
-    assert_eq!(rejects, 51);
+    assert_eq!(rejects, 54);
     assert_eq!(accepted, 38);
+}
+
+#[test]
+fn frozen_v4_handshakes_reject_without_shared_native_roster() {
+    // Historical valid v4 handshakes predate the required sharedNativeRoster
+    // capability, so the current strict shape rejects them (shape, not a
+    // capability-value verdict). The active family lives in v4-active.
+    for id in ["handshake-native", "handshake-emulated"] {
+        let bytes = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../test-fixtures/world-wire/v4/messages/{id}.json"
+        )))
+        .unwrap();
+        let input = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            !input.contains("sharedNativeRoster"),
+            "{id} is frozen history"
+        );
+        assert_eq!(
+            decode_handshake_request(input),
+            Err(CodecError("shape")),
+            "{id} rejects without the new key"
+        );
+    }
 }
 
 #[test]
@@ -119,6 +142,7 @@ fn fixture_caps() -> HostCapabilities {
     HostCapabilities {
         host_owned: false,
         equal_count: false,
+        shared_native_roster: false,
         birth_clear: true,
         native_selector_scope: NativeSelectorScope::PerOutput,
         window_suppression: true,
@@ -526,6 +550,7 @@ fn setting_name_utf8_bounds_and_unknown_name_diagnostics_round_trip() {
     let capabilities = HostCapabilities {
         host_owned: true,
         equal_count: false,
+        shared_native_roster: false,
         birth_clear: false,
         native_selector_scope: NativeSelectorScope::PerOutput,
         window_suppression: false,

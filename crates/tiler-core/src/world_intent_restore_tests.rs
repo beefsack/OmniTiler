@@ -1382,6 +1382,7 @@ fn rehandshake_resets_intent_ledgers() {
         capabilities: crate::connection::HostCapabilities {
             host_owned: true,
             equal_count: true,
+            shared_native_roster: false,
             birth_clear: true,
             native_selector_scope: crate::connection::NativeSelectorScope::AllOutputs,
             window_suppression: true,

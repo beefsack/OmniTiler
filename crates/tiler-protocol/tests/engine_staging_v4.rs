@@ -25,6 +25,17 @@ fn fixture_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/world-wire/v4")
 }
 
+/// Current active handshake/scenario family root. Frozen `v4` bytes predate
+/// the required `sharedNativeRoster` capability key and stay byte-immutable;
+/// strict staging conformance reads genuinely encoder-generated handshakes
+/// and scenarios from here, never inferring the new capability from
+/// `hostOwned` (macOS `hostOwned` output-local Spaces vectors are
+/// `sharedNativeRoster: false`).
+fn active_fixture_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/world-wire/v4-active")
+}
+
 #[derive(serde::Deserialize)]
 struct Manifest {
     fixtures: Vec<ManifestFixture>,
@@ -258,10 +269,14 @@ fn v4_staging_conserves_scenario_reports() {
 }
 
 /// Decode the immutable fixture `id` plus its manifest-declared handshake
-/// context, both through the existing codecs. Returns the report and the
-/// handshake's capabilities for a capability-context engine.
+/// context, both through the existing codecs. Reports resolve through the
+/// active manifest (unchanged vectors referenced by relative `../v4/...`
+/// paths); handshakes are the genuinely encoder-generated active vectors
+/// carrying the required `sharedNativeRoster` key, decoded strictly.
+/// Returns the report and the handshake's capabilities for a
+/// capability-context engine.
 fn fixture_report_with_handshake(id: &str) -> (WorldReportV4, HostCapabilities) {
-    let root = fixture_root();
+    let root = active_fixture_root();
     let manifest: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(root.join("manifest.json")).expect("v4 manifest reads"),
     )
@@ -482,11 +497,13 @@ fn v4_staging_grades_sticky_native_free_attempt_with_maximize_hold() {
 }
 
 /// The five capability-context scenarios stage report steps under each
-/// segment's declared handshake (decoded with the existing handshake codec).
-/// One engine per handshake establishes capability context only: the
-/// clone-based census retains nothing, so this pins staged/rejected counts
-/// plus representative conflict/support assertions, never sequential
-/// retained-state progression or full execution.
+/// segment's declared handshake (decoded strictly with the existing handshake
+/// codec from the genuinely encoder-generated active counterparts under
+/// `test-fixtures/world-wire/v4-active/scenarios`). One engine per handshake
+/// establishes capability context only: the clone-based census retains
+/// nothing, so this pins staged/rejected counts plus representative
+/// conflict/support assertions, never sequential retained-state progression
+/// or full execution.
 #[test]
 fn v4_staging_covers_capability_context_scenarios() {
     for (scenario, expected_staged, expected_rejected) in [
@@ -496,9 +513,10 @@ fn v4_staging_covers_capability_context_scenarios() {
         ("window-state", 19, 0),
         ("raw-attempt-settlement", 10, 0),
     ] {
-        let text =
-            std::fs::read_to_string(fixture_root().join(format!("scenarios/{scenario}.json")))
-                .expect("scenario reads");
+        let text = std::fs::read_to_string(
+            active_fixture_root().join(format!("scenarios/{scenario}.json")),
+        )
+        .expect("scenario reads");
         let value: serde_json::Value = serde_json::from_str(&text).expect("scenario parses");
         let steps = value
             .get("steps")

@@ -102,7 +102,7 @@ describe("v4 connection codecs (handshake + settings)", () => {
         assert.deepEqual(body["applicationIdentity"], { appId: null, executable: null, processId: OWN_PROCESS_ID_TOKEN });
         const caps = body["capabilities"] as Record<string, unknown>;
         assert.deepEqual(Object.keys(caps), [
-            "hostOwned", "equalCount", "birthClear", "nativeSelectorScope", "windowSuppression",
+            "hostOwned", "equalCount", "sharedNativeRoster", "birthClear", "nativeSelectorScope", "windowSuppression",
             "maximize", "fullscreen", "nativeSticky", "above", "warp", "tiledFloatTransfer", "unavailableFacts",
         ]);
         // A request never parses as a reply (exact type tag).

@@ -102,6 +102,7 @@ export interface KwinApplicationIdentity {
 export interface KwinHostCapabilities {
     readonly hostOwned: boolean;
     readonly equalCount: boolean;
+    readonly sharedNativeRoster: boolean;
     readonly birthClear: boolean;
     readonly nativeSelectorScope: "per-output" | "all-outputs";
     readonly windowSuppression: boolean;
@@ -118,6 +119,7 @@ export function defaultKwinCapabilities(nativePerOutput: boolean = false): KwinH
     return {
         hostOwned: true,
         equalCount: true,
+        sharedNativeRoster: true,
         birthClear: true,
         nativeSelectorScope: nativePerOutput ? "per-output" : "all-outputs",
         windowSuppression: false,
@@ -333,6 +335,7 @@ export function buildHandshakeRequest(
     if (
         typeof capabilities.hostOwned !== "boolean" ||
         typeof capabilities.equalCount !== "boolean" ||
+        typeof capabilities.sharedNativeRoster !== "boolean" ||
         typeof capabilities.birthClear !== "boolean" ||
         (capabilities.nativeSelectorScope !== "per-output" &&
             capabilities.nativeSelectorScope !== "all-outputs") ||
@@ -351,7 +354,7 @@ export function buildHandshakeRequest(
     const out =
         `{"type":"handshake","v":${WORLD_CONNECTION_VERSION},"adapter":${esc(adapter)},"req":${esc(req)},` +
         `"applicationIdentity":{"appId":${id(identity.appId)},"executable":${id(identity.executable)},"processId":${id(identity.processId)}},` +
-        `"capabilities":{"hostOwned":${capabilities.hostOwned},"equalCount":${capabilities.equalCount},` +
+        `"capabilities":{"hostOwned":${capabilities.hostOwned},"equalCount":${capabilities.equalCount},"sharedNativeRoster":${capabilities.sharedNativeRoster},` +
         `"birthClear":${capabilities.birthClear},"nativeSelectorScope":${esc(capabilities.nativeSelectorScope)},` +
         `"windowSuppression":${capabilities.windowSuppression},"maximize":${capabilities.maximize},` +
         `"fullscreen":${capabilities.fullscreen},"nativeSticky":${capabilities.nativeSticky},` +

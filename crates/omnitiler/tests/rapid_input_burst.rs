@@ -93,6 +93,7 @@ fn inner_report_closed_focused(windows: &[String], closed: &[String], focused: &
             .map(|id| format!("\"{id}\""))
             .collect::<Vec<_>>()
             .join(","),
+        !focused.is_empty(),
         disabled_presentation()
     )
 }
@@ -118,6 +119,7 @@ fn inner_report_host_native(windows: &[String], focused: &str) -> String {
           \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\
           \"rendererInput\":null}}",
         windows.join(","),
+        !focused.is_empty(),
         disabled_presentation()
     )
 }
@@ -168,7 +170,7 @@ fn handshake_req_owned(adapter: &str, req: &str, host_owned: bool) -> String {
         "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"{req}\",\
           \"applicationIdentity\":{{\"appId\":null,\"executable\":\"fixture-actuator\",\
           \"processId\":\"pid-own-1\"}},\
-          \"capabilities\":{{\"hostOwned\":{host_owned},\"equalCount\":false,\"birthClear\":false,\
+          \"capabilities\":{{\"hostOwned\":{host_owned},\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
           \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
           \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
           \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"

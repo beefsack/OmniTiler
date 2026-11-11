@@ -211,6 +211,7 @@ pub fn decode_handshake_request(input: &str) -> Result<HandshakeRequest, CodecEr
     let ck = [
         "hostOwned",
         "equalCount",
+        "sharedNativeRoster",
         "birthClear",
         "nativeSelectorScope",
         "windowSuppression",
@@ -254,6 +255,7 @@ pub fn decode_handshake_request(input: &str) -> Result<HandshakeRequest, CodecEr
     let capabilities = HostCapabilities {
         host_owned: boolean(&cm["hostOwned"])?,
         equal_count: boolean(&cm["equalCount"])?,
+        shared_native_roster: boolean(&cm["sharedNativeRoster"])?,
         birth_clear: boolean(&cm["birthClear"])?,
         native_selector_scope: scope,
         window_suppression: boolean(&cm["windowSuppression"])?,
@@ -609,7 +611,7 @@ pub fn encode_handshake_request(v: &HandshakeRequest) -> Result<String, CodecErr
         .collect::<Vec<_>>()
         .join(",");
     let out = format!(
-        "{{\"type\":\"handshake\",\"v\":4,\"adapter\":{},\"req\":{},\"applicationIdentity\":{{\"appId\":{},\"executable\":{},\"processId\":{}}},\"capabilities\":{{\"hostOwned\":{},\"equalCount\":{},\"birthClear\":{},\"nativeSelectorScope\":{},\"windowSuppression\":{},\"maximize\":{},\"fullscreen\":{},\"nativeSticky\":{},\"above\":{},\"warp\":{},\"tiledFloatTransfer\":{},\"unavailableFacts\":[{}]}}}}",
+        "{{\"type\":\"handshake\",\"v\":4,\"adapter\":{},\"req\":{},\"applicationIdentity\":{{\"appId\":{},\"executable\":{},\"processId\":{}}},\"capabilities\":{{\"hostOwned\":{},\"equalCount\":{},\"sharedNativeRoster\":{},\"birthClear\":{},\"nativeSelectorScope\":{},\"windowSuppression\":{},\"maximize\":{},\"fullscreen\":{},\"nativeSticky\":{},\"above\":{},\"warp\":{},\"tiledFloatTransfer\":{},\"unavailableFacts\":[{}]}}}}",
         encode_json_string(&v.adapter),
         encode_json_string(&v.request),
         id(&v.application_identity.app_id),
@@ -617,6 +619,7 @@ pub fn encode_handshake_request(v: &HandshakeRequest) -> Result<String, CodecErr
         id(&v.application_identity.process_id),
         c.host_owned,
         c.equal_count,
+        c.shared_native_roster,
         c.birth_clear,
         encode_json_string(scope),
         c.window_suppression,

@@ -35,6 +35,12 @@ not v4 acceptance evidence.
   `nativeSticky` = `false` (W3: no native sticky; logical sticky
   composes through suppression); `tiledFloatTransfer` = `false`
   (correct polarity for the no-remap route).
+- Required `sharedNativeRoster:false` (User 2026-11-11): Windows uses the
+  tiler-owned workspace route, not a shared native identity roster. Include the
+  key in the v4 port's exact handshake and update strict readers; old readers
+  reject amended handshakes until updated. The field is independent of
+  `equalCount` and `nativeSelectorScope`. Current connection vectors live in
+  `test-fixtures/world-wire/v4-active`; historical bytes remain unchanged.
 - `unavailableFacts`, in `FactName` catalog order
   ([catalog](world-contract.md#neutral-classification-vocabulary-and-applicability)):
   `managed,acceptsInput,transient,modal,below,role,appId,title,activationPolicy,layer`.

@@ -50,6 +50,7 @@ pub(crate) fn macos_capabilities() -> HostCapabilities {
     HostCapabilities {
         host_owned: true,
         equal_count: false,
+        shared_native_roster: false,
         birth_clear: false,
         native_selector_scope: NativeSelectorScope::PerOutput,
         window_suppression: false,

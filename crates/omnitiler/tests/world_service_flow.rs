@@ -184,7 +184,7 @@ fn handshake_req(adapter: &str, req: &str) -> String {
         "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"{req}\",\
           \"applicationIdentity\":{{\"appId\":null,\"executable\":\"fixture-actuator\",\
           \"processId\":\"pid-own-1\"}},\
-          \"capabilities\":{{\"hostOwned\":true,\"equalCount\":false,\"birthClear\":false,\
+          \"capabilities\":{{\"hostOwned\":true,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
           \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
           \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
           \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
@@ -2431,7 +2431,7 @@ fn handshake_req_birth(adapter: &str, req: &str) -> String {
         "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"{req}\",\
           \"applicationIdentity\":{{\"appId\":null,\"executable\":\"fixture-actuator\",\
           \"processId\":\"pid-own-1\"}},\
-          \"capabilities\":{{\"hostOwned\":true,\"equalCount\":false,\"birthClear\":true,\
+          \"capabilities\":{{\"hostOwned\":true,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":true,\
           \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
           \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
           \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
@@ -3576,7 +3576,7 @@ fn handshake_req_equal_count(adapter: &str, req: &str) -> String {
         "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"{req}\",\
           \"applicationIdentity\":{{\"appId\":null,\"executable\":\"fixture-actuator\",\
           \"processId\":\"pid-own-1\"}},\
-          \"capabilities\":{{\"hostOwned\":true,\"equalCount\":true,\"birthClear\":false,\
+          \"capabilities\":{{\"hostOwned\":true,\"equalCount\":true,\"sharedNativeRoster\":false,\"birthClear\":false,\
           \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
           \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
           \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"

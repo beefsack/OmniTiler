@@ -88,6 +88,7 @@ fn handshake(adapter: &str) -> HandshakeRequest {
         capabilities: HostCapabilities {
             host_owned: true,
             equal_count: true,
+            shared_native_roster: false,
             birth_clear: true,
             native_selector_scope: NativeSelectorScope::AllOutputs,
             window_suppression: true,

@@ -2266,7 +2266,7 @@ mod tests {
             "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"{req}\",\
               \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\
               \"processId\":\"pid-own-1\"}},\
-              \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"birthClear\":false,\
+              \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
               \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
               \"maximize\":false,\"fullscreen\":false,\"nativeSticky\":false,\"above\":false,\
               \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"

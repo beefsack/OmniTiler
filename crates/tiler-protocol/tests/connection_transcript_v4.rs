@@ -21,7 +21,8 @@ use tiler_protocol::world_protocol::{
 };
 
 fn fixture_root() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/world-wire/v4")
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/world-wire/v4-active")
 }
 
 fn scenario_message(scenario: &serde_json::Value, wanted: &str) -> String {
@@ -235,6 +236,7 @@ fn connection_transcript_v4() {
     assert_eq!(request.request, "handshake-a");
     assert!(!request.capabilities.host_owned);
     assert!(!request.capabilities.equal_count);
+    assert!(!request.capabilities.shared_native_roster);
     assert!(request.capabilities.birth_clear);
     assert!(request.capabilities.window_suppression);
     assert!(request.capabilities.maximize);

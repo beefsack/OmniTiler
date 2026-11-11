@@ -39,6 +39,15 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   shape; KDE's strict reply reader rejects it until updated, and Windows adopts
   it during its v4 port. A matching component set is required for execution.
 
+- The pre-release shared-roster amendment also keeps version 4 and requires
+  `sharedNativeRoster` on every handshake, without a missing-key default or
+  dual-shape fallback. Current connection conformance uses
+  `test-fixtures/world-wire/v4-active`; unchanged vectors reference the frozen
+  `v4` family. Historical handshakes remain unchanged and explicitly reject the
+  amended strict shape. Genuine current production-route recordings use
+  `test-fixtures/stage5-v4-active` and `test-fixtures/kde-v4-active`; existing
+  `stage5` and `stage5-v4` recordings remain historical.
+
 ## Ownership and G4 exceptions
 
 - One `WorldEngine` owns logical outputs, workspaces, order, views, membership,
@@ -175,6 +184,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | | `ready` | bool | no | False: no world writes/effects authorized. |
 | | `kind` | `""` or ProtocolKind | empty | Empty on acceptance; refusal kind otherwise. |
 | `HostCapabilities` | `hostOwned,equalCount,birthClear` | bool | no | Existing native-domain/equal-count/automatic-birth-clear mechanisms. |
+| | `sharedNativeRoster` | bool | no | One native desktop identity roster across outputs; ignored when hostOwned=false. Independent of equal logical counts and view-selector coupling. |
 | | `nativeSelectorScope` | `per-output/all-outputs` | no | Native view selector coupling; ignored when hostOwned=false. |
 | | `windowSuppression` | bool | no | Independent recoverable per-window hide mechanism. |
 | | `maximize,fullscreen,nativeSticky,above,warp` | bool | no | Native state/stacking/cursor actuation support, not semantic command support or permission. |

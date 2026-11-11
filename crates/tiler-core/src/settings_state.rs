@@ -324,6 +324,7 @@ mod tests {
         HostCapabilities {
             host_owned: true,
             equal_count: true,
+            shared_native_roster: false,
             birth_clear: true,
             native_selector_scope: scope,
             window_suppression: true,

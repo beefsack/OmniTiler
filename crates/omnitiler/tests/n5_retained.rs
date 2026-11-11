@@ -34,7 +34,7 @@ fn handshake_req(adapter: &str, req: &str) -> String {
         "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"{req}\",\
           \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\
           \"processId\":\"pid-own-1\"}},\
-          \"capabilities\":{{\"hostOwned\":true,\"equalCount\":false,\
+          \"capabilities\":{{\"hostOwned\":true,\"equalCount\":false,\"sharedNativeRoster\":false,\
           \"birthClear\":false,\"nativeSelectorScope\":\"per-output\",\
           \"windowSuppression\":false,\"maximize\":true,\"fullscreen\":true,\
           \"nativeSticky\":true,\"above\":false,\"warp\":false,\

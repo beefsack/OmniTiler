@@ -12,6 +12,17 @@ Live work stays under [live-macos-testing](../live-macos-testing.md)
 with the fixture-first rules and the signed bundle in
 `crates/tiler-live-fixture/README.md`.
 
+## V4 shared native roster declaration
+
+- Declare required `sharedNativeRoster:false` for output-local Spaces. Equal
+  counts or linked view selection do not imply shared native identity. The Rust
+  capability constructor carries false; verify the complete port handshake and
+  strict readers against the amended contract. Old strict readers reject the
+  new handshake key until updated; native acceptance remains separate.
+- Current connection vectors use `test-fixtures/world-wire/v4-active`.
+  Historical fixtures remain unchanged; see the
+  [amendment boundary](world-contract.md#contract-authority-rule).
+
 ## V4 native coordinate normalization
 
 - Target, not delivered by this note: AX ordinary, gesture and drag-start
