@@ -444,6 +444,25 @@
 - `git diff --check` passes. Native close-to-refocus timing is pending; no
   native acceptance is claimed.
 
+### Mechanical lint and unsafe-root follow-up (2026-11-11)
+
+- Strict all-target clippy now passes for `tiler-core` and `tiler-protocol` after
+  six remaining mechanical fixes, without lint suppressions or behavior changes.
+  The two identical incomplete-inventory hold branches are merged with
+  short-circuit OR, preserving their priority over all later hold reasons.
+- Fresh core library verification passes all 2129 tests; the close-focus and
+  dynamic-lifecycle modules also pass separately (29 and 15 tests respectively).
+- The live fixture's sole macOS FFI root, `src/menu_macos.rs`, is now explicitly
+  approved by the unsafe guardrail. Exact-path matching, required-root checks
+  and fail-closed scanning are unchanged; all 31 guardrail self-tests pass.
+  The workspace check still fails on exactly the two unchanged Windows fixture
+  examples, now tracked under [Windows fixture unsafe-root consolidation](../backlog.md).
+  No other macOS fixture source weakens `unsafe_code`.
+- An additional full protocol test invocation timed out in `intent_data_fixtures`
+  after earlier suites passed; it is not a fresh full-protocol pass. The prior
+  complete protocol evidence above remains historical. Native acceptance is
+  unchanged and pending.
+
 ### Native preparation and acceptance limit
 
 - Matching signed macOS and fixture bundles build offline with the existing

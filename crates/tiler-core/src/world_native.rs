@@ -181,7 +181,7 @@ impl WorldEngine {
         // Native deletion: vanished from its output's complete order.
         // Partial or absent rows never clear (unknown, never deletion).
         let mut vanished: Vec<(String, String)> = Vec::new();
-        for ((output, native), _) in &self.retired_natives {
+        for (output, native) in self.retired_natives.keys() {
             let order = self
                 .staged
                 .observation

@@ -1773,9 +1773,8 @@ impl WorldEngine {
                     .screens
                     .iter()
                     .any(|screen| screen.output.0 == output && screen.complete)
+                    || !staged.observation.inventory_complete
                 {
-                    Some(HoldReason::IncompleteInventory)
-                } else if !staged.observation.inventory_complete {
                     Some(HoldReason::IncompleteInventory)
                 } else if staged.gesture_barrier {
                     Some(HoldReason::GestureBarrier)

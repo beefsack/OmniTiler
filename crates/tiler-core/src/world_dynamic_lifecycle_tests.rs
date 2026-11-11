@@ -205,15 +205,6 @@ fn ring_ids(reply: &crate::world_report::WorldReplyV4, output: &str) -> Vec<Stri
     rows.into_iter().map(|(_, id)| id).collect()
 }
 
-fn native_row(output: &str, order: Vec<&str>, current: &str) -> NativeObservation {
-    NativeObservation {
-        output: OutputId(output.to_owned()),
-        native_order: order.into_iter().map(str::to_owned).collect(),
-        current_native: Some(current.to_owned()),
-        occupancy: Vec::new(),
-    }
-}
-
 #[test]
 fn dynamic_no_core_minimum_two_single_spare() {
     // Portable: bootstrap must leave exactly one trailing spare per output,
@@ -253,7 +244,7 @@ fn dynamic_shown_empty_retained_then_pruned_after_leave() {
         occupied: false,
         retained: false,
     };
-    let plan = plan_trailing(&[shown.clone(), empty_fact()]);
+    let plan = plan_trailing(&[shown, empty_fact()]);
     assert!(plan.remove.is_empty(), "shown empty retained while visible");
 
     // After leave: first becomes unshown ordinary empty, second stays trailing.
@@ -1357,7 +1348,7 @@ fn rotation_round(
                 retired.push(format!("{output}:{native}"));
             }
         }
-        for ((out, native), _) in &engine.retired_natives {
+        for (out, native) in engine.retired_natives.keys() {
             if out == output && !host.order.iter().any(|id| id == native) {
                 retired.push(format!("{output}:{native}(gone)"));
             }
