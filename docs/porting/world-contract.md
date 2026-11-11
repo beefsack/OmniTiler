@@ -725,7 +725,7 @@ acceptance or adopt the separate close-focus amendment.
 | `op` | Other keys and types | Null/absence | Meaning/source |
 | --- | --- | --- | --- |
 | `focus` | `win`: WindowId or current-focus object | no | Explicit-id or execution-time focus; ignored direction removed (R6). |
-| `send` | `win`: WindowId or current-focus object; `out`: OutputId; `ws`: WorkspaceId; `follow`: bool | no | Explicit destination, unchanged. |
+| `send` | `win`: WindowId or current-focus object; `out`: OutputId; `ws`: WorkspaceId; `follow`: bool | no | Explicit destination on the window's own output; a different-output `ws` is refused (`operation-refused`). Cross-output moves use `send-directional`. |
 | `select-workspace` | `out`: OutputId; `ws`: WorkspaceId | no | Explicit logical selection, unchanged. |
 | `select-numbered` | `out`: OutputId; `index`: integer 1..9 | out nullable | Core resolves implicit output. |
 | `select-relative` | `out`: OutputId; `delta`: integer -1 or 1 | out nullable | Relative ring selection. |
