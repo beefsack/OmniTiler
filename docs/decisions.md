@@ -55,7 +55,7 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 ## Topics
 
 - [Activation requests](decisions/activation-requests.md): activation intent, urgency and host-specific exceptions.
-- [Commands](decisions/commands.md): workspace-tiling intent and command dispatch constraints.
+- [Commands](decisions/commands.md): workspace-tiling intent, undelayed command dispatch and the single ordered report ingress.
 - [Contract](decisions/contract.md): shared core/platform contract, capabilities, persistence and cross-platform wire decisions. <a id="contract"></a>
 - [Development](decisions/development.md): project identity, licensing, tooling and development entry points.
 - [Engine](decisions/engine.md): portable world ownership, convergence, operation policy and KDE route boundaries.
