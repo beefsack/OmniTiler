@@ -179,6 +179,19 @@ pub trait AxBackend {
     fn selected_focus_evidence(&mut self) -> Option<(u32, Option<u32>)> {
         None
     }
+    /// Ordered bracket reads for arrival capture on THIS owning thread (one
+    /// [`crate::runtime_types::BracketRead`] per requested window: the
+    /// identity join, before legs, Space membership, frame, after legs — in
+    /// that order). Only the requested `wids` are read (bounded by the frozen
+    /// member set, never a whole-inventory scan). Default withholds
+    /// (empty: no live reader, never a fabricated bracket). The native
+    /// backend overrides this with the real ordered FFI sequence; mocks
+    /// return scripted reads. The caller samples the invalidation
+    /// watermark around the call; any movement invalidates the batch.
+    fn capture_brackets(&mut self, wids: &[u32]) -> Vec<crate::runtime_types::BracketRead> {
+        let _ = wids;
+        Vec::new()
+    }
 }
 
 /// Factory for per-app AX backends. Shared across threads; `create` is

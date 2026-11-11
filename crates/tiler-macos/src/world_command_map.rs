@@ -510,11 +510,11 @@ mod directional_codec_tests {
     /// Exhausted-edge execution proof through the real engine: the
     /// production-mapped implicit focus step reconciles its observation
     /// (Accepted envelope) while the command itself refuses with typed
-    /// `Rejected(OperationRefused)` and no focus effect. Accepted envelope
-    /// != command success. The ordinary (non-edge) control steps plan with
-    /// a correlated explicit-focus effect and no command result. The refused
-    /// sequence is consumed at-most-once: replaying its command_seq reports
-    /// CommandConsumed instead of re-executing.
+    /// `Rejected(OperationRefused)` and no retained focus request. Accepted
+    /// envelope != command success. The ordinary (non-edge) control steps
+    /// plan with a correlated retained explicit focus request and no command
+    /// result. The refused sequence is consumed at-most-once: replaying its
+    /// command_seq reports CommandConsumed instead of re-executing.
     #[test]
     fn directional_edge_is_accepted_envelope_with_typed_rejection() {
         use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
@@ -523,7 +523,8 @@ mod directional_codec_tests {
         use tiler_core::size_hints::WindowSizeHints;
         use tiler_core::world_engine::{WorldEngine, WorldOutcome};
         use tiler_core::world_report::{
-            CommandRejectKind, CommandResult, EffectKind, HoldReason, WorldCommand, WorldReportV4,
+            CommandRejectKind, CommandResult, EffectKind, FocusRequestCause, HoldReason,
+            WorldCommand, WorldReportV4,
         };
         use tiler_core::world_report_v4_checks::validate_report_v4_reason;
         use tiler_protocol::world_protocol::{
@@ -675,9 +676,9 @@ mod directional_codec_tests {
             other => panic!("admit accepted, got {other:?}"),
         }
 
-        // Control 1: win1 -> win2 plans with one correlated focus effect
-        // and no command result (tiled success carries no result: the
-        // effect IS the outcome).
+        // Control 1: win1 -> win2 plans with one correlated retained
+        // explicit focus request and no command result (tiled success
+        // carries no result: the request IS the outcome).
         let (command, op) =
             operation_command(&right, "4242_7", &mut retained).expect("focus route");
         assert_eq!(op, OP_FOCUS);
@@ -702,14 +703,21 @@ mod directional_codec_tests {
             "tiled success carries no result, got {:?}",
             reply.command_result
         );
-        let focus: Vec<_> = reply
-            .effects
-            .iter()
-            .filter(|effect| effect.kind == EffectKind::Focus)
-            .collect();
-        assert_eq!(focus.len(), 1, "one focus effect, got {:?}", reply.effects);
-        assert!(focus[0].is_explicit_focus_for(2), "correlated to seq 2");
-        assert_eq!(focus[0].target, WindowId("4242_8".to_owned()));
+        let req = reply
+            .focus_request
+            .as_ref()
+            .expect("control step retains its focus request");
+        assert_eq!(req.cause, FocusRequestCause::ExplicitCommand);
+        assert_eq!(req.cmd_seq, Some(2));
+        assert_eq!(req.target, WindowId("4242_8".to_owned()));
+        assert!(
+            reply
+                .effects
+                .iter()
+                .all(|effect| effect.kind != EffectKind::Focus),
+            "no Focus effect under retained requests, got {:?}",
+            reply.effects
+        );
 
         // Control 2: arrival on win2, then win2 -> win3.
         let (command, _) = operation_command(&right, "4242_8", &mut retained).expect("focus route");
@@ -734,14 +742,21 @@ mod directional_codec_tests {
             "tiled success carries no result, got {:?}",
             reply.command_result
         );
-        let focus: Vec<_> = reply
-            .effects
-            .iter()
-            .filter(|effect| effect.kind == EffectKind::Focus)
-            .collect();
-        assert_eq!(focus.len(), 1, "one focus effect, got {:?}", reply.effects);
-        assert!(focus[0].is_explicit_focus_for(3), "correlated to seq 3");
-        assert_eq!(focus[0].target, WindowId("4242_9".to_owned()));
+        let req = reply
+            .focus_request
+            .as_ref()
+            .expect("control step retains its focus request");
+        assert_eq!(req.cause, FocusRequestCause::ExplicitCommand);
+        assert_eq!(req.cmd_seq, Some(3));
+        assert_eq!(req.target, WindowId("4242_9".to_owned()));
+        assert!(
+            reply
+                .effects
+                .iter()
+                .all(|effect| effect.kind != EffectKind::Focus),
+            "no Focus effect under retained requests, got {:?}",
+            reply.effects
+        );
 
         // Exhausted edge: arrival on win3, then win3 + right retains.
         // Accepted envelope, typed Rejected(OperationRefused), no focus

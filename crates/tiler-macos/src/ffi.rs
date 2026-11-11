@@ -1926,6 +1926,21 @@ mod macos {
         }
     }
 
+    /// Exact AX subject identity: `CFEqual` over two joined elements (safe
+    /// maintained wrapper, never a hand-rolled pointer compare). Exact,
+    /// never positional and never a wid comparison: two joins of the same
+    /// live subject compare equal, joins of different subjects do not. A
+    /// reused `(pid, wid)` pair naming a new subject therefore fails the
+    /// anchor check instead of inheriting the old attestation. IDs only —
+    /// never titles, content, or paths.
+    pub fn ax_elements_equal(a: &AxElement, b: &AxElement) -> bool {
+        let a_el: &AXUIElement = &a.inner;
+        let b_el: &AXUIElement = &b.inner;
+        let a_cf: &CFType = a_el.as_ref();
+        let b_cf: &CFType = b_el.as_ref();
+        objc2_core_foundation::CFEqual(Some(a_cf), Some(b_cf))
+    }
+
     /// Maximum `AXParent` hops when resolving the element at a point to its
     /// owning window: real control hierarchies resolve within a few hops; the
     /// bound keeps a pathological chain from stalling the fixture.
@@ -10240,7 +10255,7 @@ pub use macos::{
     TapHit, TapPump, TapSource, TapSourceReport, WorkspaceIndicator, activate_app,
     activation_policy_raw_for_pid, app_hidden_for_pid, audit_self, ax_app_focus_leg,
     ax_attribute_names, ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id,
-    ax_element_at_position, ax_element_attribute, ax_focused_preimage,
+    ax_element_at_position, ax_element_attribute, ax_elements_equal, ax_focused_preimage,
     ax_focused_preimage_detailed, ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame,
     ax_hit_test_detail, ax_hit_test_owner, ax_identifier, ax_is_process_trusted,
     ax_is_size_settable, ax_min_size, ax_observe_bounded, ax_observe_session, ax_perform_action,
@@ -10771,6 +10786,10 @@ mod stub {
 
     pub fn ax_window_id_detailed(_element: &AxElement) -> Result<u32, String> {
         Err("macOS-only".to_owned())
+    }
+
+    pub fn ax_elements_equal(_a: &AxElement, _b: &AxElement) -> bool {
+        false
     }
 
     pub fn ax_focused_preimage() -> Option<(i32, Option<u32>)> {
@@ -11412,7 +11431,7 @@ pub use stub::{
     TapSource, TapSourceReport, WorkspaceIndicator, activate_app, activation_policy_raw_for_pid,
     app_hidden_for_pid, audit_self, ax_app_focus_leg, ax_attribute_names, ax_bool_attribute,
     ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
-    ax_element_attribute, ax_focused_preimage, ax_focused_preimage_detailed,
+    ax_element_attribute, ax_elements_equal, ax_focused_preimage, ax_focused_preimage_detailed,
     ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_detail,
     ax_hit_test_owner, ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size,
     ax_observe_bounded, ax_observe_session, ax_perform_action, ax_raise,
@@ -12422,6 +12441,26 @@ mod tests {
         assert!(AxElement::system_wide().is_none());
         assert!(ax_is_process_trusted().is_none());
         assert!(sls_display_spaces().is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ax_elements_equal_is_exact_subject_identity() {
+        // Headless-safe: application-element joins need no window, no
+        // consent, no focus. Two separate joins of the SAME live subject
+        // (own process) must compare equal — the anchor fence depends on
+        // cross-join value equality, not pointer identity — while joins of
+        // different subjects (own pid vs a reserved pid) must not.
+        let own = std::process::id() as i32;
+        let first = AxElement::application(own).expect("own application element joins");
+        let second = AxElement::application(own).expect("own application element re-joins");
+        assert!(ax_elements_equal(&first, &first));
+        assert!(
+            ax_elements_equal(&first, &second),
+            "two joins of the same live subject must compare equal"
+        );
+        let other = AxElement::application(1).expect("reserved-pid element joins");
+        assert!(!ax_elements_equal(&first, &other));
     }
 
     #[test]

@@ -1,7 +1,9 @@
 //! Scoped-tile entry tests (offline, portable).
 //!
-//! Fakes drive the runtime through the tile catalogue surface: exact
-//! matcher/action forwarding per arm (focus/move/grow/shrink/float/
+//! Native fakes drive the runtime through the tile catalogue surface:
+//! a default single-display topology plus scripted scoped snapshots with
+//! explicit truthful neutral metadata, exact matcher/action forwarding
+//! per arm (focus/move/grow/shrink/float/
 //! orientation with directions, Shift/Alt-arm gating, extras and key-ups
 //! ignored), resize sizing-step and repeat geometry outcomes, orientation
 //! one-per-press geometry outcomes, CLI/request safety (explicit start,
@@ -9,6 +11,7 @@
 //! validation. No live AX, no taps, no Carbon, no Spaces, no desktop
 //! effects — the built tile is never launched here.
 
+use std::collections::BTreeMap;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -18,17 +21,20 @@ use std::time::Duration;
 
 use tiler_macos::cli::{Command, parse_args};
 use tiler_macos::config::ProbeModifier;
+use tiler_macos::ffi::{DisplayRect, NsDisplay, SlsDisplayRow};
 use tiler_macos::input::cg_flag_bits;
 use tiler_macos::input_match::TapKeyKind;
 use tiler_macos::native_input::tile_catalogue;
 use tiler_macos::runtime::{
-    AxCompletion, AxObservation, InputDirection, ObservedWindow, Runtime, RuntimeConfig,
-    RuntimeHandle, ShutdownOutcome, SubmitOutcome,
+    AxCompletion, InputDirection, ObservedWindow, Runtime, RuntimeConfig, RuntimeHandle,
+    ScopedBackendSnapshot, ScopedObservation, ScopedWindowMeta, ShutdownOutcome, SubmitOutcome,
+    TopologyMode,
 };
 use tiler_macos::runtime_backend::{
     AxBackend, AxBackendFactory, InputSource, InputSourceFactory, RawKeyEvent,
 };
 use tiler_macos::tile::{TileInput, TileLogLevel, TileRequest};
+use tiler_macos::topology;
 
 const APP: u32 = 1001;
 const FLUSH: Duration = Duration::from_secs(5);
@@ -36,7 +42,17 @@ const WAIT: Duration = Duration::from_secs(5);
 
 // -- Fakes -------------------------------------------------------------------
 
-struct FakeBackend;
+struct FakeInner {
+    /// Scripted scoped snapshots per pid (absent = read fails closed, so
+    /// the worker-driven startup below owns its own sequence space).
+    scoped: Mutex<BTreeMap<u32, ScopedBackendSnapshot>>,
+}
+
+struct FakeBackend {
+    pid: u32,
+    inner: Arc<FakeInner>,
+    bound: Option<u64>,
+}
 
 impl AxBackend for FakeBackend {
     fn apply_frame(&mut self, _cmd: &tiler_macos::runtime::FrameCommand) -> AxCompletion {
@@ -44,19 +60,46 @@ impl AxBackend for FakeBackend {
     }
 
     fn snapshot(&mut self) -> Result<Vec<ObservedWindow>, String> {
-        Ok(vec![
-            win(1, 0, 0, 100, 100),
-            win(2, 100, 0, 100, 100),
-            win(3, 200, 0, 100, 100),
-        ])
+        Err(format!(
+            "legacy snapshot refused for pid {} (native tests use scoped reads)",
+            self.pid
+        ))
+    }
+
+    fn bind_effect_hook(&mut self, hook: &tiler_macos::runtime_backend::EffectHook) {
+        self.bound = hook.cell.load().map(|ctx| ctx.revision);
+    }
+
+    fn snapshot_scoped(&mut self) -> Result<ScopedBackendSnapshot, String> {
+        let revision = self
+            .bound
+            .ok_or_else(|| format!("pid {}: no native context bound", self.pid))?;
+        let mut snapshot = self
+            .inner
+            .scoped
+            .lock()
+            .expect("mutex")
+            .get(&self.pid)
+            .cloned()
+            .ok_or_else(|| format!("no scoped snapshot for pid {}", self.pid))?;
+        // A correct backend stamps the bound (current) revision it read
+        // under; the engine re-fences it.
+        snapshot.revision = revision;
+        Ok(snapshot)
     }
 }
 
-struct FakeFactory;
+struct FakeFactory {
+    inner: Arc<FakeInner>,
+}
 
 impl AxBackendFactory for FakeFactory {
-    fn create(&self, _pid: u32) -> Result<Box<dyn AxBackend>, String> {
-        Ok(Box::new(FakeBackend))
+    fn create(&self, pid: u32) -> Result<Box<dyn AxBackend>, String> {
+        Ok(Box::new(FakeBackend {
+            pid,
+            inner: Arc::clone(&self.inner),
+            bound: None,
+        }))
     }
 }
 
@@ -116,26 +159,142 @@ fn win(wid: u32, x: i32, y: i32, w: i32, h: i32) -> ObservedWindow {
 struct Fixture {
     handle: RuntimeHandle,
     input_tx: mpsc::Sender<RawKeyEvent>,
+    revision: u64,
+}
+
+/// Default native topology: one display, Spaces 11+12 with 11 current.
+/// The three catalogue windows home to the current Space by exact
+/// membership (never geometry); the 100px geometry fits the work area.
+fn single_display_snapshot() -> topology::TopologySnapshot {
+    topology::build_snapshot(
+        &[ns(1, "uuid-1", 0.0, 0.0, 1440.0, 900.0)],
+        &[row(Some("uuid-1"), &[11, 12], Some(11))],
+        Some(true),
+    )
+}
+
+fn ns(cg_id: u32, uuid: &str, x: f64, y: f64, w: f64, h: f64) -> NsDisplay {
+    NsDisplay {
+        cg_id,
+        uuid: Some(uuid.to_owned()),
+        frame: DisplayRect { x, y, w, h },
+        visible: DisplayRect { x, y, w, h },
+        scale: 2.0,
+    }
+}
+
+fn row(id: Option<&str>, spaces: &[u64], current: Option<u64>) -> SlsDisplayRow {
+    SlsDisplayRow {
+        identifier: id.map(str::to_owned),
+        spaces: spaces.to_vec(),
+        current,
+    }
+}
+
+fn user_space(_: u64) -> Option<tiler_macos::ffi::SlsSpaceType> {
+    Some(tiler_macos::ffi::SlsSpaceType::User)
+}
+
+/// Explicit neutral facts: ordinary AXWindow/AXStandardWindow,
+/// nonmodal and resizable, with ordinary layer/app/policy metadata.
+fn meta(wid: u32, spaces: Vec<u64>) -> ScopedWindowMeta {
+    ScopedWindowMeta {
+        wid,
+        spaces,
+        fullscreen: false,
+        minimized: false,
+        hidden: false,
+        role: Some(tiler_macos::classifier::ROLE_WINDOW.to_owned()),
+        subrole: Some(tiler_macos::classifier::SUBROLE_STANDARD.to_owned()),
+        modal: Some(false),
+        resizable: Some(true),
+        layer: Some(0),
+        app_id: Some("com.example.app".to_owned()),
+        activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+    }
+}
+
+fn catalogue_windows() -> Vec<ObservedWindow> {
+    vec![
+        win(1, 0, 0, 100, 100),
+        win(2, 100, 0, 100, 100),
+        win(3, 200, 0, 100, 100),
+    ]
+}
+
+/// Worker-published startup snapshot: same windows, exact current-Space
+/// membership, unfocused (the focused submit below owns focus truth).
+fn scripted() -> ScopedBackendSnapshot {
+    let windows = catalogue_windows();
+    let meta: Vec<ScopedWindowMeta> = windows.iter().map(|w| meta(w.wid, vec![11])).collect();
+    ScopedBackendSnapshot {
+        windows,
+        focused_wid: None,
+        focus_cg_owned: false,
+        focus_evidence: None,
+        sys_focus: None,
+        global_focus: None,
+        meta,
+        excluded: 0,
+        excluded_reasons: Vec::new(),
+        cg_complete: true,
+        cg_owner_wids: vec![1, 2, 3],
+        cg_alive: Vec::new(),
+        revision: 0,
+    }
+}
+
+/// Focused scoped observation: agreeing global evidence (frontmost + AX +
+/// CG all name the reporter), exact membership, fresh complete CG read.
+fn scoped_obs(generation: u64, seq: u64, focused: u32, revision: u64) -> ScopedObservation {
+    let windows = catalogue_windows();
+    let meta: Vec<ScopedWindowMeta> = windows.iter().map(|w| meta(w.wid, vec![11])).collect();
+    ScopedObservation {
+        pid: APP,
+        generation,
+        seq,
+        windows,
+        focused_wid: Some(focused),
+        revision,
+        frontmost_pid: Some(APP),
+        ax_focus: Some((APP, Some(focused))),
+        cg_owned: true,
+        meta,
+        cg_complete: true,
+        cg_owner_wids: vec![1, 2, 3],
+    }
 }
 
 fn start_catalogue() -> Fixture {
     let (input_tx, input_rx) = mpsc::channel();
     let config = RuntimeConfig {
+        topology_mode: TopologyMode::Native,
         tile_bindings: Some(tile_catalogue()),
         ..RuntimeConfig::default()
     };
+    let inner = Arc::new(FakeInner {
+        scoped: Mutex::new(BTreeMap::new()),
+    });
     let handle = Runtime::start(
         config,
-        Arc::new(FakeFactory),
+        Arc::new(FakeFactory {
+            inner: Arc::clone(&inner),
+        }),
         Arc::new(FakeInput {
             rx: Mutex::new(Some(input_rx)),
         }),
     )
     .expect("runtime starts");
-    Fixture { handle, input_tx }
+    let revision = handle.update_topology_with(single_display_snapshot(), &user_space);
+    inner.scoped.lock().expect("mutex").insert(APP, scripted());
+    Fixture {
+        handle,
+        input_tx,
+        revision,
+    }
 }
 
-fn observe_focused(handle: &RuntimeHandle, generation: u64, wid: u32) {
+fn observe_focused(fixture: &Fixture, generation: u64, wid: u32) {
     // The worker's own startup observation takes sequence 1, so this
     // superseeding sequence 2 must be QUEUED after it: the startup send
     // happens after `launch_app` reports ready, so without this wait the
@@ -143,22 +302,14 @@ fn observe_focused(handle: &RuntimeHandle, generation: u64, wid: u32) {
     // out-of-order, and the focus arrives at admission (`tiled`) instead
     // of as a focus projection — the geometry oracles below assume the
     // projection path (focused tile parked top-right, interior left edge).
-    wait_startup_observation(handle);
+    wait_startup_observation(&fixture.handle);
     assert_eq!(
-        handle.submit_observation(AxObservation {
-            pid: APP,
-            generation,
-            seq: 2,
-            windows: vec![
-                win(1, 0, 0, 100, 100),
-                win(2, 100, 0, 100, 100),
-                win(3, 200, 0, 100, 100),
-            ],
-            focused_wid: Some(wid),
-        }),
+        fixture
+            .handle
+            .submit_scoped_observation(scoped_obs(generation, 2, wid, fixture.revision)),
         SubmitOutcome::Accepted
     );
-    assert!(handle.flush(FLUSH));
+    assert!(fixture.handle.flush(FLUSH));
 }
 
 fn send_key(fixture: &Fixture, flags: u64, key_code: u32) {
@@ -310,7 +461,7 @@ fn reply_count(handle: &RuntimeHandle, prefix: &str) -> u64 {
 fn catalogue_forwards_focus_move_float_with_exact_arms() {
     let fixture = start_catalogue();
     let generation = fixture.handle.launch_app(APP).expect("launch");
-    observe_focused(&fixture.handle, generation, 1);
+    observe_focused(&fixture, generation, 1);
 
     const CTRL: u64 = 0x0004_0000;
     const SHIFT: u64 = 0x0002_0000;
@@ -356,7 +507,7 @@ fn catalogue_forwards_focus_move_float_with_exact_arms() {
 fn catalogue_ignores_extras_keyups_and_unrelated() {
     let fixture = start_catalogue();
     let generation = fixture.handle.launch_app(APP).expect("launch");
-    observe_focused(&fixture.handle, generation, 1);
+    observe_focused(&fixture, generation, 1);
 
     const CTRL: u64 = 0x0004_0000;
     const SHIFT: u64 = 0x0002_0000;
@@ -705,7 +856,7 @@ fn catalogue_resize_arms_are_exact() {
     const SHIFT: u64 = 0x0002_0000;
     let fixture = start_catalogue();
     let generation = fixture.handle.launch_app(APP).expect("launch");
-    observe_focused(&fixture.handle, generation, 1);
+    observe_focused(&fixture, generation, 1);
 
     let mut forwarded = fixture.handle.diagnostics().input_forwarded;
     // Focus, move, grow, shrink on H: one forward each, serialized.
@@ -753,7 +904,7 @@ fn catalogue_resize_grow_shrink_moves_frames_by_shared_steps() {
     const SHIFT: u64 = 0x0002_0000;
     let fixture = start_catalogue();
     let generation = fixture.handle.launch_app(APP).expect("launch");
-    observe_focused(&fixture.handle, generation, 1);
+    observe_focused(&fixture, generation, 1);
     assert!(fixture.handle.flush(FLUSH));
 
     let w0 = desired_width(&fixture.handle, "1001_1").expect("planned frame for 1001_1");
@@ -796,7 +947,7 @@ fn catalogue_orientation_toggles_once_per_press_with_frame_change() {
     const CTRL: u64 = 0x0004_0000;
     let fixture = start_catalogue();
     let generation = fixture.handle.launch_app(APP).expect("launch");
-    observe_focused(&fixture.handle, generation, 1);
+    observe_focused(&fixture, generation, 1);
     assert!(fixture.handle.flush(FLUSH));
     let before = desired_snapshot(&fixture.handle);
     assert!(!before.is_empty());

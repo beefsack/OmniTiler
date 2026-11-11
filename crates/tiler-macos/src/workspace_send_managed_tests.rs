@@ -3711,6 +3711,7 @@ mod send_join_tests {
             select_busy: false,
             select_claim_pending: false,
             selection_focus_pending: None,
+            arrival_captures: std::collections::BTreeMap::new(),
             selection_focus_floor_seq: 0,
             close_focus_current: None,
             focus_evidence: None,

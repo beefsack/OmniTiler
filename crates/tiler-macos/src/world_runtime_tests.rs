@@ -1282,7 +1282,7 @@ fn restart_sessions_mint_distinct_tokens_and_fence_old_traffic() {
             windows: Vec::new(),
             transfers: Vec::new(),
             effects: Vec::new(),
-            close_focus: None,
+            focus_request: None,
             command_result: None,
             gesture_settled: None,
             operation_settled: Vec::new(),

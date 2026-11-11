@@ -7,9 +7,11 @@
 //! it binds one launch lifetime per observed PID (bundle plus executable
 //! plus `launchDate` — a missing launch date refuses, never falls back) and
 //! creates the [`ScopedAxBackend`] that runs on the owning per-app AX
-//! thread. The backend reads with [`crate::native_facts::read_app_window_facts`]
-//! (whole-snapshot refusal on the first incomplete leg — an incomplete read
-//! never publishes as a complete replacement), publishes live rows with raw
+//! thread. The backend reads with
+//! [`crate::native_facts::read_app_window_facts_retaining`] (whole-snapshot
+//! refusal on the first incomplete leg — an incomplete read never publishes
+//! as a complete replacement; the exact retained handles from that same
+//! enumeration anchor future captures, never a post-read re-join), publishes live rows with raw
 //! nullable facts for every in-scope safely observed window (the core owns
 //! classification; the producer never pre-omits accessory/prohibited,
 //! nonordinary-layer, or unknown-role shapes), attaches per-window Space
@@ -57,6 +59,8 @@
 //! `Timeout`, or the extended `PartialApplied`) tells the worker what
 //! actually happened.
 
+#[cfg(target_os = "macos")]
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -64,6 +68,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::dev_selection::TileScope;
 use crate::ffi::AxFrame;
+#[cfg(target_os = "macos")]
+use crate::ffi::{AxElement, ax_elements_equal};
 use crate::focus_route::FocusRoute;
 use crate::native_facts::{NativeAppFacts, NativeReadOutcome};
 use crate::runtime_backend::{AxBackend, AxBackendFactory};
@@ -508,6 +514,43 @@ pub fn validate_identity_triple(
     }
 }
 
+/// Attest one capture row's owner as the bound process (pure over the
+/// injected live identity triple, so headless tests pin the fail-closed
+/// PID-reuse behavior): `Some(bound pid)` only when the same-element AX
+/// re-verify AND the window-server owner join both attest this `(pid, wid)`
+/// AND the live process identity still revalidates exactly
+/// (bundle/executable/start token, mirroring [`NativeGates`] mode for mode:
+/// scoped refuses Ghostty, unscoped admits it as an ordinary candidate).
+/// Anything else — join disagreement, unreadable start token, or any
+/// identity drift (possible PID reuse) — returns `None` and the caller
+/// omits the member, never a reused wid.
+pub fn attest_capture_owner(
+    identity: &ProcessIdentity,
+    unscoped: bool,
+    live_pid: u32,
+    live_bundle: Option<&str>,
+    live_exe: &str,
+    live_start: &str,
+    ax_after: bool,
+    cg_owned: bool,
+) -> Option<u32> {
+    if !ax_after || !cg_owned {
+        return None;
+    }
+    if live_start.is_empty() {
+        return None;
+    }
+    let revalidated = if unscoped {
+        identity.revalidate_unscoped(live_pid, live_bundle, live_exe, live_start)
+    } else {
+        identity.revalidate(live_pid, live_bundle, live_exe, live_start)
+    };
+    match revalidated {
+        Ok(()) => Some(identity.pid),
+        Err(_) => None,
+    }
+}
+
 /// Build one scoped snapshot from a complete native read (pure over
 /// injected readers, so offline tests drive the exact admission shape):
 /// whole-snapshot refusal on the first incomplete leg, per-window Space
@@ -877,6 +920,127 @@ pub fn scoped_backstop_due(
     }
 }
 
+/// Bound for the per-owner exact-subject anchor memory: TOTAL remembered
+/// live plus tombstoned identities, same ceiling as the window inventory
+/// (`crate::config::MAX_WINDOWS`). A full memory withholds newly observed
+/// wids (their captures withhold; availability only, never a silent guessed
+/// identity) rather than evicting anything. Tombstones are never evicted:
+/// evicting a retired id would re-enable a rebind the fence must refuse.
+#[cfg(target_os = "macos")]
+const AX_ANCHOR_CAP: usize = crate::config::MAX_WINDOWS;
+
+/// Exact-subject anchors for one owning per-app backend (macOS only,
+/// owner-thread only, same thread-affine retention shape as
+/// [`crate::ffi::Phase1Observer`): the EXACT AX element enumerated and read
+/// during the same genuine successful native snapshot/admission, per wid.
+/// A fresh capture attests its owner only when its freshly joined element
+/// is `CFEqual` to the anchor — a reused `(pid, wid)` pair naming a new
+/// subject withholds instead of inheriting the old attestation. The
+/// capture path never writes here (no capture-bind, no replacement on
+/// `(pid, wid)` match); only [`Self::note_genuine_snapshot`] admits.
+/// Admission binds only the exact retained handles from that same snapshot
+/// (never a post-read re-join, which could bind a replacement subject
+/// observed after the admitted facts). Eviction drops the old element and
+/// leaves an inert tombstone for the backend lifetime (never removed,
+/// never rebound, even for a fresh AX subject — a global remint token is
+/// out of scope and no tombstone removal may stand in for one). A gapless
+/// subject replacement (mismatch with no proven close) keeps the old anchor
+/// so captures withhold fail-closed. All handles stay on the owner thread,
+/// never sent to another thread (never via `EngineJob`).
+#[cfg(target_os = "macos")]
+pub(crate) struct AxSubjectAnchors {
+    live: BTreeMap<u32, AxElement>,
+    tombstones: BTreeSet<u32>,
+}
+
+#[cfg(target_os = "macos")]
+impl AxSubjectAnchors {
+    fn new() -> Self {
+        Self {
+            live: BTreeMap::new(),
+            tombstones: BTreeSet::new(),
+        }
+    }
+
+    /// Total remembered identities (live anchors plus inert tombstones):
+    /// never exceeds [`AX_ANCHOR_CAP`].
+    fn remembered_len(&self) -> usize {
+        self.live.len().saturating_add(self.tombstones.len())
+    }
+
+    /// Record one genuine successful snapshot/admission: `retained` are the
+    /// EXACT `(wid, element)` handles enumerated and read in the complete
+    /// read just published (same genuine snapshot, owner thread only),
+    /// `cg_complete` plus `cg_owner_wids` the fresh window-server oracle
+    /// read alongside it. Evicts only proven closes (anchored wid absent
+    /// from the genuine AX set while the complete CG oracle no longer names
+    /// it); retains on AX omission, off-Space absence, and unreadable CG
+    /// (all unknown, never absence). Never overwrites a live anchor: a wid
+    /// whose retained handle names a different subject without a proven
+    /// close keeps the old anchor and its captures withhold (the replacement
+    /// handle drops here). Never rebinds a tombstoned wid: the wid stays
+    /// inert and its retained handle drops, even when the fresh subject
+    /// differs. A full memory (live plus tombstones at cap) withholds newly
+    /// observed wids without failing the admission; nothing is evicted to
+    /// make room.
+    fn note_genuine_snapshot(
+        &mut self,
+        retained: Vec<(u32, AxElement)>,
+        cg_complete: bool,
+        cg_owner_wids: &BTreeSet<u32>,
+    ) {
+        let present: BTreeSet<u32> = retained.iter().map(|(wid, _)| *wid).collect();
+        let anchored: Vec<u32> = self.live.keys().copied().collect();
+        for wid in anchored {
+            if present.contains(&wid) {
+                continue;
+            }
+            if cg_complete && !cg_owner_wids.contains(&wid) {
+                self.live.remove(&wid);
+                // Total cannot grow here: one live slot converts to one
+                // tombstone slot, so the bound holds without eviction.
+                self.tombstones.insert(wid);
+            }
+        }
+        debug_assert!(self.remembered_len() <= AX_ANCHOR_CAP);
+        for (wid, element) in retained {
+            if self.live.contains_key(&wid) {
+                // Gapless replacement: keep the old anchor, drop the
+                // replacement handle. Captures for the new subject
+                // withhold fail-closed.
+                continue;
+            }
+            if self.tombstones.contains(&wid) {
+                // Proved-close wid: never rebind for this backend lifetime.
+                // The inert tombstone persists; the fresh handle drops.
+                continue;
+            }
+            if self.remembered_len() >= AX_ANCHOR_CAP {
+                // Full memory withholds the new wid (availability only,
+                // never a guessed identity); nothing is evicted.
+                continue;
+            }
+            self.live.insert(wid, element);
+        }
+    }
+
+    /// Capture gate for one freshly joined element: true only when a live
+    /// anchor exists for `wid`, the wid is not tombstoned, and the fresh
+    /// element is `CFEqual` to the anchor. `None` (unjoined/unreadable)
+    /// never passes. Pure read: never binds or replaces.
+    fn allows(&self, wid: u32, fresh: Option<&AxElement>) -> bool {
+        let Some(fresh) = fresh else {
+            return false;
+        };
+        if self.tombstones.contains(&wid) {
+            return false;
+        }
+        self.live
+            .get(&wid)
+            .is_some_and(|anchor| ax_elements_equal(anchor, fresh))
+    }
+}
+
 /// Per-app AX backend factory over one product selection: validates the
 /// selection at construction AND binds the launch lifetime at backend
 /// creation. Unknown, out-of-selection, launch-date-less owners, and (in
@@ -884,7 +1048,8 @@ pub fn scoped_backstop_due(
 /// refuses both own bundles plus exact exclusions while admitting Ghostty as
 /// an ordinary candidate. Created backends run on the owning per-app AX
 /// thread (see [`crate::runtime`]); every `AxElement` is constructed, used,
-/// and dropped there.
+/// and dropped there, except the exact anchor handles retained in
+/// `AxSubjectAnchors` (owner thread only, never sent elsewhere).
 #[derive(Debug, Clone)]
 pub struct ScopedAxFactory {
     scope: TileScope,
@@ -980,7 +1145,8 @@ impl AxBackendFactory for ScopedAxFactory {
 /// Scoped per-app AX backend over the existing safe FFI wrappers plus the
 /// native fact readers. Constructed with bound plain-data identity only;
 /// every `AxElement` is created, used, and dropped inside the owning worker
-/// thread on each call. The live effect hook (revision cell, stop flag,
+/// thread on each call, except the exact anchor handles retained in
+/// `AxSubjectAnchors` (same owner thread, never sent elsewhere). The live effect hook (revision cell, stop flag,
 /// frame slot, freshest frontmost) binds via
 /// [`AxBackend::bind_effect_hook`] every worker iteration; unhooked
 /// backends fail every scoped call closed instead of actuating blind.
@@ -1025,6 +1191,13 @@ pub struct ScopedAxBackend {
     /// (revision moved) or `arrival` (same revision, verified arrival).
     #[cfg(target_os = "macos")]
     last_poll_revision: Option<u64>,
+    /// Exact-subject anchors for arrival capture continuity (macOS only,
+    /// owner-thread only): the EXACT retained handles from the same genuine
+    /// successful snapshot enumeration, gated with `CFEqual` before any
+    /// capture attests an owner. Never written on the capture path; a
+    /// tombstoned wid never rebinds for the backend lifetime.
+    #[cfg(target_os = "macos")]
+    ax_anchors: AxSubjectAnchors,
 }
 
 impl ScopedAxBackend {
@@ -1054,6 +1227,8 @@ impl ScopedAxBackend {
             reread_seen_generation: None,
             #[cfg(target_os = "macos")]
             last_poll_revision: None,
+            #[cfg(target_os = "macos")]
+            ax_anchors: AxSubjectAnchors::new(),
         }
     }
 
@@ -1248,13 +1423,34 @@ impl AxBackend for ScopedAxBackend {
             None
         }
     }
+
+    /// Ordered bracket reads for arrival capture on THIS owning thread (one
+    /// [`crate::runtime_types::BracketRead`] per requested window: the
+    /// identity join, before legs, Space membership, frame, after legs — in
+    /// that order). Only the requested `wids` are read (bounded by the frozen
+    /// member set, never a whole-inventory scan). Facts only, never a
+    /// readiness verdict: unreadable legs stay `None`/empty and unattested
+    /// owners stay `None` (the caller omits those members, never a guessed
+    /// home or frame).
+    fn capture_brackets(&mut self, wids: &[u32]) -> Vec<crate::runtime_types::BracketRead> {
+        #[cfg(target_os = "macos")]
+        {
+            self.capture_brackets_native(wids)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = wids;
+            Vec::new()
+        }
+    }
 }
 
 /// Native scoped owner reads over live FFI (macOS only): the [`TileGates`]
 /// plus [`AxSetter`] implementation behind [`ScopedAxBackend`]. Constructed
-/// fresh per operation on the owning thread; no element outlives one fence
-/// check plus its legs. Title-free throughout; reasons name OS statuses
-/// only.
+/// fresh per operation on the owning thread; no per-leg element outlives
+/// one fence check plus its legs except the exact anchor handles retained in
+/// `AxSubjectAnchors` (same owner thread, never sent elsewhere).
+/// Title-free throughout; reasons name OS statuses only.
 #[cfg(target_os = "macos")]
 mod native {
     use super::*;
@@ -1278,12 +1474,14 @@ mod native {
             &mut self,
             ctx: &Arc<NativeContext>,
         ) -> Result<ScopedBackendSnapshot, String> {
-            use crate::native_facts::{read_app_facts, read_app_window_facts};
+            use crate::native_facts::{read_app_facts, read_app_window_facts_retaining};
 
             // Whole-read refusal on the first gap (classification or
             // per-read legs): an incomplete read never publishes as a
-            // complete replacement (which would invent destruction).
-            let outcome = read_app_window_facts(self.pid)?;
+            // complete replacement (which would invent destruction). The
+            // retaining read returns the EXACT handles from this same
+            // enumeration for anchor admission below (no second join).
+            let (outcome, retained) = read_app_window_facts_retaining(self.pid)?;
             // Owner-thread app facts: the same `NSRunningApplication`
             // model reads as the main-thread supplier (justified
             // off-main exception); hide/policy dynamics need fresh reads.
@@ -1332,6 +1530,19 @@ mod native {
                 focus_cg_owned,
                 false,
             )?;
+            // Exact-subject anchor admission (owner thread only): this read
+            // is genuine (complete AX legs plus a successful build), so its
+            // EXACT retained handles anchor future captures. Never
+            // overwrites, never rebinds tombstones, evicts only proven
+            // closes (complete CG oracle minus the wid), and withholds when
+            // the total live-plus-tombstone memory is full: a wid with no
+            // anchor withholds its captures, never a guessed owner. Handles
+            // stay on this owner thread, never sent elsewhere.
+            {
+                let cg_owned: BTreeSet<u32> = outcome.cg_owner_wids.iter().copied().collect();
+                self.ax_anchors
+                    .note_genuine_snapshot(retained, outcome.cg_complete, &cg_owned);
+            }
             // Bounded selected-oracle focus leg on THIS owning thread (never
             // the main thread, which performs no AX reads): the worker
             // stamps it over the evidence `ax_focus` slot at send time. The
@@ -1635,6 +1846,145 @@ mod native {
                 },
                 Err(reason) => AxCompletion::Failed { reason },
             }
+        }
+
+        /// Ordered bracket reads for arrival capture on the owning thread
+        /// (one [`crate::runtime_types::BracketRead`] per requested wid, in
+        /// request order, never truncated): per window, the AX application
+        /// enumeration plus window-id join (lifetime BEFORE), the first
+        /// `AXMinimized`/owner-hidden legs, a fresh SLS Space-membership
+        /// read, a fresh AX frame read, the final `AXMinimized`/owner-hidden
+        /// legs on the SAME joined element, then the window-server owner
+        /// join (lifetime AFTER). Facts only, never a verdict: every leg is
+        /// attempted in order and unreadable legs stay `None`/empty (never
+        /// guessed), no window is omitted (the caller omits unattested
+        /// members), and `owner_pid` is `Some(pid)` only when the AX join
+        /// AND the same-element re-verify AND the CG owner join all attest
+        /// exactly this `(pid, wid)` AND the bound process identity still
+        /// revalidates live (bundle/executable/launch-date, sampled once per
+        /// batch before any AX join, mirroring the effect gates; refusal
+        /// leaves every row unattested and the caller omits those members).
+        /// Visibility-before/after alone can never attest a reused wid, and
+        /// one post-hoc CG match alone never suffices either. A finite messaging timeout is set before every
+        /// AX join/read; a refused timeout fails that leg, never an
+        /// unbounded read.
+        pub(super) fn capture_brackets_native(
+            &self,
+            wids: &[u32],
+        ) -> Vec<crate::runtime_types::BracketRead> {
+            use crate::ffi::{
+                app_hidden_for_pid, ax_bool_attribute, ax_get_frame, ax_window_id,
+                cg_window_list_basic, sls_spaces_for_window,
+            };
+            use crate::runtime_types::BracketRead;
+
+            let pid_i32 = i32::try_from(self.pid).ok();
+            // Process-identity fence ONCE per batch BEFORE any AX join
+            // (PID-reuse fence: the numeric pid may have been recycled for
+            // a new process since bind; bundle/executable/launch-date must
+            // still match exactly). Refusal fails the whole batch closed:
+            // every row below rides unattested and the caller omits those
+            // members. A reuse racing the batch is TOCTOU, same as every
+            // other fence.
+            let live = (self.pid > 1 && self.pid <= i32::MAX as u32)
+                .then(|| crate::ffi::ns_app_identity_for_pid(self.pid as i32));
+            let (live_bundle, live_exe, live_start) = match &live {
+                Some(id) => (
+                    id.bundle.as_deref(),
+                    id.exe.as_deref().unwrap_or_default(),
+                    id.launch_date.as_deref().unwrap_or_default(),
+                ),
+                None => (None, "", ""),
+            };
+            let unscoped = self.scope.is_unscoped();
+            let mut out = Vec::with_capacity(wids.len());
+            for &wid in wids {
+                // Lifetime BEFORE: fresh AX enumeration plus window-id join
+                // with a finite messaging timeout before every leg. `None`
+                // (identity refusal, out-of-range pid, no element, unset
+                // timeout, unjoined wid) degrades every AX leg below to
+                // `None` without skipping the row.
+                let window = if live.is_some() {
+                    pid_i32.and_then(|_| join_window_element(self.pid, wid).ok())
+                } else {
+                    None
+                };
+                let before_minimized = window
+                    .as_ref()
+                    .and_then(|joined| ax_bool_attribute(joined, "AXMinimized").ok());
+                let before_hidden = live
+                    .as_ref()
+                    .and_then(|_| pid_i32.and_then(|pid| app_hidden_for_pid(pid).ok()));
+                // Fresh live SLS membership between the visibility legs
+                // (empty = unreadable/unknown, never "no Space").
+                let spaces = sls_spaces_for_window(wid).unwrap_or_default();
+                // Fresh native frame between the visibility legs (`None`
+                // when unreadable or degenerate — never a guessed rect).
+                let frame = window
+                    .as_ref()
+                    .and_then(|joined| ax_get_frame(joined).ok())
+                    .and_then(|read| {
+                        let rect = (read.x as i32, read.y as i32, read.w as i32, read.h as i32);
+                        if rect.2 > 0 && rect.3 > 0 {
+                            Some(rect)
+                        } else {
+                            None
+                        }
+                    });
+                // After legs on the SAME joined element (each a fresh read).
+                let after_minimized = window
+                    .as_ref()
+                    .and_then(|joined| ax_bool_attribute(joined, "AXMinimized").ok());
+                let after_hidden = live
+                    .as_ref()
+                    .and_then(|_| pid_i32.and_then(|pid| app_hidden_for_pid(pid).ok()));
+                // Lifetime AFTER: the same-element window-id re-verify plus
+                // the window-server owner join (`wid` still owned by exactly
+                // `pid`), plus the batch-sampled process-identity
+                // revalidation above. All three must attest alongside the
+                // BEFORE join; anything else leaves `owner_pid` unattested.
+                let ax_after = window.as_ref().and_then(ax_window_id) == Some(wid);
+                let cg_owned = live.is_some()
+                    && cg_window_list_basic()
+                        .map(|list| {
+                            list.iter()
+                                .any(|entry| entry.wid == wid && entry.pid == self.pid)
+                        })
+                        .unwrap_or(false);
+                // Exact-subject anchor fence BEFORE the owner join: the
+                // freshly joined element must be `CFEqual` to the anchor
+                // retained from a genuine snapshot/admission. No anchor, a
+                // tombstoned wid, or a different subject (reused `(pid, wid)`)
+                // leaves the row unattested and the caller omits the member.
+                // The capture path never binds or replaces anchors.
+                let anchor_ok = window
+                    .as_ref()
+                    .is_some_and(|fresh| self.ax_anchors.allows(wid, Some(fresh)));
+                out.push(BracketRead {
+                    wid,
+                    owner_pid: if anchor_ok {
+                        super::attest_capture_owner(
+                            &self.identity,
+                            unscoped,
+                            self.pid,
+                            live_bundle,
+                            live_exe,
+                            live_start,
+                            ax_after,
+                            cg_owned,
+                        )
+                    } else {
+                        None
+                    },
+                    before_minimized,
+                    before_hidden,
+                    spaces,
+                    frame,
+                    after_minimized,
+                    after_hidden,
+                });
+            }
+            out
         }
     }
 
@@ -2295,5 +2645,348 @@ mod tests {
             "unreadable membership rides empty (unknown)"
         );
         assert_eq!(snap.cg_alive[0].singleton(), None);
+    }
+
+    #[test]
+    fn capture_owner_attestation_fails_closed_on_identity_drift() {
+        let scoped = ProcessIdentity::bind(4242, Some("com.example.app"), "/x", "launch-1")
+            .expect("bind fixture identity");
+        // Exact continuity plus both joins attests the bound owner.
+        assert_eq!(
+            attest_capture_owner(
+                &scoped,
+                false,
+                4242,
+                Some("com.example.app"),
+                "/x",
+                "launch-1",
+                true,
+                true
+            ),
+            Some(4242)
+        );
+        // PID-reuse drifts fail closed: a recycled numeric pid naming a
+        // new process must never attest the old binding.
+        assert_eq!(
+            attest_capture_owner(
+                &scoped,
+                false,
+                4242,
+                Some("com.example.other"),
+                "/x",
+                "launch-1",
+                true,
+                true
+            ),
+            None,
+            "bundle drift must not attest"
+        );
+        assert_eq!(
+            attest_capture_owner(
+                &scoped,
+                false,
+                4242,
+                Some("com.example.app"),
+                "/y",
+                "launch-1",
+                true,
+                true
+            ),
+            None,
+            "executable drift must not attest"
+        );
+        assert_eq!(
+            attest_capture_owner(
+                &scoped,
+                false,
+                4242,
+                Some("com.example.app"),
+                "/x",
+                "launch-2",
+                true,
+                true
+            ),
+            None,
+            "start-token drift must not attest"
+        );
+        assert_eq!(
+            attest_capture_owner(
+                &scoped,
+                false,
+                4242,
+                Some("com.example.app"),
+                "/x",
+                "",
+                true,
+                true
+            ),
+            None,
+            "unreadable start token must not attest"
+        );
+        assert_eq!(
+            attest_capture_owner(
+                &scoped,
+                false,
+                9999,
+                Some("com.example.app"),
+                "/x",
+                "launch-1",
+                true,
+                true
+            ),
+            None,
+            "pid drift must not attest"
+        );
+        // Join disagreements fail closed even with a live identity.
+        assert_eq!(
+            attest_capture_owner(
+                &scoped,
+                false,
+                4242,
+                Some("com.example.app"),
+                "/x",
+                "launch-1",
+                false,
+                true
+            ),
+            None,
+            "AX re-verify miss must not attest"
+        );
+        assert_eq!(
+            attest_capture_owner(
+                &scoped,
+                false,
+                4242,
+                Some("com.example.app"),
+                "/x",
+                "launch-1",
+                true,
+                false
+            ),
+            None,
+            "CG owner miss must not attest"
+        );
+        // Unscoped mode admits Ghostty as an ordinary candidate under exact
+        // continuity; scoped mode still refuses it.
+        let ghost =
+            ProcessIdentity::bind_unscoped(4242, Some("com.mitchellh.ghostty"), "/x", "launch-1")
+                .expect("bind unscoped ghostty identity");
+        assert_eq!(
+            attest_capture_owner(
+                &ghost,
+                true,
+                4242,
+                Some("com.mitchellh.ghostty"),
+                "/x",
+                "launch-1",
+                true,
+                true
+            ),
+            Some(4242)
+        );
+        assert_eq!(
+            attest_capture_owner(
+                &ghost,
+                false,
+                4242,
+                Some("com.mitchellh.ghostty"),
+                "/x",
+                "launch-1",
+                true,
+                true
+            ),
+            None,
+            "scoped mode must not attest Ghostty"
+        );
+    }
+
+    /// Exact-subject anchor transitions (macOS only, headless-safe: the
+    /// stand-in subjects are application-element joins, which need no
+    /// window, no consent, and no focus — real `CFEqual` semantics over
+    /// live joins, not scripted tokens). Admission binds only the EXACT
+    /// retained handles from the same genuine snapshot (no post-read
+    /// re-join); tombstones never rebind for the backend lifetime.
+    #[cfg(target_os = "macos")]
+    mod ax_anchor_tests {
+        use super::super::{AX_ANCHOR_CAP, AxSubjectAnchors};
+        use crate::ffi::{AxElement, ax_elements_equal};
+        use std::collections::BTreeSet;
+
+        fn app(pid: i32) -> AxElement {
+            AxElement::application(pid).expect("application element joins headless")
+        }
+
+        fn set(wids: &[u32]) -> BTreeSet<u32> {
+            wids.iter().copied().collect()
+        }
+
+        fn retained(pairs: &[(u32, i32)]) -> Vec<(u32, AxElement)> {
+            pairs.iter().map(|(wid, pid)| (*wid, app(*pid))).collect()
+        }
+
+        #[test]
+        fn capture_needs_an_anchor_never_bare_pid_wid_match() {
+            // No admission at all: a freshly joined element with a matching
+            // `(pid, wid)` shape still withholds — the capture path never
+            // binds. `None` (unjoined/unreadable) withholds too.
+            let anchors = AxSubjectAnchors::new();
+            let fresh = app(std::process::id() as i32);
+            assert!(!anchors.allows(7, Some(&fresh)));
+            assert!(!anchors.allows(7, None));
+        }
+
+        #[test]
+        fn admission_anchors_exact_retained_subject() {
+            // Genuine admission binds the EXACT retained subject from the
+            // same snapshot (no second join): the same subject re-joined
+            // passes, a different subject does not.
+            let mut anchors = AxSubjectAnchors::new();
+            anchors.note_genuine_snapshot(retained(&[(7, 4242)]), true, &set(&[7]));
+            assert!(anchors.allows(7, Some(&app(4242))));
+            assert!(!anchors.allows(7, Some(&app(4243))));
+            assert!(!anchors.allows(9, Some(&app(4242))));
+            assert!(!anchors.allows(7, None));
+        }
+
+        #[test]
+        fn omission_and_off_space_retain_proven_close_never_rebinds() {
+            // AX omission (wid missing from the genuine set while CG still
+            // names it) and CG-unreadable snapshots retain the anchor.
+            let mut anchors = AxSubjectAnchors::new();
+            anchors.note_genuine_snapshot(retained(&[(7, 4242)]), true, &set(&[7]));
+            anchors.note_genuine_snapshot(Vec::new(), true, &set(&[7]));
+            assert!(
+                anchors.allows(7, Some(&app(4242))),
+                "CG-owned omission must retain"
+            );
+            anchors.note_genuine_snapshot(Vec::new(), false, &set(&[]));
+            assert!(
+                anchors.allows(7, Some(&app(4242))),
+                "CG-unreadable snapshots must retain"
+            );
+            // Proven close (complete CG oracle minus the wid, AX absent)
+            // drops the old element for an inert tombstone: the old subject
+            // no longer passes and the wid stays withheld.
+            anchors.note_genuine_snapshot(Vec::new(), true, &set(&[]));
+            assert!(!anchors.allows(7, Some(&app(4242))));
+            assert!(!anchors.allows(7, Some(&app(4243))));
+            // A later genuine snapshot naming the same numeric wid — even
+            // with a fresh AX subject — never rebinds: the tombstone is
+            // inert for the backend lifetime (no global-remint stand-in).
+            anchors.note_genuine_snapshot(retained(&[(7, 4243)]), true, &set(&[7]));
+            assert!(
+                !anchors.allows(7, Some(&app(4243))),
+                "tombstoned wid must never rebind, even for a fresh subject"
+            );
+            assert!(!anchors.allows(7, Some(&app(4242))));
+            assert!(
+                anchors.tombstones.contains(&7),
+                "tombstone persists after refused rebind"
+            );
+            assert!(
+                !anchors.live.contains_key(&7),
+                "no live rebind after proved close"
+            );
+        }
+
+        #[test]
+        fn gapless_replacement_never_overwrites_live_anchor() {
+            // A genuine snapshot whose retained handle names a different
+            // subject with no proven close keeps the old anchor: captures
+            // for the new subject withhold fail-closed rather than
+            // inheriting (the second-join false-continuity fix binds only
+            // the exact admitted subject).
+            let mut anchors = AxSubjectAnchors::new();
+            anchors.note_genuine_snapshot(retained(&[(7, 4242)]), true, &set(&[7]));
+            anchors.note_genuine_snapshot(retained(&[(7, 4243)]), true, &set(&[7]));
+            assert!(anchors.allows(7, Some(&app(4242))));
+            assert!(!anchors.allows(7, Some(&app(4243))));
+        }
+
+        #[test]
+        fn full_total_memory_withholds_without_evicting() {
+            // Total live-plus-tombstone memory is bounded: a full memory
+            // withholds newly observed wids (availability only, never a
+            // guessed identity) and never evicts live anchors or retired
+            // tombstones to make room.
+            let mut anchors = AxSubjectAnchors::new();
+            // Empty admission binds nothing and fails nothing.
+            anchors.note_genuine_snapshot(Vec::new(), true, &set(&[7]));
+            assert!(!anchors.allows(7, Some(&app(4242))));
+            anchors.note_genuine_snapshot(retained(&[(7, 4242)]), true, &set(&[7]));
+            let many: Vec<(u32, i32)> = (0..(AX_ANCHOR_CAP as u32))
+                .map(|wid| (wid, 10_000 + wid as i32))
+                .collect();
+            let many_set: BTreeSet<u32> = many.iter().map(|(wid, _)| *wid).collect();
+            let many_cg = many_set.clone();
+            // Wid 7 already anchors the old subject: its replacement handle
+            // in `many` drops (gapless rule), the rest fill to the cap.
+            // 999_999 is over cap and withholds.
+            let mut with_extra = many.clone();
+            with_extra.push((999_999, 10_000 + 999_999));
+            let mut with_extra_set = many_set.clone();
+            with_extra_set.insert(999_999);
+            anchors.note_genuine_snapshot(retained(&with_extra), true, &with_extra_set);
+            let _ = many_cg;
+            assert!(
+                anchors.remembered_len() <= AX_ANCHOR_CAP,
+                "total live-plus-tombstone memory must stay bounded"
+            );
+            assert!(
+                anchors.allows(7, Some(&app(4242))),
+                "live anchors are never evicted for room"
+            );
+            assert!(
+                !anchors.allows(999_999, Some(&app(10_000 + 999_999))),
+                "over-cap wids withhold"
+            );
+        }
+
+        #[test]
+        fn tombstones_are_bounded_never_evicted_and_block_rebind_at_cap() {
+            // One proved close leaves an inert tombstone; filling the rest
+            // of the total memory never evicts it, and a full memory
+            // withholds both brand-new wids and refused rebinds.
+            let mut anchors = AxSubjectAnchors::new();
+            anchors.note_genuine_snapshot(retained(&[(7, 4242)]), true, &set(&[7]));
+            anchors.note_genuine_snapshot(Vec::new(), true, &set(&[]));
+            assert!(anchors.tombstones.contains(&7));
+            // Fill the remaining slots with distinct live wids.
+            let fill: Vec<(u32, i32)> = (1000..(1000 + (AX_ANCHOR_CAP as u32) - 1))
+                .map(|wid| (wid, 20_000 + wid as i32))
+                .collect();
+            let fill_set: BTreeSet<u32> = fill.iter().map(|(wid, _)| *wid).collect();
+            anchors.note_genuine_snapshot(retained(&fill), true, &fill_set);
+            assert_eq!(
+                anchors.remembered_len(),
+                AX_ANCHOR_CAP,
+                "live plus one tombstone fills the total memory"
+            );
+            assert!(
+                anchors.tombstones.contains(&7),
+                "filling to cap must never evict the retired tombstone"
+            );
+            // Brand-new wid withholds at cap.
+            anchors.note_genuine_snapshot(retained(&[(999_999, 30_000)]), true, &set(&[999_999]));
+            assert!(!anchors.allows(999_999, Some(&app(30_000))));
+            assert_eq!(anchors.remembered_len(), AX_ANCHOR_CAP);
+            // The retired wid still never rebinds at cap.
+            anchors.note_genuine_snapshot(retained(&[(7, 4243)]), true, &set(&[7]));
+            assert!(!anchors.allows(7, Some(&app(4243))));
+            assert!(anchors.tombstones.contains(&7));
+            assert_eq!(anchors.remembered_len(), AX_ANCHOR_CAP);
+        }
+
+        #[test]
+        fn anchor_equality_is_exact_subject_not_pid() {
+            // Two joins of the same subject are equal; joins of different
+            // subjects are not, even back-to-back (pins the `CFEqual`
+            // semantics the fence relies on, headless).
+            let first = app(4242);
+            let second = app(4242);
+            assert!(ax_elements_equal(&first, &first));
+            assert!(ax_elements_equal(&first, &second));
+            assert!(!ax_elements_equal(&first, &app(4243)));
+        }
     }
 }

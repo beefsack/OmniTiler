@@ -44,6 +44,12 @@
 //!   retires the current record so old cached replays refuse as stale. The
 //!   record pins the bound handshake session, so a new handshake reusing
 //!   the same id/revision never aliases the old one.
+//! - The unified retained focus request ([`FocusRequest`]) rides the same
+//!   envelope accounting for every cause (explicit command, automatic
+//!   admission, focus-follows-cursor, positive close): the sequencer is
+//!   cause-agnostic, matching only the exact latest
+//!   `(session, id, target, issued_revision)` tuple. Cause-specific policy
+//!   (explicit exemptions, selection `afterShown` deferral) lives in Unit B.
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -53,7 +59,7 @@ use tiler_core::directional::WindowId;
 #[cfg(test)]
 use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
-    CloseFocusRequest, EffectCause, EffectKind, OneShotEffect, WorldCommand, WorldReplyV4,
+    EffectCause, EffectKind, FocusRequest, OneShotEffect, WorldCommand, WorldReplyV4,
 };
 
 /// Thread-safe observation watermark. `invalidate` advances synchronously on
@@ -411,8 +417,8 @@ impl WorldSequencer {
         state.close_retired_rev = 0;
     }
 
-    /// Observe one coherent latest close-focus envelope. `None` retires the
-    /// current record into the fence (no close intent: never actuate, and
+    /// Observe one coherent latest retained-focus envelope. `None` retires the
+    /// current record into the fence (no focus intent: never actuate, and
     /// old cached replays later refuse as stale). An exact
     /// `(session, id, target, issued_revision)` match returns `Fresh`
     /// (unspent) or `DuplicateSpent` (spent). A request naming a different
@@ -422,10 +428,12 @@ impl WorldSequencer {
     /// bound sequencer). Any other same-session tuple adopts only when
     /// strictly newer than both the current record and the fence (stable
     /// requests may first arrive on a later envelope); same-revision
-    /// mismatches and older revisions refuse as `Stale`.
+    /// mismatches and older revisions refuse as `Stale`. Cause-agnostic:
+    /// every [`FocusRequest`] cause shares this accounting; cause-specific
+    /// policy lives in Unit B.
     pub(crate) fn observe_close_envelope(
         &self,
-        request: Option<&CloseFocusRequest>,
+        request: Option<&FocusRequest>,
         adapter_incarnation: &str,
         core_generation: &str,
     ) -> CloseEnvelope {
@@ -620,7 +628,7 @@ mod tests {
             windows: Vec::new(),
             transfers: Vec::new(),
             effects: Vec::new(),
-            close_focus: None,
+            focus_request: None,
             command_result: None,
             gesture_settled: None,
             operation_settled: Vec::new(),
@@ -815,14 +823,62 @@ mod tests {
         assert_eq!(focus_effect_id(seq), format!("effect-focus-{seq}"));
     }
 
-    fn close_request(id: &str, target: &str, issued_revision: u64) -> CloseFocusRequest {
-        CloseFocusRequest {
+    fn close_request(
+        id: &str,
+        target: &str,
+        issued_revision: u64,
+    ) -> tiler_core::world_report::FocusRequest {
+        tiler_core::world_report::FocusRequest {
             id: id.to_owned(),
             target: WindowId(target.to_owned()),
             issued_revision,
-            cause: tiler_core::world_report::CloseFocusCause::PositiveClose,
+            cause: tiler_core::world_report::FocusRequestCause::PositiveClose,
             output: tiler_core::directional::OutputId("macos-display-1".to_owned()),
             workspace: "space-11".to_owned(),
+            cmd_seq: None,
+            after_shown: None,
+        }
+    }
+
+    fn focus_request_for_cause(
+        id: &str,
+        target: &str,
+        issued_revision: u64,
+        cause: tiler_core::world_report::FocusRequestCause,
+    ) -> tiler_core::world_report::FocusRequest {
+        let mut req = close_request(id, target, issued_revision);
+        req.cause = cause;
+        if cause == tiler_core::world_report::FocusRequestCause::ExplicitCommand {
+            req.cmd_seq = Some(issued_revision);
+        }
+        req
+    }
+
+    #[test]
+    fn focus_envelope_accepts_every_cause_latest_only() {
+        // Generalization proof: the envelope accounting is cause-agnostic —
+        // each of the four retained causes adopts as `Fresh` on a strictly
+        // newer revision and replays refuse once spent or superseded.
+        use tiler_core::world_report::FocusRequestCause;
+        let sequencer = WorldSequencer::new(INCARNATION, GENERATION);
+        for (rev, cause) in [
+            (3, FocusRequestCause::PositiveClose),
+            (4, FocusRequestCause::AutomaticAdmission),
+            (5, FocusRequestCause::FocusFollowsCursor),
+            (6, FocusRequestCause::ExplicitCommand),
+        ] {
+            let req = focus_request_for_cause("focus-req", "1_2", rev, cause);
+            assert_eq!(
+                sequencer.observe_close_envelope(Some(&req), INCARNATION, GENERATION),
+                CloseEnvelope::Fresh,
+                "cause {cause:?} adopts",
+            );
+            assert!(sequencer.spend_close("focus-req"));
+            assert_eq!(
+                sequencer.observe_close_envelope(Some(&req), INCARNATION, GENERATION),
+                CloseEnvelope::DuplicateSpent,
+                "cause {cause:?} replays silent",
+            );
         }
     }
 

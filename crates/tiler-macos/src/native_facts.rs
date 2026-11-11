@@ -3,10 +3,13 @@
 //! Typed native fact readers for the scoped tile (read-only, no titles).
 //!
 //! Threading (fixed architecture):
-//! - [`read_app_window_facts`] runs on the owning per-app AX thread: every
-//!   `AxElement` is constructed, used, and dropped there. A finite messaging
-//!   timeout is set BEFORE every join and read (app element and each window
-//!   object); a refused timeout skips the narrow read, never an unbounded one.
+//! - [`read_app_window_facts`] and [`read_app_window_facts_retaining`] run
+//!   on the owning per-app AX thread: every `AxElement` is constructed,
+//!   used, and dropped there, except the exact handles the retaining variant
+//!   returns from the same successful enumeration (owner thread only, never
+//!   sent elsewhere). A finite messaging timeout is set BEFORE every join
+//!   and read (app element and each window object); a refused timeout skips
+//!   the narrow read, never an unbounded one.
 //! - [`read_app_facts`] runs on the caller (main) thread over public AppKit
 //!   (`NSRunningApplication`, no AX consent involved).
 //!
@@ -389,17 +392,50 @@ pub(crate) fn cg_owner_inventory(
 /// The full CG list is read once per read for the owner identity
 /// inventory below (never derived from AX wids); an unreadable list keeps
 /// the AX legs but marks the oracle unreadable (unknown, never absence).
+///
+/// Retaining variant [`read_app_window_facts_retaining`] returns the EXACT
+/// enumerated/read handles from this same successful enumeration for anchor
+/// admission (no second join); this wrapper drops those handles on the
+/// calling owner thread for plain-data callers.
 pub fn read_app_window_facts(pid: u32) -> Result<NativeReadOutcome, String> {
     read_app_window_facts_with_cg(pid, cg_window_list_basic())
+}
+
+/// Owner-thread retaining read: the EXACT `AxElement` handles enumerated
+/// and read in this same genuine snapshot alongside their plain facts.
+/// Returns `(outcome, retained)` where `retained` holds one handle per
+/// successfully read wid (first handle wins on duplicate wids; failed legs
+/// retain nothing). Handles stay on the calling owner thread and must be
+/// consumed there (anchor admission); they are never sent to another thread
+/// (e.g. never via `EngineJob` — `AxElement` is `!Send`). On `Err` nothing
+/// retains (handles drop here on the owner thread).
+pub fn read_app_window_facts_retaining(
+    pid: u32,
+) -> Result<(NativeReadOutcome, Vec<(u32, AxElement)>), String> {
+    read_app_window_facts_with_cg_retaining(pid, cg_window_list_basic())
 }
 
 /// Injectable CG seam for the oracle: production passes the fresh full
 /// `cg_window_list_basic()` read; tests pass explicit `Ok`/`Err` values.
 /// Only this PID's wids enter the inventory, sorted and deduplicated.
+/// Plain-data wrapper over [`read_app_window_facts_with_cg_retaining`]:
+/// drops the exact retained handles on the calling owner thread.
 pub fn read_app_window_facts_with_cg(
     pid: u32,
     cg_result: Result<Vec<crate::ffi::CgWindowBasic>, String>,
 ) -> Result<NativeReadOutcome, String> {
+    read_app_window_facts_with_cg_retaining(pid, cg_result).map(|(outcome, _)| outcome)
+}
+
+/// Injectable retaining seam: same enumeration as
+/// [`read_app_window_facts_with_cg`] but also returns the EXACT
+/// enumerated/read `AxElement` handles from this same successful snapshot.
+/// Handles stay on the calling owner thread (never sent elsewhere); `Err`
+/// retains nothing.
+pub fn read_app_window_facts_with_cg_retaining(
+    pid: u32,
+    cg_result: Result<Vec<crate::ffi::CgWindowBasic>, String>,
+) -> Result<(NativeReadOutcome, Vec<(u32, AxElement)>), String> {
     if pid <= 1 || pid > i32::MAX as u32 {
         return Err(format!("refusing out-of-range pid {pid}"));
     }
@@ -442,6 +478,8 @@ pub fn read_app_window_facts_with_cg(
     cg_entries.dedup_by_key(|e| e.wid);
     let requested = windows.len();
     let mut out = Vec::new();
+    let mut retained: Vec<(u32, AxElement)> = Vec::new();
+    let mut retained_seen = std::collections::BTreeSet::new();
     let mut failed = 0usize;
     let mut first_cause = String::new();
     let mut fail = |cause: String| {
@@ -450,18 +488,18 @@ pub fn read_app_window_facts_with_cg(
             first_cause = cause;
         }
     };
-    for window in windows.iter() {
+    for window in windows {
         // Finite timeout before the join and every read on this object; a
         // refusal skips the narrow read, never an unbounded one.
-        if ax_set_messaging_timeout(window, messaging_secs()) != 0 {
+        if ax_set_messaging_timeout(&window, messaging_secs()) != 0 {
             fail("messaging timeout unset".to_owned());
             continue;
         }
-        let Some(wid) = ax_window_id(window) else {
+        let Some(wid) = ax_window_id(&window) else {
             fail("window identity join failed".to_owned());
             continue;
         };
-        let frame = match ax_get_frame(window) {
+        let frame = match ax_get_frame(&window) {
             Ok(frame) => Some(frame),
             Err(code) => {
                 fail(crate::ffi::ax_error_name(code));
@@ -474,7 +512,7 @@ pub fn read_app_window_facts_with_cg(
         // read, preserving retained state); classification gates
         // completeness for the rest via `classify_all`.
         let joined_cg = cg_list.iter().find(|w| w.wid == wid && w.pid == pid);
-        let min_size = match ax_min_size(window) {
+        let min_size = match ax_min_size(&window) {
             Ok(bound) => bound,
             Err(code) => {
                 fail(crate::ffi::ax_error_name(code));
@@ -483,18 +521,25 @@ pub fn read_app_window_facts_with_cg(
         };
         out.push(NativeWindowFacts {
             wid,
-            role: ax_string_attribute(window, "AXRole").ok().flatten(),
-            subrole: ax_string_attribute(window, "AXSubrole").ok().flatten(),
-            fullscreen: ax_fullscreen_state(window).ok(),
-            minimized: ax_bool_attribute(window, "AXMinimized").ok(),
-            modal: ax_bool_attribute(window, "AXModal").ok(),
-            size_settable: ax_is_size_settable(window).ok(),
+            role: ax_string_attribute(&window, "AXRole").ok().flatten(),
+            subrole: ax_string_attribute(&window, "AXSubrole").ok().flatten(),
+            fullscreen: ax_fullscreen_state(&window).ok(),
+            minimized: ax_bool_attribute(&window, "AXMinimized").ok(),
+            modal: ax_bool_attribute(&window, "AXModal").ok(),
+            size_settable: ax_is_size_settable(&window).ok(),
             min_size,
             max_size: None,
             frame,
             cg_layer: joined_cg.map(|w| w.layer),
             cg_onscreen: joined_cg.map(|w| w.onscreen),
         });
+        // Retain the EXACT handle read above (same enumeration, same
+        // object). First handle wins on duplicate wids: the duplicate facts
+        // row stays (existing shape) but only the first subject anchors, so
+        // the second subject withholds fail-closed.
+        if retained_seen.insert(wid) {
+            retained.push((wid, window));
+        }
     }
     if failed > 0 {
         return Err(format!(
@@ -502,7 +547,7 @@ pub fn read_app_window_facts_with_cg(
             out.len()
         ));
     }
-    Ok(NativeReadOutcome {
+    let outcome = NativeReadOutcome {
         pid,
         requested,
         observed: out.len(),
@@ -512,7 +557,8 @@ pub fn read_app_window_facts_with_cg(
         cg_complete,
         cg_owner_wids,
         cg_entries,
-    })
+    };
+    Ok((outcome, retained))
 }
 
 #[cfg(test)]

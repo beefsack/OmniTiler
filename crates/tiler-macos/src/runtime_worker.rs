@@ -24,14 +24,18 @@ use crate::runtime_native::{
     fence_focus_command, gate_close_baseline,
 };
 use crate::runtime_observe::{BackendSnapshot, PendingObservation, merge_readback, stage_latest};
+use crate::runtime_shared::NativeContextCell;
 use crate::runtime_shared::close_focus_is_current;
 use crate::runtime_thread::{EngineJob, FocusSlot, FrameSlot, FrameWait, Inbox, WorkerDrainMark};
 use crate::runtime_types::{
-    CloseFocusBinding, FocusCommand, FocusEvidence, ScopedBackendSnapshot, TopologyMode,
-    parse_window_id, window_id,
+    ArrivalCapture, BracketRead, CloseFocusBinding, FocusCommand, FocusEvidence,
+    ScopedBackendSnapshot, TopologyMode, parse_window_id, window_id,
 };
 use tiler_core::directional::WindowId;
-use tiler_core::world_report::{VisibilityReason, VisibilitySetter};
+use tiler_core::world_report::{
+    AfterShownMember, ArrivalBracket, ArrivalLocation, VisibilityReason, VisibilitySample,
+    VisibilitySetter,
+};
 
 /// Bound for one worker multiplex slice: frame waits and backend
 /// observation pumps share this cadence. Command wake stays immediate
@@ -243,6 +247,477 @@ pub(crate) fn gate_deferred_focus(
     }
 }
 
+/// Owner-thread arrival capture for frozen members, as a pure function over
+/// already-read legs so tests exercise the production mapping with scripted
+/// backends: the caller (always the owning worker) samples the invalidation
+/// watermark and the cell generation around its own
+/// [`AxBackend::capture_brackets`] batch and passes the samples in. A moved
+/// watermark/generation — or disagreeing before/after legs — marks every
+/// row `invalidated` (proof withholds, never dispatches on it). Unreadable
+/// legs omit the member (no capture: absence defers downstream, never a
+/// guessed home or frame). Only members owned by `pid` are considered; other
+/// PIDs' owners capture their own. The original read watermark is retained
+/// verbatim (never rebased): the evidence-only notification never bumps the
+/// clock, so a newer watermark after stale reads is never assigned.
+///
+/// Identity: a read attests its window only through the backend's
+/// owner join (`owner_pid`): a read naming another pid — or none — omits the
+/// member, never a reused wid. `lifetime_matched` is `Some(true)` exactly on
+/// that join (the generation pin is the caller's own live lifetime); it is
+/// never hardcoded over unattested reads.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn capture_member_brackets(
+    reads: &[BracketRead],
+    members: &[AfterShownMember],
+    pid: u32,
+    generation: u64,
+    revision: u64,
+    obs_before: u64,
+    obs_after: u64,
+    gen_before: u64,
+    gen_after: u64,
+    focus_id: &str,
+    issued_revision: u64,
+    adapter_incarnation: &str,
+    core_generation: &str,
+) -> Vec<ArrivalCapture> {
+    let batch_invalidated = obs_before != obs_after || gen_before != gen_after;
+    let mut out = Vec::new();
+    for member in members {
+        let Some((mpid, mwid)) = parse_window_id(&member.win.0) else {
+            continue;
+        };
+        if mpid != pid {
+            continue;
+        }
+        let Some(read) = reads.iter().find(|r| r.wid == mwid) else {
+            continue;
+        };
+        // Lifetime join first: the backend must attest this window still
+        // belongs to this owner around the home/frame legs. Visibility legs
+        // alone can never attest a reused wid.
+        if read.owner_pid != Some(pid) {
+            continue;
+        }
+        let (Some(before_min), Some(before_hidden), Some(after_min), Some(after_hidden)) = (
+            read.before_minimized,
+            read.before_hidden,
+            read.after_minimized,
+            read.after_hidden,
+        ) else {
+            continue;
+        };
+        let shown_before = !before_min && !before_hidden;
+        let shown_after = !after_min && !after_hidden;
+        let sample = |shown: bool, minimized: bool, hidden: bool| VisibilitySample {
+            obs: obs_after,
+            lifetime_matched: Some(true),
+            visibility: tiler_core::world_report::VisibilityFact {
+                visible: Some(shown),
+                suppression_owned: Some(false),
+            },
+            minimized: Some(minimized),
+            host_hidden: Some(hidden),
+        };
+        let frame = read.frame.and_then(|(x, y, w, h)| {
+            if w > 0 && h > 0 {
+                Some(tiler_core::geometry::Rect { x, y, w, h })
+            } else {
+                None
+            }
+        });
+        out.push(ArrivalCapture {
+            win: member.win.0.clone(),
+            pid,
+            generation,
+            revision,
+            obs: obs_after,
+            context_generation: gen_after,
+            focus_id: focus_id.to_owned(),
+            issued_revision,
+            adapter_incarnation: adapter_incarnation.to_owned(),
+            core_generation: core_generation.to_owned(),
+            before: sample(shown_before, before_min, before_hidden),
+            home_sid: if read.spaces.len() == 1 {
+                Some(read.spaces[0])
+            } else {
+                None
+            },
+            frame,
+            after: sample(shown_after, after_min, after_hidden),
+            invalidated: batch_invalidated
+                || before_min != after_min
+                || before_hidden != after_hidden,
+        });
+    }
+    out
+}
+/// Whether this owner owes a capture for the current pending intent: a
+/// pending selection intent exists with at least one frozen member owned by
+/// `pid`, and the worker has not yet attempted a capture for exactly this
+/// immutable request tuple plus watermark, topology revision, context
+/// generation, and app generation. Pure over shared snapshots so the
+/// multiplex pump calls it at existing triggers with no polling timer, no
+/// retry, and no new work ids.
+pub(crate) fn arrival_capture_due(
+    pending: Option<(String, u64, String, String)>,
+    owned_members: usize,
+    obs: u64,
+    revision: u64,
+    context_generation: u64,
+    generation: u64,
+    last_attempt: &Option<(String, u64, String, String, u64, u64, u64, u64)>,
+) -> Option<(String, u64, String, String, u64, u64, u64, u64)> {
+    let (focus_id, issued_revision, adapter_incarnation, core_generation) = pending?;
+    if owned_members == 0 {
+        return None;
+    }
+    let key = (
+        focus_id,
+        issued_revision,
+        adapter_incarnation,
+        core_generation,
+        obs,
+        revision,
+        context_generation,
+        generation,
+    );
+    if last_attempt.as_ref() == Some(&key) {
+        return None;
+    }
+    Some(key)
+}
+/// Owner-side capture for the current pending intent: one ordered bracket
+/// batch for the frozen members owned by `pid`, mapped with the sampled
+/// watermark/cell generations, sent as one evidence-only
+/// [`EngineJob::ArrivalCaptureReady`] notification. Never bumps the shared
+/// clock (the rows carry the fixed sampled watermark). Bounded: at most the
+/// frozen owned members, once per immutable request tuple plus watermark,
+/// topology revision, context generation, and app generation — the caller
+/// records `last_attempt` BEFORE the native read/enqueue so unreadable
+/// legs, empty captures, moved watermarks, and a full queue never retry on
+/// a later multiplex. A moved watermark/revision/context around the read
+/// rejects without rebasing to the newly sampled stamp. Capture with no
+/// owned members skips without recording. Returns true when a notification
+/// was enqueued.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn maybe_send_arrival_capture(
+    backend: &mut dyn AxBackend,
+    pid: u32,
+    generation: u64,
+    shared: &Arc<Mutex<Shared>>,
+    cell: &NativeContextCell,
+    inbox: &Arc<Inbox>,
+    last_attempt: &mut Option<(String, u64, String, String, u64, u64, u64, u64)>,
+) -> bool {
+    let (focus_id, issued_revision, adapter_incarnation, core_generation, members): (
+        String,
+        u64,
+        String,
+        String,
+        Vec<AfterShownMember>,
+    ) = {
+        let guard = lock_shared(shared);
+        match guard.selection_focus_pending.as_ref() {
+            Some(pending) => (
+                pending.focus_id.clone(),
+                pending.issued_revision,
+                pending.adapter_incarnation.clone(),
+                pending.core_generation.clone(),
+                pending
+                    .after_shown
+                    .members
+                    .iter()
+                    .filter(|m| parse_window_id(&m.win.0).is_some_and(|(mpid, _)| mpid == pid))
+                    .cloned()
+                    .collect(),
+            ),
+            None => return false,
+        }
+    };
+    if members.is_empty() {
+        return false;
+    }
+    let clock = lock_shared(shared).clock.clone();
+    let obs_before = clock.get();
+    let revision_before = lock_shared(shared).topology_revision;
+    let (_, gen_before) = cell.load_versioned();
+    let due_key = arrival_capture_due(
+        Some((
+            focus_id.clone(),
+            issued_revision,
+            adapter_incarnation.clone(),
+            core_generation.clone(),
+        )),
+        members.len(),
+        obs_before,
+        revision_before,
+        gen_before,
+        generation,
+        last_attempt,
+    );
+    let Some(key) = due_key else {
+        return false;
+    };
+    // Last-attempt record BEFORE the native read/enqueue: empty reads,
+    // moved stamps, and a full queue never retry on a later multiplex.
+    // Only a legitimate request/invalidation/context/lifetime change (a new
+    // key) allows one fresh attempt.
+    *last_attempt = Some(key.clone());
+    let wids: Vec<u32> = members
+        .iter()
+        .filter_map(|m| parse_window_id(&m.win.0).map(|(_, wid)| wid))
+        .collect();
+    let reads = backend.capture_brackets(&wids);
+    let (_, gen_after) = cell.load_versioned();
+    let obs_after = clock.get();
+    let revision_after = lock_shared(shared).topology_revision;
+    if obs_after != obs_before || revision_after != revision_before || gen_after != gen_before {
+        // Stamp moved around the read: reject as attempted without
+        // rebasing to the newly sampled stamp.
+        return false;
+    }
+    let captures = capture_member_brackets(
+        &reads,
+        &members,
+        pid,
+        generation,
+        revision_before,
+        obs_before,
+        obs_after,
+        gen_before,
+        gen_after,
+        &focus_id,
+        issued_revision,
+        &adapter_incarnation,
+        &core_generation,
+    );
+    if captures.is_empty() {
+        return false;
+    }
+    let job = EngineJob::ArrivalCaptureReady {
+        pid,
+        generation,
+        focus_id: focus_id.clone(),
+        issued_revision,
+        adapter_incarnation: adapter_incarnation.clone(),
+        core_generation: core_generation.clone(),
+        obs: obs_before,
+        revision: revision_before,
+        context_generation: gen_before,
+        captures,
+    };
+    if inbox.try_send_data(job) {
+        emit(shared, pid, generation, 0, "arrival", "capture-sent", 1);
+        true
+    } else {
+        lock_shared(shared).diagnostics.result_dropped_full += 1;
+        emit(
+            shared,
+            pid,
+            generation,
+            0,
+            "arrival",
+            "queue-full-dropped",
+            1,
+        );
+        false
+    }
+}
+
+/// Owner-thread arrival rows for one close-focus result: every actually
+/// proven frozen member row (all PIDs, not just the dispatching owner),
+/// built from the retained captures the engine validated as current plus a
+/// fresh target-owner bracket batch when this owner's rows are missing or
+/// stale. Facts only — the core settles from the rows with genuine
+/// brackets/watermarks. `None`/empty (no `afterShown`, moved watermark,
+/// stale tuple, unattested owner, unmappable native home, unreadable legs)
+/// omits rows, never fabricates them; a partial set stays partial. Called
+/// on the SAME owner thread that dispatches. Returns the rows plus the
+/// agreed watermark: the caller withholds the rows when the watermark moved
+/// after the dispatch.
+///
+/// The native home output comes from the observed native domain for the
+/// captured Space (revision-fenced live lookup), never from the frozen
+/// member row: a home whose Space has no live domain omits the row. The
+/// capture's singleton home must equal the release-stamped expected SID
+/// and the live domain for that Space must be current, readable, and
+/// output-identical to the frozen member scope: a replacement capture on
+/// another Space — or a domain that moved output — under the same
+/// obs/cell stamp omits the row so the owner gate defers.
+pub(crate) fn close_arrival_brackets(
+    backend: &mut dyn AxBackend,
+    close: &crate::runtime_types::CloseFocusBinding,
+    pid: u32,
+    generation: u64,
+    shared: &Arc<Mutex<Shared>>,
+    revision: u64,
+) -> (Vec<ArrivalBracket>, u64) {
+    let Some(after) = close.after_shown.as_ref() else {
+        return (Vec::new(), lock_shared(shared).clock.get());
+    };
+    let live_obs = lock_shared(shared).clock.get();
+    // Fresh target-owner bracket batch when this owner's retained rows are
+    // missing or stale: one ordered read around the dispatch (facts only).
+    // Other PIDs' rows come from the retained captures only — this thread
+    // never reads another owner's windows.
+    let owned_members: Vec<AfterShownMember> = after
+        .members
+        .iter()
+        .filter(|m| parse_window_id(&m.win.0).is_some_and(|(mpid, _)| mpid == pid))
+        .cloned()
+        .collect();
+    let owned_current = {
+        let guard = lock_shared(shared);
+        !owned_members.is_empty()
+            && owned_members.iter().all(|m| {
+                guard.arrival_captures.get(&m.win.0).is_some_and(|cap| {
+                    crate::world_dispatch::arrival_capture_current(
+                        &guard,
+                        cap,
+                        &close.close_id,
+                        close.issued_revision,
+                        &close.adapter_incarnation,
+                        &close.core_generation,
+                    ) && cap.obs == live_obs
+                })
+            })
+    };
+    // Selection-proof path (a frozen stamp rides the binding): never take
+    // fresh reads here — only retained captures already validated under the
+    // frozen proof stamp prove the rows. Unvalidated fresh rows must not
+    // replace them when current facts or homes differ; a missing or stale
+    // retained row omits the member below so the owner gate defers.
+    let stamped = close.proven_stamp.is_some() && close.after_shown.is_some();
+    let fresh: Vec<ArrivalCapture> = if stamped || owned_members.is_empty() || owned_current {
+        Vec::new()
+    } else {
+        let wids: Vec<u32> = owned_members
+            .iter()
+            .filter_map(|m| parse_window_id(&m.win.0).map(|(_, wid)| wid))
+            .collect();
+        let clock = lock_shared(shared).clock.clone();
+        let cell = lock_shared(shared).native_cell.clone();
+        let obs_before = clock.get();
+        let (_, gen_before) = cell.load_versioned();
+        let reads = backend.capture_brackets(&wids);
+        let (_, gen_after) = cell.load_versioned();
+        let obs_after = clock.get();
+        capture_member_brackets(
+            &reads,
+            &owned_members,
+            pid,
+            generation,
+            revision,
+            obs_before,
+            obs_after,
+            gen_before,
+            gen_after,
+            &close.close_id,
+            close.issued_revision,
+            &close.adapter_incarnation,
+            &close.core_generation,
+        )
+    };
+    let guard = lock_shared(shared);
+    let now = guard.clock.get();
+    if now != live_obs {
+        return (Vec::new(), now);
+    }
+    let mut out = Vec::new();
+    for member in &after.members {
+        let cap = fresh
+            .iter()
+            .find(|c| c.win == member.win.0)
+            .or_else(|| guard.arrival_captures.get(&member.win.0));
+        let Some(cap) = cap else {
+            continue;
+        };
+        if !crate::world_dispatch::arrival_capture_current(
+            &guard,
+            cap,
+            &close.close_id,
+            close.issued_revision,
+            &close.adapter_incarnation,
+            &close.core_generation,
+        ) || cap.obs != now
+            || close
+                .after_shown
+                .as_ref()
+                .is_some_and(|after| cap.obs < after.obs)
+        {
+            continue;
+        }
+        // Genuine brackets: before/after equality already enforced at
+        // capture (`invalidated`), visibility must be shown both legs.
+        if cap.invalidated {
+            continue;
+        }
+        let visible = |s: &VisibilitySample| {
+            s.visibility.visible == Some(true) && s.lifetime_matched == Some(true)
+        };
+        if !visible(&cap.before) || !visible(&cap.after) {
+            continue;
+        }
+        let Some(home_sid) = cap.home_sid else {
+            continue;
+        };
+        // Stamped expected-SID recheck (replacement-capture guard): the
+        // capture's singleton home must equal the release-stamped expected
+        // Space verbatim. A replacement capture naming another Space under
+        // the same obs/cell stamp omits the row so the owner gate defers —
+        // never a cross-Space dispatch. `None` (bindings predating the
+        // stamp, never selection releases) omits: no expected proof, no row.
+        let Some(expected_sid) = close.expected_sid else {
+            continue;
+        };
+        if home_sid != expected_sid {
+            continue;
+        }
+        // Null frozen frame still needs readable live geometry: a missing
+        // live frame omits the row; an exact frame must match.
+        match (member.frame, cap.frame) {
+            (None, Some(_)) => {}
+            (Some(frozen), Some(live))
+                if live.x == frozen.x
+                    && live.y == frozen.y
+                    && live.w == frozen.w
+                    && live.h == frozen.h => {}
+            _ => continue,
+        }
+        let Some(native) = tiler_core::ids::NativeWorkspaceId::parse(
+            crate::topology::workspace_key(home_sid).as_str(),
+        ) else {
+            continue;
+        };
+        let home_output = match guard.native_context.clone() {
+            Some(ctx) if ctx.revision == revision => ctx
+                .domains
+                .iter()
+                .find(|d| d.space == home_sid)
+                .filter(|d| d.output.0 == member.out.0 && d.current && d.readable)
+                .map(|d| d.output.clone()),
+            _ => None,
+        };
+        let Some(home_output) = home_output else {
+            continue;
+        };
+        out.push(ArrivalBracket {
+            window: member.win.clone(),
+            obs: cap.obs,
+            before: cap.before.clone(),
+            location: ArrivalLocation::Native {
+                home: Some(tiler_core::world_report::WorkspaceRef::Native {
+                    output: home_output,
+                    workspace: native,
+                }),
+            },
+            frame: cap.frame,
+            after: cap.after.clone(),
+        });
+    }
+    (out, now)
+}
 /// Owner close-focus route as a callable unit returning the raw
 /// `CloseFocusResult` job. Production `app_worker_main` calls this on the
 /// SAME owner thread then sends the returned job once on the data lane.
@@ -264,6 +739,7 @@ pub(crate) fn handle_close_focus_command(
                  pre: Option<WindowId>,
                  post: Option<WindowId>,
                  foreground_proven: bool,
+                 arrival: Vec<ArrivalBracket>,
                  attempt_ms: u64| {
         EngineJob::CloseFocusResult {
             pid,
@@ -279,6 +755,7 @@ pub(crate) fn handle_close_focus_command(
             pre,
             post,
             foreground_proven,
+            arrival,
             attempt_ms,
         }
     };
@@ -300,6 +777,7 @@ pub(crate) fn handle_close_focus_command(
                 None,
                 None,
                 false,
+                Vec::new(),
                 0,
             )
         }
@@ -320,6 +798,7 @@ pub(crate) fn handle_close_focus_command(
                 None,
                 None,
                 false,
+                Vec::new(),
                 0,
             )
         }
@@ -347,6 +826,7 @@ pub(crate) fn handle_close_focus_command(
                     None,
                     None,
                     false,
+                    Vec::new(),
                     0,
                 );
             }
@@ -373,6 +853,7 @@ pub(crate) fn handle_close_focus_command(
                         proven.clone(),
                         proven,
                         true,
+                        Vec::new(),
                         0,
                     )
                 }
@@ -394,6 +875,7 @@ pub(crate) fn handle_close_focus_command(
                         close.fallback_pre.clone(),
                         fresh,
                         foreground_proven,
+                        Vec::new(),
                         0,
                     )
                 }
@@ -414,10 +896,69 @@ pub(crate) fn handle_close_focus_command(
                         close.fallback_pre.clone(),
                         None,
                         false,
+                        Vec::new(),
                         0,
                     )
                 }
                 CloseBaselineGate::Proceed { pre } => {
+                    // Selection-proof owner gate (frozen intent only): when
+                    // the binding carries the frozen arrival set, the setter
+                    // fires only on current complete rows — one row per frozen
+                    // member (each with current/actual observed home, frame,
+                    // visibility, lifetime, and watermark) with the original
+                    // stamp still live immediately before the setter. Anything
+                    // else returns the internal deferral (never a terminal
+                    // no-call, never feedback): the pending intent stays
+                    // bound for evidence refresh. Bare closes (`afterShown`
+                    // none) dispatch unchanged; any `afterShown` binding
+                    // without a live stamp defers.
+                    let after_shown = close.after_shown.as_ref().cloned();
+                    // Owner-thread arrival brackets for the frozen members:
+                    // one ordered bracket batch around the dispatch (facts
+                    // only; the core settles from the rows). Read BEFORE the
+                    // dispatch; the watermark recheck below withholds rows
+                    // that a concurrent invalidation moved mid-dispatch.
+                    let (rows, rows_obs) = close_arrival_brackets(
+                        backend,
+                        close,
+                        pid,
+                        generation,
+                        shared,
+                        current_revision,
+                    );
+                    if let Some(after) = after_shown {
+                        let gate_ok = match close.proven_stamp.as_ref() {
+                            Some(stamp) => {
+                                rows.len() == after.members.len() && {
+                                    let guard = lock_shared(shared);
+                                    crate::world_dispatch::proven_stamp_live(&guard, stamp)
+                                        && guard.clock.get() == rows_obs
+                                }
+                            }
+                            None => false,
+                        };
+                        if !gate_ok {
+                            emit(
+                                shared,
+                                pid,
+                                generation,
+                                cmd.request_id,
+                                "focus",
+                                "deferred-proof",
+                                0,
+                            );
+                            return EngineJob::SelectionFocusDeferred {
+                                pid,
+                                generation,
+                                focus_id: close.close_id.clone(),
+                                issued_revision: close.issued_revision,
+                                adapter_incarnation: close.adapter_incarnation.clone(),
+                                core_generation: close.core_generation.clone(),
+                                cmd_id: cmd.request_id,
+                                target: close.target.clone(),
+                            };
+                        }
+                    }
                     emit(
                         shared,
                         pid,
@@ -437,7 +978,20 @@ pub(crate) fn handle_close_focus_command(
                                 fresh_wid.map(|wid| WindowId(window_id(fresh_pid, wid)))
                             });
                     let foreground_proven = post.is_some();
-                    build(setter, reason, pre, post, foreground_proven, attempt_ms)
+                    let arrival = if lock_shared(shared).clock.get() == rows_obs {
+                        rows
+                    } else {
+                        Vec::new()
+                    };
+                    build(
+                        setter,
+                        reason,
+                        pre,
+                        post,
+                        foreground_proven,
+                        arrival,
+                        attempt_ms,
+                    )
                 }
             }
         }
@@ -506,6 +1060,11 @@ pub(crate) fn app_worker_main(
     // revision. Teardown freezes the slot, draining it by definition.
     let mut drained: u64 = 0;
     let mut focus_hint: Option<u32> = None;
+    // Last arrival-capture attempt this owner already made: one bounded
+    // evidence-only attempt per immutable request tuple plus watermark,
+    // topology revision, context generation, and app generation, never a
+    // polling timer or retry.
+    let mut last_capture_sent: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
     // Seen frontmost for the change-triggered refresh below: initialized to
     // the currently published value so worker start alone never re-reads.
     let mut seen_frontmost = lock_shared(&shared)
@@ -677,6 +1236,24 @@ pub(crate) fn app_worker_main(
             } else {
                 pending.set(snapshot);
             }
+        }
+        // Owner arrival capture for the current pending selection intent
+        // (native mode only): at the existing multiplex triggers, notice a
+        // new pending tuple, watermark, revision, context, or lifetime and
+        // make one bounded evidence-only attempt. Never a clock bump,
+        // never a timer, never a retry: an attempt (even unreadable, empty,
+        // moved, or queue-full) never repeats until a legitimate key change.
+        if native_mode {
+            let cell = lock_shared(&shared).native_cell.clone();
+            maybe_send_arrival_capture(
+                &mut *backend,
+                pid,
+                generation,
+                &shared,
+                &cell,
+                &inbox,
+                &mut last_capture_sent,
+            );
         }
         // Owner-dispatched focus (native mode only): the latest-wins slot
         // command dispatches here, on the SAME owner that observed the
@@ -1288,6 +1865,375 @@ mod tests {
             gate_deferred_focus(4242, 7, "4242_7", Some((4242, Some(8)))),
             PriorFocusGate::Moved,
         );
+    }
+}
+
+#[cfg(test)]
+mod arrival_capture_dedupe_tests {
+    use std::collections::{BTreeMap, VecDeque};
+    use std::sync::{Arc, Mutex, atomic::AtomicBool};
+    use std::time::Instant;
+
+    use super::*;
+    use crate::runtime_backend::AxBackend;
+    use crate::world_sequencer::ObservationClock;
+
+    struct ScriptBackend {
+        reads: Vec<BracketRead>,
+        calls: usize,
+    }
+
+    impl AxBackend for ScriptBackend {
+        fn apply_frame(
+            &mut self,
+            _cmd: &crate::runtime_types::FrameCommand,
+        ) -> crate::runtime_types::AxCompletion {
+            crate::runtime_types::AxCompletion::Failed {
+                reason: "unused".to_owned(),
+            }
+        }
+
+        fn snapshot(&mut self) -> Result<Vec<crate::runtime::ObservedWindow>, String> {
+            Ok(Vec::new())
+        }
+
+        fn capture_brackets(&mut self, wids: &[u32]) -> Vec<BracketRead> {
+            self.calls += 1;
+            self.reads
+                .iter()
+                .filter(|r| wids.contains(&r.wid))
+                .cloned()
+                .collect()
+        }
+    }
+
+    fn good_read() -> BracketRead {
+        BracketRead {
+            wid: 7,
+            owner_pid: Some(4242),
+            before_minimized: Some(false),
+            before_hidden: Some(false),
+            spaces: vec![3],
+            frame: Some((10, 20, 300, 200)),
+            after_minimized: Some(false),
+            after_hidden: Some(false),
+        }
+    }
+
+    fn pending_for(adapter: &str, core: &str) -> crate::runtime_shared::DeferredSelectionFocus {
+        use tiler_core::directional::{OutputId, WindowId};
+        use tiler_core::world_report::{AfterShown, AfterShownMember, AfterShownScope};
+        let out = OutputId("macos-display-1".to_owned());
+        let member = AfterShownMember {
+            win: WindowId("4242_7".to_owned()),
+            out: out.clone(),
+            ws: "ws-a".to_owned(),
+            frame: None,
+        };
+        let scope = AfterShownScope {
+            out: out.clone(),
+            ws: "ws-a".to_owned(),
+        };
+        crate::runtime_shared::DeferredSelectionFocus {
+            operation_id: "op-3".to_owned(),
+            command_seq: 3,
+            focus_id: "focus-3".to_owned(),
+            issued_revision: 3,
+            adapter_incarnation: adapter.to_owned(),
+            core_generation: core.to_owned(),
+            window: WindowId("4242_7".to_owned()),
+            output: out,
+            workspace: "ws-a".to_owned(),
+            after_shown: AfterShown {
+                op: "op-3".to_owned(),
+                obs: 0,
+                members: vec![member],
+                views: vec![scope.clone()],
+                selected: vec![scope],
+                departing: Vec::new(),
+            },
+            route: crate::focus_route::FocusRoute::Slps,
+            expected_sid: 3,
+            app_generation: Some(1),
+            prior_focus: Some("4242_7".to_owned()),
+            prior_frontmost: Some(4242),
+            proven_stamp: None,
+            owner_queued: false,
+        }
+    }
+
+    fn test_shared(pending: crate::runtime_shared::DeferredSelectionFocus) -> Arc<Mutex<Shared>> {
+        let shared = Arc::new(Mutex::new(Shared {
+            config: crate::runtime_types::RuntimeConfig::default(),
+            handles_live: 0,
+            generation_counter: 0,
+            log_counter: 0,
+            start: Instant::now(),
+            apps: BTreeMap::new(),
+            clock: Arc::new(ObservationClock::new()),
+            midflight_hook: Mutex::new(None),
+            post_accept_hook: Mutex::new(None),
+            topology: None,
+            display_inputs: None,
+            select_wake: None,
+            main_wake: None,
+            topology_revision: 9,
+            native_context: None,
+            native_cell: NativeContextCell::new(),
+            select_pending: VecDeque::new(),
+            select_busy: false,
+            select_claim_pending: false,
+            selection_focus_pending: Some(pending),
+            arrival_captures: BTreeMap::new(),
+            selection_focus_floor_seq: 0,
+            close_focus_current: None,
+            focus_evidence: None,
+            zombies: Vec::new(),
+            engine_handle: None,
+            input_handle: None,
+            logger_handle: None,
+            input_thread: None,
+            terminal: None,
+            admission_closed: false,
+            stop_engine: Arc::new(AtomicBool::new(false)),
+            stop_input: Arc::new(AtomicBool::new(false)),
+            stop_logger: Arc::new(AtomicBool::new(false)),
+            log_tx: None,
+            diagnostics: crate::runtime_types::RuntimeDiagnostics::default(),
+            log: VecDeque::new(),
+            test_wake: None,
+            test_seq: 0,
+            last_desired: Vec::new(),
+            last_geometry_key: None,
+            last_presentation: crate::runtime::empty_world_presentation_v4(),
+            last_pager_bindings: Vec::new(),
+            last_workspace_desires: Vec::new(),
+            last_core_generation: String::new(),
+            presentation_style: crate::active_border::PresentationStylePx::default(),
+        }));
+        shared
+    }
+
+    #[test]
+    fn static_repeat_captures_once() {
+        let shared = test_shared(pending_for("adapter-1", "gen-1"));
+        let cell = lock_shared(&shared).native_cell.clone();
+        let inbox = Arc::new(Inbox::new(8));
+        let mut backend = ScriptBackend {
+            reads: vec![good_read()],
+            calls: 0,
+        };
+        let mut last = None;
+        assert!(maybe_send_arrival_capture(
+            &mut backend,
+            4242,
+            1,
+            &shared,
+            &cell,
+            &inbox,
+            &mut last
+        ));
+        assert!(last.is_some());
+        assert_eq!(backend.calls, 1);
+        assert!(!maybe_send_arrival_capture(
+            &mut backend,
+            4242,
+            1,
+            &shared,
+            &cell,
+            &inbox,
+            &mut last
+        ));
+        assert_eq!(backend.calls, 1, "repeat never re-reads native legs");
+    }
+
+    #[test]
+    fn empty_capture_attempts_once() {
+        let shared = test_shared(pending_for("adapter-1", "gen-1"));
+        let cell = lock_shared(&shared).native_cell.clone();
+        let inbox = Arc::new(Inbox::new(8));
+        let mut backend = ScriptBackend {
+            reads: Vec::new(),
+            calls: 0,
+        };
+        let mut last = None;
+        assert!(!maybe_send_arrival_capture(
+            &mut backend,
+            4242,
+            1,
+            &shared,
+            &cell,
+            &inbox,
+            &mut last
+        ));
+        assert!(last.is_some(), "empty attempt still records the key");
+        assert_eq!(backend.calls, 1);
+        assert!(!maybe_send_arrival_capture(
+            &mut backend,
+            4242,
+            1,
+            &shared,
+            &cell,
+            &inbox,
+            &mut last
+        ));
+        assert_eq!(backend.calls, 1, "empty never retries on later multiplex");
+    }
+
+    #[test]
+    fn full_queue_capture_attempts_once() {
+        let shared = test_shared(pending_for("adapter-1", "gen-1"));
+        let cell = lock_shared(&shared).native_cell.clone();
+        let inbox = Arc::new(Inbox::new(0));
+        let mut backend = ScriptBackend {
+            reads: vec![good_read()],
+            calls: 0,
+        };
+        let mut last = None;
+        assert!(!maybe_send_arrival_capture(
+            &mut backend,
+            4242,
+            1,
+            &shared,
+            &cell,
+            &inbox,
+            &mut last
+        ));
+        assert!(last.is_some(), "full-queue attempt still records the key");
+        assert_eq!(backend.calls, 1);
+        assert!(!maybe_send_arrival_capture(
+            &mut backend,
+            4242,
+            1,
+            &shared,
+            &cell,
+            &inbox,
+            &mut last
+        ));
+        assert_eq!(
+            backend.calls, 1,
+            "full queue never retries on later multiplex"
+        );
+    }
+
+    #[test]
+    fn context_change_same_revision_allows_fresh() {
+        let shared = test_shared(pending_for("adapter-1", "gen-1"));
+        let cell = lock_shared(&shared).native_cell.clone();
+        let inbox = Arc::new(Inbox::new(8));
+        let mut backend = ScriptBackend {
+            reads: vec![good_read()],
+            calls: 0,
+        };
+        let mut last = None;
+        assert!(maybe_send_arrival_capture(
+            &mut backend,
+            4242,
+            1,
+            &shared,
+            &cell,
+            &inbox,
+            &mut last
+        ));
+        assert!(!maybe_send_arrival_capture(
+            &mut backend,
+            4242,
+            1,
+            &shared,
+            &cell,
+            &inbox,
+            &mut last
+        ));
+        assert_eq!(backend.calls, 1);
+        cell.request_reread();
+        assert!(maybe_send_arrival_capture(
+            &mut backend,
+            4242,
+            1,
+            &shared,
+            &cell,
+            &inbox,
+            &mut last
+        ));
+        assert_eq!(
+            backend.calls, 2,
+            "context generation change allows one fresh"
+        );
+        assert!(!maybe_send_arrival_capture(
+            &mut backend,
+            4242,
+            1,
+            &shared,
+            &cell,
+            &inbox,
+            &mut last
+        ));
+        assert_eq!(backend.calls, 2);
+    }
+
+    #[test]
+    fn tuple_change_allows_fresh() {
+        let shared = test_shared(pending_for("adapter-1", "gen-1"));
+        let cell = lock_shared(&shared).native_cell.clone();
+        let inbox = Arc::new(Inbox::new(8));
+        let mut backend = ScriptBackend {
+            reads: vec![good_read()],
+            calls: 0,
+        };
+        let mut last = None;
+        assert!(maybe_send_arrival_capture(
+            &mut backend,
+            4242,
+            1,
+            &shared,
+            &cell,
+            &inbox,
+            &mut last
+        ));
+        assert_eq!(backend.calls, 1);
+        lock_shared(&shared)
+            .selection_focus_pending
+            .as_mut()
+            .expect("pending")
+            .core_generation = "gen-2".to_owned();
+        assert!(maybe_send_arrival_capture(
+            &mut backend,
+            4242,
+            1,
+            &shared,
+            &cell,
+            &inbox,
+            &mut last
+        ));
+        assert_eq!(backend.calls, 2, "core generation change allows one fresh");
+        lock_shared(&shared)
+            .selection_focus_pending
+            .as_mut()
+            .expect("pending")
+            .adapter_incarnation = "adapter-2".to_owned();
+        assert!(maybe_send_arrival_capture(
+            &mut backend,
+            4242,
+            1,
+            &shared,
+            &cell,
+            &inbox,
+            &mut last
+        ));
+        assert_eq!(
+            backend.calls, 3,
+            "adapter incarnation change allows one fresh"
+        );
+        assert!(!maybe_send_arrival_capture(
+            &mut backend,
+            4242,
+            1,
+            &shared,
+            &cell,
+            &inbox,
+            &mut last
+        ));
+        assert_eq!(backend.calls, 3);
     }
 }
 

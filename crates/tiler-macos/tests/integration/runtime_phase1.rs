@@ -14,17 +14,19 @@ use std::sync::{
 use std::time::Duration;
 
 use tiler_macos::config::ProbeModifier;
+use tiler_macos::ffi::{DisplayRect, NsDisplay, SlsDisplayRow};
 use tiler_macos::input::cg_flag_bits;
 use tiler_macos::input_match::TapKeyKind;
 use tiler_macos::runtime::{
-    AxCompletion, AxObservation, FrameCommand, InputDirection, ObservedWindow, Runtime,
-    RuntimeConfig, RuntimeHandle, ShutdownOutcome, StartupError, SubmitOutcome, TerminateOutcome,
-    WorkerReadiness,
+    AxCompletion, FrameCommand, InputDirection, ObservedWindow, Runtime, RuntimeConfig,
+    RuntimeHandle, ScopedBackendSnapshot, ScopedObservation, ScopedWindowMeta, ShutdownOutcome,
+    StartupError, SubmitOutcome, TerminateOutcome, TopologyMode, WorkerReadiness,
 };
 use tiler_macos::runtime_backend::{
-    AxBackend, AxBackendFactory, BackendSnapshot, InputSource, InputSourceFactory, RawKeyEvent,
+    AxBackend, AxBackendFactory, InputSource, InputSourceFactory, RawKeyEvent,
 };
 use tiler_macos::runtime_log::{LogEvent, LogSink};
+use tiler_macos::topology;
 
 // -- Fakes ---------------------------------------------------------------------
 
@@ -61,15 +63,15 @@ struct FakeAxInner {
     /// Wake-driven observation pumps: a worker blocked here wakes
     /// immediately on send; the bound only caps stop latency.
     poll_gates: Mutex<BTreeMap<u32, Arc<Gate>>>,
-    /// Explicit snapshot content per pid. Absent means "not configured":
-    /// `snapshot()` fails honestly instead of publishing an empty list as
-    /// truth, so manually driven tests (which never configure it) keep
-    /// their own sequence space.
-    snapshots: Mutex<BTreeMap<u32, Vec<ObservedWindow>>>,
+    /// Scripted scoped snapshots per pid. Absent means "not configured":
+    /// `snapshot_scoped()` fails honestly instead of publishing an empty
+    /// list as truth, so manually driven tests (which never configure it)
+    /// keep their own sequence space.
+    scoped: Mutex<BTreeMap<u32, ScopedBackendSnapshot>>,
     snapshot_fail: Mutex<BTreeSet<u32>>,
-    /// Autonomous observation inboxes, one per pid, installed before launch
-    /// and taken by the owning worker at creation.
-    obs_inboxes: Mutex<BTreeMap<u32, mpsc::Receiver<Result<BackendSnapshot, String>>>>,
+    /// Autonomous scoped observation inboxes, one per pid, installed before
+    /// launch and taken by the owning worker at creation.
+    poll_inboxes: Mutex<BTreeMap<u32, mpsc::Receiver<Result<ScopedBackendSnapshot, String>>>>,
     panic_pids: Mutex<BTreeSet<u32>>,
     fail_create: AtomicBool,
     timeout_once: Mutex<BTreeSet<u32>>,
@@ -111,7 +113,8 @@ impl AxBackendFactory for FakeAxFactory {
         Ok(Box::new(FakeAxBackend {
             pid,
             inner: Arc::clone(&self.inner),
-            obs_rx: self.inner.obs_inboxes.lock().expect("mutex").remove(&pid),
+            bound: None,
+            poll_rx: self.inner.poll_inboxes.lock().expect("mutex").remove(&pid),
         }))
     }
 }
@@ -119,7 +122,8 @@ impl AxBackendFactory for FakeAxFactory {
 struct FakeAxBackend {
     pid: u32,
     inner: Arc<FakeAxInner>,
-    obs_rx: Option<mpsc::Receiver<Result<BackendSnapshot, String>>>,
+    bound: Option<u64>,
+    poll_rx: Option<mpsc::Receiver<Result<ScopedBackendSnapshot, String>>>,
 }
 
 impl Drop for FakeAxBackend {
@@ -193,6 +197,17 @@ impl AxBackend for FakeAxBackend {
     }
 
     fn snapshot(&mut self) -> Result<Vec<ObservedWindow>, String> {
+        Err(format!(
+            "legacy snapshot refused for pid {} (native tests use scoped reads)",
+            self.pid
+        ))
+    }
+
+    fn bind_effect_hook(&mut self, hook: &tiler_macos::runtime_backend::EffectHook) {
+        self.bound = hook.cell.load().map(|ctx| ctx.revision);
+    }
+
+    fn snapshot_scoped(&mut self) -> Result<ScopedBackendSnapshot, String> {
         if self
             .inner
             .snapshot_fail
@@ -202,16 +217,27 @@ impl AxBackend for FakeAxBackend {
         {
             return Err(format!("fake snapshot refused for pid {}", self.pid));
         }
-        self.inner
-            .snapshots
+        let revision = self.bound.ok_or_else(|| {
+            format!(
+                "pid {}: no native context bound for scoped snapshot",
+                self.pid
+            )
+        })?;
+        let mut snapshot = self
+            .inner
+            .scoped
             .lock()
             .expect("mutex")
             .get(&self.pid)
             .cloned()
-            .ok_or_else(|| format!("fake snapshot not configured for pid {}", self.pid))
+            .ok_or_else(|| format!("no scoped snapshot for pid {}", self.pid))?;
+        // A correct backend stamps the bound (current) revision it read
+        // under; the engine re-fences it.
+        snapshot.revision = revision;
+        Ok(snapshot)
     }
 
-    fn poll_observation(&mut self, stop: &AtomicBool) -> Option<Result<BackendSnapshot, String>> {
+    fn poll_scoped(&mut self, stop: &AtomicBool) -> Option<Result<ScopedBackendSnapshot, String>> {
         // Poll gates (cloned out before waiting) let tests rendezvous with
         // a worker stuck inside its observation pump.
         let gate = self
@@ -227,17 +253,24 @@ impl AxBackend for FakeAxBackend {
                 released = gate.cond.wait(released).expect("mutex");
             }
         }
-        let rx = self.obs_rx.as_ref()?;
+        let rx = self.poll_rx.as_ref()?;
         if stop.load(Ordering::SeqCst) {
             return None;
         }
         // Wake-driven: returns immediately on send; the bound only caps
         // stop latency, it never polls.
         match rx.recv_timeout(Duration::from_millis(20)) {
-            Ok(result) => Some(result),
+            Ok(result) => Some(result.map(|mut snapshot| {
+                // A correct backend stamps the bound (current) revision it
+                // read under; the engine re-fences it.
+                if let Some(revision) = self.bound {
+                    snapshot.revision = revision;
+                }
+                snapshot
+            })),
             Err(mpsc::RecvTimeoutError::Timeout) => None,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                self.obs_rx = None;
+                self.poll_rx = None;
                 None
             }
         }
@@ -348,6 +381,7 @@ struct Fixture {
 fn test_config() -> RuntimeConfig {
     RuntimeConfig {
         worker_ready_timeout: Duration::from_secs(5),
+        topology_mode: TopologyMode::Native,
         ..RuntimeConfig::default()
     }
 }
@@ -363,9 +397,9 @@ fn start(config: RuntimeConfig) -> Fixture {
         gates: Mutex::new(BTreeMap::new()),
         create_gates: Mutex::new(BTreeMap::new()),
         poll_gates: Mutex::new(BTreeMap::new()),
-        snapshots: Mutex::new(BTreeMap::new()),
+        scoped: Mutex::new(BTreeMap::new()),
         snapshot_fail: Mutex::new(BTreeSet::new()),
-        obs_inboxes: Mutex::new(BTreeMap::new()),
+        poll_inboxes: Mutex::new(BTreeMap::new()),
         panic_pids: Mutex::new(BTreeSet::new()),
         fail_create: AtomicBool::new(false),
         timeout_once: Mutex::new(BTreeSet::new()),
@@ -450,31 +484,77 @@ fn gate_poll_app(fixture: &Fixture, pid: u32) -> Arc<Gate> {
 fn configure_snapshot(fixture: &Fixture, pid: u32, windows: Vec<ObservedWindow>) {
     fixture
         .ax
-        .snapshots
+        .scoped
         .lock()
         .expect("mutex")
-        .insert(pid, windows);
+        .insert(pid, backend_snapshot(windows, None));
+}
+
+/// Explicit snapshot content with known focus (startup + readback source).
+/// The store legs must match what the backend stream reports for the same
+/// native instant: a readback compared against the last published state
+/// differs honestly when focus knowledge differs, so a focused stream needs
+/// a focused store.
+fn configure_snapshot_focused(
+    fixture: &Fixture,
+    pid: u32,
+    windows: Vec<ObservedWindow>,
+    focused: Option<u32>,
+) {
+    fixture
+        .ax
+        .scoped
+        .lock()
+        .expect("mutex")
+        .insert(pid, backend_snapshot(windows, focused));
 }
 
 /// Install an autonomous observation inbox for one pid. Must be called
 /// before launch (the owning worker takes it at creation). Returns the
 /// sender the test uses to emit backend observations without ever calling
-/// `submit_observation`.
-fn autonomous_app(fixture: &Fixture, pid: u32) -> mpsc::Sender<Result<BackendSnapshot, String>> {
-    let (tx, rx) = mpsc::channel::<Result<BackendSnapshot, String>>();
+/// `submit_scoped_observation`.
+fn autonomous_app(
+    fixture: &Fixture,
+    pid: u32,
+) -> mpsc::Sender<Result<ScopedBackendSnapshot, String>> {
+    let (tx, rx) = mpsc::channel::<Result<ScopedBackendSnapshot, String>>();
     fixture
         .ax
-        .obs_inboxes
+        .poll_inboxes
         .lock()
         .expect("mutex")
         .insert(pid, rx);
     tx
 }
 
-fn backend_snapshot(windows: Vec<ObservedWindow>, focused_wid: Option<u32>) -> BackendSnapshot {
-    BackendSnapshot {
+fn backend_snapshot(
+    windows: Vec<ObservedWindow>,
+    focused_wid: Option<u32>,
+) -> ScopedBackendSnapshot {
+    // Autonomous/backend leg mirrors the manual `obs` below: exact
+    // current-Space membership, agreeing focus legs when focused, and a
+    // fresh complete CG attestation for the backend's own windows.
+    let mut cg_owner_wids: Vec<u32> = windows.iter().map(|w| w.wid).collect();
+    cg_owner_wids.sort_unstable();
+    cg_owner_wids.dedup();
+    let meta: Vec<ScopedWindowMeta> = windows
+        .iter()
+        .map(|w| meta(w.wid, vec![11], w.fullscreen))
+        .collect();
+    ScopedBackendSnapshot {
         windows,
         focused_wid,
+        focus_cg_owned: focused_wid.is_some(),
+        focus_evidence: None,
+        sys_focus: None,
+        global_focus: None,
+        meta,
+        excluded: 0,
+        excluded_reasons: Vec::new(),
+        cg_complete: true,
+        cg_owner_wids,
+        cg_alive: Vec::new(),
+        revision: 0,
     }
 }
 
@@ -497,13 +577,92 @@ fn obs(
     seq: u64,
     windows: Vec<ObservedWindow>,
     focused_wid: Option<u32>,
-) -> AxObservation {
-    AxObservation {
+    revision: u64,
+) -> ScopedObservation {
+    // Agreeing global evidence when focused (frontmost + AX + CG all name
+    // the reporter), empty legs when unfocused; exact current-Space
+    // membership; fresh complete CG attestation for the reporter's windows.
+    let (frontmost_pid, ax_focus) = match focused_wid {
+        Some(wid) => (Some(pid), Some((pid, Some(wid)))),
+        None => (None, None),
+    };
+    let mut cg_owner_wids: Vec<u32> = windows.iter().map(|w| w.wid).collect();
+    cg_owner_wids.sort_unstable();
+    cg_owner_wids.dedup();
+    let meta: Vec<ScopedWindowMeta> = windows
+        .iter()
+        .map(|w| meta(w.wid, vec![11], w.fullscreen))
+        .collect();
+    ScopedObservation {
         pid,
         generation,
         seq,
         windows,
         focused_wid,
+        revision,
+        frontmost_pid,
+        ax_focus,
+        cg_owned: focused_wid.is_some(),
+        meta,
+        cg_complete: true,
+        cg_owner_wids,
+    }
+}
+
+/// Default native topology: one display, Spaces 11+12 with 11 current.
+/// Every fixture window homes to the current Space by exact membership
+/// (never geometry). The display keeps the original synthetic 1920x1080
+/// work area so the observed rects below fit it exactly.
+fn single_display_snapshot() -> topology::TopologySnapshot {
+    topology::build_snapshot(
+        &[ns(1, "uuid-1", 0.0, 0.0, 1920.0, 1080.0)],
+        &[row(Some("uuid-1"), &[11, 12], Some(11))],
+        Some(true),
+    )
+}
+
+fn ns(cg_id: u32, uuid: &str, x: f64, y: f64, w: f64, h: f64) -> NsDisplay {
+    NsDisplay {
+        cg_id,
+        uuid: Some(uuid.to_owned()),
+        frame: DisplayRect { x, y, w, h },
+        visible: DisplayRect { x, y, w, h },
+        scale: 2.0,
+    }
+}
+
+fn row(id: Option<&str>, spaces: &[u64], current: Option<u64>) -> SlsDisplayRow {
+    SlsDisplayRow {
+        identifier: id.map(str::to_owned),
+        spaces: spaces.to_vec(),
+        current,
+    }
+}
+
+fn user_space(_: u64) -> Option<tiler_macos::ffi::SlsSpaceType> {
+    Some(tiler_macos::ffi::SlsSpaceType::User)
+}
+
+/// Explicit truthful neutral metadata: ordinary AXWindow/AXStandardWindow
+/// with neutral native fact legs (modal false, resizable true, layer 0,
+/// example app id, regular activation policy). Real macOS capabilities are
+/// supplied separately by the production route, never by this fixture.
+/// `fullscreen` mirrors the observed window; everything intentionally
+/// unknown stays `None`/empty (never a default).
+fn meta(wid: u32, spaces: Vec<u64>, fullscreen: bool) -> ScopedWindowMeta {
+    ScopedWindowMeta {
+        wid,
+        spaces,
+        fullscreen,
+        minimized: false,
+        hidden: false,
+        role: Some(tiler_macos::classifier::ROLE_WINDOW.to_owned()),
+        subrole: Some(tiler_macos::classifier::SUBROLE_STANDARD.to_owned()),
+        modal: Some(false),
+        resizable: Some(true),
+        layer: Some(0),
+        app_id: Some("com.example.app".to_owned()),
+        activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
     }
 }
 
@@ -779,15 +938,19 @@ fn shutdown_clean(fixture: &Fixture) {
 #[test]
 fn reconcile_drives_frame_plan_to_workers() {
     let fixture = start(test_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
     assert_eq!(fixture.handle.app_generation(APP_A), Some(generation));
 
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
         vec![win(11, 0, 0, 960, 1080), win(12, 960, 0, 960, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
 
@@ -838,17 +1001,21 @@ fn reconcile_drives_frame_plan_to_workers() {
 fn hung_app_cannot_stall_engine_input_or_other_app() {
     let fixture = start(test_config());
     let gate = gate_app(&fixture, APP_A);
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let gen_a = fixture.handle.launch_app(APP_A).expect("launch A");
     let gen_b = fixture.handle.launch_app(APP_B).expect("launch B");
 
     // A takes its first frame set and blocks inside AX. The rendezvous is
     // deterministic: nothing else is submitted until A entered apply.
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         gen_a,
         1,
         vec![win(11, 0, 0, 480, 1080), win(12, 480, 0, 480, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     let entered_a = wait_entered(&fixture, APP_A);
@@ -857,12 +1024,13 @@ fn hung_app_cannot_stall_engine_input_or_other_app() {
 
     // While A is hung, the engine, input, and B all progress. The flush
     // itself proves the engine is not stalled by A.
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_B,
         gen_b,
         1,
         vec![win(21, 960, 0, 480, 1080), win(22, 1440, 0, 480, 1080)],
         Some(21),
+        revision,
     ));
     send_input_and_flush(&fixture, &[focus_key()], 1, 0);
 
@@ -925,15 +1093,19 @@ fn hung_app_cannot_stall_engine_input_or_other_app() {
 fn terminate_mid_command_rejects_late_result() {
     let fixture = start(test_config());
     let gate = gate_app(&fixture, APP_A);
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let gen_a = fixture.handle.launch_app(APP_A).expect("launch A");
     let gen_b = fixture.handle.launch_app(APP_B).expect("launch B");
 
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         gen_a,
         1,
         vec![win(11, 0, 0, 960, 1080), win(12, 960, 0, 960, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     // A has taken the two-command desired set and is blocked inside the
@@ -974,12 +1146,13 @@ fn terminate_mid_command_rejects_late_result() {
     );
 
     // Unaffected apps remain operational.
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_B,
         gen_b,
         1,
         vec![win(21, 0, 0, 1920, 1080)],
         Some(21),
+        revision,
     ));
     flush(&fixture.handle);
     let applied_b = wait_applied(&fixture);
@@ -990,24 +1163,29 @@ fn terminate_mid_command_rejects_late_result() {
 #[test]
 fn out_of_order_observations_cannot_regress_state() {
     let fixture = start(test_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
 
     // Newer sequence first: two windows.
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         2,
         vec![win(11, 0, 0, 960, 1080), win(12, 960, 0, 960, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     // Older sequence arrives late and must be rejected.
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
         vec![win(11, 0, 0, 1920, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
 
@@ -1037,13 +1215,17 @@ fn out_of_order_observations_cannot_regress_state() {
 fn stop_during_blocked_work_is_bounded_then_reaps() {
     let fixture = start(test_config());
     let gate = gate_app(&fixture, APP_A);
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
         vec![win(11, 0, 0, 1920, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     let _ = wait_entered(&fixture, APP_A);
@@ -1064,7 +1246,7 @@ fn stop_during_blocked_work_is_bounded_then_reaps() {
     assert_eq!(
         fixture
             .handle
-            .submit_observation(obs(APP_A, generation, 2, vec![], None)),
+            .submit_scoped_observation(obs(APP_A, generation, 2, vec![], None, revision)),
         SubmitOutcome::AdmissionClosed
     );
 
@@ -1094,6 +1276,9 @@ fn stop_during_blocked_work_is_bounded_then_reaps() {
 #[test]
 fn idle_never_terminates_and_wakes_on_new_data() {
     let fixture = start(test_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
     // Liveness without any timing oracle: admission open plus a barrier
     // round-trip proves the idle runtime stays alive and wakes.
@@ -1103,12 +1288,13 @@ fn idle_never_terminates_and_wakes_on_new_data() {
         "idle runtime must wake"
     );
 
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
         vec![win(11, 0, 0, 1920, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     let applied = wait_applied(&fixture);
@@ -1119,14 +1305,18 @@ fn idle_never_terminates_and_wakes_on_new_data() {
 #[test]
 fn ax_panic_is_never_a_clean_stop() {
     let fixture = start(test_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
     fixture.ax.panic_pids.lock().expect("mutex").insert(APP_A);
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
         vec![win(11, 0, 0, 1920, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     // Deterministic rendezvous: the worker entered apply and will panic.
@@ -1149,9 +1339,9 @@ fn input_panic_is_never_a_clean_stop() {
         gates: Mutex::new(BTreeMap::new()),
         create_gates: Mutex::new(BTreeMap::new()),
         poll_gates: Mutex::new(BTreeMap::new()),
-        snapshots: Mutex::new(BTreeMap::new()),
+        scoped: Mutex::new(BTreeMap::new()),
         snapshot_fail: Mutex::new(BTreeSet::new()),
-        obs_inboxes: Mutex::new(BTreeMap::new()),
+        poll_inboxes: Mutex::new(BTreeMap::new()),
         panic_pids: Mutex::new(BTreeSet::new()),
         fail_create: AtomicBool::new(false),
         timeout_once: Mutex::new(BTreeSet::new()),
@@ -1180,6 +1370,9 @@ fn input_panic_is_never_a_clean_stop() {
 #[test]
 fn engine_panic_is_never_a_clean_stop() {
     let fixture = start(test_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     fixture.handle.launch_app(APP_A).expect("launch");
     assert!(fixture.handle.inject_engine_panic_for_test());
     // The engine is dead, so the FIFO barrier never completes.
@@ -1192,7 +1385,7 @@ fn engine_panic_is_never_a_clean_stop() {
     assert_eq!(
         fixture
             .handle
-            .submit_observation(obs(APP_A, 1, 1, vec![], None)),
+            .submit_scoped_observation(obs(APP_A, 1, 1, vec![], None, revision)),
         SubmitOutcome::AdmissionClosed,
         "admission to a dead engine stays closed"
     );
@@ -1211,9 +1404,9 @@ fn honest_startup_failures_leave_runtime_usable() {
         gates: Mutex::new(BTreeMap::new()),
         create_gates: Mutex::new(BTreeMap::new()),
         poll_gates: Mutex::new(BTreeMap::new()),
-        snapshots: Mutex::new(BTreeMap::new()),
+        scoped: Mutex::new(BTreeMap::new()),
         snapshot_fail: Mutex::new(BTreeSet::new()),
-        obs_inboxes: Mutex::new(BTreeMap::new()),
+        poll_inboxes: Mutex::new(BTreeMap::new()),
         panic_pids: Mutex::new(BTreeSet::new()),
         fail_create: AtomicBool::new(true),
         timeout_once: Mutex::new(BTreeSet::new()),
@@ -1237,7 +1430,10 @@ fn honest_startup_failures_leave_runtime_usable() {
     )
     .expect("runtime starts");
 
-    // Backend refusal fails the launch honestly.
+    // Backend refusal fails the launch honestly. Topology is published so
+    // the post-clear launch binds a real revision (startup still fails
+    // closed with no scripted snapshot, honestly).
+    let revision = handle.update_topology_with(single_display_snapshot(), &user_space);
     assert!(matches!(
         handle.launch_app(APP_A),
         Err(StartupError::BackendRefused(_))
@@ -1246,7 +1442,7 @@ fn honest_startup_failures_leave_runtime_usable() {
     assert!(handle.launch_app(0).is_err());
     // Observations for unknown apps are refused, not queued.
     assert_eq!(
-        handle.submit_observation(obs(APP_A, 0, 1, vec![], None)),
+        handle.submit_scoped_observation(obs(APP_A, 0, 1, vec![], None, revision)),
         SubmitOutcome::UnknownApp
     );
 
@@ -1271,9 +1467,9 @@ fn input_startup_failure_cleans_up_the_engine() {
         gates: Mutex::new(BTreeMap::new()),
         create_gates: Mutex::new(BTreeMap::new()),
         poll_gates: Mutex::new(BTreeMap::new()),
-        snapshots: Mutex::new(BTreeMap::new()),
+        scoped: Mutex::new(BTreeMap::new()),
         snapshot_fail: Mutex::new(BTreeSet::new()),
-        obs_inboxes: Mutex::new(BTreeMap::new()),
+        poll_inboxes: Mutex::new(BTreeMap::new()),
         panic_pids: Mutex::new(BTreeSet::new()),
         fail_create: AtomicBool::new(false),
         timeout_once: Mutex::new(BTreeSet::new()),
@@ -1318,10 +1514,13 @@ fn focus_saturation_drops_counted_and_survives() {
         ..test_config()
     };
     let fixture = start(config);
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
     // Three windows in a row so two consecutive focus-right steps both
     // resolve through the core.
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
@@ -1331,6 +1530,7 @@ fn focus_saturation_drops_counted_and_survives() {
             win(13, 1280, 0, 640, 1080),
         ],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     drain_applied(&fixture);
@@ -1372,7 +1572,7 @@ fn focus_saturation_drops_counted_and_survives() {
     assert!(!requests[0].verified);
 
     // The runtime survives saturation: new observations still actuate.
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         2,
@@ -1382,6 +1582,7 @@ fn focus_saturation_drops_counted_and_survives() {
             win(13, 1280, 0, 640, 1080),
         ],
         Some(13),
+        revision,
     ));
     flush(&fixture.handle);
     assert!(!drain_applied(&fixture).is_empty());
@@ -1396,13 +1597,17 @@ fn admission_never_steals_focus_but_explicit_focus_dispatches() {
     // migration against adopting the core's automatic admission policy as
     // native steering.
     let fixture = start(test_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
         vec![win(11, 0, 0, 1920, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     let baseline = wait_applied(&fixture);
@@ -1411,12 +1616,13 @@ fn admission_never_steals_focus_but_explicit_focus_dispatches() {
     assert!(fixture.handle.drain_focus_requests().is_empty());
 
     // Admission-only: a newcomer tiles with no command in flight.
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         2,
         vec![win(11, 0, 0, 960, 1080), win(12, 960, 0, 960, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     // Frames actuate for the newcomer...
@@ -1450,13 +1656,17 @@ fn admission_never_steals_focus_but_explicit_focus_dispatches() {
 #[test]
 fn input_matching_forwards_only_exact_keydown() {
     let fixture = start(test_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
         vec![win(11, 0, 0, 960, 1080), win(12, 960, 0, 960, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     // No applies rendezvous is needed here: the ignored-input assertions
@@ -1583,13 +1793,17 @@ fn input_matching_forwards_only_exact_keydown() {
 #[test]
 fn pid_reuse_bumps_generation_and_refuses_overlap() {
     let fixture = start(test_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let gen1 = fixture.handle.launch_app(APP_A).expect("first launch");
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         gen1,
         1,
         vec![win(11, 0, 0, 1920, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     collect_for_pids(&fixture, &[(APP_A, vec![1])]);
@@ -1602,12 +1816,13 @@ fn pid_reuse_bumps_generation_and_refuses_overlap() {
     // sequence space: seq 1 is accepted, not stale.
     let gen2 = relaunch(&fixture.handle, APP_A);
     assert!(gen2 > gen1, "generations must be monotonic");
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         gen2,
         1,
         vec![win(11, 0, 0, 1920, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     assert_eq!(
@@ -1626,12 +1841,13 @@ fn pid_reuse_bumps_generation_and_refuses_overlap() {
     drain_entered(&fixture);
     let gate = gate_app(&fixture, APP_B);
     let gen_b = fixture.handle.launch_app(APP_B).expect("launch B");
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_B,
         gen_b,
         1,
         vec![win(21, 0, 0, 1920, 1080)],
         Some(21),
+        revision,
     ));
     flush(&fixture.handle);
     let _ = wait_entered(&fixture, APP_B);
@@ -1658,23 +1874,28 @@ fn pid_reuse_bumps_generation_and_refuses_overlap() {
 #[test]
 fn terminate_keeps_survivors_operational() {
     let fixture = start(test_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let gen_a = fixture.handle.launch_app(APP_A).expect("launch A");
     let gen_b = fixture.handle.launch_app(APP_B).expect("launch B");
     // Globally consistent rects: the skeleton domain is shared, so windows
     // from different apps must tile it without overlap.
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         gen_a,
         1,
         vec![win(11, 0, 0, 480, 1080), win(12, 480, 0, 480, 1080)],
         Some(11),
+        revision,
     ));
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_B,
         gen_b,
         1,
         vec![win(21, 960, 0, 480, 1080), win(22, 1440, 0, 480, 1080)],
         Some(21),
+        revision,
     ));
     flush(&fixture.handle);
     assert_eq!(fixture.handle.last_desired_geometry().len(), 4);
@@ -1773,14 +1994,18 @@ fn terminate_keeps_survivors_operational() {
 #[test]
 fn backend_timeout_completion_is_honest_not_truth() {
     let fixture = start(test_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
     fixture.ax.timeout_once.lock().expect("mutex").insert(APP_A);
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
         vec![win(11, 0, 0, 1920, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     // The timeout completion arrives as a result, and the engine logs it
@@ -1807,13 +2032,17 @@ fn backend_timeout_completion_is_honest_not_truth() {
 #[test]
 fn structured_log_reconstructs_lifecycle() {
     let fixture = start(test_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
         vec![win(11, 0, 0, 1920, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     let _ = wait_applied(&fixture);
@@ -1866,13 +2095,17 @@ fn structured_log_reconstructs_lifecycle() {
 #[test]
 fn stale_generation_observation_rejected_after_relaunch() {
     let fixture = start(test_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let gen1 = fixture.handle.launch_app(APP_A).expect("first launch");
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         gen1,
         1,
         vec![win(11, 0, 0, 1920, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     // Rendezvous with the first lifetime's apply so it cannot leak into
@@ -1894,9 +2127,14 @@ fn stale_generation_observation_rejected_after_relaunch() {
     // A late observation from the old lifetime is refused, not stamped with
     // the new generation: the plan is untouched.
     assert_eq!(
-        fixture
-            .handle
-            .submit_observation(obs(APP_A, gen1, 2, vec![win(11, 0, 0, 1, 1)], Some(11))),
+        fixture.handle.submit_scoped_observation(obs(
+            APP_A,
+            gen1,
+            2,
+            vec![win(11, 0, 0, 1, 1)],
+            Some(11),
+            revision
+        )),
         SubmitOutcome::StaleGeneration
     );
     flush(&fixture.handle);
@@ -1912,12 +2150,13 @@ fn stale_generation_observation_rejected_after_relaunch() {
 
     // The new lifetime has its own sequence space: seq 1 is fresh.
     assert_eq!(
-        fixture.handle.submit_observation(obs(
+        fixture.handle.submit_scoped_observation(obs(
             APP_A,
             gen2,
             1,
             vec![win(11, 0, 0, 1920, 1080)],
-            Some(11)
+            Some(11),
+            revision,
         )),
         SubmitOutcome::Accepted
     );
@@ -1945,6 +2184,9 @@ fn worker_not_ready_leaves_runtime_usable_and_late_launch_is_stale() {
     let fixture = start(config);
     // Block backend creation so the sync launch times out waiting for it.
     let create_gate = gate_create_app(&fixture, APP_A);
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     assert_eq!(
         fixture.handle.launch_app(APP_A),
         Err(StartupError::WorkerNotReady)
@@ -1979,12 +2221,13 @@ fn worker_not_ready_leaves_runtime_usable_and_late_launch_is_stale() {
     // The exited generation no longer blocks replacement.
     let gen2 = relaunch(&fixture.handle, APP_A);
     assert!(gen2 >= 2);
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         gen2,
         1,
         vec![win(11, 0, 0, 1920, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     let applied = collect_for_pids(&fixture, &[(APP_A, vec![1])]);
@@ -2000,6 +2243,9 @@ fn async_launch_reports_readiness_without_blocking() {
     let fixture = start(test_config());
     // The nonblocking path admits immediately and reports readiness once
     // the worker creates its backend inside the owning thread.
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture
         .handle
         .launch_app_async(APP_A)
@@ -2027,12 +2273,13 @@ fn async_launch_reports_readiness_without_blocking() {
     );
     // The worker reported its own Launch before marking ready, so the
     // engine already knows this generation: observations actuate.
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
         vec![win(11, 0, 0, 1920, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     let applied = wait_applied(&fixture);
@@ -2072,8 +2319,11 @@ fn input_eos_is_observed_not_spun() {
 #[test]
 fn focus_plans_never_advance_observed_truth() {
     let fixture = start(test_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
@@ -2083,6 +2333,7 @@ fn focus_plans_never_advance_observed_truth() {
             win(13, 1280, 0, 640, 1080),
         ],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     drain_applied(&fixture);
@@ -2121,13 +2372,17 @@ fn focus_plans_never_advance_observed_truth() {
 #[test]
 fn terminated_focus_is_purged_and_drain_stays_fresh() {
     let fixture = start(test_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
         vec![win(11, 0, 0, 960, 1080), win(12, 960, 0, 960, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     drain_applied(&fixture);
@@ -2153,13 +2408,17 @@ fn terminated_focus_is_purged_and_drain_stays_fresh() {
 fn concurrent_terminate_and_shutdown_with_queued_focus_cannot_deadlock() {
     use std::sync::Barrier;
     let fixture = start(test_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
         vec![win(11, 0, 0, 960, 1080), win(12, 960, 0, 960, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     drain_applied(&fixture);
@@ -2241,9 +2500,12 @@ fn backend_observations_reach_core_without_main_submit() {
     // Startup snapshot content: the worker publishes it on its own thread.
     configure_snapshot(&fixture, APP_A, vec![win(11, 0, 0, 960, 1080)]);
     let obs_tx = autonomous_app(&fixture, APP_A);
+    fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
 
-    // No `submit_observation` call anywhere in this test: the startup
+    // No `submit_scoped_observation` call anywhere in this test: the startup
     // observation alone must drive the first core plan.
     wait_desired_names(&fixture, &["1001_11"]);
     let applied = wait_applied(&fixture);
@@ -2275,6 +2537,9 @@ fn observation_failure_preserves_retained_state() {
     let fixture = start(test_config());
     configure_snapshot(&fixture, APP_A, vec![win(11, 0, 0, 1920, 1080)]);
     let obs_tx = autonomous_app(&fixture, APP_A);
+    fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     fixture.handle.launch_app(APP_A).expect("launch");
     wait_desired_names(&fixture, &["1001_11"]);
     let plan_before = fixture.handle.last_desired_geometry();
@@ -2311,6 +2576,9 @@ fn startup_change_and_readback_converge_without_replay() {
     let v1 = vec![win(11, 0, 0, 960, 1080), win(12, 960, 0, 960, 1080)];
     configure_snapshot(&fixture, APP_A, v1.clone());
     let obs_tx = autonomous_app(&fixture, APP_A);
+    fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
 
     // Startup handoff: worker-published, core-planned, worker-actuated.
@@ -2322,7 +2590,10 @@ fn startup_change_and_readback_converge_without_replay() {
     // as live native state would be), the core re-plans, the worker
     // actuates the re-planned rects.
     let v2 = vec![win(11, 0, 0, 1920, 1080)];
-    configure_snapshot(&fixture, APP_A, v2.clone());
+    // The store is the readback source: it must carry the same focus
+    // knowledge the stream reports, or the post-apply re-read honestly
+    // differs from the last published state and republishes.
+    configure_snapshot_focused(&fixture, APP_A, v2.clone(), Some(11));
     obs_tx
         .send(Ok(backend_snapshot(v2, Some(11))))
         .expect("backend send");
@@ -2399,6 +2670,19 @@ fn hung_observation_pump_cannot_stall_others() {
     let poll_gate = gate_poll_app(&fixture, APP_A);
     configure_snapshot(&fixture, APP_B, vec![win(21, 0, 0, 960, 1080)]);
     let obs_tx_b = autonomous_app(&fixture, APP_B);
+    // Worker-lane focus need: the worker stamps published evidence at poll
+    // time, so publish before the launches (nothing in flight to fence)
+    // for B's focused backend observations to promote observed focus.
+    fixture
+        .handle
+        .update_focus_evidence(tiler_macos::runtime::FocusEvidence {
+            frontmost_pid: Some(APP_B),
+            frontmost_bundle: None,
+            ax_focus: Some((APP_B, Some(21))),
+        });
+    fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let gen_b = fixture.handle.launch_app(APP_B).expect("launch B");
     let _gen_a = fixture.handle.launch_app(APP_A).expect("launch A");
 
@@ -2528,9 +2812,9 @@ fn start_with_collect(
         gates: Mutex::new(BTreeMap::new()),
         create_gates: Mutex::new(BTreeMap::new()),
         poll_gates: Mutex::new(BTreeMap::new()),
-        snapshots: Mutex::new(BTreeMap::new()),
+        scoped: Mutex::new(BTreeMap::new()),
         snapshot_fail: Mutex::new(BTreeSet::new()),
-        obs_inboxes: Mutex::new(BTreeMap::new()),
+        poll_inboxes: Mutex::new(BTreeMap::new()),
         panic_pids: Mutex::new(BTreeSet::new()),
         fail_create: AtomicBool::new(false),
         timeout_once: Mutex::new(BTreeSet::new()),
@@ -2562,13 +2846,15 @@ fn structured_sink_reconstructs_start_to_stop() {
     let sink = Arc::new(CollectSink::new());
     let (handle, _ax, applied_rx, _entered_rx, _input_tx) =
         start_with_collect(test_config(), Arc::clone(&sink));
+    let revision = handle.update_topology_with(single_display_snapshot(), &user_space);
     let generation = handle.launch_app(APP_A).expect("launch");
-    handle.submit_observation(obs(
+    handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
         vec![win(11, 0, 0, 1920, 1080)],
         Some(11),
+        revision,
     ));
     assert!(handle.flush(FLUSH_TIMEOUT));
     let applied = applied_rx
@@ -2673,16 +2959,18 @@ fn failed_completion_reason_is_sanitized_not_leaked() {
     let sink = Arc::new(CollectSink::new());
     let (handle, ax, applied_rx, _entered_rx, _input_tx) =
         start_with_collect(test_config(), Arc::clone(&sink));
+    let revision = handle.update_topology_with(single_display_snapshot(), &user_space);
     let generation = handle.launch_app(APP_A).expect("launch");
     // A refused apply reports dispatch truth with a sanitized static token;
     // the raw backend string never reaches the sink.
     ax.timeout_once.lock().expect("mutex").insert(APP_A);
-    handle.submit_observation(obs(
+    handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
         vec![win(11, 0, 0, 1920, 1080)],
         Some(11),
+        revision,
     ));
     assert!(handle.flush(FLUSH_TIMEOUT));
     wait_diagnostics(
@@ -2744,9 +3032,9 @@ fn slow_sink_never_stalls_engine_or_input() {
         gates: Mutex::new(BTreeMap::new()),
         create_gates: Mutex::new(BTreeMap::new()),
         poll_gates: Mutex::new(BTreeMap::new()),
-        snapshots: Mutex::new(BTreeMap::new()),
+        scoped: Mutex::new(BTreeMap::new()),
         snapshot_fail: Mutex::new(BTreeSet::new()),
-        obs_inboxes: Mutex::new(BTreeMap::new()),
+        poll_inboxes: Mutex::new(BTreeMap::new()),
         panic_pids: Mutex::new(BTreeSet::new()),
         fail_create: AtomicBool::new(false),
         timeout_once: Mutex::new(BTreeSet::new()),
@@ -2768,17 +3056,19 @@ fn slow_sink_never_stalls_engine_or_input() {
         sink.clone(),
     )
     .expect("runtime starts");
+    let revision = handle.update_topology_with(single_display_snapshot(), &user_space);
     let generation = handle.launch_app(APP_A).expect("launch");
     // Flood observations while the sink is blocked: the engine must still
     // drain them (barrier proves it) and the saturated log queue must drop
     // counted instead of stalling anyone.
     for seq in 1..=20u64 {
-        handle.submit_observation(obs(
+        handle.submit_scoped_observation(obs(
             APP_A,
             generation,
             seq,
             vec![win(11, 0, 0, 1920, 1080)],
             Some(11),
+            revision,
         ));
     }
     input_tx.send(focus_key()).expect("input send");
@@ -2824,6 +3114,9 @@ fn slow_sink_never_stalls_engine_or_input() {
 #[test]
 fn teardown_failure_is_unclean_not_clean() {
     let fixture = start(test_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
     fixture
         .ax
@@ -2831,12 +3124,13 @@ fn teardown_failure_is_unclean_not_clean() {
         .lock()
         .expect("mutex")
         .insert(APP_A);
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
         vec![win(11, 0, 0, 1920, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     let report = fixture.handle.shutdown(Duration::from_secs(5));
@@ -2868,11 +3162,19 @@ fn teardown_failure_is_unclean_not_clean() {
 #[test]
 fn reaped_worker_panic_still_poisons_shutdown() {
     let fixture = start(test_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     fixture.handle.launch_app(APP_A).expect("launch");
     fixture.ax.panic_pids.lock().expect("mutex").insert(APP_A);
-    fixture
-        .handle
-        .submit_observation(obs(APP_A, 1, 1, vec![win(11, 0, 0, 1920, 1080)], Some(11)));
+    fixture.handle.submit_scoped_observation(obs(
+        APP_A,
+        1,
+        1,
+        vec![win(11, 0, 0, 1920, 1080)],
+        Some(11),
+        revision,
+    ));
     flush(&fixture.handle);
     let _ = wait_entered(&fixture, APP_A);
     // The panicked generation exited: a replacement launch reaps the panic
@@ -2914,9 +3216,9 @@ fn blocked_input_startup_retains_handle_for_reap() {
         gates: Mutex::new(BTreeMap::new()),
         create_gates: Mutex::new(BTreeMap::new()),
         poll_gates: Mutex::new(BTreeMap::new()),
-        snapshots: Mutex::new(BTreeMap::new()),
+        scoped: Mutex::new(BTreeMap::new()),
         snapshot_fail: Mutex::new(BTreeSet::new()),
-        obs_inboxes: Mutex::new(BTreeMap::new()),
+        poll_inboxes: Mutex::new(BTreeMap::new()),
         panic_pids: Mutex::new(BTreeSet::new()),
         fail_create: AtomicBool::new(false),
         timeout_once: Mutex::new(BTreeSet::new()),
@@ -2987,17 +3289,19 @@ fn failed_ax_status_reaches_sink_as_allowlisted_token() {
     let sink = Arc::new(CollectSink::new());
     let (handle, ax, _applied_rx, _entered_rx, _input_tx) =
         start_with_collect(test_config(), Arc::clone(&sink));
+    let revision = handle.update_topology_with(single_display_snapshot(), &user_space);
     let generation = handle.launch_app(APP_A).expect("launch");
     // One refused apply carrying a specific OS status: the completion must
     // preserve the cause as an allowlisted token instead of collapsing it
     // into the coarse `failed-set` bucket.
     ax.fail_status_once.lock().expect("mutex").insert(APP_A);
-    handle.submit_observation(obs(
+    handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
         vec![win(11, 0, 0, 1920, 1080)],
         Some(11),
+        revision,
     ));
     assert!(handle.flush(FLUSH_TIMEOUT));
     wait_diagnostics(
@@ -3077,16 +3381,20 @@ fn observation_failure_outcome_is_sanitized_token() {
 fn dropped_handle_exits_workers_without_join() {
     let fixture = start(test_config());
     let gate = gate_app(&fixture, APP_A);
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
     // Two windows so the taken batch holds two commands: the first is
     // provably inflight (entered rendezvous) while the second is still
     // taken-but-unstarted when the handle drops.
-    fixture.handle.submit_observation(obs(
+    fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         1,
         vec![win(11, 0, 0, 960, 1080), win(12, 960, 0, 960, 1080)],
         Some(11),
+        revision,
     ));
     flush(&fixture.handle);
     let entered = wait_entered(&fixture, APP_A);
@@ -3136,14 +3444,18 @@ fn borrowed_clone_drop_leaves_engine_and_workers_usable() {
     // must leave the engine and observers usable; only the final owning
     // handle drop tears down.
     let fixture = start(test_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(single_display_snapshot(), &user_space);
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
     assert_eq!(
-        fixture.handle.submit_observation(obs(
+        fixture.handle.submit_scoped_observation(obs(
             APP_A,
             generation,
             1,
             vec![win(11, 0, 0, 960, 1080)],
             Some(11),
+            revision,
         )),
         SubmitOutcome::Accepted
     );
@@ -3170,12 +3482,13 @@ fn borrowed_clone_drop_leaves_engine_and_workers_usable() {
         "engine still answers barriers after borrowed drop"
     );
     assert_eq!(
-        fixture.handle.submit_observation(obs(
+        fixture.handle.submit_scoped_observation(obs(
             APP_A,
             generation,
             2,
             vec![win(11, 0, 0, 960, 1080)],
             Some(11),
+            revision,
         )),
         SubmitOutcome::Accepted,
         "observers stay admitted after borrowed drop"

@@ -164,7 +164,29 @@ pub(crate) enum EngineJob {
         pre: Option<WindowId>,
         post: Option<WindowId>,
         foreground_proven: bool,
+        arrival: Vec<tiler_core::world_report::ArrivalBracket>,
         attempt_ms: u64,
+    },
+    /// Owner-side selection-proof deferral (internal, never a verdict): the
+    /// owning worker's pre-setter gate found the frozen proof rows
+    /// incomplete or the original proof stamp moved, so no setter ran and
+    /// no feedback stages. Carries the immutable request tuple, the owning
+    /// app lifetime, and the exact queued command identity (no new wire
+    /// id). The engine accepts only the exact still-current queued pending
+    /// tuple: it resets `owner_queued` plus the stamp and retains the
+    /// original deps and baselines, so evidence refresh or engine
+    /// reevaluation can queue the same unstarted work again. Data lane
+    /// (drops counted when full, never blocking); a dropped notification
+    /// merely defers.
+    SelectionFocusDeferred {
+        pid: u32,
+        generation: u64,
+        focus_id: String,
+        issued_revision: u64,
+        adapter_incarnation: String,
+        core_generation: String,
+        cmd_id: u64,
+        target: WindowId,
     },
     /// Raw mechanical view-attempt evidence from one proven select-drain
     /// outcome (never a verdict): the setter disposition plus the drain's
@@ -240,6 +262,29 @@ pub(crate) enum EngineJob {
         created_sid: Option<u64>,
         attempt_ms: u64,
     },
+    /// Owner arrival-capture readiness notification (evidence only, never a
+    /// verdict): one owning per-app worker's ordered bracket reads for the
+    /// frozen members it owns, sampled around one agreed watermark. The
+    /// sender never bumps the shared clock for this job (it carries raw
+    /// reads of a fixed sampled watermark), so multi-pid captures sharing
+    /// one watermark stay jointly current. Data lane (drops counted when
+    /// full, never blocking); a dropped notification merely defers — the
+    /// pending intent stays bound for a later publication. The engine
+    /// validates the exact current request tuple, app generation, watermark,
+    /// and revision before retaining, then reevaluates the latest same-id
+    /// deferred intent from the current reply.
+    ArrivalCaptureReady {
+        pid: u32,
+        generation: u64,
+        focus_id: String,
+        issued_revision: u64,
+        adapter_incarnation: String,
+        core_generation: String,
+        obs: u64,
+        revision: u64,
+        context_generation: u64,
+        captures: Vec<crate::runtime_types::ArrivalCapture>,
+    },
     /// Rendezvous for deterministic tests: processed in FIFO order, so a
     /// completed barrier proves every earlier job was processed.
     Barrier(mpsc::Sender<()>),
@@ -291,9 +336,11 @@ impl EngineJob {
                 | Self::ViewAttempt { .. }
                 | Self::MemberAttempt { .. }
                 | Self::NativeCreation { .. }
+                | Self::ArrivalCaptureReady { .. }
                 | Self::AxResult { .. }
                 | Self::FocusResult { .. }
                 | Self::CloseFocusResult { .. }
+                | Self::SelectionFocusDeferred { .. }
         )
     }
 }
@@ -353,7 +400,7 @@ impl Inbox {
     }
 
     /// Block until a job arrives or stop/close is signalled. Strict FIFO.
-    fn recv(&self, stop: &AtomicBool) -> Option<EngineJob> {
+    pub(crate) fn recv(&self, stop: &AtomicBool) -> Option<EngineJob> {
         let mut state = self.state.lock().expect("inbox mutex");
         loop {
             if state.closed || stop.load(Ordering::SeqCst) {
@@ -1882,6 +1929,7 @@ pub(crate) fn process_job(
             pre,
             post,
             foreground_proven,
+            arrival,
             attempt_ms,
         } => {
             // Narrowly typed close result: diagnostics plus the truthful
@@ -1902,6 +1950,29 @@ pub(crate) fn process_job(
                 tiler_core::world_report::VisibilitySetter::NotCalled => ("not-called", 0),
             };
             lock_shared(shared).count_completion(token);
+            // Terminal owner completion (attempt or no-call alike): clear
+            // only the exactly matching deferred intent — same request
+            // tuple plus the exact queued command identity — before the
+            // normal first-feedback staging below. Anything else stays
+            // bound; a null/newer publication cancels through the dispatch
+            // legs, never here.
+            {
+                let mut guard = lock_shared(shared);
+                let matches = guard
+                    .selection_focus_pending
+                    .as_ref()
+                    .is_some_and(|pending| {
+                        pending.focus_id == close_id
+                            && pending.issued_revision == issued_rev
+                            && pending.adapter_incarnation == adapter_incarnation
+                            && pending.core_generation == core_generation
+                            && pending.command_seq == cmd_id
+                            && pending.window == target
+                    });
+                if matches {
+                    guard.selection_focus_pending = None;
+                }
+            }
             let live = lock_shared(shared)
                 .apps
                 .get(&pid)
@@ -1938,7 +2009,7 @@ pub(crate) fn process_job(
                     pre,
                     post,
                     foreground_proven,
-                    arrival: Vec::new(),
+                    arrival,
                     attempt_ms,
                 });
                 emit(shared, 0, 0, 0, "feedback", "staged", 1);
@@ -1954,6 +2025,106 @@ pub(crate) fn process_job(
                     0,
                 );
             }
+        }
+        EngineJob::SelectionFocusDeferred {
+            pid,
+            generation,
+            focus_id,
+            issued_revision,
+            adapter_incarnation,
+            core_generation,
+            cmd_id,
+            target,
+        } => {
+            // Owner pre-setter deferral: no setter ran, no feedback stages.
+            // Accept only the exact still-current queued pending tuple and
+            // app lifetime: reset the queue mark plus the stamp and retain
+            // the original deps and baselines, so evidence refresh or engine
+            // reevaluation can queue the same unstarted work again. No
+            // setter is ever retried from here.
+            let accept = {
+                let guard = lock_shared(shared);
+                guard
+                    .selection_focus_pending
+                    .as_ref()
+                    .is_some_and(|pending| {
+                        pending.owner_queued
+                            && pending.focus_id == focus_id
+                            && pending.issued_revision == issued_revision
+                            && pending.adapter_incarnation == adapter_incarnation
+                            && pending.core_generation == core_generation
+                            && pending.command_seq == cmd_id
+                            && pending.window == target
+                    })
+                    && guard
+                        .apps
+                        .get(&pid)
+                        .is_some_and(|record| record.generation == generation && !record.terminated)
+            };
+            if accept {
+                let mut guard = lock_shared(shared);
+                if let Some(pending) = guard.selection_focus_pending.as_mut() {
+                    pending.owner_queued = false;
+                    pending.proven_stamp = None;
+                }
+                drop(guard);
+                emit(
+                    shared,
+                    pid,
+                    generation,
+                    cmd_id,
+                    "focus",
+                    "deferred-owner",
+                    1,
+                );
+            } else {
+                lock_shared(shared).diagnostics.stale_dropped += 1;
+                emit(
+                    shared,
+                    pid,
+                    generation,
+                    cmd_id,
+                    "focus-result",
+                    "stale-rejected",
+                    0,
+                );
+            }
+        }
+        EngineJob::ArrivalCaptureReady {
+            pid,
+            generation,
+            focus_id,
+            issued_revision,
+            adapter_incarnation,
+            core_generation,
+            obs,
+            revision,
+            context_generation,
+            captures,
+        } => {
+            // Evidence-only capture completion: validate the exact current
+            // tuple, app lifetime, watermark, and revision, retain the
+            // bounded per-member rows, then reevaluate the latest same-id
+            // deferred intent from the current reply. Never bumps the clock,
+            // never reissues a report, never warms or skips publishing: the
+            // reevaluation releases only through the existing live legs.
+            crate::world_dispatch::apply_arrival_capture(
+                session,
+                retained,
+                shared,
+                focus_queue,
+                pid,
+                generation,
+                &focus_id,
+                issued_revision,
+                &adapter_incarnation,
+                &core_generation,
+                obs,
+                revision,
+                context_generation,
+                captures,
+            );
+            emit(shared, pid, generation, 0, "arrival", "captured", 1);
         }
         EngineJob::ManagedFactsQuery { window, reply } => {
             // Current engine-managed truth for one subject window: the
@@ -2799,6 +2970,7 @@ mod trailing_join_tests {
             select_busy: false,
             select_claim_pending: false,
             selection_focus_pending: None,
+            arrival_captures: std::collections::BTreeMap::new(),
             selection_focus_floor_seq: 0,
             close_focus_current: None,
             focus_evidence: None,
@@ -3017,13 +3189,15 @@ mod trailing_join_tests {
         let incarnation = session.incarnation().to_owned();
         let generation = session.sequencer().bound_generation();
         session.sequencer().observe_close_envelope(
-            Some(&tiler_core::world_report::CloseFocusRequest {
+            Some(&tiler_core::world_report::FocusRequest {
                 id: id.to_owned(),
                 target: WindowId(format!("4242_{wid}")),
                 issued_revision: rev,
-                cause: tiler_core::world_report::CloseFocusCause::PositiveClose,
+                cause: tiler_core::world_report::FocusRequestCause::PositiveClose,
                 output: tiler_core::directional::OutputId("macos-display-1".to_owned()),
                 workspace: "ws-a".to_owned(),
+                cmd_seq: None,
+                after_shown: None,
             }),
             &incarnation,
             &generation,
@@ -3071,6 +3245,7 @@ mod trailing_join_tests {
             pre: None,
             post: None,
             foreground_proven: false,
+            arrival: Vec::new(),
             attempt_ms: 0,
         }
     }
@@ -3941,13 +4116,13 @@ mod trailing_join_tests {
     #[test]
     fn selection_focus_binds_through_real_dispatch_with_live_binding() {
         // Positive real-routing proof: a remembered-leaf view change mints
-        // `fx-<seq>` through the real core, and the real dispatch binds the
-        // deferred intent with the genuine expected SID taken from the
-        // reply's live native binding (never a guessed Space). The full
-        // production cycle runs between the legs: the away select drains
-        // through the scripted native row, stages its proven attempt, and
-        // settles on the moved observation — then the return mints its own
-        // remembered focus and supersedes the away intent.
+        // a retained `focusRequest` through the real core, and the real
+        // dispatch binds the deferred intent with the genuine expected SID
+        // taken from the reply's live native binding (never a guessed
+        // Space). The full production cycle runs between the legs: the away
+        // select drains through the scripted native row, stages its proven
+        // attempt, and settles on the moved observation — then the return
+        // mints its own remembered focus and supersedes the away intent.
         use crate::workspace_select::{SelectGates, SelectionState, drain_claimed_select_with};
         use tiler_core::world_report::TransferKind;
         let ctx = ctx();
@@ -4103,17 +4278,21 @@ mod trailing_join_tests {
             })
             .expect("bound op retains its View transfer");
         // The expected SID is exactly the reply's live native binding for
-        // that retained target — parsed, never guessed.
+        // the request scope — parsed, never guessed.
         let reply = session
             .sequencer()
             .last_reply()
             .expect("applied reply retained");
+        let req = reply
+            .focus_request
+            .as_ref()
+            .expect("reply carries the retained focus request");
+        use tiler_core::world_report::FocusRequestCause;
+        assert_eq!(req.cause, FocusRequestCause::ExplicitCommand);
         let binding = reply
             .workspaces
             .iter()
-            .find(|row| {
-                row.output.0 == transfer.target_output.0 && row.id == transfer.target_workspace
-            })
+            .find(|row| row.output == req.output && row.id == req.workspace)
             .and_then(|row| row.native_binding.clone())
             .expect("reply publishes the live native binding");
         let expected: u64 = binding
@@ -4132,7 +4311,7 @@ mod trailing_join_tests {
             Some(4242),
             "bind-time foreground rides as the stability baseline"
         );
-        // The window is exactly the reply's correlated focus outcome.
+        // The window is exactly the reply's correlated retained request.
         let seq: u64 = pending
             .operation_id
             .strip_prefix("op-")
@@ -4140,17 +4319,2765 @@ mod trailing_join_tests {
             .parse()
             .expect("numeric seq");
         assert_eq!(pending.command_seq, seq);
-        let effect = reply
-            .effects
-            .iter()
-            .find(|effect| effect.is_explicit_focus_for(seq))
-            .expect("reply carries the correlated focus outcome");
-        assert_eq!(pending.window, effect.target);
+        assert_eq!(req.cmd_seq, Some(seq));
+        assert_eq!(req.target, pending.window);
+        assert_eq!(pending.focus_id, req.id);
+        assert_eq!(pending.issued_revision, req.issued_revision);
+        assert_eq!(pending.output, req.output);
+        assert_eq!(pending.workspace, req.workspace);
+        let after = req
+            .after_shown
+            .as_ref()
+            .expect("selection request carries frozen afterShown");
+        assert_eq!(after.op, pending.operation_id);
+        assert_eq!(&pending.after_shown, after);
         // The away leg's superseded floor never blocks the newer bind.
         assert!(
             lock_shared(&shared).selection_focus_floor_seq <= seq,
             "floor tracks the binding command"
         );
+    }
+
+    struct FakeFocusBackend {
+        fresh: Option<(u32, Option<u32>)>,
+        post: Option<(u32, Option<u32>)>,
+        reads: usize,
+        dispatches: usize,
+        completion: crate::runtime_types::AxCompletion,
+    }
+
+    impl crate::runtime_backend::AxBackend for FakeFocusBackend {
+        fn apply_frame(
+            &mut self,
+            _cmd: &crate::runtime::FrameCommand,
+        ) -> crate::runtime_types::AxCompletion {
+            crate::runtime_types::AxCompletion::Failed {
+                reason: "fake no frames".to_owned(),
+            }
+        }
+        fn snapshot(&mut self) -> Result<Vec<crate::runtime::ObservedWindow>, String> {
+            Ok(Vec::new())
+        }
+        fn selected_focus_evidence(&mut self) -> Option<(u32, Option<u32>)> {
+            let value = if self.reads == 0 {
+                self.fresh
+            } else {
+                self.post
+            };
+            self.reads += 1;
+            value
+        }
+        fn dispatch_focus(
+            &mut self,
+            _cmd: &crate::runtime_types::FocusCommand,
+        ) -> crate::runtime_types::AxCompletion {
+            self.dispatches += 1;
+            self.completion.clone()
+        }
+    }
+
+    /// Genuine away-bind fixture for the retained-selection focus tests:
+    /// Native config (arms the owner slot) plus the live owner app record
+    /// (bind carries `Some` generation so the release matches it) with
+    /// bind-time foreground evidence, then one observation bootstrap and
+    /// one away select through the production producer (`handle_select_action_with`
+    /// into `dispatch_report`, whose byte codec round-trips both directions
+    /// before the sequencer accepts). Returns the bound away state.
+    #[allow(clippy::type_complexity)]
+    fn selection_away_fixture() -> (
+        WorldSession,
+        RetainedCore,
+        Arc<Mutex<Shared>>,
+        Arc<Inbox>,
+        Arc<Mutex<Vec<FocusRequest>>>,
+        Arc<NativeContext>,
+    ) {
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), retained_send_subject());
+        lock_shared(&shared).config.topology_mode = crate::runtime_types::TopologyMode::Native;
+        close_app(&shared, 4243, 1);
+        lock_shared(&shared).focus_evidence = Some(crate::runtime_types::FocusEvidence {
+            frontmost_pid: Some(4242),
+            frontmost_bundle: None,
+            ax_focus: None,
+        });
+        bootstrap_observation(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            &ctx,
+        );
+        assert_fixture_admitted(&session, &retained);
+        handle_select_action_with(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 2 }),
+            true,
+        );
+        (session, retained, shared, inbox, focus_queue, ctx)
+    }
+
+    /// Genuine arrival settle for one bound away select: the real claim
+    /// drains through the scripted native row, the proven attempt stages
+    /// through the production job arm, and the moved observation settles
+    /// through the production dispatch path. Returns the away operation id
+    /// plus the drain-verified arrival Space.
+    fn drain_settle_away(
+        session: &mut WorldSession,
+        retained: &mut RetainedCore,
+        shared: &Arc<Mutex<Shared>>,
+        inbox: &Arc<Inbox>,
+        focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
+    ) -> (String, Option<u64>) {
+        use crate::workspace_select::{SelectGates, SelectionState, drain_claimed_select_with};
+        use tiler_core::world_report::FrameSetter;
+        let away = lock_shared(shared)
+            .select_pending
+            .front()
+            .cloned()
+            .expect("away select stored");
+        let away_op = away.operation_id.clone().expect("operation rides");
+        let mut backend = FakeBackend::new(&[1, 277], 1, &[]);
+        let mut state = SelectionState::default();
+        let gates = SelectGates {
+            session_unlocked: true,
+            secure_active: false,
+            lock_screen: false,
+        };
+        let moved = drain_claimed_select_with(&mut state, &mut backend, away, &gates, true)
+            .expect("away drains to its binding");
+        assert_eq!((moved.pre, moved.post), (Some(1), Some(277)));
+        process_job(
+            EngineJob::ViewAttempt {
+                operation_id: away_op.clone(),
+                setter: FrameSetter::Accepted,
+                pre_sid: moved.pre,
+                post_sid: moved.post,
+                baseline_sid: moved.effect.baseline,
+            },
+            session,
+            retained,
+            shared,
+            inbox,
+            focus_queue,
+            8,
+        );
+        let moved_ctx = Arc::new(NativeContext {
+            revision: 10,
+            domains: vec![domain(1, false), domain(277, true)],
+            skipped: Vec::new(),
+        });
+        lock_shared(shared).native_context = Some(Arc::clone(&moved_ctx));
+        lock_shared(shared).topology_revision = moved_ctx.revision;
+        match dispatch_report(
+            session,
+            retained,
+            shared,
+            inbox,
+            focus_queue,
+            8,
+            crate::world_runtime::DispatchContext::Native(Arc::clone(&moved_ctx)),
+            Vec::new(),
+            None,
+            None,
+            false,
+            crate::world_command_map::OP_RECONCILE,
+            0,
+            0,
+            0,
+        ) {
+            DispatchVerdict::Applied { .. } => {}
+            other => panic!("moved observation must apply, got {other:?}"),
+        }
+        assert!(
+            session.engine_mut().retained_transfers().is_empty(),
+            "native echo settles the away transfer"
+        );
+        (away_op, moved.post)
+    }
+
+    struct RefusingFocusAx;
+
+    impl crate::runtime_backend::AxBackendFactory for RefusingFocusAx {
+        fn create(&self, _pid: u32) -> Result<Box<dyn crate::runtime_backend::AxBackend>, String> {
+            Err("test stub creates nothing".to_owned())
+        }
+    }
+
+    fn release_handle(
+        shared: &Arc<Mutex<Shared>>,
+        inbox: &Arc<Inbox>,
+        focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
+    ) -> crate::runtime::RuntimeHandle {
+        crate::runtime::RuntimeHandle {
+            shared: Arc::clone(shared),
+            inbox: Arc::clone(inbox),
+            focus_queue: Arc::clone(focus_queue),
+            ax_factory: Arc::new(RefusingFocusAx),
+        }
+    }
+
+    /// Genuine skipped issuing plus two unchanged publications for the
+    /// numbered away select: each report is built plus core-transacted
+    /// through the byte codec yet never accepted/consumed, so the adapter
+    /// binds nothing while the core retains the identical focus request.
+    /// Returns the core-issued frozen request. Shared by the latest-only
+    /// and settled-parent proofs (exactly these two uses).
+    fn skipped_issuing_identical(
+        session: &mut WorldSession,
+        retained: &mut RetainedCore,
+        shared: &Arc<Mutex<Shared>>,
+        ctx: &Arc<NativeContext>,
+    ) -> tiler_core::world_report::FocusRequest {
+        use crate::world_dispatch::codec_transact;
+        let action = InputSemanticAction::WorkspaceSelect { index: 2 };
+        let command = crate::world_command_map::select_command(&action, None)
+            .expect("numbered select maps without an output hint");
+        let clock_before = lock_shared(shared).clock.get();
+        let cell_gen_before = lock_shared(shared).native_cell.generation();
+        let issuing_req = {
+            let ticket = session
+                .sequencer()
+                .try_begin_request(Some(command.clone()))
+                .expect("flight opens for the skipped issuing");
+            let report = build_dispatch_report(
+                &mut *session,
+                retained,
+                &crate::world_runtime::DispatchContext::Native(Arc::clone(ctx)),
+                &[],
+                ticket.observation_seq,
+                ticket.request_seq,
+                ticket.command_seq,
+                ticket.command.clone(),
+                None,
+                &ticket.request_id,
+            )
+            .expect("skipped issuing builds");
+            let outcome =
+                codec_transact(&mut *session, &report).expect("skipped issuing transacts");
+            let reply = match outcome {
+                WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => reply,
+                WorldOutcome::Duplicate(reply) => reply,
+                WorldOutcome::Rejected { kind, .. } => panic!("skipped issuing rejected: {kind}"),
+            };
+            let req = reply
+                .focus_request
+                .clone()
+                .expect("issuing reply carries the retained focus request");
+            session.sequencer().clear_flight();
+            req
+        };
+        for _ in 0..2 {
+            let ticket = session
+                .sequencer()
+                .try_begin_request(None)
+                .expect("flight opens for a skipped unchanged publication");
+            let report = build_dispatch_report(
+                &mut *session,
+                retained,
+                &crate::world_runtime::DispatchContext::Native(Arc::clone(ctx)),
+                &[],
+                ticket.observation_seq,
+                ticket.request_seq,
+                ticket.command_seq,
+                ticket.command.clone(),
+                None,
+                &ticket.request_id,
+            )
+            .expect("skipped unchanged builds");
+            let outcome =
+                codec_transact(&mut *session, &report).expect("skipped unchanged transacts");
+            let reply = match outcome {
+                WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => reply,
+                WorldOutcome::Duplicate(reply) => reply,
+                WorldOutcome::Rejected { kind, .. } => {
+                    panic!("skipped unchanged rejected: {kind}")
+                }
+            };
+            let req = reply
+                .focus_request
+                .clone()
+                .expect("unchanged reply retains the focus request");
+            assert_eq!(
+                req.id, issuing_req.id,
+                "skipped unchanged keeps the identical core focus id"
+            );
+            assert_eq!(
+                req.target, issuing_req.target,
+                "skipped unchanged keeps the identical core focus target"
+            );
+            assert_eq!(
+                req, issuing_req,
+                "skipped unchanged re-emits the identical retained request"
+            );
+            session.sequencer().clear_flight();
+        }
+        assert_eq!(lock_shared(shared).clock.get(), clock_before);
+        assert_eq!(
+            lock_shared(shared).native_cell.generation(),
+            cell_gen_before
+        );
+        issuing_req
+    }
+
+    #[test]
+    fn selection_focus_latest_only_releases_once_through_real_owner() {
+        // Genuine latest-only proof: the producer select builds issuing plus
+        // two unchanged reports as bytes and skips all three (never
+        // dispatch_ticket/accept/consume), the first real dispatch binds the
+        // deferred intent, a real owner arrival capture stamps it, the
+        // production owner route dispatches the mocked setter exactly once
+        // from the generated completion, and a target observation settles
+        // the truthful feedback.
+        use std::sync::atomic::AtomicBool;
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), retained_send_subject());
+        lock_shared(&shared).config.topology_mode = crate::runtime_types::TopologyMode::Native;
+        close_app(&shared, 4243, 1);
+        lock_shared(&shared).focus_evidence = Some(crate::runtime_types::FocusEvidence {
+            frontmost_pid: Some(4242),
+            frontmost_bundle: None,
+            ax_focus: None,
+        });
+        bootstrap_observation(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            &ctx,
+        );
+        assert_fixture_admitted(&session, &retained);
+        let issuing_req = skipped_issuing_identical(&mut session, &mut retained, &shared, &ctx);
+        assert!(
+            lock_shared(&shared).selection_focus_pending.is_none(),
+            "skipped publications bind nothing"
+        );
+        assert!(crate::runtime_shared::lock_focus(&focus_queue).is_empty());
+        assert_eq!(lock_shared(&shared).diagnostics.focus_dispatched, 0);
+        // First latest delivery: the only publication that ever runs the
+        // production accept/consume path (observation-only, no new command).
+        match dispatch_report(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            crate::world_runtime::DispatchContext::Native(Arc::clone(&ctx)),
+            Vec::new(),
+            None,
+            None,
+            false,
+            crate::world_command_map::OP_RECONCILE,
+            0,
+            0,
+            0,
+        ) {
+            DispatchVerdict::Applied { .. } => {}
+            other => panic!("latest observation must apply, got {other:?}"),
+        }
+        // Production claim store for the bound operation so the drain below
+        // settles the core-issued parent transfer.
+        {
+            let op = lock_shared(&shared)
+                .selection_focus_pending
+                .clone()
+                .expect("latest binds the deferred intent")
+                .operation_id
+                .clone();
+            let mut claim = ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 2 });
+            bind_select_plan(&mut session, &ctx, &mut claim, &op);
+            store_select_claim(&shared, claim, Some(&op));
+        }
+        let away_op = lock_shared(&shared)
+            .select_pending
+            .front()
+            .cloned()
+            .expect("away select stored")
+            .operation_id
+            .expect("operation rides");
+        let pending = lock_shared(&shared)
+            .selection_focus_pending
+            .clone()
+            .expect("first dispatch binds the deferred intent");
+        assert_eq!(pending.operation_id, away_op);
+        assert_eq!(pending.window.0, "4243_9");
+        assert_eq!(pending.after_shown.op, away_op);
+        assert_eq!(pending.adapter_incarnation, session.incarnation());
+        assert_eq!(
+            pending.core_generation,
+            session.sequencer().bound_generation()
+        );
+        assert_eq!(lock_shared(&shared).topology_revision, ctx.revision);
+        let reply = session
+            .sequencer()
+            .last_reply()
+            .expect("applied reply retained");
+        let req = reply
+            .focus_request
+            .as_ref()
+            .expect("reply carries the retained focus request");
+        assert_eq!(req.id, pending.focus_id);
+        assert_eq!(req.target, pending.window);
+        assert_eq!(
+            req.id, issuing_req.id,
+            "latest delivers the identical core-issued focus id"
+        );
+        assert_eq!(
+            req.target, issuing_req.target,
+            "latest delivers the identical core-issued focus target"
+        );
+        assert_eq!(
+            req, &issuing_req,
+            "latest delivers the identical core-issued request"
+        );
+        assert!(reply.based_on_observation_seq >= pending.after_shown.obs);
+        // Genuine arrival settle through the real drain plus native echo.
+        let (settled_op, post) =
+            drain_settle_away(&mut session, &mut retained, &shared, &inbox, &focus_queue);
+        assert_eq!(settled_op, away_op);
+        assert_eq!(post, Some(277));
+        // Mock applies the actual produced layout frames, then the
+        // production scoped-observation handler observes that mock native
+        // geometry so the roster-observed live rects match the frozen
+        // actual layout rects for the exact-frame gate. No direct roster
+        // mutation: the production `ScopedObservation` path converges the
+        // roster, then dispatches the genuine reconciling report.
+        {
+            let desired = lock_shared(&shared).last_desired.clone();
+            let by_window: std::collections::BTreeMap<String, (i32, i32, i32, i32)> = desired
+                .into_iter()
+                .map(|row| (row.window, (row.x, row.y, row.w, row.h)))
+                .collect();
+            let live_reply_now = session
+                .sequencer()
+                .last_reply()
+                .expect("settle keeps the latest reply");
+            let mut per_pid: std::collections::BTreeMap<u32, Vec<crate::runtime::ObservedWindow>> =
+                std::collections::BTreeMap::new();
+            let mut meta_per_pid: std::collections::BTreeMap<
+                u32,
+                Vec<crate::runtime_types::ScopedWindowMeta>,
+            > = std::collections::BTreeMap::new();
+            for member in &pending.after_shown.members {
+                let Some((mpid, mwid)) = crate::runtime_types::parse_window_id(&member.win.0)
+                else {
+                    panic!("frozen member parses");
+                };
+                let live_sid = live_reply_now
+                    .workspaces
+                    .iter()
+                    .find(|ws| ws.output == member.out && ws.id == member.ws)
+                    .and_then(|ws| ws.native_binding.clone())
+                    .and_then(|binding| {
+                        crate::workspace_select::parse_native_binding(binding.as_str())
+                    })
+                    .expect("latest publishes the live member binding");
+                let (x, y, w, h) = by_window
+                    .get(&member.win.0)
+                    .copied()
+                    .or_else(|| member.frame.map(|rect| (rect.x, rect.y, rect.w, rect.h)))
+                    .expect("produced layout carries the frozen geometry");
+                per_pid
+                    .entry(mpid)
+                    .or_default()
+                    .push(crate::runtime::ObservedWindow {
+                        wid: mwid,
+                        x,
+                        y,
+                        w,
+                        h,
+                        floating: false,
+                        fullscreen: false,
+                        hints: WindowSizeHints::none(),
+                    });
+                meta_per_pid.entry(mpid).or_default().push(
+                    crate::runtime_types::ScopedWindowMeta {
+                        wid: mwid,
+                        spaces: vec![live_sid],
+                        fullscreen: false,
+                        minimized: false,
+                        hidden: false,
+                        role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                        subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                        modal: Some(false),
+                        resizable: Some(true),
+                        layer: Some(0),
+                        app_id: Some("com.example.app".to_owned()),
+                        activation_policy: Some(
+                            tiler_core::world_report::ActivationPolicy::Regular,
+                        ),
+                    },
+                );
+            }
+            for (mpid, windows) in per_pid {
+                let meta = meta_per_pid.remove(&mpid).unwrap_or_default();
+                let wids: Vec<u32> = windows.iter().map(|w| w.wid).collect();
+                let (generation, seq_last, revision) = {
+                    let guard = lock_shared(&shared);
+                    let app = guard.apps.get(&mpid).expect("capture owner stays live");
+                    (
+                        app.generation,
+                        retained
+                            .apps
+                            .get(&mpid)
+                            .map(|app| app.seq_last)
+                            .unwrap_or(0),
+                        guard.topology_revision,
+                    )
+                };
+                process_job(
+                    EngineJob::ScopedObservation {
+                        pid: mpid,
+                        generation,
+                        seq: seq_last + 1,
+                        snapshot: crate::runtime_types::ScopedBackendSnapshot {
+                            windows,
+                            focused_wid: None,
+                            focus_cg_owned: false,
+                            focus_evidence: None,
+                            sys_focus: None,
+                            global_focus: None,
+                            meta,
+                            excluded: 0,
+                            excluded_reasons: Vec::new(),
+                            cg_complete: true,
+                            cg_owner_wids: wids,
+                            cg_alive: Vec::new(),
+                            revision,
+                        },
+                    },
+                    &mut session,
+                    &mut retained,
+                    &shared,
+                    &inbox,
+                    &focus_queue,
+                    8,
+                );
+            }
+        }
+        // Real owner arrival capture for every frozen member, through the
+        // production worker/engine path.
+        struct LocalCaptureBackend {
+            reads: Vec<crate::runtime_types::BracketRead>,
+        }
+        impl crate::runtime_backend::AxBackend for LocalCaptureBackend {
+            fn apply_frame(
+                &mut self,
+                _cmd: &crate::runtime::FrameCommand,
+            ) -> crate::runtime_types::AxCompletion {
+                crate::runtime_types::AxCompletion::Failed {
+                    reason: "capture gate never actuates".to_owned(),
+                }
+            }
+            fn snapshot(&mut self) -> Result<Vec<crate::runtime::ObservedWindow>, String> {
+                Ok(Vec::new())
+            }
+            fn capture_brackets(&mut self, wids: &[u32]) -> Vec<crate::runtime_types::BracketRead> {
+                self.reads
+                    .iter()
+                    .filter(|read| wids.contains(&read.wid))
+                    .cloned()
+                    .collect()
+            }
+        }
+        let live_reply = session
+            .sequencer()
+            .last_reply()
+            .expect("settle keeps the latest reply");
+        let mut reads = Vec::new();
+        for member in &pending.after_shown.members {
+            let Some((mpid, mwid)) = crate::runtime_types::parse_window_id(&member.win.0) else {
+                panic!("frozen member parses");
+            };
+            let live_sid = live_reply
+                .workspaces
+                .iter()
+                .find(|ws| ws.output == member.out && ws.id == member.ws)
+                .and_then(|ws| ws.native_binding.clone())
+                .and_then(|binding| crate::workspace_select::parse_native_binding(binding.as_str()))
+                .expect("latest publishes the live member binding");
+            let frame = retained
+                .apps
+                .get(&mpid)
+                .and_then(|app| app.roster.get(&mwid))
+                .and_then(|entry| entry.observed)
+                .map(|live| (live.x, live.y, live.w, live.h))
+                .or_else(|| member.frame.map(|rect| (rect.x, rect.y, rect.w, rect.h)))
+                .expect("frozen member has readable live geometry");
+            reads.push(crate::runtime_types::BracketRead {
+                wid: mwid,
+                owner_pid: Some(mpid),
+                before_minimized: Some(false),
+                before_hidden: Some(false),
+                spaces: vec![live_sid],
+                frame: Some(frame),
+                after_minimized: Some(false),
+                after_hidden: Some(false),
+            });
+        }
+        let capture_inbox = Arc::new(Inbox::new(16));
+        let cell = lock_shared(&shared).native_cell.clone();
+        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut pids: Vec<u32> = reads
+            .iter()
+            .filter_map(|read| read.owner_pid)
+            .collect::<std::collections::BTreeSet<u32>>()
+            .into_iter()
+            .collect();
+        pids.sort();
+        let mut notified = 0;
+        for pid in pids {
+            let generation = lock_shared(&shared)
+                .apps
+                .get(&pid)
+                .map(|record| record.generation)
+                .expect("capture owner stays live");
+            let mut backend = LocalCaptureBackend {
+                reads: reads.clone(),
+            };
+            if crate::runtime_worker::maybe_send_arrival_capture(
+                &mut backend,
+                pid,
+                generation,
+                &shared,
+                &cell,
+                &capture_inbox,
+                &mut last_attempt,
+            ) {
+                notified += 1;
+            }
+        }
+        assert!(notified > 0, "worker owes at least one genuine capture");
+        for _ in 0..notified {
+            let stop = AtomicBool::new(false);
+            let job = capture_inbox.recv(&stop).expect("capture queued");
+            process_job(
+                job,
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                8,
+            );
+        }
+        let stamped = lock_shared(&shared)
+            .selection_focus_pending
+            .clone()
+            .expect("capture keeps the intent for release");
+        let stamp = stamped
+            .proven_stamp
+            .clone()
+            .expect("capture stamps the intent");
+        {
+            let guard = lock_shared(&shared);
+            assert_eq!(stamp.obs, guard.clock.get());
+            assert_eq!(stamp.revision, guard.topology_revision);
+            assert_eq!(stamp.context_generation, guard.native_cell.generation());
+        }
+        for member in &pending.after_shown.members {
+            assert!(
+                lock_shared(&shared)
+                    .arrival_captures
+                    .contains_key(&member.win.0),
+                "every frozen member retains a genuine capture"
+            );
+        }
+        // Arrival capture auto-releases by design (apply_arrival_capture ->
+        // reevaluate_selection_release): the bound intent stays with
+        // owner_queued set until the real owner result retires it, so the
+        // drain-verified callback below must report NoPending, never a
+        // second release.
+        {
+            let auto = lock_shared(&shared)
+                .selection_focus_pending
+                .clone()
+                .expect("auto-release keeps the intent bound");
+            assert!(auto.owner_queued, "auto-release marks the intent queued");
+            assert_eq!(auto.operation_id, away_op);
+            assert_eq!(auto.focus_id, pending.focus_id);
+            assert!(
+                auto.proven_stamp.is_some(),
+                "auto-release keeps the proven stamp"
+            );
+        }
+        {
+            let queued = crate::runtime_shared::lock_focus(&focus_queue);
+            assert_eq!(queued.len(), 1, "auto-release queues exactly once");
+            assert_eq!((queued[0].pid, queued[0].wid), (4243, 9));
+            assert_eq!(queued[0].generation, 1);
+        }
+        // Duplicate drain-verified callback reports NoPending instead of a
+        // second release; the queued intent stays bound for the owner leg.
+        let handle = release_handle(&shared, &inbox, &focus_queue);
+        assert_eq!(
+            handle.release_selection_focus(Some(&away_op), post, Some(4242)),
+            crate::world_dispatch::SelectionFocusRelease::NoPending
+        );
+        assert!(
+            lock_shared(&shared).selection_focus_pending.is_some(),
+            "duplicate never retires the queued intent"
+        );
+        assert_eq!(
+            crate::runtime_shared::lock_focus(&focus_queue).len(),
+            1,
+            "duplicate queues nothing more"
+        );
+        let cmd = lock_shared(&shared)
+            .apps
+            .get(&4243)
+            .and_then(|app| app.focus.take())
+            .expect("owner slot carries the release");
+        assert_eq!(cmd.window, "4243_9");
+        let close = cmd.close.clone().expect("unified close route");
+        assert_eq!(close.close_id, pending.focus_id);
+        assert_eq!(close.issued_revision, pending.issued_revision);
+        // Actual mocked owner setter plus its generated completion.
+        let revision = lock_shared(&shared).topology_revision;
+        let mut fake = FakeFocusBackend {
+            fresh: Some((4242, Some(7))),
+            post: Some((4243, Some(9))),
+            reads: 0,
+            dispatches: 0,
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3 },
+        };
+        let job = crate::runtime_worker::handle_close_focus_command(
+            &mut fake, &cmd, &close, 4243, 1, revision, &shared,
+        );
+        assert_eq!(fake.dispatches, 1, "owner dispatches exactly once");
+        assert_eq!(fake.reads, 2, "fresh baseline plus post read");
+        match &job {
+            EngineJob::CloseFocusResult {
+                setter,
+                reason,
+                pre,
+                post,
+                foreground_proven,
+                close_id,
+                target,
+                issued_rev,
+                ..
+            } => {
+                assert_eq!(
+                    *setter,
+                    tiler_core::world_report::VisibilitySetter::Accepted
+                );
+                assert_eq!(*reason, tiler_core::world_report::VisibilityReason::Empty);
+                assert_eq!(
+                    *pre,
+                    Some(tiler_core::directional::WindowId("4242_7".to_owned()))
+                );
+                assert_eq!(
+                    *post,
+                    Some(tiler_core::directional::WindowId("4243_9".to_owned()))
+                );
+                assert!(*foreground_proven);
+                assert_eq!(close_id, &pending.focus_id);
+                assert_eq!(*issued_rev, pending.issued_revision);
+                assert_eq!(*target, pending.window);
+            }
+            _ => panic!("expected CloseFocusResult"),
+        }
+        process_job(
+            job,
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        assert_eq!(
+            session.peek_close_feedback().expect("accepted stages").id,
+            pending.focus_id
+        );
+        // The staged row is truthful generated feedback: exact stamp plus
+        // the full frozen arrival set with valid visible rows. This row
+        // alone never settles the core (Accepted/Proven retains until
+        // target equality); the genuine target observation below does.
+        {
+            let staged = session
+                .peek_close_feedback()
+                .expect("accepted stages")
+                .clone();
+            assert_eq!(staged.target, pending.window);
+            assert_eq!(staged.revision, pending.issued_revision);
+            assert_eq!(staged.post, Some(pending.window.clone()));
+            assert!(staged.foreground_proven);
+            let mut frozen: Vec<String> = pending
+                .after_shown
+                .members
+                .iter()
+                .map(|m| m.win.0.clone())
+                .collect();
+            frozen.sort();
+            let mut arrived: Vec<String> =
+                staged.arrival.iter().map(|b| b.window.0.clone()).collect();
+            arrived.sort();
+            assert_eq!(
+                arrived, frozen,
+                "generated feedback covers the full frozen set"
+            );
+            assert!(
+                !staged.arrival.is_empty(),
+                "generated feedback carries valid rows"
+            );
+            for bracket in &staged.arrival {
+                assert!(
+                    bracket.before.visibility.visible == Some(true)
+                        && bracket.before.lifetime_matched == Some(true),
+                    "arrival before leg is valid"
+                );
+                assert!(
+                    bracket.after.visibility.visible == Some(true)
+                        && bracket.after.lifetime_matched == Some(true),
+                    "arrival after leg is valid"
+                );
+            }
+        }
+        // Genuine target observation through the production ScopedObservation
+        // path: the owner thread reports the target focused with full
+        // workspace+AX+CG agreement on the current domain, so the engine
+        // promotes `retained.observed_focus` to the target (the
+        // CloseFocusResult handler above never touches observed focus; only
+        // this observation does). Its inner dispatch then drains the staged
+        // row with `focused_global == target`, which is what actually
+        // clears the core pending request via target equality.
+        lock_shared(&shared).focus_evidence = Some(crate::runtime_types::FocusEvidence {
+            frontmost_pid: Some(4243),
+            frontmost_bundle: None,
+            ax_focus: None,
+        });
+        {
+            let live_reply = session
+                .sequencer()
+                .last_reply()
+                .expect("settle keeps the latest reply")
+                .clone();
+            let desired = lock_shared(&shared).last_desired.clone();
+            let by_window: std::collections::BTreeMap<String, (i32, i32, i32, i32)> = desired
+                .into_iter()
+                .map(|row| (row.window, (row.x, row.y, row.w, row.h)))
+                .collect();
+            let mut windows = Vec::new();
+            let mut meta = Vec::new();
+            for member in &pending.after_shown.members {
+                let Some((mpid, mwid)) = crate::runtime_types::parse_window_id(&member.win.0)
+                else {
+                    panic!("frozen member parses");
+                };
+                if mpid != 4243 {
+                    continue;
+                }
+                let live_sid = live_reply
+                    .workspaces
+                    .iter()
+                    .find(|ws| ws.output == member.out && ws.id == member.ws)
+                    .and_then(|ws| ws.native_binding.clone())
+                    .and_then(|binding| {
+                        crate::workspace_select::parse_native_binding(binding.as_str())
+                    })
+                    .expect("latest publishes the live member binding");
+                let (x, y, w, h) = by_window
+                    .get(&member.win.0)
+                    .copied()
+                    .or_else(|| member.frame.map(|rect| (rect.x, rect.y, rect.w, rect.h)))
+                    .expect("frozen member has readable live geometry");
+                windows.push(crate::runtime::ObservedWindow {
+                    wid: mwid,
+                    x,
+                    y,
+                    w,
+                    h,
+                    floating: false,
+                    fullscreen: false,
+                    hints: WindowSizeHints::none(),
+                });
+                meta.push(crate::runtime_types::ScopedWindowMeta {
+                    wid: mwid,
+                    spaces: vec![live_sid],
+                    fullscreen: false,
+                    minimized: false,
+                    hidden: false,
+                    role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                    subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                    modal: Some(false),
+                    resizable: Some(true),
+                    layer: Some(0),
+                    app_id: Some("com.example.app".to_owned()),
+                    activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+                });
+            }
+            assert!(!windows.is_empty(), "target owner holds frozen members");
+            let wids: Vec<u32> = windows.iter().map(|w| w.wid).collect();
+            assert!(wids.contains(&9), "target wid rides the frozen owner set");
+            let (generation, seq_last, revision) = {
+                let guard = lock_shared(&shared);
+                let generation = guard
+                    .apps
+                    .get(&4243)
+                    .expect("capture owner stays live")
+                    .generation;
+                let seq_last = retained
+                    .apps
+                    .get(&4243)
+                    .map(|app| app.seq_last)
+                    .unwrap_or(0);
+                (generation, seq_last, guard.topology_revision)
+            };
+            process_job(
+                EngineJob::ScopedObservation {
+                    pid: 4243,
+                    generation,
+                    seq: seq_last + 1,
+                    snapshot: crate::runtime_types::ScopedBackendSnapshot {
+                        windows,
+                        focused_wid: Some(9),
+                        focus_cg_owned: true,
+                        focus_evidence: Some(crate::runtime_types::FocusEvidence {
+                            frontmost_pid: Some(4243),
+                            frontmost_bundle: None,
+                            ax_focus: Some((4243, Some(9))),
+                        }),
+                        sys_focus: Some((4243, Some(9))),
+                        global_focus: Some((4243, 9)),
+                        meta,
+                        excluded: 0,
+                        excluded_reasons: Vec::new(),
+                        cg_complete: true,
+                        cg_owner_wids: wids,
+                        cg_alive: Vec::new(),
+                        revision,
+                    },
+                },
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                8,
+            );
+        }
+        assert_eq!(
+            retained.observed_focus,
+            Some(pending.window.clone()),
+            "target observation promotes the observed focus"
+        );
+        assert!(
+            session
+                .sequencer()
+                .last_reply()
+                .expect("settlement keeps the latest reply")
+                .focus_request
+                .is_none(),
+            "target equality clears the core pending request"
+        );
+        assert!(
+            session.peek_close_feedback().is_none(),
+            "target observation settles the staged feedback"
+        );
+        assert!(
+            lock_shared(&shared).selection_focus_pending.is_none(),
+            "completion retires the intent"
+        );
+        assert_eq!(
+            handle.release_selection_focus(Some(&away_op), post, Some(4242)),
+            crate::world_dispatch::SelectionFocusRelease::NoPending
+        );
+        assert!(
+            lock_shared(&shared)
+                .apps
+                .get(&4243)
+                .and_then(|app| app.focus.take())
+                .is_none(),
+            "duplicate latest carries no new command"
+        );
+        assert_eq!(crate::runtime_shared::lock_focus(&focus_queue).len(), 1);
+        assert_eq!(fake.dispatches, 1);
+        assert!(session.peek_close_feedback().is_none());
+    }
+
+    #[test]
+    fn selection_focus_settled_parent_releases_from_latest_arrival_proof() {
+        // Genuine settled-parent proof: skipped issuing plus two unchanged
+        // core replies retain the identical frozen request, the parent View
+        // settles core-side (truthful staged attempt plus a skipped moved
+        // report) BEFORE the first adapter focus dispatch, the first latest
+        // then delivers the identical request with no parent transfer and
+        // releases immediately from the latest (no old callback/ticket), the
+        // mocked owner dispatches exactly once from the generated
+        // completion, and a genuine target observation settles the core.
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), retained_send_subject());
+        lock_shared(&shared).config.topology_mode = crate::runtime_types::TopologyMode::Native;
+        close_app(&shared, 4243, 1);
+        lock_shared(&shared).focus_evidence = Some(crate::runtime_types::FocusEvidence {
+            frontmost_pid: Some(4242),
+            frontmost_bundle: None,
+            ax_focus: None,
+        });
+        bootstrap_observation(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            &ctx,
+        );
+        assert_fixture_admitted(&session, &retained);
+        let issuing_req = skipped_issuing_identical(&mut session, &mut retained, &shared, &ctx);
+        // No prior adapter binding, outbox row, or owner dispatch: the
+        // skipped publications bind nothing core-side visible here.
+        assert!(
+            lock_shared(&shared).selection_focus_pending.is_none(),
+            "skipped publications bind nothing"
+        );
+        assert!(crate::runtime_shared::lock_focus(&focus_queue).is_empty());
+        assert_eq!(lock_shared(&shared).diagnostics.focus_dispatched, 0);
+        assert!(lock_shared(&shared).select_pending.is_empty());
+        assert!(lock_shared(&shared).arrival_captures.is_empty());
+        // Parent View operation minted core-side by the skipped issuing.
+        let parent_op = {
+            let views: Vec<String> = session
+                .engine_mut()
+                .retained_transfers()
+                .into_iter()
+                .filter(|t| matches!(t.kind, tiler_core::world_report::TransferKind::View))
+                .map(|t| t.operation_id)
+                .collect();
+            assert_eq!(views.len(), 1, "skipped issuing mints one parent View");
+            views.into_iter().next().expect("parent View rides")
+        };
+        // Truthful settle SIDs read from the fixture contexts: pre/baseline
+        // is the bootstrap current, post is the moved current.
+        let pre_sid = ctx.domains.iter().find(|d| d.current).map(|d| d.space);
+        assert_eq!(pre_sid, Some(1));
+        let moved_ctx = Arc::new(NativeContext {
+            revision: 10,
+            domains: vec![domain(1, false), domain(277, true)],
+            skipped: Vec::new(),
+        });
+        let post_sid = moved_ctx
+            .domains
+            .iter()
+            .find(|d| d.current)
+            .map(|d| d.space);
+        assert_eq!(post_sid, Some(277));
+        // Stage the proven raw attempt through the production job arm.
+        process_job(
+            EngineJob::ViewAttempt {
+                operation_id: parent_op.clone(),
+                setter: tiler_core::world_report::FrameSetter::Accepted,
+                pre_sid,
+                post_sid,
+                baseline_sid: pre_sid,
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        // Publish the moved native truth exactly like the main-thread pump
+        // before the settling report, then settle core-side via a skipped
+        // moved report (bytes inside the codec, never accepted/consumed, so
+        // the adapter still binds nothing).
+        lock_shared(&shared).native_context = Some(Arc::clone(&moved_ctx));
+        lock_shared(&shared).topology_revision = moved_ctx.revision;
+        crate::runtime_core::note_dispatch_context(&mut retained, &moved_ctx);
+        {
+            use crate::world_dispatch::codec_transact;
+            let ticket = session
+                .sequencer()
+                .try_begin_request(None)
+                .expect("flight opens for the skipped settle");
+            let report = build_dispatch_report(
+                &mut session,
+                &mut retained,
+                &crate::world_runtime::DispatchContext::Native(Arc::clone(&moved_ctx)),
+                &[],
+                ticket.observation_seq,
+                ticket.request_seq,
+                ticket.command_seq,
+                ticket.command.clone(),
+                None,
+                &ticket.request_id,
+            )
+            .expect("skipped settle builds");
+            let outcome = codec_transact(&mut session, &report).expect("skipped settle transacts");
+            let reply = match outcome {
+                WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => reply,
+                WorldOutcome::Duplicate(reply) => reply,
+                WorldOutcome::Rejected { kind, .. } => panic!("skipped settle rejected: {kind}"),
+            };
+            let req = reply
+                .focus_request
+                .clone()
+                .expect("settle reply keeps the frozen focus request");
+            assert_eq!(
+                req, issuing_req,
+                "parent settle keeps the identical frozen request"
+            );
+            assert!(
+                reply.transfers.iter().all(|t| t.operation_id != parent_op),
+                "settle reply carries no parent transfer row"
+            );
+            session.sequencer().clear_flight();
+        }
+        assert!(
+            session.engine_mut().retained_transfers().is_empty(),
+            "truthful echo settles the parent core-side"
+        );
+        // Still no adapter binding, outbox row, or owner dispatch after the
+        // core-side settle: the first latest below is the first consumer.
+        assert!(
+            lock_shared(&shared).selection_focus_pending.is_none(),
+            "core settle binds nothing adapter-side"
+        );
+        assert!(crate::runtime_shared::lock_focus(&focus_queue).is_empty());
+        assert_eq!(lock_shared(&shared).diagnostics.focus_dispatched, 0);
+        assert!(lock_shared(&shared).select_pending.is_empty());
+        // First latest delivery: the only publication that ever runs the
+        // production accept/consume path (observation-only, no new command),
+        // now over the moved native truth with the parent already settled.
+        match dispatch_report(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            crate::world_runtime::DispatchContext::Native(Arc::clone(&moved_ctx)),
+            Vec::new(),
+            None,
+            None,
+            false,
+            crate::world_command_map::OP_RECONCILE,
+            0,
+            0,
+            0,
+        ) {
+            DispatchVerdict::Applied { .. } => {}
+            other => panic!("settled latest observation must apply, got {other:?}"),
+        }
+        let pending = lock_shared(&shared)
+            .selection_focus_pending
+            .clone()
+            .expect("settled latest binds the deferred intent");
+        assert_eq!(pending.operation_id, parent_op);
+        assert_eq!(pending.window.0, "4243_9");
+        assert_eq!(pending.after_shown.op, parent_op);
+        assert_eq!(pending.adapter_incarnation, session.incarnation());
+        assert_eq!(
+            pending.core_generation,
+            session.sequencer().bound_generation()
+        );
+        assert_eq!(lock_shared(&shared).topology_revision, moved_ctx.revision);
+        // The settled latest binds but defers: the frozen proof still needs
+        // the arrival-capture legs, so no release yet (never an early
+        // dispatch on unproven arrival).
+        assert!(
+            !pending.owner_queued,
+            "settled latest defers until the arrival capture stamps it"
+        );
+        assert!(
+            pending.proven_stamp.is_none(),
+            "deferred bind stays unstamped"
+        );
+        assert_eq!(
+            lock_shared(&shared).selection_focus_floor_seq,
+            pending.command_seq
+        );
+        let reply = session
+            .sequencer()
+            .last_reply()
+            .expect("applied reply retained");
+        let req = reply
+            .focus_request
+            .as_ref()
+            .expect("reply carries the retained focus request");
+        assert_eq!(
+            req.id, issuing_req.id,
+            "settled latest delivers the identical core focus id"
+        );
+        assert_eq!(
+            req.target, issuing_req.target,
+            "settled latest delivers the identical core focus target"
+        );
+        assert_eq!(
+            req, &issuing_req,
+            "settled latest delivers the identical core-issued request"
+        );
+        assert_eq!(req.id, pending.focus_id);
+        assert_eq!(req.target, pending.window);
+        assert!(
+            session.engine_mut().retained_transfers().is_empty(),
+            "first latest retains no parent View transfer"
+        );
+        assert!(
+            reply.transfers.iter().all(|t| t.operation_id != parent_op),
+            "first latest carries no parent transfer row"
+        );
+        assert!(
+            !reply.windows.is_empty(),
+            "production reply proves strictly"
+        );
+        assert!(reply.based_on_observation_seq >= pending.after_shown.obs);
+        // No old callback, ticket, or claim: the adapter never stored a
+        // select plan, the outbox stays empty, and the owner never
+        // dispatched — the unstamped intent cannot release early.
+        assert!(
+            lock_shared(&shared).select_pending.is_empty(),
+            "deferred latest stores no select claim"
+        );
+        assert!(crate::runtime_shared::lock_focus(&focus_queue).is_empty());
+        assert_eq!(lock_shared(&shared).diagnostics.focus_dispatched, 0);
+        let handle = release_handle(&shared, &inbox, &focus_queue);
+        assert_eq!(
+            handle.release_selection_focus(Some(&parent_op), post_sid, Some(4242)),
+            crate::world_dispatch::SelectionFocusRelease::Deferred,
+            "unstamped intent never releases early"
+        );
+        assert_eq!(lock_shared(&shared).diagnostics.focus_dispatched, 0);
+        // Mock applies the actual produced layout frames, then the
+        // production scoped-observation handler observes that mock native
+        // geometry so the roster-observed live rects match the frozen
+        // actual layout rects for the exact-frame gate. No direct roster
+        // mutation: the production `ScopedObservation` path converges the
+        // roster, then dispatches the genuine reconciling report.
+        {
+            let desired = lock_shared(&shared).last_desired.clone();
+            let by_window: std::collections::BTreeMap<String, (i32, i32, i32, i32)> = desired
+                .into_iter()
+                .map(|row| (row.window, (row.x, row.y, row.w, row.h)))
+                .collect();
+            let live_reply_now = session
+                .sequencer()
+                .last_reply()
+                .expect("latest keeps the reply");
+            let mut per_pid: std::collections::BTreeMap<u32, Vec<crate::runtime::ObservedWindow>> =
+                std::collections::BTreeMap::new();
+            let mut meta_per_pid: std::collections::BTreeMap<
+                u32,
+                Vec<crate::runtime_types::ScopedWindowMeta>,
+            > = std::collections::BTreeMap::new();
+            for member in &pending.after_shown.members {
+                let Some((mpid, mwid)) = crate::runtime_types::parse_window_id(&member.win.0)
+                else {
+                    panic!("frozen member parses");
+                };
+                let live_sid = live_reply_now
+                    .workspaces
+                    .iter()
+                    .find(|ws| ws.output == member.out && ws.id == member.ws)
+                    .and_then(|ws| ws.native_binding.clone())
+                    .and_then(|binding| {
+                        crate::workspace_select::parse_native_binding(binding.as_str())
+                    })
+                    .expect("latest publishes the live member binding");
+                let (x, y, w, h) = by_window
+                    .get(&member.win.0)
+                    .copied()
+                    .or_else(|| member.frame.map(|rect| (rect.x, rect.y, rect.w, rect.h)))
+                    .expect("produced layout carries the frozen geometry");
+                per_pid
+                    .entry(mpid)
+                    .or_default()
+                    .push(crate::runtime::ObservedWindow {
+                        wid: mwid,
+                        x,
+                        y,
+                        w,
+                        h,
+                        floating: false,
+                        fullscreen: false,
+                        hints: WindowSizeHints::none(),
+                    });
+                meta_per_pid.entry(mpid).or_default().push(
+                    crate::runtime_types::ScopedWindowMeta {
+                        wid: mwid,
+                        spaces: vec![live_sid],
+                        fullscreen: false,
+                        minimized: false,
+                        hidden: false,
+                        role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                        subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                        modal: Some(false),
+                        resizable: Some(true),
+                        layer: Some(0),
+                        app_id: Some("com.example.app".to_owned()),
+                        activation_policy: Some(
+                            tiler_core::world_report::ActivationPolicy::Regular,
+                        ),
+                    },
+                );
+            }
+            for (mpid, windows) in per_pid {
+                let meta = meta_per_pid.remove(&mpid).unwrap_or_default();
+                let wids: Vec<u32> = windows.iter().map(|w| w.wid).collect();
+                let (generation, seq_last, revision) = {
+                    let guard = lock_shared(&shared);
+                    let app = guard.apps.get(&mpid).expect("capture owner stays live");
+                    (
+                        app.generation,
+                        retained
+                            .apps
+                            .get(&mpid)
+                            .map(|app| app.seq_last)
+                            .unwrap_or(0),
+                        guard.topology_revision,
+                    )
+                };
+                process_job(
+                    EngineJob::ScopedObservation {
+                        pid: mpid,
+                        generation,
+                        seq: seq_last + 1,
+                        snapshot: crate::runtime_types::ScopedBackendSnapshot {
+                            windows,
+                            focused_wid: None,
+                            focus_cg_owned: false,
+                            focus_evidence: None,
+                            sys_focus: None,
+                            global_focus: None,
+                            meta,
+                            excluded: 0,
+                            excluded_reasons: Vec::new(),
+                            cg_complete: true,
+                            cg_owner_wids: wids,
+                            cg_alive: Vec::new(),
+                            revision,
+                        },
+                    },
+                    &mut session,
+                    &mut retained,
+                    &shared,
+                    &inbox,
+                    &focus_queue,
+                    8,
+                );
+            }
+        }
+        // Real owner arrival capture for every frozen member, through the
+        // production worker/engine path. The capture stamps the deferred
+        // intent; the same-id reevaluation against the settled latest then
+        // releases exactly once (no drain callback exists on this path).
+        use std::sync::atomic::AtomicBool;
+        struct SettledCaptureBackend {
+            reads: Vec<crate::runtime_types::BracketRead>,
+        }
+        impl crate::runtime_backend::AxBackend for SettledCaptureBackend {
+            fn apply_frame(
+                &mut self,
+                _cmd: &crate::runtime::FrameCommand,
+            ) -> crate::runtime_types::AxCompletion {
+                crate::runtime_types::AxCompletion::Failed {
+                    reason: "capture gate never actuates".to_owned(),
+                }
+            }
+            fn snapshot(&mut self) -> Result<Vec<crate::runtime::ObservedWindow>, String> {
+                Ok(Vec::new())
+            }
+            fn capture_brackets(&mut self, wids: &[u32]) -> Vec<crate::runtime_types::BracketRead> {
+                self.reads
+                    .iter()
+                    .filter(|read| wids.contains(&read.wid))
+                    .cloned()
+                    .collect()
+            }
+        }
+        let live_reply = session
+            .sequencer()
+            .last_reply()
+            .expect("convergence keeps the latest reply")
+            .clone();
+        let mut reads = Vec::new();
+        for member in &pending.after_shown.members {
+            let Some((mpid, mwid)) = crate::runtime_types::parse_window_id(&member.win.0) else {
+                panic!("frozen member parses");
+            };
+            let live_sid = live_reply
+                .workspaces
+                .iter()
+                .find(|ws| ws.output == member.out && ws.id == member.ws)
+                .and_then(|ws| ws.native_binding.clone())
+                .and_then(|binding| crate::workspace_select::parse_native_binding(binding.as_str()))
+                .expect("latest publishes the live member binding");
+            let frame = retained
+                .apps
+                .get(&mpid)
+                .and_then(|app| app.roster.get(&mwid))
+                .and_then(|entry| entry.observed)
+                .map(|live| (live.x, live.y, live.w, live.h))
+                .or_else(|| member.frame.map(|rect| (rect.x, rect.y, rect.w, rect.h)))
+                .expect("converged roster carries the frozen geometry");
+            reads.push(crate::runtime_types::BracketRead {
+                wid: mwid,
+                owner_pid: Some(mpid),
+                before_minimized: Some(false),
+                before_hidden: Some(false),
+                spaces: vec![live_sid],
+                frame: Some(frame),
+                after_minimized: Some(false),
+                after_hidden: Some(false),
+            });
+        }
+        let capture_inbox = Arc::new(Inbox::new(16));
+        let cell = lock_shared(&shared).native_cell.clone();
+        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut pids: Vec<u32> = reads
+            .iter()
+            .filter_map(|read| read.owner_pid)
+            .collect::<std::collections::BTreeSet<u32>>()
+            .into_iter()
+            .collect();
+        pids.sort();
+        let mut notified = 0;
+        for pid in pids {
+            let generation = lock_shared(&shared)
+                .apps
+                .get(&pid)
+                .map(|record| record.generation)
+                .expect("capture owner stays live");
+            let mut backend = SettledCaptureBackend {
+                reads: reads.clone(),
+            };
+            if crate::runtime_worker::maybe_send_arrival_capture(
+                &mut backend,
+                pid,
+                generation,
+                &shared,
+                &cell,
+                &capture_inbox,
+                &mut last_attempt,
+            ) {
+                notified += 1;
+            }
+        }
+        assert!(notified > 0, "worker owes at least one genuine capture");
+        for _ in 0..notified {
+            let stop = AtomicBool::new(false);
+            let job = capture_inbox.recv(&stop).expect("capture queued");
+            process_job(
+                job,
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                8,
+            );
+        }
+        // Arrival capture auto-releases by design: the bound intent stays
+        // with owner_queued set until the real owner result retires it, so
+        // any old-callback duplicate below must report NoPending.
+        {
+            let auto = lock_shared(&shared)
+                .selection_focus_pending
+                .clone()
+                .expect("capture keeps the intent bound for release");
+            assert!(auto.owner_queued, "capture auto-releases the intent");
+            assert_eq!(auto.operation_id, parent_op);
+            assert_eq!(auto.focus_id, pending.focus_id);
+            assert!(auto.proven_stamp.is_some(), "capture stamps the intent");
+        }
+        {
+            let queued = crate::runtime_shared::lock_focus(&focus_queue);
+            assert_eq!(queued.len(), 1, "capture release queues exactly once");
+            assert_eq!((queued[0].pid, queued[0].wid), (4243, 9));
+            assert_eq!(queued[0].generation, 1);
+        }
+        assert_eq!(lock_shared(&shared).diagnostics.focus_dispatched, 2);
+        assert_eq!(
+            handle.release_selection_focus(Some(&parent_op), post_sid, Some(4242)),
+            crate::world_dispatch::SelectionFocusRelease::NoPending,
+            "old callback never duplicates the capture release"
+        );
+        assert_eq!(lock_shared(&shared).diagnostics.focus_dispatched, 2);
+        let cmd = lock_shared(&shared)
+            .apps
+            .get(&4243)
+            .and_then(|app| app.focus.take())
+            .expect("owner slot carries the release");
+        assert_eq!(cmd.window, "4243_9");
+        assert_eq!(
+            lock_shared(&shared).selection_focus_floor_seq,
+            pending.command_seq
+        );
+        let close = cmd.close.clone().expect("unified close route");
+        assert_eq!(close.close_id, pending.focus_id);
+        assert_eq!(close.issued_revision, pending.issued_revision);
+        assert_eq!(
+            close.after_shown.as_ref().map(|a| a.op.as_str()),
+            Some(parent_op.as_str())
+        );
+        assert_eq!(
+            lock_shared(&shared)
+                .close_focus_current
+                .as_ref()
+                .map(|e| e.id.clone()),
+            Some(pending.focus_id.clone())
+        );
+        // Actual mocked owner setter plus its generated completion.
+        let revision = lock_shared(&shared).topology_revision;
+        let mut fake = FakeFocusBackend {
+            fresh: Some((4242, Some(7))),
+            post: Some((4243, Some(9))),
+            reads: 0,
+            dispatches: 0,
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3 },
+        };
+        let job = crate::runtime_worker::handle_close_focus_command(
+            &mut fake, &cmd, &close, 4243, 1, revision, &shared,
+        );
+        assert_eq!(fake.dispatches, 1, "owner dispatches exactly once");
+        assert_eq!(fake.reads, 2, "fresh baseline plus post read");
+        match &job {
+            EngineJob::CloseFocusResult {
+                setter,
+                reason,
+                pre,
+                post,
+                foreground_proven,
+                close_id,
+                target,
+                issued_rev,
+                ..
+            } => {
+                assert_eq!(
+                    *setter,
+                    tiler_core::world_report::VisibilitySetter::Accepted
+                );
+                assert_eq!(*reason, tiler_core::world_report::VisibilityReason::Empty);
+                assert_eq!(
+                    *pre,
+                    Some(tiler_core::directional::WindowId("4242_7".to_owned()))
+                );
+                assert_eq!(
+                    *post,
+                    Some(tiler_core::directional::WindowId("4243_9".to_owned()))
+                );
+                assert!(*foreground_proven);
+                assert_eq!(close_id, &pending.focus_id);
+                assert_eq!(*issued_rev, pending.issued_revision);
+                assert_eq!(*target, pending.window);
+            }
+            _ => panic!("expected CloseFocusResult"),
+        }
+        process_job(
+            job,
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        assert_eq!(
+            session.peek_close_feedback().expect("accepted stages").id,
+            pending.focus_id
+        );
+        // The staged row is truthful generated feedback: exact stamp plus
+        // the full frozen arrival set with valid visible rows. This row
+        // alone never settles the core (Accepted/Proven retains until
+        // target equality); the genuine target observation below does.
+        {
+            let staged = session
+                .peek_close_feedback()
+                .expect("accepted stages")
+                .clone();
+            assert_eq!(staged.target, pending.window);
+            assert_eq!(staged.revision, pending.issued_revision);
+            assert_eq!(staged.post, Some(pending.window.clone()));
+            assert!(staged.foreground_proven);
+            let mut frozen: Vec<String> = pending
+                .after_shown
+                .members
+                .iter()
+                .map(|m| m.win.0.clone())
+                .collect();
+            frozen.sort();
+            let mut arrived: Vec<String> =
+                staged.arrival.iter().map(|b| b.window.0.clone()).collect();
+            arrived.sort();
+            assert_eq!(
+                arrived, frozen,
+                "generated feedback covers the full frozen set"
+            );
+            assert!(
+                !staged.arrival.is_empty(),
+                "generated feedback carries valid rows"
+            );
+            for bracket in &staged.arrival {
+                assert!(
+                    bracket.before.visibility.visible == Some(true)
+                        && bracket.before.lifetime_matched == Some(true),
+                    "arrival before leg is valid"
+                );
+                assert!(
+                    bracket.after.visibility.visible == Some(true)
+                        && bracket.after.lifetime_matched == Some(true),
+                    "arrival after leg is valid"
+                );
+            }
+        }
+        // Genuine target observation through the production ScopedObservation
+        // path: the owner thread reports the target focused with full
+        // workspace+AX+CG agreement on the current domain, so the engine
+        // promotes `retained.observed_focus` to the target (the
+        // CloseFocusResult handler above never touches observed focus; only
+        // this observation does). Its inner dispatch then drains the staged
+        // row with `focused_global == target`, which is what actually
+        // clears the core pending request via target equality.
+        lock_shared(&shared).focus_evidence = Some(crate::runtime_types::FocusEvidence {
+            frontmost_pid: Some(4243),
+            frontmost_bundle: None,
+            ax_focus: None,
+        });
+        {
+            let live_reply = session
+                .sequencer()
+                .last_reply()
+                .expect("settle keeps the latest reply")
+                .clone();
+            let desired = lock_shared(&shared).last_desired.clone();
+            let by_window: std::collections::BTreeMap<String, (i32, i32, i32, i32)> = desired
+                .into_iter()
+                .map(|row| (row.window, (row.x, row.y, row.w, row.h)))
+                .collect();
+            let mut windows = Vec::new();
+            let mut meta = Vec::new();
+            for member in &pending.after_shown.members {
+                let Some((mpid, mwid)) = crate::runtime_types::parse_window_id(&member.win.0)
+                else {
+                    panic!("frozen member parses");
+                };
+                if mpid != 4243 {
+                    continue;
+                }
+                let live_sid = live_reply
+                    .workspaces
+                    .iter()
+                    .find(|ws| ws.output == member.out && ws.id == member.ws)
+                    .and_then(|ws| ws.native_binding.clone())
+                    .and_then(|binding| {
+                        crate::workspace_select::parse_native_binding(binding.as_str())
+                    })
+                    .expect("latest publishes the live member binding");
+                let (x, y, w, h) = by_window
+                    .get(&member.win.0)
+                    .copied()
+                    .or_else(|| member.frame.map(|rect| (rect.x, rect.y, rect.w, rect.h)))
+                    .expect("frozen member has readable live geometry");
+                windows.push(crate::runtime::ObservedWindow {
+                    wid: mwid,
+                    x,
+                    y,
+                    w,
+                    h,
+                    floating: false,
+                    fullscreen: false,
+                    hints: WindowSizeHints::none(),
+                });
+                meta.push(crate::runtime_types::ScopedWindowMeta {
+                    wid: mwid,
+                    spaces: vec![live_sid],
+                    fullscreen: false,
+                    minimized: false,
+                    hidden: false,
+                    role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                    subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                    modal: Some(false),
+                    resizable: Some(true),
+                    layer: Some(0),
+                    app_id: Some("com.example.app".to_owned()),
+                    activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+                });
+            }
+            assert!(!windows.is_empty(), "target owner holds frozen members");
+            let wids: Vec<u32> = windows.iter().map(|w| w.wid).collect();
+            assert!(wids.contains(&9), "target wid rides the frozen owner set");
+            let (generation, seq_last, revision) = {
+                let guard = lock_shared(&shared);
+                let generation = guard
+                    .apps
+                    .get(&4243)
+                    .expect("capture owner stays live")
+                    .generation;
+                let seq_last = retained
+                    .apps
+                    .get(&4243)
+                    .map(|app| app.seq_last)
+                    .unwrap_or(0);
+                (generation, seq_last, guard.topology_revision)
+            };
+            process_job(
+                EngineJob::ScopedObservation {
+                    pid: 4243,
+                    generation,
+                    seq: seq_last + 1,
+                    snapshot: crate::runtime_types::ScopedBackendSnapshot {
+                        windows,
+                        focused_wid: Some(9),
+                        focus_cg_owned: true,
+                        focus_evidence: Some(crate::runtime_types::FocusEvidence {
+                            frontmost_pid: Some(4243),
+                            frontmost_bundle: None,
+                            ax_focus: Some((4243, Some(9))),
+                        }),
+                        sys_focus: Some((4243, Some(9))),
+                        global_focus: Some((4243, 9)),
+                        meta,
+                        excluded: 0,
+                        excluded_reasons: Vec::new(),
+                        cg_complete: true,
+                        cg_owner_wids: wids,
+                        cg_alive: Vec::new(),
+                        revision,
+                    },
+                },
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                8,
+            );
+        }
+        assert_eq!(
+            retained.observed_focus,
+            Some(pending.window.clone()),
+            "target observation promotes the observed focus"
+        );
+        assert!(
+            session
+                .sequencer()
+                .last_reply()
+                .expect("settlement keeps the latest reply")
+                .focus_request
+                .is_none(),
+            "target equality clears the core pending request"
+        );
+        assert!(
+            session.peek_close_feedback().is_none(),
+            "target observation settles the staged feedback"
+        );
+        assert!(
+            lock_shared(&shared).selection_focus_pending.is_none(),
+            "completion retires the intent"
+        );
+        assert_eq!(
+            handle.release_selection_focus(Some(&parent_op), post_sid, Some(4242)),
+            crate::world_dispatch::SelectionFocusRelease::NoPending
+        );
+        assert!(
+            lock_shared(&shared)
+                .apps
+                .get(&4243)
+                .and_then(|app| app.focus.take())
+                .is_none(),
+            "duplicate latest carries no new command"
+        );
+        assert_eq!(crate::runtime_shared::lock_focus(&focus_queue).len(), 1);
+        assert_eq!(fake.dispatches, 1);
+        assert!(session.peek_close_feedback().is_none());
+    }
+
+    #[test]
+    fn selection_focus_frozen_late_admission_excluded() {
+        // Frozen-set exclusion: the away intent proves its frozen projection
+        // through the genuine production legs (scoped-geometry convergence
+        // plus an owner arrival capture with same-id auto-release), releases
+        // exactly once, actuates once through the mocked owner while
+        // current, and settles on the genuine target observation. A
+        // genuinely late-admitted fixed-size window (absent from the frozen
+        // members) arrives WHILE the old request is still pending — before
+        // the capture stamps it — and is then excluded: the core admits it
+        // as an automatic float whose birth spends without emitting, so it
+        // mints no new request, arms no new queue row, no new slot
+        // command, and no staged feedback, while the frozen set stays
+        // byte-identical and the capture plus generated feedback cover
+        // only the original set. The capture below reads ONLY the frozen
+        // members.
+        use std::sync::atomic::AtomicBool;
+        let (mut session, mut retained, shared, inbox, focus_queue, _ctx) =
+            selection_away_fixture();
+        let (away_op, post) =
+            drain_settle_away(&mut session, &mut retained, &shared, &inbox, &focus_queue);
+        let pending = lock_shared(&shared)
+            .selection_focus_pending
+            .clone()
+            .expect("away binds the deferred intent");
+        assert_eq!(pending.operation_id, away_op);
+        // Mock applies the actual produced layout frames, then the
+        // production scoped-observation handler observes that mock native
+        // geometry so the roster-observed live rects match the frozen
+        // actual layout rects for the exact-frame gate. No direct roster
+        // mutation: the production `ScopedObservation` path converges the
+        // roster, then dispatches the genuine reconciling report.
+        {
+            let desired = lock_shared(&shared).last_desired.clone();
+            let by_window: std::collections::BTreeMap<String, (i32, i32, i32, i32)> = desired
+                .into_iter()
+                .map(|row| (row.window, (row.x, row.y, row.w, row.h)))
+                .collect();
+            let live_reply_now = session
+                .sequencer()
+                .last_reply()
+                .expect("settle keeps the latest reply");
+            let mut per_pid: std::collections::BTreeMap<u32, Vec<crate::runtime::ObservedWindow>> =
+                std::collections::BTreeMap::new();
+            let mut meta_per_pid: std::collections::BTreeMap<
+                u32,
+                Vec<crate::runtime_types::ScopedWindowMeta>,
+            > = std::collections::BTreeMap::new();
+            for member in &pending.after_shown.members {
+                let Some((mpid, mwid)) = crate::runtime_types::parse_window_id(&member.win.0)
+                else {
+                    panic!("frozen member parses");
+                };
+                let live_sid = live_reply_now
+                    .workspaces
+                    .iter()
+                    .find(|ws| ws.output == member.out && ws.id == member.ws)
+                    .and_then(|ws| ws.native_binding.clone())
+                    .and_then(|binding| {
+                        crate::workspace_select::parse_native_binding(binding.as_str())
+                    })
+                    .expect("latest publishes the live member binding");
+                let (x, y, w, h) = by_window
+                    .get(&member.win.0)
+                    .copied()
+                    .or_else(|| member.frame.map(|rect| (rect.x, rect.y, rect.w, rect.h)))
+                    .expect("produced layout carries the frozen geometry");
+                per_pid
+                    .entry(mpid)
+                    .or_default()
+                    .push(crate::runtime::ObservedWindow {
+                        wid: mwid,
+                        x,
+                        y,
+                        w,
+                        h,
+                        floating: false,
+                        fullscreen: false,
+                        hints: WindowSizeHints::none(),
+                    });
+                meta_per_pid.entry(mpid).or_default().push(
+                    crate::runtime_types::ScopedWindowMeta {
+                        wid: mwid,
+                        spaces: vec![live_sid],
+                        fullscreen: false,
+                        minimized: false,
+                        hidden: false,
+                        role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                        subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                        modal: Some(false),
+                        resizable: Some(true),
+                        layer: Some(0),
+                        app_id: Some("com.example.app".to_owned()),
+                        activation_policy: Some(
+                            tiler_core::world_report::ActivationPolicy::Regular,
+                        ),
+                    },
+                );
+            }
+            for (mpid, windows) in per_pid {
+                let meta = meta_per_pid.remove(&mpid).unwrap_or_default();
+                let wids: Vec<u32> = windows.iter().map(|w| w.wid).collect();
+                let (generation, seq_last, revision) = {
+                    let guard = lock_shared(&shared);
+                    let app = guard.apps.get(&mpid).expect("capture owner stays live");
+                    (
+                        app.generation,
+                        retained
+                            .apps
+                            .get(&mpid)
+                            .map(|app| app.seq_last)
+                            .unwrap_or(0),
+                        guard.topology_revision,
+                    )
+                };
+                process_job(
+                    EngineJob::ScopedObservation {
+                        pid: mpid,
+                        generation,
+                        seq: seq_last + 1,
+                        snapshot: crate::runtime_types::ScopedBackendSnapshot {
+                            windows,
+                            focused_wid: None,
+                            focus_cg_owned: false,
+                            focus_evidence: None,
+                            sys_focus: None,
+                            global_focus: None,
+                            meta,
+                            excluded: 0,
+                            excluded_reasons: Vec::new(),
+                            cg_complete: true,
+                            cg_owner_wids: wids,
+                            cg_alive: Vec::new(),
+                            revision,
+                        },
+                    },
+                    &mut session,
+                    &mut retained,
+                    &shared,
+                    &inbox,
+                    &focus_queue,
+                    8,
+                );
+            }
+        }
+        // Late fixed-size newcomer admitted WHILE the old request is still
+        // pending (before the capture stamps it): window 10 rides plain
+        // with fixed-equal hints on the arrival Space through the genuine
+        // scoped-observation plus production-dispatch path. The core admits
+        // it as an automatic float whose birth spends without emitting, so
+        // the old core request survives under its own id and the adapter
+        // intent keeps its frozen set byte-identical.
+        let focus_before = session
+            .sequencer()
+            .last_reply()
+            .expect("settle keeps the latest reply")
+            .focus_request
+            .clone();
+        assert_eq!(
+            focus_before.as_ref().map(|req| req.id.as_str()),
+            Some("focus-2"),
+            "old explicit request still current while pending"
+        );
+        {
+            let live_reply = session
+                .sequencer()
+                .last_reply()
+                .expect("settle keeps the latest reply")
+                .clone();
+            let desired = lock_shared(&shared).last_desired.clone();
+            let by_window: std::collections::BTreeMap<String, (i32, i32, i32, i32)> = desired
+                .into_iter()
+                .map(|row| (row.window, (row.x, row.y, row.w, row.h)))
+                .collect();
+            let live_sid = pending
+                .after_shown
+                .members
+                .iter()
+                .find_map(|member| {
+                    let (mpid, _) = crate::runtime_types::parse_window_id(&member.win.0)?;
+                    if mpid != 4243 {
+                        return None;
+                    }
+                    live_reply
+                        .workspaces
+                        .iter()
+                        .find(|ws| ws.output == member.out && ws.id == member.ws)
+                        .and_then(|ws| ws.native_binding.clone())
+                        .and_then(|binding| {
+                            crate::workspace_select::parse_native_binding(binding.as_str())
+                        })
+                })
+                .expect("latest publishes the live arrival binding");
+            let (x, y, w, h) = by_window
+                .get("4243_9")
+                .copied()
+                .expect("produced layout carries the frozen target geometry");
+            let windows = vec![
+                crate::runtime::ObservedWindow {
+                    wid: 9,
+                    x,
+                    y,
+                    w,
+                    h,
+                    floating: false,
+                    fullscreen: false,
+                    hints: WindowSizeHints::none(),
+                },
+                crate::runtime::ObservedWindow {
+                    wid: 10,
+                    x: 100,
+                    y: 100,
+                    w: 800,
+                    h: 600,
+                    floating: false,
+                    fullscreen: false,
+                    hints: WindowSizeHints {
+                        min_w: Some(800),
+                        min_h: Some(600),
+                        max_w: Some(800),
+                        max_h: Some(600),
+                    },
+                },
+            ];
+            let meta = vec![
+                crate::runtime_types::ScopedWindowMeta {
+                    wid: 9,
+                    spaces: vec![live_sid],
+                    fullscreen: false,
+                    minimized: false,
+                    hidden: false,
+                    role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                    subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                    modal: Some(false),
+                    resizable: Some(true),
+                    layer: Some(0),
+                    app_id: Some("com.example.app".to_owned()),
+                    activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+                },
+                crate::runtime_types::ScopedWindowMeta {
+                    wid: 10,
+                    spaces: vec![live_sid],
+                    fullscreen: false,
+                    minimized: false,
+                    hidden: false,
+                    role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                    subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                    modal: Some(false),
+                    resizable: Some(false),
+                    layer: Some(0),
+                    app_id: Some("com.example.app".to_owned()),
+                    activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+                },
+            ];
+            let (generation, seq_last, revision) = {
+                let guard = lock_shared(&shared);
+                (
+                    guard
+                        .apps
+                        .get(&4243)
+                        .expect("admission owner stays live")
+                        .generation,
+                    retained
+                        .apps
+                        .get(&4243)
+                        .map(|app| app.seq_last)
+                        .unwrap_or(0),
+                    guard.topology_revision,
+                )
+            };
+            process_job(
+                EngineJob::ScopedObservation {
+                    pid: 4243,
+                    generation,
+                    seq: seq_last + 1,
+                    snapshot: crate::runtime_types::ScopedBackendSnapshot {
+                        windows,
+                        focused_wid: None,
+                        focus_cg_owned: false,
+                        focus_evidence: None,
+                        sys_focus: None,
+                        global_focus: None,
+                        meta,
+                        excluded: 0,
+                        excluded_reasons: Vec::new(),
+                        cg_complete: true,
+                        cg_owner_wids: vec![9, 10],
+                        cg_alive: Vec::new(),
+                        revision,
+                    },
+                },
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                8,
+            );
+        }
+        // Order + pending-identity fence: the newcomer is already admitted
+        // (latest roster AND latest reply) while the old request is still
+        // pending under its original id with its frozen set untouched.
+        assert!(
+            retained
+                .apps
+                .get(&4243)
+                .and_then(|app| app.roster.get(&10))
+                .is_some(),
+            "fixed newcomer admitted to the latest roster while pending"
+        );
+        assert!(
+            session
+                .sequencer()
+                .last_reply()
+                .expect("admission publishes")
+                .windows
+                .iter()
+                .any(|row| row.lifetime.0 == "4243_10" && row.floating),
+            "fixed newcomer rides the latest reply as an automatic float"
+        );
+        {
+            let focus_after = session
+                .sequencer()
+                .last_reply()
+                .expect("admission publishes")
+                .focus_request
+                .clone();
+            assert_eq!(
+                focus_after.as_ref().map(|req| req.id.clone()),
+                focus_before.as_ref().map(|req| req.id.clone()),
+                "withheld birth mints nothing: the old request id survives"
+            );
+            assert_eq!(
+                focus_after.as_ref().map(|req| req.target.0.clone()),
+                Some("4243_9".to_owned()),
+                "old target undisturbed by the fixed newcomer"
+            );
+        }
+        {
+            let current = lock_shared(&shared)
+                .selection_focus_pending
+                .clone()
+                .expect("newcomer never cancels the bound intent");
+            assert_eq!(current.operation_id, away_op, "same pending operation");
+            assert_eq!(current.focus_id, pending.focus_id, "same pending request");
+            assert_eq!(
+                current.after_shown.members, pending.after_shown.members,
+                "frozen set byte-identical despite the live newcomer"
+            );
+            assert!(
+                !current
+                    .after_shown
+                    .members
+                    .iter()
+                    .any(|m| m.win.0 == "4243_10"),
+                "late member excluded from the frozen set"
+            );
+        }
+        assert!(
+            crate::runtime_shared::lock_focus(&focus_queue).is_empty(),
+            "withheld birth dispatches nothing new"
+        );
+        assert!(
+            lock_shared(&shared)
+                .apps
+                .get(&4243)
+                .and_then(|app| app.focus.take())
+                .is_none(),
+            "withheld birth arms no slot command"
+        );
+        assert!(
+            session.peek_close_feedback().is_none(),
+            "withheld birth stages no feedback"
+        );
+        // Real owner arrival capture for every frozen member, through the
+        // production worker/engine path. The reads cover ONLY the frozen
+        // members (never the pending-admitted fixed newcomer above, which
+        // the release below must not need).
+        struct LocalCaptureBackend {
+            reads: Vec<crate::runtime_types::BracketRead>,
+        }
+        impl crate::runtime_backend::AxBackend for LocalCaptureBackend {
+            fn apply_frame(
+                &mut self,
+                _cmd: &crate::runtime::FrameCommand,
+            ) -> crate::runtime_types::AxCompletion {
+                crate::runtime_types::AxCompletion::Failed {
+                    reason: "capture gate never actuates".to_owned(),
+                }
+            }
+            fn snapshot(&mut self) -> Result<Vec<crate::runtime::ObservedWindow>, String> {
+                Ok(Vec::new())
+            }
+            fn capture_brackets(&mut self, wids: &[u32]) -> Vec<crate::runtime_types::BracketRead> {
+                self.reads
+                    .iter()
+                    .filter(|read| wids.contains(&read.wid))
+                    .cloned()
+                    .collect()
+            }
+        }
+        let live_reply = session
+            .sequencer()
+            .last_reply()
+            .expect("settle keeps the latest reply");
+        let mut reads = Vec::new();
+        for member in &pending.after_shown.members {
+            let Some((mpid, mwid)) = crate::runtime_types::parse_window_id(&member.win.0) else {
+                panic!("frozen member parses");
+            };
+            let live_sid = live_reply
+                .workspaces
+                .iter()
+                .find(|ws| ws.output == member.out && ws.id == member.ws)
+                .and_then(|ws| ws.native_binding.clone())
+                .and_then(|binding| crate::workspace_select::parse_native_binding(binding.as_str()))
+                .expect("latest publishes the live member binding");
+            let frame = retained
+                .apps
+                .get(&mpid)
+                .and_then(|app| app.roster.get(&mwid))
+                .and_then(|entry| entry.observed)
+                .map(|live| (live.x, live.y, live.w, live.h))
+                .or_else(|| member.frame.map(|rect| (rect.x, rect.y, rect.w, rect.h)))
+                .expect("frozen member has readable live geometry");
+            reads.push(crate::runtime_types::BracketRead {
+                wid: mwid,
+                owner_pid: Some(mpid),
+                before_minimized: Some(false),
+                before_hidden: Some(false),
+                spaces: vec![live_sid],
+                frame: Some(frame),
+                after_minimized: Some(false),
+                after_hidden: Some(false),
+            });
+        }
+        let capture_inbox = Arc::new(Inbox::new(16));
+        let cell = lock_shared(&shared).native_cell.clone();
+        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut pids: Vec<u32> = reads
+            .iter()
+            .filter_map(|read| read.owner_pid)
+            .collect::<std::collections::BTreeSet<u32>>()
+            .into_iter()
+            .collect();
+        pids.sort();
+        let mut notified = 0;
+        for pid in pids {
+            let generation = lock_shared(&shared)
+                .apps
+                .get(&pid)
+                .map(|record| record.generation)
+                .expect("capture owner stays live");
+            let mut backend = LocalCaptureBackend {
+                reads: reads.clone(),
+            };
+            if crate::runtime_worker::maybe_send_arrival_capture(
+                &mut backend,
+                pid,
+                generation,
+                &shared,
+                &cell,
+                &capture_inbox,
+                &mut last_attempt,
+            ) {
+                notified += 1;
+            }
+        }
+        assert!(notified > 0, "worker owes at least one genuine capture");
+        for _ in 0..notified {
+            let stop = AtomicBool::new(false);
+            let job = capture_inbox.recv(&stop).expect("capture queued");
+            process_job(
+                job,
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                8,
+            );
+        }
+        let stamped = lock_shared(&shared)
+            .selection_focus_pending
+            .clone()
+            .expect("capture keeps the intent for release");
+        let stamp = stamped
+            .proven_stamp
+            .clone()
+            .expect("capture stamps the intent");
+        {
+            let guard = lock_shared(&shared);
+            assert_eq!(stamp.obs, guard.clock.get());
+            assert_eq!(stamp.revision, guard.topology_revision);
+            assert_eq!(stamp.context_generation, guard.native_cell.generation());
+        }
+        for member in &pending.after_shown.members {
+            assert!(
+                lock_shared(&shared)
+                    .arrival_captures
+                    .contains_key(&member.win.0),
+                "every frozen member retains a genuine capture"
+            );
+        }
+        // Arrival capture auto-releases by design (apply_arrival_capture ->
+        // reevaluate_selection_release): the bound intent stays with
+        // owner_queued set until the real owner result retires it, so the
+        // drain-verified callback below must report NoPending, never a
+        // second release.
+        {
+            let auto = lock_shared(&shared)
+                .selection_focus_pending
+                .clone()
+                .expect("auto-release keeps the intent bound");
+            assert!(auto.owner_queued, "auto-release marks the intent queued");
+            assert_eq!(auto.operation_id, away_op);
+            assert_eq!(auto.focus_id, pending.focus_id);
+            assert!(
+                auto.proven_stamp.is_some(),
+                "auto-release keeps the proven stamp"
+            );
+        }
+        {
+            let queued = crate::runtime_shared::lock_focus(&focus_queue);
+            assert_eq!(queued.len(), 1, "auto-release queues exactly once");
+            assert_eq!((queued[0].pid, queued[0].wid), (4243, 9));
+            assert_eq!(queued[0].generation, 1);
+        }
+        // Duplicate drain-verified callback reports NoPending instead of a
+        // second release; the queued intent stays bound for the owner leg.
+        let handle = release_handle(&shared, &inbox, &focus_queue);
+        assert_eq!(
+            handle.release_selection_focus(Some(&away_op), post, Some(4242)),
+            crate::world_dispatch::SelectionFocusRelease::NoPending
+        );
+        assert!(
+            lock_shared(&shared).selection_focus_pending.is_some(),
+            "duplicate never retires the queued intent"
+        );
+        assert_eq!(
+            crate::runtime_shared::lock_focus(&focus_queue).len(),
+            1,
+            "duplicate queues nothing more"
+        );
+        // The frozen command actuates exactly once through the mocked owner
+        // while its release is still current (the pending-admitted fixed
+        // newcomer above spent without touching it). Taken once for the
+        // owner actuation, so the
+        // single-threaded harness observes no interim.
+        let cmd = lock_shared(&shared)
+            .apps
+            .get(&4243)
+            .and_then(|app| app.focus.take())
+            .expect("owner slot carries the release");
+        let close = cmd.close.clone().expect("unified close route");
+        assert_eq!(close.close_id, "focus-2");
+        assert_eq!(
+            close.after_shown.as_ref().map(|a| a.op.as_str()),
+            Some(away_op.as_str())
+        );
+        let revision = lock_shared(&shared).topology_revision;
+        let mut fake = FakeFocusBackend {
+            fresh: Some((4242, Some(7))),
+            post: Some((4243, Some(9))),
+            reads: 0,
+            dispatches: 0,
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3 },
+        };
+        let job = crate::runtime_worker::handle_close_focus_command(
+            &mut fake, &cmd, &close, 4243, 1, revision, &shared,
+        );
+        assert_eq!(fake.dispatches, 1, "owner dispatches exactly once");
+        assert_eq!(fake.reads, 2, "fresh baseline plus post read");
+        match &job {
+            EngineJob::CloseFocusResult { setter, .. } => assert_eq!(
+                *setter,
+                tiler_core::world_report::VisibilitySetter::Accepted
+            ),
+            _ => panic!("expected CloseFocusResult"),
+        }
+        process_job(
+            job,
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        assert_eq!(
+            session.peek_close_feedback().expect("accepted stages").id,
+            "focus-2"
+        );
+        // The staged row is truthful generated feedback: exact stamp plus
+        // the full frozen arrival set with valid visible rows. This row
+        // alone never settles the core (Accepted/Proven retains until
+        // target equality); the genuine target observation below does.
+        {
+            let staged = session
+                .peek_close_feedback()
+                .expect("accepted stages")
+                .clone();
+            assert_eq!(staged.target, pending.window);
+            assert_eq!(staged.revision, pending.issued_revision);
+            assert_eq!(staged.post, Some(pending.window.clone()));
+            assert!(staged.foreground_proven);
+            let mut frozen: Vec<String> = pending
+                .after_shown
+                .members
+                .iter()
+                .map(|m| m.win.0.clone())
+                .collect();
+            frozen.sort();
+            let mut arrived: Vec<String> =
+                staged.arrival.iter().map(|b| b.window.0.clone()).collect();
+            arrived.sort();
+            assert_eq!(
+                arrived, frozen,
+                "generated feedback covers the full frozen set"
+            );
+            assert!(
+                !staged.arrival.is_empty(),
+                "generated feedback carries valid rows"
+            );
+            for bracket in &staged.arrival {
+                assert!(
+                    bracket.before.visibility.visible == Some(true)
+                        && bracket.before.lifetime_matched == Some(true),
+                    "arrival before leg is valid"
+                );
+                assert!(
+                    bracket.after.visibility.visible == Some(true)
+                        && bracket.after.lifetime_matched == Some(true),
+                    "arrival after leg is valid"
+                );
+            }
+        }
+        // Genuine target observation through the production ScopedObservation
+        // path: the owner thread reports the target focused with full
+        // workspace+AX+CG agreement on the current domain, so the engine
+        // promotes `retained.observed_focus` to the target (the
+        // CloseFocusResult handler above never touches observed focus; only
+        // this observation does). The pending-admitted fixed newcomer rides
+        // along unfocused with its fixed hints, so it stays live (never a
+        // close) without disturbing the settle. Its inner dispatch then
+        // drains the staged row with `focused_global == target`, which is
+        // what actually clears the core pending request via target equality.
+        lock_shared(&shared).focus_evidence = Some(crate::runtime_types::FocusEvidence {
+            frontmost_pid: Some(4243),
+            frontmost_bundle: None,
+            ax_focus: None,
+        });
+        {
+            let live_reply = session
+                .sequencer()
+                .last_reply()
+                .expect("settle keeps the latest reply")
+                .clone();
+            let desired = lock_shared(&shared).last_desired.clone();
+            let by_window: std::collections::BTreeMap<String, (i32, i32, i32, i32)> = desired
+                .into_iter()
+                .map(|row| (row.window, (row.x, row.y, row.w, row.h)))
+                .collect();
+            let mut windows = Vec::new();
+            let mut meta = Vec::new();
+            for member in &pending.after_shown.members {
+                let Some((mpid, mwid)) = crate::runtime_types::parse_window_id(&member.win.0)
+                else {
+                    panic!("frozen member parses");
+                };
+                if mpid != 4243 {
+                    continue;
+                }
+                let live_sid = live_reply
+                    .workspaces
+                    .iter()
+                    .find(|ws| ws.output == member.out && ws.id == member.ws)
+                    .and_then(|ws| ws.native_binding.clone())
+                    .and_then(|binding| {
+                        crate::workspace_select::parse_native_binding(binding.as_str())
+                    })
+                    .expect("latest publishes the live member binding");
+                let (x, y, w, h) = by_window
+                    .get(&member.win.0)
+                    .copied()
+                    .or_else(|| member.frame.map(|rect| (rect.x, rect.y, rect.w, rect.h)))
+                    .expect("frozen member has readable live geometry");
+                windows.push(crate::runtime::ObservedWindow {
+                    wid: mwid,
+                    x,
+                    y,
+                    w,
+                    h,
+                    floating: false,
+                    fullscreen: false,
+                    hints: WindowSizeHints::none(),
+                });
+                meta.push(crate::runtime_types::ScopedWindowMeta {
+                    wid: mwid,
+                    spaces: vec![live_sid],
+                    fullscreen: false,
+                    minimized: false,
+                    hidden: false,
+                    role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                    subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                    modal: Some(false),
+                    resizable: Some(true),
+                    layer: Some(0),
+                    app_id: Some("com.example.app".to_owned()),
+                    activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+                });
+            }
+            // The pending-admitted fixed newcomer rides along unfocused:
+            // it stays live with its fixed hints (never a close) while the
+            // target focus legs settle the old request.
+            let newcomer_sid = meta
+                .iter()
+                .find(|m| m.wid == 9)
+                .and_then(|m| m.spaces.first().copied())
+                .expect("target member carries the live arrival Space");
+            windows.push(crate::runtime::ObservedWindow {
+                wid: 10,
+                x: 100,
+                y: 100,
+                w: 800,
+                h: 600,
+                floating: false,
+                fullscreen: false,
+                hints: WindowSizeHints {
+                    min_w: Some(800),
+                    min_h: Some(600),
+                    max_w: Some(800),
+                    max_h: Some(600),
+                },
+            });
+            meta.push(crate::runtime_types::ScopedWindowMeta {
+                wid: 10,
+                spaces: vec![newcomer_sid],
+                fullscreen: false,
+                minimized: false,
+                hidden: false,
+                role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                modal: Some(false),
+                resizable: Some(false),
+                layer: Some(0),
+                app_id: Some("com.example.app".to_owned()),
+                activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+            });
+            assert!(!windows.is_empty(), "target owner holds frozen members");
+            let wids: Vec<u32> = windows.iter().map(|w| w.wid).collect();
+            assert!(wids.contains(&9), "target wid rides the frozen owner set");
+            let (generation, seq_last, revision) = {
+                let guard = lock_shared(&shared);
+                let generation = guard
+                    .apps
+                    .get(&4243)
+                    .expect("capture owner stays live")
+                    .generation;
+                let seq_last = retained
+                    .apps
+                    .get(&4243)
+                    .map(|app| app.seq_last)
+                    .unwrap_or(0);
+                (generation, seq_last, guard.topology_revision)
+            };
+            process_job(
+                EngineJob::ScopedObservation {
+                    pid: 4243,
+                    generation,
+                    seq: seq_last + 1,
+                    snapshot: crate::runtime_types::ScopedBackendSnapshot {
+                        windows,
+                        focused_wid: Some(9),
+                        focus_cg_owned: true,
+                        focus_evidence: Some(crate::runtime_types::FocusEvidence {
+                            frontmost_pid: Some(4243),
+                            frontmost_bundle: None,
+                            ax_focus: Some((4243, Some(9))),
+                        }),
+                        sys_focus: Some((4243, Some(9))),
+                        global_focus: Some((4243, 9)),
+                        meta,
+                        excluded: 0,
+                        excluded_reasons: Vec::new(),
+                        cg_complete: true,
+                        cg_owner_wids: wids,
+                        cg_alive: Vec::new(),
+                        revision,
+                    },
+                },
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                8,
+            );
+        }
+        assert_eq!(
+            retained.observed_focus,
+            Some(pending.window.clone()),
+            "target observation promotes the observed focus"
+        );
+        assert!(
+            session
+                .sequencer()
+                .last_reply()
+                .expect("settlement keeps the latest reply")
+                .focus_request
+                .is_none(),
+            "target equality clears the core pending request"
+        );
+        assert!(
+            session.peek_close_feedback().is_none(),
+            "target observation settles the staged feedback"
+        );
+        assert!(
+            lock_shared(&shared).selection_focus_pending.is_none(),
+            "completion retires the intent"
+        );
+        assert_eq!(
+            handle.release_selection_focus(Some(&away_op), post, Some(4242)),
+            crate::world_dispatch::SelectionFocusRelease::NoPending
+        );
+        assert!(
+            lock_shared(&shared)
+                .apps
+                .get(&4243)
+                .and_then(|app| app.focus.take())
+                .is_none(),
+            "duplicate latest carries no new command"
+        );
+        assert_eq!(crate::runtime_shared::lock_focus(&focus_queue).len(), 1);
+        assert_eq!(fake.dispatches, 1);
+        assert!(session.peek_close_feedback().is_none());
+        // The pending-admitted fixed newcomer stays live through the settle
+        // without ever joining the frozen set or disturbing the release.
+        assert!(
+            retained
+                .apps
+                .get(&4243)
+                .and_then(|app| app.roster.get(&10))
+                .is_some(),
+            "excluded newcomer stays admitted after the settle"
+        );
+    }
+
+    #[test]
+    fn selection_focus_null_and_newer_epoch_cancel_without_setter() {
+        // Latest/null epoch cancellation: a genuine newer non-explicit
+        // publication cancels the unstarted deferred intent, and a genuine
+        // null (focus-satisfied) publication retires the epoch — the old
+        // operation never reaches any setter (zero queue rows, zero slot
+        // commands, zero dispatches throughout).
+        let (mut session, mut retained, shared, inbox, focus_queue, _ctx) =
+            selection_away_fixture();
+        let away_op = lock_shared(&shared)
+            .selection_focus_pending
+            .clone()
+            .expect("away binds")
+            .operation_id;
+        let dropped_before = lock_shared(&shared).diagnostics.focus_dropped_full;
+        // Newer non-explicit publication: ordinary admission of window 10
+        // mints an AutomaticAdmission request for the new window, cancelling
+        // the old intent counted while dispatching nothing itself.
+        let meta = |wid: u32, minimized: bool| crate::runtime_types::ScopedWindowMeta {
+            wid,
+            spaces: vec![277],
+            fullscreen: false,
+            minimized,
+            hidden: false,
+            role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+            subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+            modal: Some(false),
+            resizable: Some(true),
+            layer: Some(0),
+            app_id: Some("com.example.app".to_owned()),
+            activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+        };
+        let scoped = |windows: Vec<ObservedWindow>,
+                      focused: Option<u32>,
+                      min10: bool,
+                      seq: u64,
+                      rev: u64| {
+            crate::runtime_types::ScopedBackendSnapshot {
+                windows,
+                focused_wid: focused,
+                focus_cg_owned: false,
+                focus_evidence: None,
+                sys_focus: None,
+                global_focus: None,
+                meta: vec![meta(9, false), meta(10, min10)],
+                excluded: 0,
+                excluded_reasons: Vec::new(),
+                cg_complete: true,
+                cg_owner_wids: vec![9, 10],
+                cg_alive: Vec::new(),
+                revision: rev,
+            }
+        };
+        process_job(
+            EngineJob::ScopedObservation {
+                pid: 4243,
+                generation: 1,
+                seq: 2,
+                snapshot: scoped(vec![observed(9), observed(10)], None, false, 2, 9),
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        let late_req = session
+            .sequencer()
+            .last_reply()
+            .expect("reply retained")
+            .focus_request
+            .expect("admission mints its own request");
+        assert_eq!(late_req.target.0, "4243_10");
+        assert_ne!(late_req.id, "focus-2");
+        assert!(lock_shared(&shared).selection_focus_pending.is_none());
+        {
+            let after = lock_shared(&shared).diagnostics.focus_dropped_full;
+            // Two counted events, both genuine: the bind refusal drops the
+            // one deferred intent (op-1 cancelled), and the refusal arm
+            // stages the admission's own no-call row with its own count.
+            assert_eq!(
+                after,
+                dropped_before + 2,
+                "admission cancels the deferred intent and no-calls its own (before={dropped_before} after={after})"
+            );
+        }
+        assert_eq!(
+            lock_shared(&shared)
+                .close_focus_current
+                .as_ref()
+                .map(|e| e.id.clone()),
+            Some(late_req.id.clone())
+        );
+        assert_eq!(lock_shared(&shared).diagnostics.focus_dispatched, 0);
+        assert!(crate::runtime_shared::lock_focus(&focus_queue).is_empty());
+        assert!(
+            lock_shared(&shared)
+                .apps
+                .get(&4243)
+                .and_then(|app| app.focus.take())
+                .is_none(),
+            "cancelled intent arms no slot command"
+        );
+        // Null publication: the owner reports the old target focused, so
+        // the core retires the lane and the adapter epoch retires to None.
+        process_job(
+            EngineJob::ScopedObservation {
+                pid: 4243,
+                generation: 1,
+                seq: 3,
+                snapshot: scoped(vec![observed(9), observed(10)], Some(9), false, 3, 9),
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        assert_eq!(
+            session
+                .sequencer()
+                .last_reply()
+                .expect("reply retained")
+                .focus_request,
+            None,
+            "target equality retires the lane"
+        );
+        assert!(lock_shared(&shared).close_focus_current.is_none());
+        assert!(lock_shared(&shared).selection_focus_pending.is_none());
+        assert_eq!(lock_shared(&shared).diagnostics.focus_dispatched, 0);
+        assert!(crate::runtime_shared::lock_focus(&focus_queue).is_empty());
+        assert!(session.peek_close_feedback().is_none());
+        assert_eq!(away_op, "op-1");
     }
 
     #[test]
@@ -6948,6 +9875,7 @@ mod drag_gesture_handoff_tests {
             select_busy: false,
             select_claim_pending: false,
             selection_focus_pending: None,
+            arrival_captures: std::collections::BTreeMap::new(),
             selection_focus_floor_seq: 0,
             close_focus_current: None,
             focus_evidence: None,

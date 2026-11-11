@@ -103,6 +103,109 @@ pub struct AxObservation {
     pub focused_wid: Option<u32>,
 }
 
+/// One ordered owner-thread bracket read for a single window: the owner/window
+/// identity join, the first visibility legs, the native Space-membership
+/// read BETWEEN them, the native frame read BETWEEN them, and the final
+/// visibility legs. Facts only, never a readiness verdict. The backend reads
+/// these legs in this order on its owning thread: the AX window enumeration
+/// plus the window-id join attest the (pid, wid) lifetime BEFORE the home and
+/// frame legs, and a window-server owner join attests it again around them —
+/// visibility-before/after alone can never attest lifetime, so a read whose
+/// joins disagree omits the window (no capture), never a guessed home.
+/// The caller samples the invalidation watermark around the call and marks
+/// the whole batch invalidated when anything moved mid-read. Unreadable legs
+/// omit the window (no capture), never a guessed home or frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BracketRead {
+    pub wid: u32,
+    /// Owner pid attested by the backend's identity joins (AX enumeration of
+    /// exactly this pid plus a window-server owner match) around the home and
+    /// frame legs, plus the bound process-identity revalidation
+    /// (bundle/executable/launch-date; PID/CG id match alone never attests).
+    /// (`None` = unattested there: the window is omitted).
+    pub owner_pid: Option<u32>,
+    /// First `AXMinimized` leg (`None` = unreadable there).
+    pub before_minimized: Option<bool>,
+    /// First owner-hidden leg (`None` = unreadable there).
+    pub before_hidden: Option<bool>,
+    /// Fresh live SLS Space membership read between the visibility legs
+    /// (empty = unreadable/unknown, never "no Space").
+    pub spaces: Vec<u64>,
+    /// Fresh native frame read between the visibility legs (`None` when
+    /// unreadable or degenerate — never a guessed rect).
+    pub frame: Option<(i32, i32, i32, i32)>,
+    /// Final `AXMinimized` leg (`None` = unreadable there).
+    pub after_minimized: Option<bool>,
+    /// Final owner-hidden leg (`None` = unreadable there).
+    pub after_hidden: Option<bool>,
+}
+
+/// Bounded proven-arrival stamp for one deferred selection intent: the
+/// live observation watermark, topology revision, and native-context
+/// generation sampled when the full frozen-member proof returned `Proven`.
+/// The request tuple itself already rides immutable in the deferred intent;
+/// the stamp adds only the liveness legs. The release rechecks the stamp
+/// against live state before taking the slot and keeps a missing/stale
+/// stamp deferred for capture-driven reevaluation — a callback never
+/// bypasses frozen proof. Carried into the owner binding verbatim (never
+/// reissued in the callback) so the owner can recheck the exact proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProvenArrivalStamp {
+    pub obs: u64,
+    pub revision: u64,
+    pub context_generation: u64,
+}
+
+/// One retained owner-captured arrival bracket for a frozen member: the
+/// identity-bound visibility reads around the membership/frame reads plus
+/// the source-domain watermark sampled around those reads. Written only by
+/// the engine from an owner [`EngineJob::ArrivalCaptureReady`] notification
+/// (never at apply time from roster truth, never by tests directly),
+/// consumed only by the frozen-member proof and the owner feedback builder.
+/// Any mismatch (generation, revision, watermark, lifetime, visibility,
+/// home, frame) or any intervening invalidation withholds proof — never a
+/// stale `Proven`.
+///
+/// Watermark pairing: `obs` is the global watermark sampled around the
+/// owner-thread reads (before/after must agree or the batch invalidates).
+/// The proof requires the live watermark to still equal `obs`: the
+/// evidence-only notification never bumps the clock, so any other
+/// intervening invalidation — native, main, context, or other-pid — moves it
+/// and withholds. A newer watermark is never assigned after stale reads: the
+/// batch is built only from reads bracketed by one agreed watermark.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArrivalCapture {
+    /// Runtime window id (`"<pid>_<wid>"`).
+    pub win: String,
+    pub pid: u32,
+    /// Owning app lifetime that performed the read.
+    pub generation: u64,
+    /// Topology revision read with the bracket.
+    pub revision: u64,
+    /// Invalidation watermark sampled around the owner-thread reads.
+    pub obs: u64,
+    /// Native-context invalidation generation sampled around the
+    /// owner-thread reads (`gen_after`: the original sampled generation,
+    /// never the current apply-time stamp). The engine validates it
+    /// against the live cell generation; a moved generation withholds.
+    pub context_generation: u64,
+    /// Immutable request tuple this capture serves (engine validates exact
+    /// match against the still-pending intent; a stale tuple never proves).
+    pub focus_id: String,
+    pub issued_revision: u64,
+    pub adapter_incarnation: String,
+    pub core_generation: String,
+    pub before: tiler_core::world_report::VisibilitySample,
+    /// Fresh singleton Space membership (`None` = unreadable/multi/unhomed).
+    pub home_sid: Option<u64>,
+    /// Fresh live frame (`None` = unreadable there).
+    pub frame: Option<Rect>,
+    pub after: tiler_core::world_report::VisibilitySample,
+    /// True when the watermark, context version, or revision moved around
+    /// or during the read batch, or the before/after legs disagreed.
+    pub invalidated: bool,
+}
+
 /// Step direction for semantic input actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputDirection {
@@ -629,9 +732,10 @@ pub struct FocusEvidence {
     pub ax_focus: Option<(u32, Option<u32>)>,
 }
 
-/// Typed close-focus context on one owner focus command: the exact frozen
-/// close intent (`close-focus-<rev>` id, target, issuing publication
-/// revision) plus its full bound context. `generation` pins the target
+/// Typed retained-focus context on one owner focus command: the exact
+/// frozen focus intent (request id, target, issuing publication revision,
+/// cause, command correlation and frozen selection dependencies) plus its
+/// full bound context. `generation` pins the target
 /// app lifetime, `topology_revision` the display/Space revision at bind,
 /// `domain` the frozen source domain (output plus logical workspace).
 /// `adapter_incarnation`/`core_generation` pin the handshake session so a
@@ -640,14 +744,22 @@ pub struct FocusEvidence {
 /// is empty, never unknown-by-default) and `fallback_known` tells whether
 /// that fallback was proven (a bound window or proven windowless) or
 /// unknown — an unknown baseline must refuse as `FocusUnproven`, never
-/// bypass the fresh foreground recheck. `None` on
-/// [`FocusCommand::close`] is the legacy explicit/deferred path, which
-/// dispatches unchanged and never carries close identity.
+/// bypass the fresh foreground recheck. `cause` selects cause-specific
+/// explicit exemptions (an explicit user command is exempt from the
+/// automatic fullscreen steal guard; every other cause keeps it).
+/// `cmd_seq` correlates exactly the explicit-command origin (`None`
+/// otherwise) and `after_shown` carries the frozen selection dependencies
+/// for selection-backed explicit requests (`None` otherwise). `None` on
+/// [`FocusCommand::close`] is the legacy deferred-selection path, which
+/// dispatches unchanged and never carries request identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloseFocusBinding {
     pub close_id: String,
     pub target: WindowId,
     pub issued_revision: u64,
+    pub cause: tiler_core::world_report::FocusRequestCause,
+    pub cmd_seq: Option<u64>,
+    pub after_shown: Option<tiler_core::world_report::AfterShown>,
     pub adapter_incarnation: String,
     pub core_generation: String,
     pub output: OutputId,
@@ -657,6 +769,17 @@ pub struct CloseFocusBinding {
     pub topology_revision: u64,
     pub fallback_pre: Option<WindowId>,
     pub fallback_known: bool,
+    /// Expected native Space for the selection arrival scope, stamped from
+    /// the deferred intent at release (verbatim, never re-resolved
+    /// owner-side): the owner rechecks every capture's singleton home
+    /// against exactly this SID plus the live domain output against the
+    /// frozen member scope before the setter. `None` on non-selection
+    /// paths (bare closes) and on bindings that predate the stamp.
+    pub expected_sid: Option<u64>,
+    /// Verbatim proven-arrival stamp from the deferred intent (never
+    /// reissued in the callback): the owner rechecks this exact proof
+    /// before the setter. `None` on non-selection paths.
+    pub proven_stamp: Option<ProvenArrivalStamp>,
 }
 
 /// Typed focus command to one app worker through its latest-wins focus
@@ -670,8 +793,8 @@ pub struct CloseFocusBinding {
 /// dispatch when the agreed selected focus names neither the prior nor the
 /// target, so a same-app user focus move the main thread cannot see never
 /// gets fought. Never guessed: `None` means no prior check.
-/// `close` carries the typed close-focus context above (`Some` only on the
-/// close-focus route, never on explicit/deferred commands): the owner
+/// `close` carries the typed retained-focus context above (`Some` only on
+/// the retained-focus route, never on explicit/deferred commands): the owner
 /// worker rechecks the captured baseline fresh plus the liveness fences
 /// before dispatching, and reports a narrowly typed close result back.
 /// Existing explicit/deferred selection paths keep `close: None`.

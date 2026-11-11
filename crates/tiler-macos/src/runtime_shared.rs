@@ -193,18 +193,38 @@ pub(crate) struct FocusBaselines {
 /// of a planner-owned view switch (the target domain's remembered leaf),
 /// held after the engine reply until the native Dock-swipe selection proves
 /// arrival. Released only by the matching select completion's verified post
-/// (the post names the bound native Space); dropped on refusal, on
-/// supersession by a newer switch or explicit focus, on a stale app, on a
-/// user focus move to another app, or when the post never proves arrival.
-/// Never dispatched before verified arrival, never on the wrong Space,
-/// never replayed (at-most-once: the slot is taken before enqueue).
+/// (the post names the bound native Space) or immediately from the latest
+/// reply when the parent has already settled and the frozen arrival set
+/// proves ready — never dispatched before verified arrival, never on the
+/// wrong Space, never replayed (at-most-once: the slot is taken before
+/// enqueue). Carries the immutable generalized request binding
+/// (focus id/target/issuing revision, adapter incarnation/core generation,
+/// request activation scope plus the full frozen `afterShown` projection)
+/// into the release owner, so the release dispatches through the unified
+/// epoch/accounting/raw-feedback route (`close: Some`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeferredSelectionFocus {
     /// Stable world-command operation identity (`op-<command_seq>`).
     pub operation_id: String,
     pub command_seq: u64,
+    /// Immutable generalized focus identity: the retained request id.
+    pub focus_id: String,
+    /// Publication revision that minted the request.
+    pub issued_revision: u64,
+    pub adapter_incarnation: String,
+    pub core_generation: String,
     /// Core-correlated focus target (`"<pid>_<wid>"`).
     pub window: tiler_core::directional::WindowId,
+    /// Frozen resolved activation scope (request scope, never
+    /// `selected.first`): the arrival Space is the live native binding
+    /// for exactly this scope.
+    pub output: tiler_core::directional::OutputId,
+    pub workspace: String,
+    /// Full frozen selection dependencies (projection of existing
+    /// selection state: parent op, issuing observation, required
+    /// members with lifetime/home/frame, native-view targets and
+    /// affected selected/departing scopes). Never reconstructed.
+    pub after_shown: tiler_core::world_report::AfterShown,
     pub route: crate::focus_route::FocusRoute,
     /// Native Space the selection must arrive on before focus releases.
     pub expected_sid: u64,
@@ -223,6 +243,22 @@ pub(crate) struct DeferredSelectionFocus {
     /// drops the intent). `None` is never bound (bind refuses without a
     /// stability baseline).
     pub prior_frontmost: Option<u32>,
+    /// Bounded proven-arrival stamp: `Some` only once the full
+    /// frozen-member proof returns `Proven` (plus the live native mapping);
+    /// `None` on every `NotReady` bind. The callback release rechecks the
+    /// stamp against live watermark/revision/context-generation before
+    /// taking the slot and keeps a missing/stale stamp deferred — never a
+    /// second authority, never loosened. Rides verbatim into the owner
+    /// binding (never reissued in the callback).
+    pub proven_stamp: Option<crate::runtime_types::ProvenArrivalStamp>,
+    /// Owner-queue mark for the bounded deferral lifecycle: set once when
+    /// the release enqueues the owner command (the original pending stays
+    /// bound), cleared by the owner's deferral report or by any terminal
+    /// owner completion. While set, further releases report `NoPending`
+    /// instead of duplicating the owner command; evidence refresh and
+    /// engine reevaluation can queue the same unstarted work again once
+    /// cleared. No setter is ever retried from this mark.
+    pub owner_queued: bool,
 }
 
 /// State key grounding held-reply geometry retention: the current
@@ -357,6 +393,15 @@ pub(crate) struct Shared {
     /// the engine thread (bind/drop) and the main-thread tile controller
     /// (release on the verified completion post).
     pub(crate) selection_focus_pending: Option<DeferredSelectionFocus>,
+    /// Retained owner-captured arrival brackets by runtime window id
+    /// (`"<pid>_<wid>"`): written only by the engine from an owner
+    /// [`EngineJob::ArrivalCaptureReady`] notification (never at observation
+    /// apply time, never by tests directly), consumed only by the
+    /// frozen-member proof and the owner feedback builder. Bounded: one entry
+    /// per frozen member at most. A generation, revision, watermark, tuple,
+    /// or failed lifetime/visibility/home/frame match withholds proof; a
+    /// missing or stale entry defers, never refuses.
+    pub(crate) arrival_captures: BTreeMap<String, crate::runtime_types::ArrivalCapture>,
     /// Monotonic supersession floor for deferred selection focus: bumped
     /// by every selection bind and every explicit-focus dispatch. A select
     /// completion releases focus only when its command seq reaches the
