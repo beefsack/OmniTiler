@@ -4360,7 +4360,7 @@ fn immutable_effect_rows_match_fixture_bytes() {
     // A focus carrier refuses on the wire in both directions.
     let report = decode_request(&one_window_request()).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let mut reply = match engine.handle_report(&report) {
+    let mut reply = match engine.handle_report(&report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };

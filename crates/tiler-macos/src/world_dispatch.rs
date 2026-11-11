@@ -10266,11 +10266,13 @@ mod tests {
             crate::world_connection::macos_capabilities(),
         )
         .expect("producer binds the consumer handshake");
-        let accepted =
-            |engine: &mut WorldEngine, report: &WorldReportV4| match engine.handle_report(report) {
-                WorldOutcome::Accepted(reply) => reply,
-                other => panic!("expected accepted, got {other:?}"),
-            };
+        let accepted = |engine: &mut WorldEngine, report: &WorldReportV4| match engine
+            .handle_report(report, &[])
+            .0
+        {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("expected accepted, got {other:?}"),
+        };
         accepted(
             &mut engine,
             &report(
@@ -10633,11 +10635,13 @@ mod tests {
             crate::world_connection::macos_capabilities(),
         )
         .expect("producer binds the consumer handshake");
-        let accepted =
-            |engine: &mut WorldEngine, report: &WorldReportV4| match engine.handle_report(report) {
-                WorldOutcome::Accepted(reply) => reply,
-                other => panic!("expected accepted, got {other:?}"),
-            };
+        let accepted = |engine: &mut WorldEngine, report: &WorldReportV4| match engine
+            .handle_report(report, &[])
+            .0
+        {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("expected accepted, got {other:?}"),
+        };
         accepted(
             &mut engine,
             &report(
@@ -10978,11 +10982,13 @@ mod tests {
             )],
         )
         .expect("producer binds the consumer handshake");
-        let accepted =
-            |engine: &mut WorldEngine, report: &WorldReportV4| match engine.handle_report(report) {
-                WorldOutcome::Accepted(reply) => reply,
-                other => panic!("expected accepted, got {other:?}"),
-            };
+        let accepted = |engine: &mut WorldEngine, report: &WorldReportV4| match engine
+            .handle_report(report, &[])
+            .0
+        {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("expected accepted, got {other:?}"),
+        };
         let pair = || {
             vec![
                 fact("4242_7", "macos-display-1", 0),

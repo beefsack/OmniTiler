@@ -6,8 +6,8 @@
   approved one retained focus request for explicit commands, automatic admission,
   focus-follows-cursor and positive close, including macOS admission actuation
   and Q1-Q3 below. The frozen `afterShown` schema is defined below; runtime
-  implementation and proof are incomplete. Full-suite verification and remaining
-  proof-plan coverage still prevent acceptance of the coordinated wire amendment.
+  implementation is present, but full proof-plan mapping and native acceptance
+  are incomplete. This is work in progress, not a fully passing workspace.
 - Replace issuing-publication-dependent focus with one global pending slot,
   present in every latest publication until satisfied, superseded, ineligible
   or refused. Keep immutable correlation, report-derived settlement and one
@@ -357,6 +357,46 @@
 - Next work is to complete the remaining proof-plan mapping and full verification.
   KDE and Windows unified-focus adoption must be recorded before coordinated
   publication; old readers are not compatible.
+
+## Rebased work-in-progress evidence
+
+- Current implementation was rebased onto `b9a197c1`, including single report
+  ingress `b282f8de` and dead fullscreen flag removal `9fec57c3`. Ten textual
+  conflicts preserved the upstream single-engine test and ingress signature,
+  retained-focus assertions, truthful foreground fixtures and the shared-roster
+  contract. Four newly added test call sites then needed the two-argument ingress.
+- Latest verification is reported by the implementation worker against that
+  rebased tree with the four call-site fixes: core library 2139 passed, macOS
+  library 1570 passed; protocol library 61, world codec 60, close-focus wire 13,
+  focus feedback 12, reply decode 17 and selection writer 2 passed. Each test
+  command exited 0, with zero failures. The macOS library includes all four
+  per-cause skipped-issuing journeys and both genuine selection journeys.
+- A complete workspace build is not established. The worker's workspace
+  all-target check exited 101 in `omnitiler::float_intent_store` on rustix
+  mode-type operations and unavailable `mkfifoat`; attribution is not yet
+  established. Strict all-target clippy for core/protocol/macOS exited 101 at
+  three lints in unchanged `world_native.rs` (needless borrow, question mark,
+  unnecessary get-then-check). Further macOS dead-code/unused-variable and
+  protocol unused-mut warnings were observed; clean strict clippy is unproved.
+- Earlier protocol stress failures were caused by the effects-to-request
+  cutover and migrated: before rebase, all 60 library tests, 60 world-codec
+  tests and both selection-writer tests passed. Eleven raw-attempt integration
+  failures remain caused by the cutover: their mock consumer still assumes
+  one-shot focus effects and needs genuine retained accounting, not relaxed
+  assertions. They have not been rerun after rebase.
+- The earlier macOS integration result was 119 passed, 31 failed, exit 101:
+  classification 18, runtime phase 1 seven, scoped gates one, focus-gap trace
+  one and scoped tile four. Attribution remains unknown and these tests have
+  not been rerun after rebase. Earlier core integration fixture migrations
+  passed targeted checks, but no current full integration result is claimed.
+- The two Windows-example unsafe-root violations are pre-existing and already
+  tracked under Windows fixture unsafe-root consolidation; the direct guardrail
+  check exited 101 (zero passed, one failed). No allowlist waiver was added.
+- KDE and Windows adoption is tracked in the backlog. Old consumers are not
+  wire-compatible. User-run macOS native acceptance and remaining proof-plan
+  coverage stay open. C3's approved retained reply work uses the same model;
+  it must preserve this lane while converting other items. C1/C2/C5 may move
+  retained state, sizing and codec plumbing; C4 may replace evidence carriers.
 
 ## Source anchors
 
