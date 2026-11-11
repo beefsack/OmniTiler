@@ -982,15 +982,11 @@ fn focus_effects_filter_held_output() {
     ];
     let reply = engine.publish_v4(envelope(7), None, effects, None, &BTreeSet::new());
     assert!(
-        !reply.effects.iter().any(|effect| effect.target.0 == "win-a"
-            && effect.kind == crate::world_report::EffectKind::Focus),
-        "held focus filtered: {:?}",
-        reply.effects
-    );
-    assert!(
-        reply.effects.iter().any(|effect| effect.target.0 == "win-c"
-            && effect.kind == crate::world_report::EffectKind::Focus),
-        "clean focus kept: {:?}",
+        !reply
+            .effects
+            .iter()
+            .any(|effect| effect.kind == crate::world_report::EffectKind::Focus),
+        "focus never publishes as wire effects: {:?}",
         reply.effects
     );
     // Raise/Stack are native effects: held targets suppress, clean pass.

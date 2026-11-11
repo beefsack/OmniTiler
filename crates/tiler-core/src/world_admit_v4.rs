@@ -41,7 +41,7 @@ use crate::world_presentation::{GroupHideReason, PresentationUnderlay};
 use crate::world_report::{
     AttemptLaneV4, BatchSettlement, BorderPresentationV4, WORLD_CONTRACT_VERSION_V4,
     WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldCommand, WorldPresentationV4,
-    WorldReplyV4, WorldReportV4, validate_intent_writes_reason,
+    WorldReplyV4, WorldReportV4, validate_focus_request_reason, validate_intent_writes_reason,
 };
 use crate::world_report_v4_checks::{
     graded_effective_v4, report_digest_v4, validate_report_v4_reason,
@@ -577,6 +577,16 @@ impl WorldEngine {
                 message: reason,
             });
         }
+        // Frozen `afterShown` section caps mirror the protocol encoder:
+        // an over-cap projection refuses before adoption so a typed
+        // rejection leaves the engine exactly unchanged instead of
+        // poisoning the retained slot past the byte gate.
+        if let Some(reason) = validate_focus_request_reason(&reply.focus_request) {
+            return Some(V4RunOutcome::Rejected {
+                kind: KIND_SNAPSHOT,
+                message: reason,
+            });
+        }
         if reply_estimate_v4(reply) > WORLD_MAX_REPLY_BYTES
             || reply_exact_bytes_v4(reply) > WORLD_MAX_REPLY_BYTES
         {
@@ -670,7 +680,7 @@ impl WorldEngine {
             windows: Vec::new(),
             transfers: Vec::new(),
             effects: Vec::new(),
-            close_focus: None,
+            focus_request: None,
             command_result: None,
             gesture_settled: None,
             operation_settled: Vec::new(),

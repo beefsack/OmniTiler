@@ -719,31 +719,24 @@ pub(crate) mod tests {
             other => panic!("directional result, got {other:?}"),
         };
         assert_eq!(target, Some(WindowId("win-target".to_owned())));
-        assert_eq!(
-            reply.effects.len(),
-            1,
-            "one spent effect, never a duplicate actuation lane"
-        );
         assert!(
-            reply
-                .effects
-                .iter()
-                .any(|effect| effect.target.0 == "win-target" && effect.is_explicit_focus_for(12)),
-            "explicit focus effect for the core-selected target"
+            reply.effects.is_empty(),
+            "focus never publishes as wire effects: {:?}",
+            reply.effects
         );
-        for effect in reply
-            .effects
-            .iter()
-            .filter(|effect| effect.is_explicit_focus_for(12))
-        {
-            assert_eq!(
-                effect.cause,
-                crate::world_report::EffectCause::ExplicitCommand,
-                "explicit cause: {effect:?}"
-            );
-            assert_eq!(effect.command_seq, Some(12));
-            assert!(!effect.await_shown);
-        }
+        let request = reply
+            .focus_request
+            .as_ref()
+            .expect("explicit focus request");
+        assert_eq!(request.target.0, "win-target");
+        assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+        assert_eq!(request.issued_revision, reply.state_revision);
+        assert_eq!(
+            request.cause,
+            crate::world_report::FocusRequestCause::ExplicitCommand
+        );
+        assert_eq!(request.cmd_seq, Some(12));
+        assert_eq!(request.after_shown, None);
     }
 
     #[test]
@@ -1118,32 +1111,24 @@ pub(crate) mod tests {
             other => panic!("directional result, got {other:?}"),
         };
         assert_eq!(target, Some(WindowId("win-new".to_owned())));
-        let focus_effects: Vec<_> = reply
-            .effects
-            .iter()
-            .filter(|effect| effect.kind == crate::world_report::EffectKind::Focus)
-            .collect();
-        // The directional decision spends exactly one effect (a newcomer
-        // admission effect may coincide on the same target through the
-        // shared lane; both name the core-selected window). Correlation
-        // is typed (cause plus command sequence), never id spelling.
-        let directional: Vec<_> = focus_effects
-            .iter()
-            .filter(|effect| effect.is_explicit_focus_for(12))
-            .collect();
-        assert_eq!(
-            directional.len(),
-            1,
-            "exactly one directional focus effect, got {:?}",
+        assert!(
+            reply.effects.is_empty(),
+            "focus never publishes as wire effects: {:?}",
             reply.effects
         );
-        assert_eq!(directional[0].target, WindowId("win-new".to_owned()));
-        assert!(
-            focus_effects
-                .iter()
-                .all(|effect| effect.target == WindowId("win-new".to_owned())),
-            "every focus effect names the selected target"
+        let request = reply
+            .focus_request
+            .as_ref()
+            .expect("explicit focus request");
+        assert_eq!(request.target, WindowId("win-new".to_owned()));
+        assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+        assert_eq!(request.issued_revision, reply.state_revision);
+        assert_eq!(
+            request.cause,
+            crate::world_report::FocusRequestCause::ExplicitCommand
         );
+        assert_eq!(request.cmd_seq, Some(12));
+        assert_eq!(request.after_shown, None);
     }
 
     #[test]
@@ -1193,18 +1178,23 @@ pub(crate) mod tests {
             "cross-output move retains a transfer, got {:?}",
             reply.transfers
         );
-        let focus_effects: Vec<_> = reply
-            .effects
-            .iter()
-            .filter(|effect| effect.kind == crate::world_report::EffectKind::Focus)
-            .collect();
-        assert_eq!(
-            focus_effects.len(),
-            1,
-            "exactly one follow-focus effect, got {:?}",
+        assert!(
+            reply.effects.is_empty(),
+            "focus never publishes as wire effects: {:?}",
             reply.effects
         );
-        assert_eq!(focus_effects[0].target, WindowId("win-a".to_owned()));
+        let request = reply
+            .focus_request
+            .as_ref()
+            .expect("explicit focus request");
+        assert_eq!(request.target, WindowId("win-a".to_owned()));
+        assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+        assert_eq!(request.issued_revision, reply.state_revision);
+        assert_eq!(
+            request.cause,
+            crate::world_report::FocusRequestCause::ExplicitCommand
+        );
+        assert_eq!(request.cmd_seq, Some(11));
     }
 
     #[test]

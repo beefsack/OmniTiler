@@ -2988,27 +2988,21 @@ mod effect_vocabulary_sizing_tests {
         )
         .saturating_add(max_intent_rollback_bound(engine.rollback_reserve_count()));
         let reply = accepted_v4(&mut engine, &input);
-        assert_eq!(
-            reply.effects.len(),
-            1,
-            "explicit winner supersedes admission: {:?}",
-            reply.effects
-        );
-        let explicit = reply
-            .effects
-            .iter()
-            .find(|effect| effect.is_explicit_focus_for(2))
-            .expect("explicit row");
-        assert_eq!(explicit.target.0, "win-a");
-        assert!(!explicit.await_shown);
         assert!(
-            reply
-                .effects
-                .iter()
-                .all(|effect| effect.cause != EffectCause::AutomaticAdmission),
-            "admission superseded by the explicit winner: {:?}",
+            reply.effects.is_empty(),
+            "focus never publishes as wire effects: {:?}",
             reply.effects
         );
+        let explicit = reply.focus_request.as_ref().expect("explicit request");
+        assert_eq!(explicit.target.0, "win-a");
+        assert_eq!(explicit.id, format!("focus-{}", reply.state_revision));
+        assert_eq!(explicit.issued_revision, reply.state_revision);
+        assert_eq!(
+            explicit.cause,
+            crate::world_report::FocusRequestCause::ExplicitCommand
+        );
+        assert_eq!(explicit.cmd_seq, Some(2));
+        assert_eq!(explicit.after_shown, None);
         assert!(
             engine
                 .automatic_focus_tokens
@@ -3142,10 +3136,12 @@ mod effect_vocabulary_sizing_tests {
         );
         let reply = accepted_v4(&mut engine, &retry);
         assert!(
-            reply
-                .effects
-                .iter()
-                .any(|effect| effect.is_explicit_focus_for(2)),
+            reply.focus_request.as_ref().is_some_and(|request| {
+                request.target.0 == "win-a"
+                    && request.cause
+                        == crate::world_report::FocusRequestCause::ExplicitCommand
+                    && request.cmd_seq == Some(2)
+            }),
             "retry emits the explicit focus: {:?}",
             reply.effects
         );

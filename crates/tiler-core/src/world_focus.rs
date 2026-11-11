@@ -38,7 +38,8 @@ pub(crate) enum FocusVerdict {
     Unproven,
 }
 
-/// One retained ordinary focus grant: the emitted effect as published, the
+/// One retained ordinary focus grant: the focus carrier as published (the
+/// winner's carrier shares the global request's frozen id), the
 /// first exact-tuple correlated feedback row (if any), and its verdict.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RetainedFocusGrant {
@@ -162,14 +163,44 @@ impl WorldEngine {
     /// explicit command in practice).
     pub(crate) fn retain_published_focus(&mut self, effects: &[OneShotEffect]) {
         use crate::world_report::EffectKind;
+        // Single-authority correlation: a retained ordinary carrier is only
+        // a representation and shares the winning global request's frozen
+        // id, so adapter feedback (keyed by the published request) latches
+        // here. Only the winner's tuple aligns (matching cause, command
+        // sequence, target, and issuing revision); every other grant keeps
+        // its opaque tuple and simply never correlates, never a second
+        // actuation authority.
+        let slot = self.pending_focus.clone();
         let fresh: Vec<RetainedFocusGrant> = effects
             .iter()
             .filter(|effect| effect.kind == EffectKind::Focus && !effect.await_shown)
             .cloned()
-            .map(|effect| RetainedFocusGrant {
-                effect,
-                feedback: None,
-                verdict: FocusVerdict::Pending,
+            .map(|mut effect| {
+                if let Some(pending) = slot.as_ref()
+                    && effect.issued_revision == pending.issued_revision
+                    && effect.command_seq == pending.cmd_seq
+                    && effect.target == pending.target
+                    && matches!(
+                        (effect.cause, pending.cause),
+                        (
+                            crate::world_report::EffectCause::ExplicitCommand,
+                            crate::world_report::FocusRequestCause::ExplicitCommand
+                        ) | (
+                            crate::world_report::EffectCause::AutomaticAdmission,
+                            crate::world_report::FocusRequestCause::AutomaticAdmission
+                        ) | (
+                            crate::world_report::EffectCause::FocusFollowsCursor,
+                            crate::world_report::FocusRequestCause::FocusFollowsCursor
+                        )
+                    )
+                {
+                    effect.id = pending.id.clone();
+                }
+                RetainedFocusGrant {
+                    effect,
+                    feedback: None,
+                    verdict: FocusVerdict::Pending,
+                }
             })
             .collect();
         if fresh.is_empty() {

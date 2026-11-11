@@ -171,11 +171,28 @@ fn v4_reply_valid_shapes_spot_check() {
         "observe no suspension"
     );
     let focus = decode_ok("messages/reply-effect-focus.json");
-    assert_eq!(focus.reply.effects.len(), 1);
+    let request = focus
+        .reply
+        .focus_request
+        .as_ref()
+        .expect("focus lane present");
     assert_eq!(
-        focus.reply.effects[0].command_seq,
+        request.cause,
+        tiler_core::world_report::FocusRequestCause::ExplicitCommand,
+        "explicit request carries its cause"
+    );
+    assert_eq!(
+        request.cmd_seq,
         Some(1),
-        "explicit effect carries its command"
+        "explicit request carries its command"
+    );
+    assert!(
+        request.after_shown.is_some(),
+        "selection-backed explicit carries dependencies"
+    );
+    assert!(
+        focus.reply.effects.is_empty(),
+        "focus left the effects lane"
     );
     let float = decode_ok("messages/reply-result-float-placed.json");
     assert!(float.reply.command_result.is_some(), "float carries result");
@@ -268,19 +285,19 @@ fn expected_reject(id: &str) -> (&'static str, &'static str, &'static str, &'sta
         "invalid-effect-explicit-null-seq" => (
             "snapshot-invalid",
             "effect-explicit-null-seq",
-            "messages/reply-effect-focus.json",
+            "messages/reply-effect-raise.json",
             "/effects/0/cmdSeq",
         ),
         "invalid-effect-automatic-await-shown" => (
             "snapshot-invalid",
             "effect-automatic-await-shown",
-            "messages/reply-effect-automatic-admission.json",
+            "messages/reply-effect-raise.json",
             "/effects/0/awaitShown",
         ),
         "invalid-effect-unknown-cause" => (
             "unknown-value",
             "request contains an unknown value",
-            "messages/reply-effect-focus.json",
+            "messages/reply-effect-raise.json",
             "/effects/0/cause",
         ),
         "invalid-result-applied-wrapper" => (
@@ -347,13 +364,13 @@ fn expected_reject(id: &str) -> (&'static str, &'static str, &'static str, &'sta
             "unknown-value",
             "request contains an unknown value",
             "messages/reply-close-focus-pending.json",
-            "/closeFocus/cause",
+            "/focusRequest/cause",
         ),
         "invalid-close-focus-missing-lane" => (
             "malformed",
             "request is malformed",
             "messages/reply-bootstrap.json",
-            "/closeFocus",
+            "/focusRequest",
         ),
         other => panic!("reject table misses {other}"),
     }
@@ -1015,15 +1032,19 @@ fn writer_base() -> DecodedReplyV4 {
     decode_reply_v4(&fixture_text("messages/reply-observe.json")).expect("observe decodes")
 }
 
-fn writer_effect_focus() -> DecodedReplyV4 {
-    decode_reply_v4(&fixture_text("messages/reply-effect-focus.json")).expect("decodes")
+fn writer_effect_raise() -> DecodedReplyV4 {
+    decode_reply_v4(&fixture_text("messages/reply-effect-raise.json")).expect("decodes")
 }
 
 fn writer_effect_automatic() -> DecodedReplyV4 {
-    decode_reply_v4(&fixture_text(
-        "messages/reply-effect-automatic-admission.json",
-    ))
-    .expect("decodes")
+    // No valid-wire fixture carries a non-explicit effect row (focus left
+    // the effects lane with its causes): derive the automatic base from
+    // the raise row so the writer refusals below stay effect-lane checks.
+    let mut base =
+        decode_reply_v4(&fixture_text("messages/reply-effect-raise.json")).expect("decodes");
+    base.reply.effects[0].cause = tiler_core::world_report::EffectCause::AutomaticAdmission;
+    base.reply.effects[0].command_seq = None;
+    base
 }
 
 #[test]
@@ -1036,7 +1057,7 @@ fn v4_reply_writer_refuses_unspellable() {
         .reply
         .windows
         .push(duplicate_window.reply.windows[0].clone());
-    let mut duplicate_effect = writer_effect_focus();
+    let mut duplicate_effect = writer_effect_raise();
     duplicate_effect
         .reply
         .effects
@@ -1046,7 +1067,7 @@ fn v4_reply_writer_refuses_unspellable() {
         .reply
         .scopes
         .push(duplicate_scope.reply.scopes[0].clone());
-    let mut explicit_null_seq = writer_effect_focus();
+    let mut explicit_null_seq = writer_effect_raise();
     explicit_null_seq.reply.effects[0].command_seq = None;
     let mut non_explicit_seq = writer_effect_automatic();
     non_explicit_seq.reply.effects[0].command_seq = Some(1);

@@ -15,9 +15,9 @@ use crate::gesture::{GestureIngress, GestureKind, GesturePhase};
 use crate::world_commands::CommandApplied;
 use crate::world_engine::{KIND_OPERATION, WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandRejectKind, CommandResult, EffectKind, FrameAttempt, FrameSetter, HoldReason,
-    RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, StateAttempt, StateProperty,
-    WindowDesire, WindowFact, WorldCommand, WorldReportV4,
+    CommandRejectKind, CommandResult, FrameAttempt, FrameSetter, HoldReason, RowDiagnosticKind,
+    RowDiagnosticLane, ScopeAuthority, StateAttempt, StateProperty, WindowDesire, WindowFact,
+    WorldCommand, WorldReportV4,
 };
 use crate::world_v4_support_tests::{accepted, fact, report_full, screen};
 
@@ -2743,12 +2743,36 @@ fn directional_outcome(reply: &crate::world_report::WorldReplyV4) -> Option<&'st
 }
 
 fn focus_effect_targets(reply: &crate::world_report::WorldReplyV4) -> Vec<WindowId> {
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {:?}",
+        reply.effects
+    );
     reply
-        .effects
-        .iter()
-        .filter(|effect| effect.kind == EffectKind::Focus)
-        .map(|effect| effect.target.clone())
-        .collect()
+        .focus_request
+        .as_ref()
+        .map(|request| vec![request.target.clone()])
+        .unwrap_or_default()
+}
+
+fn expect_explicit_focus(reply: &crate::world_report::WorldReplyV4, target: &str, cmd_seq: u64) {
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {:?}",
+        reply.effects
+    );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target, WindowId(target.to_owned()));
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(cmd_seq));
 }
 
 #[test]
@@ -2778,10 +2802,7 @@ fn composed_tiled_focus_crosses_adjacent_output() {
         &mut engine,
         &cmd_two(3, 2, windows(), "win-a", focus_dir("win-a", "right")),
     );
-    assert_eq!(
-        focus_effect_targets(&reply),
-        vec![WindowId("win-c".to_owned())]
-    );
+    expect_explicit_focus(&reply, "win-c", 2);
     assert!(
         engine
             .composed_maximized
@@ -2927,11 +2948,7 @@ fn composed_tiled_move_clears_bit_without_native_clear() {
         reply.command_result.is_none(),
         "tiled success carries no result"
     );
-    assert_eq!(
-        focus_effect_targets(&reply),
-        vec![WindowId("win-a".to_owned())],
-        "mover keeps focus through one effect"
-    );
+    expect_explicit_focus(&reply, "win-a", 2);
     let row = desire(&reply, "win-a");
     assert_eq!(row.clear_operation, None, "no clear desire published");
     assert_ne!(

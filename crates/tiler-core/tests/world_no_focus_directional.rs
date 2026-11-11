@@ -12,8 +12,8 @@ use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    EffectKind, PresentationIngressV4, PresentationRowV4, ScreenReport, WORLD_CONTRACT_VERSION_V4,
-    WindowFact, WorldCommand, WorldReportV4,
+    PresentationIngressV4, PresentationRowV4, ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact,
+    WorldCommand, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -138,13 +138,21 @@ fn accepted(
     }
 }
 
-fn focus_targets(reply: &tiler_core::world_report::WorldReplyV4) -> Vec<String> {
-    reply
-        .effects
-        .iter()
-        .filter(|effect| effect.kind == EffectKind::Focus)
-        .map(|effect| effect.target.0.clone())
-        .collect()
+/// Quiet means no wire effects and no retained request: focus never
+/// publishes as one-shot wire effects, and with no pending focus decision
+/// (or after satisfaction) the retained lane stays `None`. A live pending
+/// request would survive here unchanged instead, never silently clear.
+fn assert_quiet_no_request(reply: &tiler_core::world_report::WorldReplyV4) {
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {:?}",
+        reply.effects
+    );
+    assert!(
+        reply.focus_request.is_none(),
+        "no pending focus decision retains nothing: {:?}",
+        reply.focus_request
+    );
 }
 
 fn two_outputs() -> Vec<ScreenReport> {
@@ -205,11 +213,9 @@ fn no_focus_journey_focuses_remembered_then_converges() {
         &mut engine,
         &report(4, screens.clone(), four_windows(), "", None, None, None),
     );
-    assert!(
-        focus_targets(&loss).is_empty(),
-        "host loss stays quiet: {:?}",
-        loss.effects
-    );
+    // Host-caused focus loss is observation-only: no new focus decision,
+    // no pending request, so the retained lane stays absent.
+    assert_quiet_no_request(&loss);
     let crossed = accepted(
         &mut engine,
         &report(
@@ -225,21 +231,63 @@ fn no_focus_journey_focuses_remembered_then_converges() {
             Some("out-a"),
         ),
     );
-    assert_eq!(
-        focus_targets(&crossed),
-        vec!["win-b2".to_owned()],
-        "entry-edge destination selection: {:?}",
+    assert!(
+        crossed.effects.is_empty(),
+        "focus never publishes as wire effects: {:?}",
         crossed.effects
+    );
+    let request = crossed
+        .focus_request
+        .as_ref()
+        .expect("entry-edge destination selection retains win-b2");
+    assert_eq!(
+        request.target.0, "win-b2",
+        "entry-edge destination selection: {:?}",
+        crossed.focus_request
+    );
+    assert_eq!(
+        request.cause,
+        tiler_core::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
+    assert_eq!(
+        request.id,
+        format!("focus-{}", crossed.state_revision),
+        "retained id quotes the issuing revision: {:?}",
+        crossed.focus_request
+    );
+    assert_eq!(
+        request.issued_revision, crossed.state_revision,
+        "retained revision quotes the issuing publication: {:?}",
+        crossed.focus_request
+    );
+    assert!(
+        request.after_shown.is_none(),
+        "directional focus carries no selection dependencies: {:?}",
+        crossed.focus_request
+    );
+    let home = crossed
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-b2")
+        .expect("win-b2 homed");
+    assert_eq!(
+        request.output, home.output,
+        "retained scope follows routing: {:?}",
+        crossed.focus_request
+    );
+    assert_eq!(
+        request.workspace, home.workspace,
+        "retained scope follows routing: {:?}",
+        crossed.focus_request
     );
     let arrival = accepted(
         &mut engine,
         &report(6, screens, four_windows(), "win-b2", None, None, None),
     );
-    assert!(
-        focus_targets(&arrival).is_empty(),
-        "convergence adopts without refocus: {:?}",
-        arrival.effects
-    );
+    // Observing the retained target satisfies it: the lane clears instead
+    // of minting a refocus or retaining the old row.
+    assert_quiet_no_request(&arrival);
     assert!(
         arrival.command_result.is_none(),
         "quiet arrival: {:?}",
@@ -262,7 +310,8 @@ fn no_focus_noop_journey_stays_quiet() {
         &mut engine,
         &report(2, screens.clone(), windows(), "", None, None, None),
     );
-    assert!(focus_targets(&loss).is_empty());
+    // Observation-only loss mints nothing: the retained lane stays absent.
+    assert_quiet_no_request(&loss);
     let noop = accepted(
         &mut engine,
         &report(
@@ -279,9 +328,14 @@ fn no_focus_noop_journey_stays_quiet() {
         ),
     );
     assert!(
-        focus_targets(&noop).is_empty(),
-        "no neighbor: {:?}",
+        noop.effects.is_empty(),
+        "no neighbor mints no wire effects: {:?}",
         noop.effects
+    );
+    assert!(
+        noop.focus_request.is_none(),
+        "no-op decision retains nothing: {:?}",
+        noop.focus_request
     );
     match &noop.command_result {
         Some(tiler_core::world_report::CommandResult::Directional { outcome, cause, .. }) => {
@@ -294,5 +348,6 @@ fn no_focus_noop_journey_stays_quiet() {
         &mut engine,
         &report(4, screens, windows(), "", None, None, None),
     );
-    assert!(focus_targets(&still).is_empty());
+    // The follow-up observation carries no new decision either.
+    assert_quiet_no_request(&still);
 }

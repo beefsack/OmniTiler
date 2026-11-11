@@ -17,7 +17,7 @@ use crate::ids::{CorrelationId, OwnerId};
 use crate::intent_data::{IntentData, decode_intent_data, encode_intent_data};
 use crate::world_engine::{EventIssue, WorldEngine};
 use crate::world_report::{
-    BatchSettlement, CommandResult, EffectKind, IntentWrite, NativeObservation, NativeOccupancy,
+    BatchSettlement, CommandResult, IntentWrite, NativeObservation, NativeOccupancy,
     NativeWorkspaceFact, PresentationIngressV4, PresentationRowV4, SendSource, TransferKind,
     WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
@@ -185,18 +185,43 @@ fn implicit_focus_dir(direction: &str) -> WorldCommand {
 }
 
 fn has_focus_effect(reply: &WorldReplyV4, window: &str) -> bool {
-    reply
-        .effects
-        .iter()
-        .any(|effect| effect.kind == EffectKind::Focus && effect.target.0 == window)
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {:?}",
+        reply.effects
+    );
+    match reply.focus_request.as_ref() {
+        Some(request) => {
+            assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+            assert_eq!(request.issued_revision, reply.state_revision);
+            request.target.0 == window
+        }
+        None => false,
+    }
 }
 
 fn focus_effects(reply: &WorldReplyV4) -> Vec<&WindowId> {
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {:?}",
+        reply.effects
+    );
     reply
-        .effects
+        .focus_request
         .iter()
-        .filter(|effect| effect.kind == EffectKind::Focus)
-        .map(|effect| &effect.target)
+        .map(|r| {
+            assert_eq!(r.id, format!("focus-{}", reply.state_revision));
+            assert_eq!(r.issued_revision, reply.state_revision);
+            assert_eq!(
+                r.cause,
+                crate::world_report::FocusRequestCause::ExplicitCommand
+            );
+            assert!(
+                r.cmd_seq.is_some(),
+                "explicit batch focus carries cmd_seq: {r:?}"
+            );
+            &r.target
+        })
         .collect()
 }
 

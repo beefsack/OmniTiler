@@ -178,8 +178,9 @@ fn focus_command(window: &str) -> WorldCommand {
     }
 }
 
-/// Real explicit-command grant for `window` via command `seq`: returns the
-/// actually emitted effect (opaque id, target, issuing revision).
+/// Real explicit-command grant for `window` via command `seq`: asserts the
+/// wire retained request, then returns the internal ordinary grant effect
+/// (opaque id, target, issuing revision) for exact-tuple feedback.
 fn explicit_grant(engine: &mut WorldEngine, seq: u64, window: &str) -> OneShotEffect {
     let reply = accepted(
         engine,
@@ -192,8 +193,22 @@ fn explicit_grant(engine: &mut WorldEngine, seq: u64, window: &str) -> OneShotEf
             Some(focus_command(window)),
         ),
     );
-    assert_eq!(reply.effects.len(), 1, "one explicit focus: {reply:?}");
-    reply.effects[0].clone()
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, window, "wire target: {reply:?}");
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand,
+        "wire cause: {reply:?}"
+    );
+    assert_eq!(request.cmd_seq, Some(seq), "wire cmd_seq: {reply:?}");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    engine.retained_focus[0].effect.clone()
 }
 
 fn bootstrap_two(engine: &mut WorldEngine) {
@@ -884,21 +899,31 @@ fn explicit_batch_focus_supersedes_admission_grant() {
             Some(focus_command("w0")),
         ),
     );
-    assert_eq!(reply.effects.len(), 1, "explicit-only grant: {reply:?}");
-    assert_eq!(reply.effects[0].target.0, "w0");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply.focus_request.as_ref().expect("explicit-only request");
+    assert_eq!(request.target.0, "w0");
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(2));
     assert_eq!(
         engine.retained_focus.len(),
         1,
         "bound follows the surviving grant"
     );
-    // The surviving grant is tracked: the emitted effect retained as issued,
-    // nothing dropped or truncated.
+    // The surviving grant is tracked: the internal effect retained as issued.
+    // Wire carries only the retained request; the internal tuple stays opaque.
     let retained_effects: Vec<OneShotEffect> = engine
         .retained_focus
         .iter()
         .map(|grant| grant.effect.clone())
         .collect();
-    assert_eq!(retained_effects, reply.effects);
+    assert_eq!(retained_effects.len(), 1);
+    assert_eq!(retained_effects[0].target.0, "w0");
     assert!(
         engine
             .retained_focus
@@ -976,20 +1001,24 @@ fn newer_emitted_batch_supersedes_older_and_stale_tuples_ignore() {
             Some(focus_command("w0")),
         ),
     );
-    assert_eq!(first.effects.len(), 1, "explicit-only grant: {first:?}");
-    assert_eq!(first.effects[0].target.0, "w0");
-    let stale: Vec<FocusFeedback> = first
-        .effects
+    assert!(
+        first.effects.is_empty(),
+        "focus never publishes as wire effects: {first:?}"
+    );
+    let first_request = first.focus_request.as_ref().expect("explicit-only request");
+    assert_eq!(first_request.target.0, "w0");
+    let stale: Vec<FocusFeedback> = engine
+        .retained_focus
         .iter()
-        .map(|effect| {
+        .map(|grant| {
             feedback_row(
-                &effect.id,
-                &effect.target.0,
-                effect.issued_revision,
+                &grant.effect.id,
+                &grant.effect.target.0,
+                grant.effect.issued_revision,
                 VisibilitySetter::Accepted,
                 VisibilityReason::Empty,
                 Some("w-fore"),
-                Some(effect.target.0.clone()).as_deref(),
+                Some(grant.effect.target.0.clone()).as_deref(),
                 true,
                 9,
             )
@@ -1007,7 +1036,15 @@ fn newer_emitted_batch_supersedes_older_and_stale_tuples_ignore() {
             Some(focus_command("w1")),
         ),
     );
-    assert_eq!(reply.effects.len(), 1);
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("fresh explicit request");
+    assert_eq!(request.target.0, "w1");
     assert_eq!(engine.retained_focus.len(), 1);
     assert_eq!(engine.retained_focus[0].effect.target.0, "w1");
     assert_eq!(engine.retained_focus[0].verdict, FocusVerdict::Pending);
@@ -1072,12 +1109,17 @@ fn focus_follows_cursor_grant_settles_alone() {
     hover.cursor = Some((110, 10));
     hover.cursor_hit = Some(WindowId("win-b".to_owned()));
     let reply = accepted(&mut engine, &hover);
-    assert_eq!(reply.effects.len(), 1, "hover mints alone: {reply:?}");
-    assert_eq!(
-        reply.effects[0].id,
-        format!("ffc-{}", reply.effects[0].issued_revision),
-        "compact hover identity"
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
     );
+    let request = reply.focus_request.as_ref().expect("hover request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::FocusFollowsCursor
+    );
+    assert_eq!(request.id, format!("focus-{}", request.issued_revision));
     assert_eq!(engine.retained_focus.len(), 1);
     let grant = &engine.retained_focus[0];
     assert_eq!(grant.effect.target.0, "win-b");
@@ -1294,10 +1336,11 @@ fn explicit_close_prunes_and_reused_id_cannot_match_old_grant() {
         true,
         9,
     );
-    assert!(
-        reply.effects.iter().any(|effect| effect.target.0 == "w0"),
-        "reused id focuses fresh: {reply:?}"
-    );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("reused newcomer request");
+    assert_eq!(request.target.0, "w0", "reused id focuses fresh: {reply:?}");
     assert_eq!(engine.retained_focus.len(), 1);
     assert_ne!(engine.retained_focus[0].effect.id, effect.id);
     accepted(

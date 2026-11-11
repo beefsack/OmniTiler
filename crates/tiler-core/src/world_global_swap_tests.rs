@@ -1243,9 +1243,20 @@ fn global_unique_swap_occupied_current_emits_destination_remembered_focus() {
     );
     assert_eq!(view_of(&swapped, "out-a").as_deref(), Some(view_b.as_str()));
     assert_eq!(view_of(&swapped, "out-b").as_deref(), Some(view_a.as_str()));
-    assert_eq!(swapped.effects.len(), 1, "{:?}", swapped.effects);
-    assert_eq!(swapped.effects[0].target.0, "win-b1");
-    assert_eq!(swapped.effects[0].id, "fx-11");
+    assert!(
+        swapped.effects.is_empty(),
+        "focus never publishes as wire effects: {:?}",
+        swapped.effects
+    );
+    let request = swapped.focus_request.as_ref().expect("retained focus request");
+    assert_eq!(request.target.0, "win-b1");
+    assert_eq!(request.id, format!("focus-{}", swapped.state_revision));
+    assert_eq!(request.issued_revision, swapped.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
 }
 
 #[test]
@@ -1297,9 +1308,20 @@ fn global_unique_swap_empty_current_emits_destination_remembered_focus() {
     );
     assert_eq!(view_of(&swapped, "out-a").as_deref(), Some(view_b.as_str()));
     assert_eq!(view_of(&swapped, "out-b").as_deref(), Some(view_a.as_str()));
-    assert_eq!(swapped.effects.len(), 1, "{:?}", swapped.effects);
-    assert_eq!(swapped.effects[0].target.0, "win-b1");
-    assert_eq!(swapped.effects[0].id, "fx-11");
+    assert!(
+        swapped.effects.is_empty(),
+        "focus never publishes as wire effects: {:?}",
+        swapped.effects
+    );
+    let request = swapped.focus_request.as_ref().expect("retained focus request");
+    assert_eq!(request.target.0, "win-b1");
+    assert_eq!(request.id, format!("focus-{}", swapped.state_revision));
+    assert_eq!(request.issued_revision, swapped.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
 }
 
 #[test]

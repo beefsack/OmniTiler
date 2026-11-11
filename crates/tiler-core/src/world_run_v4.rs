@@ -376,12 +376,20 @@ impl WorldEngine {
                 {
                     self.implicit_focus = None;
                 }
+                if self
+                    .logical_focus_cursor
+                    .as_ref()
+                    .is_none_or(|slot| slot.0 != current_focused)
+                {
+                    self.logical_focus_cursor = None;
+                }
             } else if current_focused.is_empty() {
                 // Genuine native focus loss clears the execution-time
                 // subject. Per-workspace canonical memory
                 // (`last_active_window`) is untouched: it stays best-effort
                 // for workspace return.
                 self.implicit_focus = None;
+                self.logical_focus_cursor = None;
             }
             // Close or departure clears a slot target that left the live
             // set; unchanged re-reports keep an unlanded command choice.
@@ -389,6 +397,18 @@ impl WorldEngine {
                 && (self.staged.closes.contains(&slot) || !self.staged.homing.contains_key(&slot))
             {
                 self.implicit_focus = None;
+            }
+            if let Some(slot) = self.logical_focus_cursor.clone()
+                && (self.staged.closes.contains(&slot) || !self.staged.homing.contains_key(&slot))
+            {
+                self.logical_focus_cursor = None;
+            }
+            // A live retained request preserves its target as the cursor
+            // across an unchanged-baseline report: stale observed A must
+            // not overwrite pending B.
+            {
+                let observed = self.staged.observation.focused_global.clone();
+                self.preserve_live_pending_cursor(&observed);
             }
         }
         // Deferred first-command subject re-resolution: the pre-observation
@@ -400,7 +420,7 @@ impl WorldEngine {
         // instead of retargeting, and an unresolvable subject freezes
         // nothing so execution refuses without inventing focus.
         if first_implicit_home_send {
-            frozen_send_source = self.implicit_focus.clone().and_then(|subject| {
+            frozen_send_source = self.execution_subject().and_then(|subject| {
                 pre_send_homes
                     .get(&subject)
                     .cloned()
@@ -441,12 +461,22 @@ impl WorldEngine {
             }
         }
         let mut effects = self.take_admission_focus(&known_before, &held_scopes);
+        // Same-capture admission enters the execution-time ordering before
+        // commands: the accepted newcomer advances the logical cursor
+        // immediately, so a later implicit subject resolves from core focus,
+        // not stale native foreground.
+        for effect in &effects {
+            if effect.kind == EffectKind::Focus {
+                let _ = self.record_canonical(&effect.target, &held_scopes, false);
+            }
+        }
         if consumed {
             // Consumed sequences reconcile only, never re-execute or
             // re-validate: the result never re-emits, while a gesture
             // result stays the gesture's own.
             crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
             let result = self.command_result.take();
+            effects = self.drain_focus_candidates(effects, &held_scopes, report, issuing_revision);
             let reply = self.publish_v4(
                 PublishEnvelopeV4 {
                     adapter_incarnation: report.adapter_incarnation.clone(),
@@ -485,6 +515,7 @@ impl WorldEngine {
         if commands.is_empty() {
             let result = self.command_result.take();
             crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
+            effects = self.drain_focus_candidates(effects, &held_scopes, report, issuing_revision);
             let reply = self.publish_v4(
                 PublishEnvelopeV4 {
                     adapter_incarnation: report.adapter_incarnation.clone(),
@@ -692,9 +723,13 @@ impl WorldEngine {
         // The final publish drains with the last executed command's
         // carried identity (resolved pre-execution subject); commands
         // that never executed fall back to the reported spelling.
-        let published_command: Option<&WorldCommand> = last_bookkeeping
-            .as_ref()
-            .or_else(|| commands.last().map(|(_, command, _)| command));
+        let published_command: Option<WorldCommand> = last_bookkeeping
+            .clone()
+            .or_else(|| commands.last().map(|(_, command, _)| command.clone()));
+        // Winner pass before publication: the final focus decision
+        // supersedes the retained slot here, while the carriers stay
+        // internal for the selection freeze inside publication.
+        let effects = self.drain_focus_candidates(effects, &held_scopes, report, issuing_revision);
         let reply = self.publish_v4(
             PublishEnvelopeV4 {
                 adapter_incarnation: report.adapter_incarnation.clone(),
@@ -703,7 +738,7 @@ impl WorldEngine {
                 command_consumed: false,
                 issuing_revision,
             },
-            published_command,
+            published_command.as_ref(),
             effects,
             last_result,
             &held_scopes,

@@ -146,7 +146,7 @@ fn report(
             .first()
             .map(|f| f.window.0.clone())
             .unwrap_or_default(),
-        foreground_known: !windows.is_empty(),
+        foreground_known: windows.first().is_some_and(|f| !f.window.0.is_empty()),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),

@@ -12,8 +12,8 @@ use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::session::DomainKey;
 use crate::world_engine::{KIND_REUSED, PriorAcceptedContext, WorldEngine, WorldOutcome};
 use crate::world_report::{
-    AuthorityScope, EffectKind, HoldReason, ScopeAuthority, ScopeStatus, TilingMode, WindowDesire,
-    WorkspaceDesire, WorldCommand, WorldReplyV4,
+    AuthorityScope, FocusRequestCause, HoldReason, ScopeAuthority, ScopeStatus, TilingMode,
+    WindowDesire, WorkspaceDesire, WorldCommand, WorldReplyV4,
 };
 use crate::world_v4_support_tests::{accepted, fact, report, report_full, screen};
 
@@ -316,9 +316,12 @@ fn unchanged_raw_focus_preserves_command_selected_slot_without_cache() {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted command, got {other:?}"),
     };
-    assert!(reply.effects.iter().any(|effect| {
-        effect.kind == EffectKind::Focus && effect.target == WindowId("win-b".to_owned())
-    }));
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target, WindowId("win-b".to_owned()));
+    assert_eq!(request.cause, FocusRequestCause::ExplicitCommand);
     assert_eq!(
         engine.canonical_memory(&key),
         Some(WindowId("win-b".to_owned()))

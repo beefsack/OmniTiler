@@ -12,7 +12,7 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
 use crate::world_report::{
-    CommandRejectKind, CommandResult, EffectCause, FrameSetter, HoldReason, MemberAttempt,
+    CommandRejectKind, CommandResult, FrameSetter, HoldReason, MemberAttempt,
     PresentationIngressV4, PresentationRowV4, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority,
     ScreenReport, TransferKind, WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef, WorldCommand,
     WorldReportV4,
@@ -237,18 +237,20 @@ fn burst_batch_pins_last_eligible_newcomer_once() {
             None,
         ),
     );
-    assert_eq!(
-        arrival.effects.len(),
-        1,
-        "one burst intent: {:?}",
-        arrival.effects
+    assert!(
+        arrival.effects.is_empty(),
+        "focus never publishes as wire effects: {arrival:?}"
     );
-    assert_eq!(arrival.effects[0].target.0, "w3", "last newcomer");
+    let request = arrival.focus_request.as_ref().expect("admission request");
+    assert_eq!(request.target.0, "w3");
+    assert_eq!(request.id, format!("focus-{}", arrival.state_revision));
+    assert_eq!(request.issued_revision, arrival.state_revision);
     assert_eq!(
-        arrival.effects[0].id,
-        format!("af-{}", arrival.effects[0].issued_revision),
-        "compact admission identity"
+        request.cause,
+        crate::world_report::FocusRequestCause::AutomaticAdmission
     );
+    assert_eq!(request.cmd_seq, None);
+    assert_eq!(request.after_shown, None);
     let echo = accepted(
         &mut engine,
         &report(
@@ -461,18 +463,20 @@ fn normalized_ordinary_float_newcomer_focuses_once() {
             None,
         ),
     );
-    assert_eq!(
-        arrival.effects.len(),
-        1,
-        "one newcomer intent: {:?}",
-        arrival.effects
+    assert!(
+        arrival.effects.is_empty(),
+        "focus never publishes as wire effects: {arrival:?}"
     );
-    assert_eq!(arrival.effects[0].target.0, "w2");
+    let request = arrival.focus_request.as_ref().expect("admission request");
+    assert_eq!(request.target.0, "w2");
+    assert_eq!(request.id, format!("focus-{}", arrival.state_revision));
+    assert_eq!(request.issued_revision, arrival.state_revision);
     assert_eq!(
-        arrival.effects[0].id,
-        format!("af-{}", arrival.effects[0].issued_revision),
-        "compact admission identity"
+        request.cause,
+        crate::world_report::FocusRequestCause::AutomaticAdmission
     );
+    assert_eq!(request.cmd_seq, None);
+    assert_eq!(request.after_shown, None);
     assert!(row_of(&arrival, "w2").floating, "newcomer floats");
     let echo = accepted(
         &mut engine,
@@ -667,18 +671,20 @@ fn fixed_tile_override_newcomer_still_mints_once() {
             None,
         ),
     );
-    assert_eq!(
-        arrival.effects.len(),
-        1,
-        "override keeps intent: {:?}",
-        arrival.effects
+    assert!(
+        arrival.effects.is_empty(),
+        "focus never publishes as wire effects: {arrival:?}"
     );
-    assert_eq!(arrival.effects[0].target.0, "wt");
+    let request = arrival.focus_request.as_ref().expect("admission request");
+    assert_eq!(request.target.0, "wt");
+    assert_eq!(request.id, format!("focus-{}", arrival.state_revision));
+    assert_eq!(request.issued_revision, arrival.state_revision);
     assert_eq!(
-        arrival.effects[0].id,
-        format!("af-{}", arrival.effects[0].issued_revision),
-        "compact admission identity"
+        request.cause,
+        crate::world_report::FocusRequestCause::AutomaticAdmission
     );
+    assert_eq!(request.cmd_seq, None);
+    assert_eq!(request.after_shown, None);
     assert!(
         !row_of(&arrival, "wt").floating,
         "override tiles: {:?}",
@@ -896,18 +902,20 @@ fn closed_automatic_lifetime_reused_as_ordinary_mints_again() {
             None,
         ),
     );
-    assert_eq!(
-        readmit.effects.len(),
-        1,
-        "reuse mints fresh: {:?}",
-        readmit.effects
+    assert!(
+        readmit.effects.is_empty(),
+        "focus never publishes as wire effects: {readmit:?}"
     );
-    assert_eq!(readmit.effects[0].target.0, "wf");
+    let request = readmit.focus_request.as_ref().expect("admission request");
+    assert_eq!(request.target.0, "wf");
+    assert_eq!(request.id, format!("focus-{}", readmit.state_revision));
+    assert_eq!(request.issued_revision, readmit.state_revision);
     assert_eq!(
-        readmit.effects[0].id,
-        format!("af-{}", readmit.effects[0].issued_revision),
-        "compact admission identity"
+        request.cause,
+        crate::world_report::FocusRequestCause::AutomaticAdmission
     );
+    assert_eq!(request.cmd_seq, None);
+    assert_eq!(request.after_shown, None);
 }
 
 #[test]
@@ -939,18 +947,23 @@ fn mixed_batch_fixed_last_matches_sequential_ordinary_focus() {
             None,
         ),
     );
-    assert_eq!(
-        seq_ordinary.effects.len(),
-        1,
-        "sequential ordinary mints: {:?}",
-        seq_ordinary.effects
+    assert!(
+        seq_ordinary.effects.is_empty(),
+        "focus never publishes as wire effects: {seq_ordinary:?}"
     );
-    assert_eq!(seq_ordinary.effects[0].target.0, "wa");
+    let request = seq_ordinary
+        .focus_request
+        .as_ref()
+        .expect("admission request");
+    assert_eq!(request.target.0, "wa");
+    assert_eq!(request.id, format!("focus-{}", seq_ordinary.state_revision));
+    assert_eq!(request.issued_revision, seq_ordinary.state_revision);
     assert_eq!(
-        seq_ordinary.effects[0].id,
-        format!("af-{}", seq_ordinary.effects[0].issued_revision),
-        "compact admission identity"
+        request.cause,
+        crate::world_report::FocusRequestCause::AutomaticAdmission
     );
+    assert_eq!(request.cmd_seq, None);
+    assert_eq!(request.after_shown, None);
     // Sequential fixed arrival is tiled-first (the classifier path);
     // the batched echo below observes the already-floated result.
     let seq_fixed = accepted(
@@ -1000,9 +1013,9 @@ fn mixed_batch_fixed_last_matches_sequential_ordinary_focus() {
         ),
     );
     assert_eq!(
-        arrival.effects, seq_ordinary.effects,
+        arrival.focus_request, seq_ordinary.focus_request,
         "batch matches sequential: {:?}",
-        arrival.effects
+        arrival.focus_request
     );
     // Report order within the batch changes nothing: the same members
     // listed fixed-first select identically.
@@ -1037,9 +1050,9 @@ fn mixed_batch_fixed_last_matches_sequential_ordinary_focus() {
         ),
     );
     assert_eq!(
-        reordered_arrival.effects, seq_ordinary.effects,
+        reordered_arrival.focus_request, seq_ordinary.focus_request,
         "reordered batch matches: {:?}",
-        reordered_arrival.effects
+        reordered_arrival.focus_request
     );
     let mut wz_echo = float_fact("wz", "out-a", 300);
     wz_echo.hints = Some(fixed_hints());
@@ -1061,9 +1074,9 @@ fn mixed_batch_fixed_last_matches_sequential_ordinary_focus() {
         ),
     );
     assert_eq!(
-        echo.effects, seq_fixed.effects,
+        echo.focus_request, seq_fixed.focus_request,
         "echo matches sequential: {:?}",
-        echo.effects
+        echo.focus_request
     );
 }
 
@@ -1102,18 +1115,20 @@ fn mixed_batch_fixed_first_mints_ordinary() {
             None,
         ),
     );
-    assert_eq!(
-        arrival.effects.len(),
-        1,
-        "ordinary mints: {:?}",
-        arrival.effects
+    assert!(
+        arrival.effects.is_empty(),
+        "focus never publishes as wire effects: {arrival:?}"
     );
-    assert_eq!(arrival.effects[0].target.0, "wo");
+    let request = arrival.focus_request.as_ref().expect("admission request");
+    assert_eq!(request.target.0, "wo");
+    assert_eq!(request.id, format!("focus-{}", arrival.state_revision));
+    assert_eq!(request.issued_revision, arrival.state_revision);
     assert_eq!(
-        arrival.effects[0].id,
-        format!("af-{}", arrival.effects[0].issued_revision),
-        "compact admission identity"
+        request.cause,
+        crate::world_report::FocusRequestCause::AutomaticAdmission
     );
+    assert_eq!(request.cmd_seq, None);
+    assert_eq!(request.after_shown, None);
     assert!(
         row_of(&arrival, "wf").floating,
         "fixed still floats automatic"
@@ -1285,26 +1300,20 @@ fn windows_profile_automatic_fixed_withholds_while_ordinary_mints() {
                 "automatic fixed floats under windows profile"
             );
         } else {
-            assert_eq!(
-                arrival.effects.len(),
-                1,
-                "windows profile still mints {case}: {:?}",
-                arrival.effects
-            );
-            assert_eq!(arrival.effects[0].target.0, "wn");
             assert!(
-                arrival.effects[0].id.starts_with("af-"),
-                "admission intent id: {:?}",
-                arrival.effects[0].id
+                arrival.effects.is_empty(),
+                "focus never publishes as wire effects: {arrival:?}"
             );
+            let request = arrival.focus_request.as_ref().expect("admission request");
+            assert_eq!(request.target.0, "wn");
+            assert_eq!(request.id, format!("focus-{}", arrival.state_revision));
+            assert_eq!(request.issued_revision, arrival.state_revision);
             assert_eq!(
-                arrival.effects[0].cause,
-                crate::world_report::EffectCause::AutomaticAdmission,
-                "admission cause: {:?}",
-                arrival.effects[0]
+                request.cause,
+                crate::world_report::FocusRequestCause::AutomaticAdmission
             );
-            assert_eq!(arrival.effects[0].command_seq, None);
-            assert!(!arrival.effects[0].await_shown);
+            assert_eq!(request.cmd_seq, None);
+            assert_eq!(request.after_shown, None);
         }
     }
 }
@@ -1366,26 +1375,23 @@ fn explicit_focus_command_after_withhold_succeeds_without_admission_token() {
             }),
         ),
     );
+    assert!(
+        commanded.effects.is_empty(),
+        "focus never publishes as wire effects: {commanded:?}"
+    );
+    let request = commanded
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, "wf");
+    assert_eq!(request.id, format!("focus-{}", commanded.state_revision));
+    assert_eq!(request.issued_revision, commanded.state_revision);
     assert_eq!(
-        commanded.effects.len(),
-        1,
-        "explicit focus emits: {:?}",
-        commanded.effects
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
     );
-    assert!(
-        commanded.effects[0].is_explicit_focus_for(10),
-        "correlated explicit effect: {:?}",
-        commanded.effects
-    );
-    assert_eq!(commanded.effects[0].target.0, "wf");
-    assert!(
-        commanded
-            .effects
-            .iter()
-            .all(|e| e.cause != EffectCause::AutomaticAdmission),
-        "no admission cause: {:?}",
-        commanded.effects
-    );
+    assert_eq!(request.cmd_seq, Some(10));
+    assert_eq!(request.after_shown, None);
 }
 
 #[test]
@@ -1676,14 +1682,20 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
         stay.transfers
     );
     assert!(!stay.transfers[0].follow, "stay carries follow=false");
-    assert_eq!(
-        stay.effects.len(),
-        1,
-        "stay names exactly one focus: {:?}",
-        stay.effects
+    assert!(
+        stay.effects.is_empty(),
+        "focus never publishes as wire effects: {stay:?}"
     );
-    assert_eq!(stay.effects[0].target.0, "w2", "source MRU survivor");
-    assert!(stay.effects[0].is_explicit_focus_for(11));
+    let request = stay.focus_request.as_ref().expect("explicit focus request");
+    assert_eq!(request.target.0, "w2");
+    assert_eq!(request.id, format!("focus-{}", stay.state_revision));
+    assert_eq!(request.issued_revision, stay.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
+    assert_eq!(request.after_shown, None);
     // Exact arrival settles; the echo replays nothing.
     let arrived = fact("w0", "out-b", 800);
     let settled = accepted(
@@ -1738,13 +1750,20 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
         back.transfers
     );
     assert!(back.transfers[0].follow, "follow carries follow=true");
-    assert_eq!(
-        back.effects.len(),
-        1,
-        "follow names exactly one focus: {:?}",
-        back.effects
+    assert!(
+        back.effects.is_empty(),
+        "focus never publishes as wire effects: {back:?}"
     );
-    assert_eq!(back.effects[0].target.0, "w0", "exact mover");
+    let request = back.focus_request.as_ref().expect("explicit focus request");
+    assert_eq!(request.target.0, "w0");
+    assert_eq!(request.id, format!("focus-{}", back.state_revision));
+    assert_eq!(request.issued_revision, back.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(12));
+    assert_eq!(request.after_shown, None);
     let echo = accepted(
         &mut engine,
         &report(
@@ -1828,13 +1847,23 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
         stay_left.transfers
     );
     assert!(!stay_left.transfers[0].follow, "stay carries follow=false");
-    assert_eq!(
-        stay_left.effects.len(),
-        1,
-        "stay names exactly one focus: {:?}",
-        stay_left.effects
+    assert!(
+        stay_left.effects.is_empty(),
+        "focus never publishes as wire effects: {stay_left:?}"
     );
-    assert_eq!(stay_left.effects[0].target.0, "wb2", "out-b MRU survivor");
+    let request = stay_left
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, "wb2");
+    assert_eq!(request.id, format!("focus-{}", stay_left.state_revision));
+    assert_eq!(request.issued_revision, stay_left.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
+    assert_eq!(request.after_shown, None);
     let view_a = view_of(&stay_left, "out-a");
     let _ = &view_a;
     let arrived_left = fact("wb", "out-a", 0);
@@ -1891,13 +1920,23 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
         ahead.transfers
     );
     assert!(ahead.transfers[0].follow, "follow carries follow=true");
-    assert_eq!(
-        ahead.effects.len(),
-        1,
-        "follow names exactly one focus: {:?}",
-        ahead.effects
+    assert!(
+        ahead.effects.is_empty(),
+        "focus never publishes as wire effects: {ahead:?}"
     );
-    assert_eq!(ahead.effects[0].target.0, "wb", "exact mover");
+    let request = ahead
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, "wb");
+    assert_eq!(request.id, format!("focus-{}", ahead.state_revision));
+    assert_eq!(request.issued_revision, ahead.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(12));
+    assert_eq!(request.after_shown, None);
     let echo_left = accepted(
         &mut engine,
         &report(
@@ -2996,13 +3035,23 @@ fn float_send_into_empty_and_occupied_trailings_stays_controlled() {
             "{row:?}"
         );
         assert_eq!(row.frame_authority, ScopeAuthority::Untouched, "{row:?}");
-        assert_eq!(
-            reply.effects.len(),
-            1,
-            "stay names the survivor: {:?}",
-            reply.effects
+        assert!(
+            reply.effects.is_empty(),
+            "focus never publishes as wire effects: {reply:?}"
         );
-        assert_eq!(reply.effects[0].target.0, "w0");
+        let request = reply
+            .focus_request
+            .as_ref()
+            .expect("explicit focus request");
+        assert_eq!(request.target.0, "w0");
+        assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+        assert_eq!(request.issued_revision, reply.state_revision);
+        assert_eq!(
+            request.cause,
+            crate::world_report::FocusRequestCause::ExplicitCommand
+        );
+        assert_eq!(request.cmd_seq, Some(11));
+        assert_eq!(request.after_shown, None);
         assert!(
             reply
                 .scopes

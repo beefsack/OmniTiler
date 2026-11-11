@@ -156,7 +156,7 @@ fn report(
             .first()
             .map(|f| f.window.0.clone())
             .unwrap_or_default(),
-        foreground_known: !windows.is_empty(),
+        foreground_known: windows.first().is_some_and(|f| !f.window.0.is_empty()),
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),
@@ -1156,11 +1156,18 @@ fn pager_click_minimized_refuses_while_tiled_focus_succeeds() {
     click_tiled.foreground_known = true;
     let reply = accepted(&mut engine, &click_tiled);
     assert!(
-        reply
-            .effects
-            .iter()
-            .any(|effect| effect.target.0 == "win-a" && effect.is_explicit_focus_for(12)),
-        "pager click on tiled mints fx-12: {:?}",
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {:?}",
         reply.effects
     );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("pager click on tiled retains fx-12 request");
+    assert_eq!(request.target.0, "win-a");
+    assert_eq!(
+        request.cause,
+        tiler_core::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(12));
 }

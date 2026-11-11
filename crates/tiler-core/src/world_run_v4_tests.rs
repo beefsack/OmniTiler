@@ -11,12 +11,12 @@ use crate::ids::{CorrelationId, OwnerId};
 use crate::intent_data::{IntentData, encode_intent_data};
 use crate::world_engine::{EventIssue, WorldEngine};
 use crate::world_report::{
-    AttemptOutcome, AuthorityScope, CommandRejectKind, CommandResult, EffectKind, FrameAttempt,
-    FrameSetter, HeldPresentationRow, HeldWindowRow, IntentRecord, NativeObservation,
-    NativeOccupancy, NativeWorkspaceFact, PresentationIngressV4, PresentationPagerFrameV4,
-    PresentationRowV4, RenderTarget, RendererInput, RowDiagnosticKind, ScopeAuthority,
-    ScreenReport, SendSource, StateAttempt, StateProperty, WORLD_CONTRACT_VERSION_V4, WindowFact,
-    WorldCommand, WorldReportV4,
+    AttemptOutcome, AuthorityScope, CommandRejectKind, CommandResult, FrameAttempt, FrameSetter,
+    HeldPresentationRow, HeldWindowRow, IntentRecord, NativeObservation, NativeOccupancy,
+    NativeWorkspaceFact, PresentationIngressV4, PresentationPagerFrameV4, PresentationRowV4,
+    RenderTarget, RendererInput, RowDiagnosticKind, ScopeAuthority, ScreenReport, SendSource,
+    StateAttempt, StateProperty, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand,
+    WorldReportV4,
 };
 use crate::world_run_v4::V4RunOutcome;
 use crate::world_v4_support_tests::{fact, float_fact, screen};
@@ -484,13 +484,22 @@ fn ordinary_focus_command_dispatches_effect() {
     );
     let reply = accepted_reply(2, outcome);
     assert!(
-        reply.effects.iter().any(|effect| {
-            effect.kind == EffectKind::Focus
-                && effect.target == WindowId("win-b".to_owned())
-                && effect.command_seq == Some(1)
-        }),
-        "fresh command dispatches its focus effect"
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {:?}",
+        reply.effects
     );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target, WindowId("win-b".to_owned()));
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(1));
     assert!(reply.command_result.is_none());
     assert_eq!(engine.command_highwater, Some(1));
 }
@@ -1121,14 +1130,22 @@ fn renderer_older_unchanged_target_executes_after_intervening_observation() {
     );
     assert!(reply.command_result.is_none());
     assert!(
-        reply.effects.iter().any(|effect| {
-            effect.kind == EffectKind::Focus
-                && effect.target == WindowId("win-b".to_owned())
-                && effect.command_seq == Some(1)
-        }),
-        "older unchanged renderer rows proceed: {:?}",
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {:?}",
         reply.effects
     );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target, WindowId("win-b".to_owned()));
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(1));
 }
 
 #[test]
@@ -1266,13 +1283,22 @@ fn renderer_equal_revision_with_exact_row_executes() {
     let reply = accepted_reply(2, outcome);
     assert!(reply.command_result.is_none());
     assert!(
-        reply.effects.iter().any(|effect| {
-            effect.kind == EffectKind::Focus
-                && effect.target == WindowId("win-b".to_owned())
-                && effect.command_seq == Some(1)
-        }),
-        "exact rows at the latest published revision proceed"
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {:?}",
+        reply.effects
     );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target, WindowId("win-b".to_owned()));
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(1));
 }
 
 #[test]

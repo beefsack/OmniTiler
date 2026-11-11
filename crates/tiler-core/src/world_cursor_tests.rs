@@ -268,21 +268,20 @@ fn focus_follows_on_mints_hover_effect() {
             false,
         ),
     );
-    assert_eq!(reply.effects.len(), 1);
-    assert_eq!(
-        reply.effects[0].id,
-        format!("ffc-{}", reply.effects[0].issued_revision),
-        "compact hover identity"
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
     );
-    assert_eq!(reply.effects[0].target.0, "win-b");
+    let request = reply.focus_request.as_ref().expect("hover request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
     assert_eq!(
-        reply.effects[0].cause,
-        crate::world_report::EffectCause::FocusFollowsCursor,
-        "hover cause: {:?}",
-        reply.effects[0]
+        request.cause,
+        crate::world_report::FocusRequestCause::FocusFollowsCursor
     );
-    assert_eq!(reply.effects[0].command_seq, None);
-    assert!(!reply.effects[0].await_shown);
+    assert_eq!(request.cmd_seq, None);
+    assert_eq!(request.after_shown, None);
     // Hover coupling is same-output here: no warp.
     assert_eq!(reply.cursor_warp, None);
 }
@@ -470,8 +469,19 @@ fn warp_off_by_default_publishes_no_point() {
             }),
         ),
     );
-    assert_eq!(reply.effects.len(), 1);
-    assert_eq!(reply.effects[0].target.0, "win-b");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply.focus_request.as_ref().expect("explicit focus request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
     assert_eq!(reply.cursor_warp, None);
 }
 
@@ -498,8 +508,19 @@ fn warp_publishes_cross_output_centre() {
             }),
         ),
     );
-    assert_eq!(reply.effects.len(), 1);
-    assert_eq!(reply.effects[0].target.0, "win-b");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply.focus_request.as_ref().expect("explicit focus request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
     // Win-b's desired row carries its effective frame; the warp point is
     // that frame's centre, inside out-b's work area.
     let row = reply
@@ -542,7 +563,19 @@ fn warp_skips_same_output_focus() {
             }),
         ),
     );
-    assert_eq!(reply.effects.len(), 1);
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply.focus_request.as_ref().expect("explicit focus request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
     assert_eq!(reply.cursor_warp, None);
 }
 
@@ -669,13 +702,20 @@ fn focus_follows_overlap_uses_topmost_hit() {
             false,
         ),
     );
-    assert_eq!(reply.effects.len(), 1);
-    assert_eq!(
-        reply.effects[0].id,
-        format!("ffc-{}", reply.effects[0].issued_revision),
-        "compact hover identity"
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
     );
-    assert_eq!(reply.effects[0].target.0, "win-c");
+    let request = reply.focus_request.as_ref().expect("hover request");
+    assert_eq!(request.target.0, "win-c");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::FocusFollowsCursor
+    );
+    assert_eq!(request.cmd_seq, None);
+    assert_eq!(request.after_shown, None);
 }
 
 #[test]
@@ -721,8 +761,20 @@ fn focus_follows_hit_beats_rectangles() {
             false,
         ),
     );
-    assert_eq!(reply.effects.len(), 1);
-    assert_eq!(reply.effects[0].target.0, "win-b");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply.focus_request.as_ref().expect("hover request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::FocusFollowsCursor
+    );
+    assert_eq!(request.cmd_seq, None);
+    assert_eq!(request.after_shown, None);
 }
 
 #[test]
@@ -873,8 +925,23 @@ fn focus_follows_static_cursor_never_resteals() {
             false,
         ),
     );
-    assert_eq!(coupled.effects.len(), 1);
-    assert_eq!(coupled.effects[0].target.0, "win-b");
+    assert!(
+        coupled.effects.is_empty(),
+        "focus never publishes as wire effects: {coupled:?}"
+    );
+    let coupled_request = coupled.focus_request.clone().expect("hover request");
+    assert_eq!(coupled_request.target.0, "win-b");
+    assert_eq!(
+        coupled_request.id,
+        format!("focus-{}", coupled.state_revision)
+    );
+    assert_eq!(coupled_request.issued_revision, coupled.state_revision);
+    assert_eq!(
+        coupled_request.cause,
+        crate::world_report::FocusRequestCause::FocusFollowsCursor
+    );
+    assert_eq!(coupled_request.cmd_seq, None);
+    assert_eq!(coupled_request.after_shown, None);
     // Adapter applies the coupling: focus arrives on win-b.
     let idle = accepted(
         &mut engine,
@@ -892,6 +959,10 @@ fn focus_follows_static_cursor_never_resteals() {
         ),
     );
     assert!(idle.effects.is_empty());
+    assert!(
+        idle.focus_request.is_none(),
+        "target equality satisfies the hover: {idle:?}"
+    );
     // Keyboard command moves focus back to win-a; the static cursor over
     // win-b must not steal it back, neither now nor on the next
     // observation.
@@ -915,8 +986,28 @@ fn focus_follows_static_cursor_never_resteals() {
             }),
         ),
     );
-    assert_eq!(commanded.effects.len(), 1);
-    assert_eq!(commanded.effects[0].target.0, "win-a");
+    assert!(
+        commanded.effects.is_empty(),
+        "focus never publishes as wire effects: {commanded:?}"
+    );
+    let commanded_request = commanded
+        .focus_request
+        .clone()
+        .expect("explicit focus request");
+    assert_eq!(commanded_request.target.0, "win-a");
+    assert_eq!(
+        commanded_request.id,
+        format!("focus-{}", commanded.state_revision)
+    );
+    assert_eq!(
+        commanded_request.issued_revision,
+        commanded.state_revision
+    );
+    assert_eq!(
+        commanded_request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(commanded_request.cmd_seq, Some(11));
     let settled = accepted(
         &mut engine,
         &report(
@@ -933,6 +1024,10 @@ fn focus_follows_static_cursor_never_resteals() {
         ),
     );
     assert!(settled.effects.is_empty());
+    assert!(
+        settled.focus_request.is_none(),
+        "target equality satisfies the explicit grant: {settled:?}"
+    );
 }
 
 #[test]
@@ -959,8 +1054,20 @@ fn focus_follows_yields_to_fresh_admission() {
             false,
         ),
     );
-    assert_eq!(reply.effects.len(), 1);
-    assert_eq!(reply.effects[0].target.0, "win-c");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply.focus_request.as_ref().expect("admission request");
+    assert_eq!(request.target.0, "win-c");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::AutomaticAdmission
+    );
+    assert_eq!(request.cmd_seq, None);
+    assert_eq!(request.after_shown, None);
 }
 
 #[test]
@@ -988,8 +1095,19 @@ fn focus_follows_yields_to_explicit_command_focus() {
             }),
         ),
     );
-    assert_eq!(reply.effects.len(), 1);
-    assert_eq!(reply.effects[0].target.0, "win-b");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply.focus_request.as_ref().expect("explicit focus request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
 }
 
 #[test]
@@ -1027,7 +1145,18 @@ fn warp_follows_single_explicit_grant_not_superseded_admission() {
             }),
         ),
     );
-    assert_eq!(reply.effects.len(), 1, "explicit-only grant: {reply:?}");
-    assert_eq!(reply.effects[0].target.0, "win-a");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply.focus_request.as_ref().expect("explicit focus request");
+    assert_eq!(request.target.0, "win-a");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
     assert_eq!(reply.cursor_warp, None);
 }

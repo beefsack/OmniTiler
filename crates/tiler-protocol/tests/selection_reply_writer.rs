@@ -195,12 +195,28 @@ fn selection_reply_spells_through_v4_writer() {
             "",
         ),
     );
-    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
-    assert_eq!(reply.effects[0].target.0, "win-b");
     assert!(
-        reply.effects[0].await_shown,
-        "selection focus awaits arrival"
+        reply
+            .effects
+            .iter()
+            .all(|effect| effect.kind != tiler_core::world_report::EffectKind::Focus),
+        "focus never publishes as wire effects: {reply:?}"
     );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("selection retains one request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(
+        request.cause,
+        tiler_core::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(3));
+    let shown = request
+        .after_shown
+        .as_ref()
+        .expect("selection dependencies");
+    assert_eq!((shown.op.as_str(), shown.obs), ("op-3", 3));
 
     // The v4 writer spells the actual producer reply, with the independent
     // core byte count exact and a decoder roundtrip to the identical typed
@@ -211,8 +227,12 @@ fn selection_reply_spells_through_v4_writer() {
         "estimate covers the selection reply"
     );
     assert!(
-        wire.contains("\"awaitShown\":true"),
-        "wire carries the grant"
+        wire.contains("\"afterShown\":{"),
+        "wire carries the frozen dependencies"
+    );
+    assert!(
+        !wire.contains("awaitShown"),
+        "no one-shot grant on the wire"
     );
 
     // The wire pair rides one authorizing revision with no fallback.
@@ -295,8 +315,15 @@ fn selection_reply_carries_switch_terminal_through_v4_writer() {
             "",
         ),
     );
-    let effect = granted.effects[0].clone();
-    assert!(effect.await_shown, "selection focus awaits arrival");
+    let request = granted
+        .focus_request
+        .clone()
+        .expect("selection retains one request");
+    assert_eq!(request.target.0, "win-b");
+    assert!(
+        request.after_shown.is_some(),
+        "selection focus carries arrival dependencies"
+    );
     let rev = granted.state_revision;
     let frame = granted
         .windows
@@ -314,16 +341,16 @@ fn selection_reply_carries_switch_terminal_through_v4_writer() {
         host_hidden: Some(false),
     };
     let feedback = FocusFeedback {
-        id: effect.id.clone(),
-        target: effect.target.clone(),
-        revision: effect.issued_revision,
+        id: request.id.clone(),
+        target: request.target.clone(),
+        revision: request.issued_revision,
         setter: VisibilitySetter::Accepted,
         reason: VisibilityReason::Empty,
         pre: None,
-        post: Some(effect.target.clone()),
+        post: Some(request.target.clone()),
         foreground_proven: true,
         arrival: vec![ArrivalBracket {
-            window: effect.target.clone(),
+            window: request.target.clone(),
             obs: 4,
             before: sample(4),
             location: ArrivalLocation::Output {

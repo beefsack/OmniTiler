@@ -13,8 +13,8 @@ use crate::size_hints::WindowSizeHints;
 use crate::world_commands::CommandApplied;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandRejectKind, CommandResult, EffectKind, PresentationRowV4, ScreenReport,
-    WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
+    CommandRejectKind, CommandResult, PresentationRowV4, ScreenReport, WORLD_CONTRACT_VERSION_V4,
+    WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 use crate::world_v4_support_tests::empty_ingress;
 
@@ -148,11 +148,29 @@ fn test_issue(report: &WorldReportV4) -> crate::world_engine::EventIssue {
 }
 
 fn focus_targets(reply: &WorldReplyV4) -> Vec<WindowId> {
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {:?}",
+        reply.effects
+    );
     reply
-        .effects
+        .focus_request
         .iter()
-        .filter(|e| e.kind == EffectKind::Focus)
-        .map(|e| e.target.clone())
+        .map(|r| {
+            assert_eq!(r.id, format!("focus-{}", reply.state_revision));
+            assert_eq!(r.issued_revision, reply.state_revision);
+            match r.cause {
+                crate::world_report::FocusRequestCause::ExplicitCommand => {
+                    assert!(r.cmd_seq.is_some(), "explicit focus carries cmd_seq: {r:?}");
+                }
+                crate::world_report::FocusRequestCause::AutomaticAdmission
+                | crate::world_report::FocusRequestCause::FocusFollowsCursor
+                | crate::world_report::FocusRequestCause::PositiveClose => {
+                    assert_eq!(r.cmd_seq, None, "automatic focus carries no cmd_seq: {r:?}");
+                }
+            }
+            r.target.clone()
+        })
         .collect()
 }
 
@@ -865,12 +883,7 @@ fn global_swap_records_effect_target_in_moved_domain() {
             }),
         ),
     );
-    let targets: Vec<WindowId> = reply
-        .effects
-        .iter()
-        .filter(|e| e.is_explicit_focus_for(11))
-        .map(|e| e.target.clone())
-        .collect();
+    let targets: Vec<WindowId> = focus_targets(&reply);
     assert_eq!(
         targets,
         vec![WindowId("win-b2".to_owned())],

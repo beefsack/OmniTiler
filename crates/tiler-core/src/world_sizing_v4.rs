@@ -404,19 +404,44 @@ pub fn report_estimate_v4(report: &WorldReportV4) -> usize {
     bytes
 }
 
-/// Conservative size of the retained close-focus lane body (after the
-/// `,"closeFocus":` joiner): `null` (4) with no request, else the fixed
-/// object shape with quoted revision and closed cause token.
-fn close_focus_estimate_v4(request: &Option<crate::world_report::CloseFocusRequest>) -> usize {
+/// Conservative size of the retained focus-request lane body (after the
+/// `,"focusRequest":` joiner): `null` (4) with no request, else the fixed
+/// object shape with quoted revision, closed cause token, nullable command
+/// sequence and nullable `afterShown` projection.
+fn focus_request_estimate_v4(request: &Option<crate::world_report::FocusRequest>) -> usize {
     match request {
         None => 4,
         Some(request) => {
-            63 + json_string_len(&request.id)
+            91 + json_string_len(&request.id)
                 + json_string_len(&request.target.0)
                 + u64_len(request.issued_revision)
                 + json_string_len(request.cause.as_str())
                 + json_string_len(&request.output.0)
                 + json_string_len(&request.workspace)
+                + request.cmd_seq.map_or(4, |seq| 2 + u64_len(seq))
+                + after_shown_estimate(&request.after_shown)
+        }
+    }
+}
+
+/// Conservative size of the `afterShown` projection body (after the
+/// `,"afterShown":` joiner): `null` (4) when absent, else the fixed object
+/// shape over the worst-case capped member/scope lanes.
+fn after_shown_estimate(shown: &Option<crate::world_report::AfterShown>) -> usize {
+    match shown {
+        None => 4,
+        Some(shown) => {
+            // Fixed object punctuation mirrors `after_shown_exact` (69) plus
+            // per-row upper bounds at the section caps (members at 10k, each
+            // scope lane at 16): member rows spell 30 fixed plus three
+            // max-width quoted ids (130 each) plus the widest rect (27);
+            // scope rows spell 14 fixed plus two max-width quoted ids.
+            69 + json_string_len(&shown.op)
+                + u64_len(shown.obs)
+                + shown.members.len() * (30 + 130 + 130 + 130 + 27)
+                + shown.views.len() * (14 + 130 + 130)
+                + shown.selected.len() * (14 + 130 + 130)
+                + shown.departing.len() * (14 + 130 + 130)
         }
     }
 }
@@ -539,7 +564,7 @@ pub fn reply_estimate_v4(reply: &WorldReplyV4) -> usize {
             + bool_len(effect.await_shown);
     }
     bytes += reply.effects.len().saturating_sub(1);
-    bytes += 14 + close_focus_estimate_v4(&reply.close_focus);
+    bytes += 16 + focus_request_estimate_v4(&reply.focus_request);
     bytes += command_result_estimate(&reply.command_result);
     bytes += gesture_settled_estimate(&reply.gesture_settled);
     bytes += operation_settled_estimate(&reply.operation_settled);
@@ -748,18 +773,19 @@ pub fn reply_exact_bytes_v4(reply: &WorldReplyV4) -> usize {
             + bool_len(effect.await_shown);
     }
     bytes += reply.effects.len().saturating_sub(1);
-    bytes += 14
-        + reply.close_focus.as_ref().map_or(4, |request| {
-            // 48 fixed: 50 joiner literals plus the 8 quote pairs the four
-            // opaque fields carry, minus the 10 quotes the five
-            // `json_string_len` values below already count (rev is unquoted
-            // on both sides; its quotes ride the joiners).
-            48 + json_string_len(&request.id)
+    bytes += 16
+        + reply.focus_request.as_ref().map_or(4, |request| {
+            // 72 fixed joiners (see `encode_focus_request_v4`): the
+            // `cmdSeq` arm spells `null` (4) or `"N"` (2 + digits);
+            // `afterShown` spells `null` or the exact projection below.
+            72 + json_string_len(&request.id)
                 + json_string_len(&request.target.0)
                 + u64_len(request.issued_revision)
                 + json_string_len(request.cause.as_str())
                 + json_string_len(&request.output.0)
                 + json_string_len(&request.workspace)
+                + request.cmd_seq.map_or(4, |seq| 2 + u64_len(seq))
+                + after_shown_exact(&request.after_shown)
         });
     bytes += command_result_exact_v4(&reply.command_result);
     bytes += reply.gesture_settled.as_ref().map_or(4, |terminal| {
@@ -808,6 +834,43 @@ pub fn reply_exact_bytes_v4(reply: &WorldReplyV4) -> usize {
         }
     }
     bytes += reply.switch_settled.len().saturating_sub(1);
+    bytes
+}
+
+/// Exact byte size of one `afterShown` projection body (after the
+/// `,"afterShown":` joiner): `null` (4) when absent, else the exact object
+/// in `encode_after_shown_v4` key order
+/// (`op,obs,members,views,selected,departing`; members spell
+/// `win,out,ws,frame`; scopes spell `out,ws`).
+fn after_shown_exact(shown: &Option<crate::world_report::AfterShown>) -> usize {
+    let Some(shown) = shown else {
+        return 4;
+    };
+    // `{"op":` (6) + `,"obs":"` (8) + closing `"` (1) +
+    // `,"members":[` (12) + `],"views":[` (11) + `],"selected":[` (14) +
+    // `],"departing":[` (15) + `]}` (2) = 69 fixed.
+    let mut bytes = 69 + json_string_len(&shown.op) + u64_len(shown.obs);
+    for (i, member) in shown.members.iter().enumerate() {
+        if i > 0 {
+            bytes += 1;
+        }
+        // `{"win":` (7) + `,"out":` (7) + `,"ws":` (6) + `,"frame":`
+        // (9) + `}` (1) = 30 fixed.
+        bytes += 30
+            + json_string_len(&member.win.0)
+            + json_string_len(&member.out.0)
+            + json_string_len(&member.ws)
+            + crate::world_sizing::rect_len(member.frame);
+    }
+    for lane in [&shown.views, &shown.selected, &shown.departing] {
+        for (i, scope) in lane.iter().enumerate() {
+            if i > 0 {
+                bytes += 1;
+            }
+            // `{"out":` (7) + `,"ws":` (6) + `}` (1) = 14 fixed.
+            bytes += 14 + json_string_len(&scope.out.0) + json_string_len(&scope.ws);
+        }
+    }
     bytes
 }
 

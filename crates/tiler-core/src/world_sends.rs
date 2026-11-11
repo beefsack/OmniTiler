@@ -157,6 +157,7 @@ impl WorldEngine {
             }
             self.last_active_window.insert(home, window.clone());
             self.implicit_focus = Some(window.clone());
+            self.logical_focus_cursor = Some(window.clone());
             return true;
         }
         let effective = if sticky {
@@ -205,6 +206,7 @@ impl WorldEngine {
             }
             self.last_active_window.insert(effective, window.clone());
             self.implicit_focus = Some(window.clone());
+            self.logical_focus_cursor = Some(window.clone());
             return true;
         }
         let ok = self
@@ -235,6 +237,7 @@ impl WorldEngine {
         }
         self.last_active_window.insert(effective, window.clone());
         self.implicit_focus = Some(window.clone());
+        self.logical_focus_cursor = Some(window.clone());
         true
     }
     /// Shared window-send path for [`WorldCommand::Send`],

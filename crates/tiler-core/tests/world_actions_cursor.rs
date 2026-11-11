@@ -14,7 +14,8 @@ use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    PresentationIngressV4, PresentationRowV4, WorldCommand, WorldReplyV4, WorldReportV4,
+    FocusRequestCause, PresentationIngressV4, PresentationRowV4, WorldCommand, WorldReplyV4,
+    WorldReportV4,
 };
 
 fn rect(v: &[i64]) -> Rect {
@@ -866,8 +867,55 @@ fn shared_world_actions_converge_per_fixture() {
                     case.name
                 );
                 assert!(
-                    arrival.effects.iter().any(|e| e.target.0 == new_id),
-                    "{}: newcomer focuses",
+                    arrival.effects.is_empty(),
+                    "{}: admission never publishes wire effects: {:?}",
+                    case.name,
+                    arrival.effects
+                );
+                let request = arrival.focus_request.as_ref().unwrap_or_else(|| {
+                    panic!(
+                        "{}: newcomer retains admission request: {:?}",
+                        case.name, arrival
+                    )
+                });
+                assert_eq!(request.target.0, new_id, "{}: admission target", case.name);
+                assert_eq!(
+                    request.cause,
+                    FocusRequestCause::AutomaticAdmission,
+                    "{}: admission cause",
+                    case.name
+                );
+                assert_eq!(
+                    request.cmd_seq, None,
+                    "{}: admission carries no command",
+                    case.name
+                );
+                assert!(
+                    request.after_shown.is_none(),
+                    "{}: admission carries no selection: {:?}",
+                    case.name,
+                    arrival.focus_request
+                );
+                assert_eq!(
+                    request.id,
+                    format!("focus-{}", arrival.state_revision),
+                    "{}: admission id quotes issuing revision",
+                    case.name
+                );
+                assert_eq!(
+                    request.issued_revision, arrival.state_revision,
+                    "{}: admission revision quotes publication",
+                    case.name
+                );
+                assert_eq!(
+                    request.output.0, expect_output,
+                    "{}: admission scope follows routing",
+                    case.name
+                );
+                assert_eq!(
+                    (request.output.0.clone(), request.workspace.clone()),
+                    homed(&arrival, &new_id),
+                    "{}: admission scope follows routing",
                     case.name
                 );
                 // Exactly the anchor shrinks; the stable peer is untouched.
@@ -926,6 +974,14 @@ fn shared_world_actions_converge_per_fixture() {
                     homed(&settled, &new_id).0,
                     expect_output,
                     "{}: homing retained",
+                    case.name
+                );
+                // No new focus decision on the follow-up: the live retained
+                // admission request survives identical, never silently
+                // clears while still unproven.
+                assert_eq!(
+                    settled.focus_request, arrival.focus_request,
+                    "{}: pending admission survives unchanged",
                     case.name
                 );
             }

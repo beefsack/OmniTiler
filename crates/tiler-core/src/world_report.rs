@@ -328,20 +328,36 @@ impl EffectCause {
     }
 }
 
-/// Typed retained close-focus cause. Closed: only the positive close of
-/// the focused lifetime originates the retained request. Separate from
-/// [`EffectCause`]: no command sequence, no admission/hover semantics,
-/// and no new verdict ingress.
+/// Bound on frozen `afterShown` members per focus request (same
+/// inventory alphabet as windows).
+pub const MAX_FOCUS_MEMBERS: usize = 10_000;
+/// Bound on each frozen `afterShown` scope lane (`views`, `selected`,
+/// `departing`): one per output at most.
+pub const MAX_FOCUS_VIEWS: usize = 16;
+pub const MAX_FOCUS_SELECTED: usize = 16;
+pub const MAX_FOCUS_DEPARTING: usize = 16;
+
+/// Typed retained focus-request cause. Closed: explicit command
+/// correlation, automatic admission intent, focus-follows-cursor hover,
+/// and the positive close of the focused lifetime. Only
+/// `explicit-command` carries a command sequence and only it may carry a
+/// non-null `afterShown`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CloseFocusCause {
+pub enum FocusRequestCause {
+    ExplicitCommand,
+    AutomaticAdmission,
+    FocusFollowsCursor,
     PositiveClose,
 }
 
-impl CloseFocusCause {
+impl FocusRequestCause {
     /// Wire token for this value, matching the protocol codec vocabulary.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::ExplicitCommand => "explicit-command",
+            Self::AutomaticAdmission => "automatic-admission",
+            Self::FocusFollowsCursor => "focus-follows-cursor",
             Self::PositiveClose => "positive-close",
         }
     }
@@ -350,27 +366,73 @@ impl CloseFocusCause {
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         Some(match value {
+            "explicit-command" => Self::ExplicitCommand,
+            "automatic-admission" => Self::AutomaticAdmission,
+            "focus-follows-cursor" => Self::FocusFollowsCursor,
             "positive-close" => Self::PositiveClose,
             _ => return None,
         })
     }
 }
 
-/// Retained close-focus request (outbound only): the frozen target of the
-/// positively closed focused lifetime plus its frozen source domain. No
-/// command sequence, no transfer, no raise/stack semantics. `None` on the
-/// row carries no close intent: no activation is authorized.
+/// One frozen `afterShown` member row: the required window lifetime, its
+/// frozen logical home, and the required nullable final published desire
+/// frame (`None` waives frame equality, never the need for a readable
+/// live frame).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CloseFocusRequest {
+pub struct AfterShownMember {
+    pub win: WindowId,
+    pub out: OutputId,
+    pub ws: String,
+    pub frame: Option<Rect>,
+}
+
+/// One frozen `afterShown` scope row: the frozen logical home.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AfterShownScope {
+    pub out: OutputId,
+    pub ws: String,
+}
+
+/// Frozen selection dependencies for a selection-backed explicit focus
+/// request: the existing parent operation id, the quoted issuing
+/// observation counter, the required members with lifetime/home/frame,
+/// the native-view targets and the affected selected/departing scopes.
+/// A projection of existing selection state, not a new work id or a new
+/// selection policy. `None` on the request replaces `awaitShown:false`;
+/// non-null replaces `awaitShown:true`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AfterShown {
+    pub op: String,
+    pub obs: u64,
+    pub members: Vec<AfterShownMember>,
+    pub views: Vec<AfterShownScope>,
+    pub selected: Vec<AfterShownScope>,
+    pub departing: Vec<AfterShownScope>,
+}
+
+/// One retained focus request (outbound only): the frozen target of the
+/// winning focus decision plus its frozen activation scope, cause, command
+/// correlation and frozen selection dependencies. `None` on the row
+/// carries no focus intent: no activation is authorized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusRequest {
     pub id: String,
     pub target: WindowId,
     /// Publication revision that minted the request (quoted on the wire).
     pub issued_revision: u64,
-    pub cause: CloseFocusCause,
-    /// Frozen source output scope.
+    pub cause: FocusRequestCause,
+    /// Frozen resolved activation scope.
     pub output: OutputId,
-    /// Frozen source logical workspace id.
+    /// Frozen resolved logical workspace id.
     pub workspace: String,
+    /// Originating command sequence, `Some` exactly for
+    /// `explicit-command`, `None` otherwise. Quoted decimal on the wire,
+    /// `null` when absent.
+    pub cmd_seq: Option<u64>,
+    /// Frozen selection dependencies, non-null only for
+    /// `explicit-command` selection-backed requests.
+    pub after_shown: Option<AfterShown>,
 }
 
 /// One-shot effect: the adapter marks it spent BEFORE first native dispatch;
@@ -2551,9 +2613,9 @@ pub struct WorldReplyV4 {
     pub windows: Vec<WindowDesire>,
     pub transfers: Vec<TransferTargetV4>,
     pub effects: Vec<OneShotEffect>,
-    /// Retained close-focus request, always present on the wire (`null`
+    /// Retained focus request, always present on the wire (`null`
     /// carries no request). Zero or one row, never a chain.
-    pub close_focus: Option<CloseFocusRequest>,
+    pub focus_request: Option<FocusRequest>,
     pub command_result: Option<CommandResult>,
     pub gesture_settled: Option<GestureSettled>,
     pub operation_settled: Vec<OperationEvent>,
@@ -3190,6 +3252,42 @@ pub fn validate_intent_writes_reason(writes: &[IntentWrite]) -> Option<&'static 
         }
     }
     None
+}
+
+/// Name the failed outbound `afterShown` section-cap check in fixed
+/// vocabulary (never payload bytes): `None` when the nullable projection
+/// fits every frozen lane cap, otherwise the static reason token the
+/// engine carries as its rejection message under kind `snapshot-invalid`
+/// (mirroring the protocol `encode_after_shown_v4`/`decode_after_shown`
+/// caps). Caps only: no duplicate, subset, or id-shape checks here; the
+/// frozen projection is already exact and never truncated.
+#[must_use]
+pub fn validate_after_shown_reason(shown: &Option<AfterShown>) -> Option<&'static str> {
+    let shown = shown.as_ref()?;
+    if shown.members.len() > MAX_FOCUS_MEMBERS {
+        return Some("focus-members-over-cap");
+    }
+    if shown.views.len() > MAX_FOCUS_VIEWS {
+        return Some("focus-views-over-cap");
+    }
+    if shown.selected.len() > MAX_FOCUS_SELECTED {
+        return Some("focus-selected-over-cap");
+    }
+    if shown.departing.len() > MAX_FOCUS_DEPARTING {
+        return Some("focus-departing-over-cap");
+    }
+    None
+}
+
+/// Name the failed outbound focus-request lane check in fixed vocabulary:
+/// `None` when absent or when its nullable `afterShown` projection fits
+/// every cap, otherwise the `afterShown` cap token. Thin wrapper over
+/// [`validate_after_shown_reason`]; cause/correlation checks stay with the
+/// codec.
+#[must_use]
+pub fn validate_focus_request_reason(request: &Option<FocusRequest>) -> Option<&'static str> {
+    let request = request.as_ref()?;
+    validate_after_shown_reason(&request.after_shown)
 }
 
 /// Validate one send source: explicit outputs carry opaque ids, implicit

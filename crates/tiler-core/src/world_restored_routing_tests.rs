@@ -679,21 +679,26 @@ fn exhausted_move_retains_identity_pinned_transfer_and_settles_on_arrival() {
     // The tiled directional move keeps focus on the mover through one
     // spent core effect (the old adapter follow-focus lane, now
     // core-owned at-most-once): exactly one, naming the mover.
-    let focus_effects: Vec<_> = reply
-        .effects
-        .iter()
-        .filter(|effect| effect.kind == crate::world_report::EffectKind::Focus)
-        .collect();
-    assert_eq!(
-        focus_effects.len(),
-        1,
-        "tiled move carries one follow-focus effect, got {:?}",
-        reply.effects
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
     );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
     assert_eq!(
-        focus_effects[0].target,
+        request.target,
         crate::directional::WindowId("win-a".to_owned())
     );
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(112));
+    assert_eq!(request.after_shown, None);
     // Local move on a gap topology retains no window transfer.
     let gap = vec![
         screen_full("src", rect(0, 2000, 800, 600)),
@@ -1277,11 +1282,23 @@ fn operation_send_retains_and_foreign_routes_refuse() {
         Some(ring[1].as_str()),
         "ineligible follow still moves the logical view"
     );
-    assert_eq!(reply.effects.len(), 1, "legacy direct focus");
     assert!(
-        !reply.effects[0].await_shown,
-        "ineligible follow does not wait on the destination"
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
     );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, "win-a");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(32));
+    assert_eq!(request.after_shown, None);
     // Operation directional migration with a single live output has no
     // resolvable target and refuses without mutation, never silently
     // local. (Single output here; the strict map cannot resolve.)
@@ -2351,13 +2368,23 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
                 // their own gaps (checked by the shared assert below).
             }
             2 | 3 => {
-                let focus: Vec<_> = reply
-                    .effects
-                    .iter()
-                    .filter(|e| e.kind == crate::world_report::EffectKind::Focus)
-                    .collect();
-                assert_eq!(focus.len(), 1, "case {case}: one focus effect");
-                assert_ne!(focus[0].target.0, "win-a", "focus crosses the output");
+                assert!(
+                    reply.effects.is_empty(),
+                    "focus never publishes as wire effects: {reply:?}"
+                );
+                let request = reply
+                    .focus_request
+                    .as_ref()
+                    .expect("explicit focus request");
+                assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+                assert_eq!(request.issued_revision, reply.state_revision);
+                assert_eq!(
+                    request.cause,
+                    crate::world_report::FocusRequestCause::ExplicitCommand
+                );
+                assert_eq!(request.cmd_seq, Some(11));
+                assert_eq!(request.after_shown, None);
+                assert_ne!(request.target.0, "win-a", "focus crosses the output");
             }
             4 => {
                 // Ineligible same-output follow (no suppression support in
@@ -2379,8 +2406,23 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
                         .contains_key(&OutputId("out-a".to_owned())),
                     "ineligible mover binds nothing"
                 );
-                assert_eq!(reply.effects.len(), 1, "legacy direct focus");
-                assert!(!reply.effects[0].await_shown);
+                assert!(
+                    reply.effects.is_empty(),
+                    "focus never publishes as wire effects: {reply:?}"
+                );
+                let request = reply
+                    .focus_request
+                    .as_ref()
+                    .expect("explicit focus request");
+                assert_eq!(request.target.0, "win-a");
+                assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+                assert_eq!(request.issued_revision, reply.state_revision);
+                assert_eq!(
+                    request.cause,
+                    crate::world_report::FocusRequestCause::ExplicitCommand
+                );
+                assert_eq!(request.cmd_seq, Some(11));
+                assert_eq!(request.after_shown, None);
             }
             5 => {
                 assert_eq!(reply.transfers.len(), 1, "stay keeps only the window");
@@ -2483,19 +2525,28 @@ fn explicit_output_send_uses_output_route() {
         assert_eq!(row_of(&reply, "win-a").output.0, "out-b");
         assert_eq!(row_of(&reply, "win-a").workspace, view_b);
         assert_pair_gaps(&engine, &key_a, &key_b);
-        let focus: Vec<_> = reply
-            .effects
-            .iter()
-            .filter(|e| e.kind == crate::world_report::EffectKind::Focus)
-            .collect();
+        assert!(
+            reply.effects.is_empty(),
+            "focus never publishes as wire effects: {reply:?}"
+        );
+        let request = reply
+            .focus_request
+            .as_ref()
+            .expect("explicit focus request");
+        assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+        assert_eq!(request.issued_revision, reply.state_revision);
+        assert_eq!(
+            request.cause,
+            crate::world_report::FocusRequestCause::ExplicitCommand
+        );
+        assert_eq!(request.cmd_seq, Some(11));
+        assert_eq!(request.after_shown, None);
         if follow {
-            assert_eq!(focus.len(), 1, "follow names one focus effect");
-            assert_eq!(focus[0].target.0, "win-a");
+            assert_eq!(request.target.0, "win-a", "follow names one focus request");
         } else {
             // Stay leaves the source selected: the surviving stayer keeps
             // focus, never the departed mover.
-            assert_eq!(focus.len(), 1, "stay names one focus effect");
-            assert_eq!(focus[0].target.0, "win-s");
+            assert_eq!(request.target.0, "win-s", "stay names one focus request");
         }
         // Exact inset layout: every allocated row fills its output's
         // work-area-derived inset in y/h and stays inside it in x.

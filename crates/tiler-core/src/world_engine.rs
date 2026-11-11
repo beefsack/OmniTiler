@@ -982,11 +982,12 @@ impl WorldEngine {
         // caller's: pre-observation for the first batch command, post-prior
         // for later per-command refreezes. An unresolvable subject freezes
         // nothing, so execution refuses instead of falling back to action.
+        let subject = self.execution_subject();
         let effective_send: Option<(&WindowId, &crate::world_report::SendSource)> = match command {
             Some(WorldCommand::Implicit(inner)) => match inner.as_ref() {
                 WorldCommand::SendRelative { source, .. }
                 | WorldCommand::SendNumbered { source, .. } => {
-                    self.implicit_focus.as_ref().map(|slot| (slot, source))
+                    subject.as_ref().map(|slot| (slot, source))
                 }
                 _ => None,
             },
@@ -1407,12 +1408,12 @@ pub struct WorldEngine {
     /// lifetime ledgers; reset on handshake by fresh construction.
     /// Never a row, slot, or wire value.
     pub(crate) retained_focus: Vec<crate::world_focus::RetainedFocusGrant>,
-    /// One retained core-owned positive-close refocus request (see
-    /// [`crate::world_close_focus`]): the frozen pre-close MRU tiled
-    /// survivor plus its frozen source domain, re-emitted until satisfied,
-    /// superseded, ineligible, or refused. Reset on handshake by fresh
+    /// One retained core-owned focus request (see
+    /// [`crate::world_close_focus`]): the frozen winning target plus its
+    /// frozen activation scope, re-emitted until satisfied, superseded,
+    /// ineligible, or refused. Reset on handshake by fresh
     /// construction; staged clones carry it for atomic adoption.
-    pub(crate) pending_close_focus: Option<crate::world_close_focus::PendingCloseFocus>,
+    pub(crate) pending_focus: Option<crate::world_close_focus::PendingFocus>,
     /// Pending native-free selection grant between the real selection
     /// command and publish only (see [`crate::world_selection`]): the
     /// dispatching command plus the selected/departing homes, issuing
@@ -1625,6 +1626,17 @@ pub struct WorldEngine {
     /// by [`WorldEngine::record_canonical`], regardless of domain. Empty
     /// when no canonical focus has ever been recorded.
     pub(crate) implicit_focus: Option<WindowId>,
+    /// Execution-time logical focus cursor (retained-focus Q1): the
+    /// accepted-focus subject for the next implicit command, separate
+    /// from native observed foreground (`staged.observation`) and from
+    /// per-workspace history (`last_active_window`). Every accepted
+    /// focus choice (explicit command, admission, hover, close)
+    /// advances it immediately in FIFO order; a live retained request
+    /// preserves its target across unchanged-baseline reports; a newer
+    /// observed focus supersedes it; refusal/ineligibility resets it to
+    /// the eligible observed focus. Non-focus and refused commands
+    /// never erase it.
+    pub(crate) logical_focus_cursor: Option<WindowId>,
     /// Pre-batch per-domain session focus snapshot, taken once per capture
     /// after observation incorporation and before the first batch command.
     /// [`WorldEngine::effective_operation_focus`] prefers the live session
@@ -1914,7 +1926,7 @@ impl WorldEngine {
             admission_focus_spent: BTreeSet::new(),
             automatic_focus_tokens: BTreeMap::new(),
             retained_focus: Vec::new(),
-            pending_close_focus: None,
+            pending_focus: None,
             pending_selection: None,
             pending_policy_selections: Vec::new(),
             selection_targets: BTreeMap::new(),
@@ -1952,6 +1964,7 @@ impl WorldEngine {
             ingest_trials: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             last_active_window: BTreeMap::new(),
             implicit_focus: None,
+            logical_focus_cursor: None,
             batch_base_focus: BTreeMap::new(),
             batch_command_focus: BTreeSet::new(),
             implicit_event_focus: None,
@@ -3183,8 +3196,7 @@ impl WorldEngine {
     pub(crate) fn bookkeeping_command(&self, command: &WorldCommand) -> WorldCommand {
         match command {
             WorldCommand::Implicit(inner) => self
-                .implicit_focus
-                .clone()
+                .execution_subject()
                 .and_then(|window| crate::world_report::explicit_for_implicit(inner, window))
                 .unwrap_or_else(|| command.clone()),
             _ => command.clone(),

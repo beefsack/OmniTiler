@@ -28,8 +28,8 @@ use crate::world_engine::{
 };
 use crate::world_members::MemberState;
 use crate::world_report::{
-    EffectCause, PresentationIngressV4, PresentationRowV4, SendSource, StateProperty,
-    WORLD_CONTRACT_VERSION_V4, WorldCommand, WorldReportV4,
+    EffectCause, FocusRequestCause, PresentationIngressV4, PresentationRowV4, SendSource,
+    StateProperty, WORLD_CONTRACT_VERSION_V4, WorldCommand, WorldReportV4,
 };
 use crate::world_v4_support_tests::{fact, rect, screen};
 
@@ -1506,10 +1506,18 @@ fn handle_report_echoes_envelope_request_and_command_sequence() {
         other => panic!("command report must accept, got {other:?}"),
     };
     assert_eq!(reply.request_id, "req-2");
-    assert_eq!(reply.effects.len(), 1);
-    assert_eq!(reply.effects[0].target, WindowId("win-b".to_owned()));
-    assert_eq!(reply.effects[0].command_seq, Some(7));
-    assert_eq!(reply.effects[0].cause, EffectCause::ExplicitCommand);
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {:?}",
+        reply.effects
+    );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target, WindowId("win-b".to_owned()));
+    assert_eq!(request.cmd_seq, Some(7));
+    assert_eq!(request.cause, FocusRequestCause::ExplicitCommand);
     let mut observation_only = report_v4_simple(3, vec![screen("out-a", 0)]);
     observation_only.windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 200)];
     observation_only.focused_global = "win-a".to_owned();

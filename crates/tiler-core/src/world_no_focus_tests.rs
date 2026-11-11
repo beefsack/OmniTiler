@@ -358,14 +358,23 @@ fn no_focus_crosses_occupied_origin_to_existing_selection() {
             None,
         ),
     );
-    let focus = focus_effects(&reply);
-    assert_eq!(focus.len(), 1, "one focus effect: {:?}", reply.effects);
-    assert_eq!(focus[0].target.0, "win-b2", "entry-edge selection");
     assert!(
-        focus[0].is_explicit_focus_for(11),
-        "one-shot explicit correlation: {:?}",
-        focus[0]
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
     );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, "win-b2");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
+    assert_eq!(request.after_shown, None);
     assert!(
         reply.command_result.is_none(),
         "success rides the effect like focused crossing: {:?}",
@@ -411,14 +420,23 @@ fn no_focus_crosses_empty_origin() {
             None,
         ),
     );
-    let focus = focus_effects(&reply);
-    assert_eq!(
-        focus.len(),
-        1,
-        "empty origin still crosses: {:?}",
-        reply.effects
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
     );
-    assert_eq!(focus[0].target.0, "win-b1");
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, "win-b1");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
+    assert_eq!(request.after_shown, None);
 }
 
 #[test]
@@ -505,9 +523,23 @@ fn no_focus_wide_target_prefers_edge_leaf_over_mru() {
             None,
         ),
     );
-    let focus = focus_effects(&reply);
-    assert_eq!(focus.len(), 1, "one focus effect: {:?}", reply.effects);
-    assert_eq!(focus[0].target.0, "win-b2", "edge leaf beats MRU");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, "win-b2");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
+    assert_eq!(request.after_shown, None);
 }
 
 #[test]
@@ -579,14 +611,23 @@ fn no_focus_seeded_target_prefers_newer_seeded_leaf() {
             None,
         ),
     );
-    let focus = focus_effects(&reply);
-    assert_eq!(
-        focus.len(),
-        1,
-        "seeded history crosses: {:?}",
-        reply.effects
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
     );
-    assert_eq!(focus[0].target.0, "win-b1", "newest seeded leaf");
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, "win-b1");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
+    assert_eq!(request.after_shown, None);
 }
 
 #[test]
@@ -658,9 +699,23 @@ fn no_focus_down_prefers_mru_among_top_edge_pair() {
             None,
         ),
     );
-    let focus = focus_effects(&reply);
-    assert_eq!(focus.len(), 1, "down crosses: {:?}", reply.effects);
-    assert_eq!(focus[0].target.0, "win-c2", "MRU among edge pair");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, "win-c2");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
+    assert_eq!(request.after_shown, None);
 }
 
 #[test]
@@ -687,17 +742,23 @@ fn no_focus_resolves_source_from_cursor_when_foreground_unknown() {
             Some((900, 10)),
         ),
     );
-    let focus = focus_effects(&reply);
-    assert_eq!(
-        focus.len(),
-        1,
-        "cursor resolves source: {:?}",
-        reply.effects
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
     );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, "win-a1");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
     assert_eq!(
-        focus[0].target.0, "win-a1",
-        "left from out-b names the out-a right-edge leaf (tall facts admit stacked newcomer-first, so the MRU win-a2 does not touch the entry edge)"
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
     );
+    assert_eq!(request.cmd_seq, Some(11));
+    assert_eq!(request.after_shown, None);
 }
 
 #[test]
@@ -859,9 +920,23 @@ fn no_focus_up_down_cross_stacked_outputs() {
             None,
         ),
     );
-    let focus = focus_effects(&reply);
-    assert_eq!(focus.len(), 1, "down crosses: {:?}", reply.effects);
-    assert_eq!(focus[0].target.0, "win-c1");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, "win-c1");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
+    assert_eq!(request.after_shown, None);
 }
 
 #[test]

@@ -136,6 +136,8 @@ mod world_float_boundary_tests;
 #[cfg(test)]
 mod world_float_membership_tests;
 #[cfg(test)]
+mod world_focus_cursor_tests;
+#[cfg(test)]
 mod world_focus_feedback_tests;
 #[cfg(test)]
 mod world_focus_settlement_tests;

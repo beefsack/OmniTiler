@@ -1528,7 +1528,7 @@
             "intentWrites": [],
             "switchSettled": [],
             "diagnostics": [],
-            "closeFocus": null
+            "focusRequest": null
           },
           "currentGeneration": "generation-b",
           "currentObs": "3"

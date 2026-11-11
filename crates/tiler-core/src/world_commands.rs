@@ -66,7 +66,7 @@ impl WorldEngine {
         }
         match command {
             WorldCommand::Implicit(inner) => {
-                let Some(resolved) = self.implicit_focus.clone() else {
+                let Some(resolved) = self.execution_subject() else {
                     return CommandApplied::Rejected {
                         kind: KIND_FOCUS,
                         message: MSG_FOCUS,

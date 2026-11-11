@@ -16,10 +16,13 @@ use crate::world_engine::{
     KIND_REUSED, KIND_REVISION_EXHAUSTED, KIND_SNAPSHOT, KIND_SUPERSEDED, RawRouting, WorldEngine,
 };
 use crate::world_report::{
-    AttemptLaneV4, AuthorityScope, CommandRejectKind, CommandResult, HeldAttemptRow, HeldWindowRow,
-    IntentWrite, PresentationIngressV4, PresentationRowV4, RowDiagnostic, RowDiagnosticKind,
+    AfterShown, AfterShownMember, AfterShownScope, AttemptLaneV4, AuthorityScope,
+    CommandRejectKind, CommandResult, FocusRequest, FocusRequestCause, HeldAttemptRow,
+    HeldWindowRow, IntentWrite, MAX_FOCUS_DEPARTING, MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED,
+    MAX_FOCUS_VIEWS, PresentationIngressV4, PresentationRowV4, RowDiagnostic, RowDiagnosticKind,
     RowDiagnosticLane, ScreenReport, SendSource, WORLD_CONTRACT_VERSION_V4, WORLD_MAX_REPLY_BYTES,
-    WindowFact, WorldCommand, WorldReportV4, retained_window_fields,
+    WindowFact, WorldCommand, WorldReportV4, retained_window_fields, validate_after_shown_reason,
+    validate_focus_request_reason,
 };
 use crate::world_report_v4_checks::{graded_effective_v4, report_digest_v4};
 use crate::world_run_v4::V4RunOutcome;
@@ -342,13 +345,14 @@ fn fresh_consumed_command_reconciles_without_reexecution() {
             ),
         ),
     );
-    assert!(
+    assert_eq!(
         executed
-            .effects
-            .iter()
-            .any(|effect| effect.command_seq == Some(1)),
+            .focus_request
+            .as_ref()
+            .map(|request| request.cmd_seq),
+        Some(Some(1)),
         "fresh command executes: {:?}",
-        executed.effects
+        executed.focus_request
     );
     assert_eq!(engine.command_highwater, Some(1));
     let rerun = report(
@@ -365,12 +369,9 @@ fn fresh_consumed_command_reconciles_without_reexecution() {
             assert!(reply.command_consumed);
             assert_eq!(reply.based_on_observation_seq, 3);
             assert!(
-                !reply
-                    .effects
-                    .iter()
-                    .any(|effect| effect.command_seq == Some(1)),
+                reply.focus_request.is_none() || reply.focus_request == executed.focus_request,
                 "consumed sequences never re-execute: {:?}",
-                reply.effects
+                reply.focus_request
             );
             assert!(reply.command_result.is_none());
         }
@@ -1105,6 +1106,208 @@ fn forged_staged_reply_never_adopts() {
     assert_eq!(engine.state_revision, 0, "refusal advances no revision");
     assert!(!engine.has_last_v4, "refusal populates no replay cache");
     assert!(engine.last_reply_v4.is_none(), "refusal caches no reply");
+}
+
+fn after_shown_members(count: usize) -> Vec<AfterShownMember> {
+    (0..count)
+        .map(|i| AfterShownMember {
+            win: WindowId(format!("win-{i}")),
+            out: OutputId("out-a".to_owned()),
+            ws: "ws-a".to_owned(),
+            frame: None,
+        })
+        .collect()
+}
+
+fn after_shown_scopes(count: usize) -> Vec<AfterShownScope> {
+    (0..count)
+        .map(|i| AfterShownScope {
+            out: OutputId(format!("out-{i}")),
+            ws: format!("ws-{i}"),
+        })
+        .collect()
+}
+
+fn over_cap_shown(
+    members: Vec<AfterShownMember>,
+    views: Vec<AfterShownScope>,
+    selected: Vec<AfterShownScope>,
+    departing: Vec<AfterShownScope>,
+) -> AfterShown {
+    AfterShown {
+        op: "op-1".to_owned(),
+        obs: 1,
+        members,
+        views,
+        selected,
+        departing,
+    }
+}
+
+fn over_cap_request(shown: AfterShown) -> FocusRequest {
+    FocusRequest {
+        id: "focus-1".to_owned(),
+        target: WindowId("win-a".to_owned()),
+        issued_revision: 1,
+        cause: FocusRequestCause::ExplicitCommand,
+        output: OutputId("out-a".to_owned()),
+        workspace: "ws-a".to_owned(),
+        cmd_seq: Some(7),
+        after_shown: Some(shown),
+    }
+}
+
+#[test]
+fn after_shown_cap_helper_pins_each_lane() {
+    // Absent projection admits.
+    assert_eq!(validate_after_shown_reason(&None), None);
+    assert_eq!(validate_focus_request_reason(&None), None);
+    assert_eq!(
+        validate_focus_request_reason(&Some(FocusRequest {
+            id: "focus-1".to_owned(),
+            target: WindowId("win-a".to_owned()),
+            issued_revision: 1,
+            cause: FocusRequestCause::ExplicitCommand,
+            output: OutputId("out-a".to_owned()),
+            workspace: "ws-a".to_owned(),
+            cmd_seq: Some(7),
+            after_shown: None,
+        })),
+        None,
+        "null projection admits"
+    );
+    // At-cap admits on every lane without reaching the byte budget.
+    let at_cap = over_cap_shown(
+        after_shown_members(MAX_FOCUS_MEMBERS),
+        after_shown_scopes(MAX_FOCUS_VIEWS),
+        after_shown_scopes(MAX_FOCUS_SELECTED),
+        after_shown_scopes(MAX_FOCUS_DEPARTING),
+    );
+    assert_eq!(at_cap.members.len(), 10_000);
+    assert_eq!(validate_after_shown_reason(&Some(at_cap)), None);
+    // Over-cap refuses per lane with the encoder's fixed token.
+    let over_members = over_cap_shown(
+        after_shown_members(MAX_FOCUS_MEMBERS + 1),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(
+        validate_after_shown_reason(&Some(over_members)),
+        Some("focus-members-over-cap")
+    );
+    for (lane, token) in [
+        ("views", "focus-views-over-cap"),
+        ("selected", "focus-selected-over-cap"),
+        ("departing", "focus-departing-over-cap"),
+    ] {
+        let shown = match lane {
+            "views" => {
+                let views = after_shown_scopes(MAX_FOCUS_VIEWS + 1);
+                over_cap_shown(Vec::new(), views.clone(), views, Vec::new())
+            }
+            "selected" => over_cap_shown(
+                Vec::new(),
+                Vec::new(),
+                after_shown_scopes(MAX_FOCUS_SELECTED + 1),
+                Vec::new(),
+            ),
+            _ => over_cap_shown(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                after_shown_scopes(MAX_FOCUS_DEPARTING + 1),
+            ),
+        };
+        assert_eq!(
+            validate_after_shown_reason(&Some(shown)),
+            Some(token),
+            "{lane} over cap refuses"
+        );
+    }
+}
+
+#[test]
+fn forged_after_shown_over_cap_never_adopts() {
+    // An over-cap but byte-small projection must refuse at the finalize
+    // gate before adoption: the byte gate alone cannot catch it, so the
+    // typed cap check owns this boundary with no engine mutation, cache,
+    // or id advance.
+    let fresh = engine();
+    let first = observe(1, facts_pair(), "win-a");
+    let mut staged = fresh.clone();
+    let genuine = match staged.run_accepted_v4(&first, &issue(&first), false, 1) {
+        V4RunOutcome::Accepted(reply) | V4RunOutcome::CommandConsumed(reply) => reply,
+        other => panic!("expected staged run, got {other:?}"),
+    };
+    let digest = report_digest_v4(&first);
+    let members_before = fresh.members.clone();
+    let mut engine = fresh.clone();
+    let views = after_shown_scopes(MAX_FOCUS_VIEWS + 1);
+    let cases: Vec<(&str, AfterShown)> = vec![
+        (
+            "focus-members-over-cap",
+            over_cap_shown(
+                after_shown_members(MAX_FOCUS_MEMBERS + 1),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
+        ),
+        (
+            "focus-views-over-cap",
+            over_cap_shown(Vec::new(), views.clone(), views, Vec::new()),
+        ),
+        (
+            "focus-selected-over-cap",
+            over_cap_shown(
+                Vec::new(),
+                Vec::new(),
+                after_shown_scopes(MAX_FOCUS_SELECTED + 1),
+                Vec::new(),
+            ),
+        ),
+        (
+            "focus-departing-over-cap",
+            over_cap_shown(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                after_shown_scopes(MAX_FOCUS_DEPARTING + 1),
+            ),
+        ),
+    ];
+    for (token, shown) in cases {
+        let mut forged = genuine.clone();
+        forged.focus_request = Some(over_cap_request(shown));
+        assert!(
+            reply_exact_bytes_v4(&forged) <= WORLD_MAX_REPLY_BYTES,
+            "{token} forgery stays under the byte gate so the cap owns it"
+        );
+        match engine.finalize_v4_candidate(staged.clone(), &first, digest, forged) {
+            V4RunOutcome::Rejected { kind, message } => {
+                assert_eq!(kind, KIND_SNAPSHOT, "{token} refuses typed");
+                assert_eq!(message, token);
+            }
+            other => panic!("expected {token} refusal, got {other:?}"),
+        }
+        assert_eq!(engine.state_revision, 0, "{token} advances no revision");
+        assert!(
+            engine.command_highwater.is_none(),
+            "{token} consumes nothing"
+        );
+        assert!(!engine.has_last_v4, "{token} populates no replay cache");
+        assert!(engine.last_reply_v4.is_none(), "{token} caches no reply");
+        assert_eq!(engine.members, members_before, "{token} mutates no members");
+        assert!(
+            engine.pending_focus.is_none(),
+            "{token} poisons no focus slot"
+        );
+        assert_eq!(
+            engine.latest_published_presentation_rev_v4, 0,
+            "{token} stamps no publication"
+        );
+    }
 }
 
 #[test]

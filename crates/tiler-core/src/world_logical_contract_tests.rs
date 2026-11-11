@@ -487,8 +487,20 @@ fn fresh_admission_focus_is_at_most_once() {
             false,
         ),
     );
-    assert_eq!(second.effects.len(), 1);
-    assert!(second.effects[0].id.starts_with("af-"));
+    assert!(
+        second.effects.is_empty(),
+        "focus never publishes as wire effects: {second:?}"
+    );
+    let request = second.focus_request.as_ref().expect("admission request");
+    assert_eq!(request.target.0, "win-a");
+    assert_eq!(request.id, format!("focus-{}", second.state_revision));
+    assert_eq!(request.issued_revision, second.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::AutomaticAdmission
+    );
+    assert_eq!(request.cmd_seq, None);
+    assert_eq!(request.after_shown, None);
     // Re-observation never replays it, even on a fresh sequence.
     let third = accepted(
         &mut engine,
@@ -548,8 +560,23 @@ fn send_follow_and_stay_commit_window_transfers() {
         false,
     );
     let reply = accepted(&mut engine, &follow);
-    assert_eq!(reply.effects.len(), 1);
-    assert_eq!(reply.effects[0].target.0, "win-a");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, "win-a");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
+    assert_eq!(request.after_shown, None);
     assert_eq!(reply.transfers.len(), 1);
     assert_eq!(reply.transfers[0].operation_id, "op-11");
     // Before arrival the mover publishes Controlled membership desire at
@@ -909,9 +936,23 @@ fn directional_focus_crosses_outputs_with_explicit_effect() {
             false,
         ),
     );
-    assert_eq!(reply.effects.len(), 1);
-    assert_eq!(reply.effects[0].target.0, "win-b");
-    assert!(reply.effects[0].is_explicit_focus_for(11));
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
+    assert_eq!(request.after_shown, None);
 }
 
 #[test]
@@ -1167,8 +1208,23 @@ fn numbered_send_trailing_path_creates_and_commits_immediately() {
             false,
         ),
     );
-    assert_eq!(reply.effects.len(), 1);
-    assert_eq!(reply.effects[0].target.0, "win-a");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, "win-a");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
+    assert_eq!(request.after_shown, None);
     // Ineligible follow (no suppression support in these facts): the
     // window flight under the stable command identity with no view
     // flight and no frozen binding, legacy direct focus only. The
@@ -1180,8 +1236,13 @@ fn numbered_send_trailing_path_creates_and_commits_immediately() {
         .expect("window flight");
     assert_eq!(reply.transfers.len(), 1, "window flight only");
     assert_eq!(window.operation_id, "op-11");
-    assert!(
-        !reply.effects[0].await_shown,
+    assert_eq!(
+        reply
+            .focus_request
+            .as_ref()
+            .expect("explicit focus request")
+            .after_shown,
+        None,
         "ineligible follow never awaits"
     );
     let trailing = window.target_workspace.clone();
@@ -1738,8 +1799,23 @@ fn numbered_send_trailing_create_stages_fresh_target_and_commits() {
             false,
         ),
     );
-    assert_eq!(reply.effects.len(), 1);
-    assert_eq!(reply.effects[0].target.0, "win-a");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, "win-a");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(12));
+    assert_eq!(request.after_shown, None);
     // The Create-path window transfer commits alongside the still-outstanding
     // select view flight: filter to the mover's window transfer.
     let sends: Vec<_> = reply
@@ -1848,8 +1924,23 @@ fn numbered_follow_selects_target_view_and_stay_keeps_source() {
         output_view(&reply, "out-a").as_deref(),
         Some(view_b.as_str())
     );
-    assert_eq!(reply.effects.len(), 1);
-    assert_eq!(reply.effects[0].target.0, "win-a");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, "win-a");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
+    assert_eq!(request.after_shown, None);
     let member = window_row(&reply, "win-a");
     assert_eq!(
         (member.output.0.as_str(), member.workspace.as_str()),
@@ -1887,13 +1978,23 @@ fn numbered_follow_selects_target_view_and_stay_keeps_source() {
         output_view(&stayed, "out-a").as_deref(),
         Some(view_b.as_str())
     );
-    assert_eq!(
-        stayed.effects.len(),
-        1,
-        "stay names a source survivor: {:?}",
-        stayed.effects
+    assert!(
+        stayed.effects.is_empty(),
+        "focus never publishes as wire effects: {stayed:?}"
     );
-    assert_ne!(stayed.effects[0].target.0, "win-b");
+    let request = stayed
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.id, format!("focus-{}", stayed.state_revision));
+    assert_eq!(request.issued_revision, stayed.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(12));
+    assert_eq!(request.after_shown, None);
+    assert_ne!(request.target.0, "win-b");
     let member = window_row(&stayed, "win-b");
     assert_eq!(
         (member.output.0.as_str(), member.workspace.as_str()),
@@ -2014,8 +2115,23 @@ fn numbered_follow_fans_out_views_in_shared_mode() {
         output_view(&reply, "out-b").as_deref(),
         Some(view_b.as_str())
     );
-    assert_eq!(reply.effects.len(), 1);
-    assert_eq!(reply.effects[0].target.0, "win-a");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, "win-a");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
+    assert_eq!(request.after_shown, None);
 }
 
 #[test]
@@ -3897,8 +4013,23 @@ fn cross_output_follow_ineligible_moves_view_without_binding() {
             .contains_key(&OutputId("out-b".to_owned())),
         "ineligible mover binds nothing"
     );
-    assert_eq!(followed.effects.len(), 1, "legacy direct focus");
-    assert!(!followed.effects[0].await_shown);
+    assert!(
+        followed.effects.is_empty(),
+        "focus never publishes as wire effects: {followed:?}"
+    );
+    let request = followed
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target.0, "win-a");
+    assert_eq!(request.id, format!("focus-{}", followed.state_revision));
+    assert_eq!(request.issued_revision, followed.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
+    assert_eq!(request.after_shown, None);
     // Membership arrival retires the window flight with no binding and no
     // terminal.
     let arrived = accepted(

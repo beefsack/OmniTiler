@@ -54,9 +54,10 @@ use crate::session::DomainKey;
 use crate::world_engine::WorldEngine;
 use crate::world_focus::{FocusVerdict, classify_focus_feedback};
 use crate::world_report::{
-    EffectKind, FocusFeedback, HeldScreenRow, HoldReason, LastWrite, LastWriteProperty,
-    OneShotEffect, ScopeAuthority, ScreenReport, SwitchEvent, SwitchFocus, SwitchOutcome,
-    TransferKind, VisibilityTarget, WindowDesire, WorldCommand,
+    AfterShown, AfterShownMember, AfterShownScope, EffectKind, FocusFeedback, HeldScreenRow,
+    HoldReason, LastWrite, LastWriteProperty, OneShotEffect, ScopeAuthority, ScreenReport,
+    SwitchEvent, SwitchFocus, SwitchOutcome, TransferKind, VisibilityTarget, WindowDesire,
+    WorldCommand,
 };
 
 /// Minimal carrier between the real selection command and publish only:
@@ -152,8 +153,9 @@ pub(crate) struct LatchedSwitchEvidence {
     pub confirmed: bool,
 }
 
-/// Retained selection binding: the actually emitted focus effect (`None`
-/// for focusless selections, which mint no focus effect), the parent view
+/// Retained selection binding: the focus carrier (`None`
+/// for focusless selections, which mint no focus effect), sharing the
+/// winning global request's frozen tuple where feedback correlates; the parent view
 /// operation identity (`op-<cmdseq>`, for the follow-on switch dependency;
 /// recorded from the dispatching command, never a new wire id), the focus
 /// selected home, the issuing revision and observation, the frozen arrival
@@ -193,6 +195,76 @@ pub(crate) struct RetainedSelection {
     /// effect beyond which binding survives.
     pub selected: Vec<DomainKey>,
     pub affected: Vec<OutputId>,
+}
+
+impl RetainedSelection {
+    /// Exact `afterShown` projection of this frozen binding: the existing
+    /// parent operation and issuing observation, the frozen arrival members
+    /// with lifetime/home/frame, the frozen native view targets (host-owned
+    /// only; native-free bindings carry empty `views`), and the frozen
+    /// selected/departing scopes. No caps, no truncation, no row
+    /// re-derivation: the frozen state is already exact. Departing scopes
+    /// come from the surviving per-output scopes at the binding revision.
+    pub(crate) fn after_shown_projection(
+        &self,
+        scopes: &BTreeMap<OutputId, SelectionScope>,
+    ) -> AfterShown {
+        let members: Vec<AfterShownMember> = self
+            .members
+            .iter()
+            .map(|member| AfterShownMember {
+                win: member.window.clone(),
+                out: member.home.output.clone(),
+                ws: member.home.workspace.0.clone(),
+                frame: member.frame,
+            })
+            .collect();
+        // Native-free bindings obligate no native view: empty views.
+        // Host-owned bindings prove via the frozen native view targets.
+        let views: Vec<AfterShownScope> = self
+            .view_targets
+            .values()
+            .map(|home| AfterShownScope {
+                out: home.output.clone(),
+                ws: home.workspace.0.clone(),
+            })
+            .collect();
+        let selected: Vec<AfterShownScope> = self
+            .selected
+            .iter()
+            .map(|home| AfterShownScope {
+                out: home.output.clone(),
+                ws: home.workspace.0.clone(),
+            })
+            .collect();
+        let mut departing: Vec<AfterShownScope> = Vec::new();
+        for output in &self.affected {
+            if let Some(scope) = scopes.get(output)
+                && scope.rev == self.rev
+            {
+                for home in &scope.departing {
+                    let row = AfterShownScope {
+                        out: home.output.clone(),
+                        ws: home.workspace.0.clone(),
+                    };
+                    if !departing
+                        .iter()
+                        .any(|kept| kept.out == row.out && kept.ws == row.ws)
+                    {
+                        departing.push(row);
+                    }
+                }
+            }
+        }
+        AfterShown {
+            op: self.parent_op.clone(),
+            obs: self.obs,
+            members,
+            views,
+            selected,
+            departing,
+        }
+    }
 }
 
 /// Live outputs for selection retention: reported live screens plus held
@@ -1066,7 +1138,7 @@ impl WorldEngine {
         windows: &[WindowDesire],
         pending: PendingSelection,
     ) {
-        let effect: Option<OneShotEffect> = match pending.focus.clone() {
+        let mut effect: Option<OneShotEffect> = match pending.focus.clone() {
             Some(focus) => effects
                 .iter()
                 .find(|effect| {
@@ -1079,6 +1151,20 @@ impl WorldEngine {
                 .cloned(),
             None => None,
         };
+        // Single-authority correlation: the retained carrier is only a
+        // representation and shares the winning global request's frozen
+        // tuple, so adapter feedback (keyed by the published request)
+        // latches here. Each binding keeps its own frozen copy: later
+        // supersession of the global slot never rewrites it, and
+        // member/visibility obligations are untouched.
+        if let (Some(slot), Some(repr)) = (self.pending_focus.as_ref(), effect.as_mut())
+            && slot.cause == crate::world_report::FocusRequestCause::ExplicitCommand
+            && slot.cmd_seq == pending.command_seq
+            && slot.target == repr.target
+            && slot.issued_revision == repr.issued_revision
+        {
+            repr.id = slot.id.clone();
+        }
         if pending.focus.is_some() && effect.is_none() {
             return;
         }
@@ -1235,6 +1321,8 @@ impl WorldEngine {
         let obs = pending.obs;
         let selected = pending.selected.clone();
         let affected = pending.affected_outputs.clone();
+        let focus_key = pending.focus.clone();
+        let focus_seq = pending.command_seq;
         self.retained_selection.insert(
             pending.focus_home.output.clone(),
             RetainedSelection {
@@ -1255,6 +1343,33 @@ impl WorldEngine {
                 affected,
             },
         );
+        // Same-freeze `afterShown` copy: when the retained focus winner is
+        // the selection-backed explicit request this binding was just
+        // frozen for (same command sequence and focus target), project the
+        // binding's exact frozen state into it. No row re-derivation, no
+        // caps, no truncation; parent settlement later cannot erase the
+        // copy. Direct/directional explicit winners have no binding and
+        // keep `None`.
+        if let (Some(focus), Some(focus_seq)) = (focus_key, focus_seq) {
+            let matches = self.pending_focus.as_ref().is_some_and(|slot| {
+                slot.cause == crate::world_report::FocusRequestCause::ExplicitCommand
+                    && slot.cmd_seq == Some(focus_seq)
+                    && slot.target == focus
+                    && slot.after_shown.is_none()
+            });
+            if matches
+                && let Some(output) = self.pending_focus.as_ref().map(|slot| slot.output.clone())
+                && let Some(binding) = self.retained_selection.get(&output).cloned()
+                && binding.effect.as_ref().is_some_and(|effect| {
+                    effect.command_seq == Some(focus_seq) && effect.target == focus
+                })
+            {
+                let projection = binding.after_shown_projection(&self.selection_scopes);
+                if let Some(slot) = self.pending_focus.as_mut() {
+                    slot.after_shown = Some(projection);
+                }
+            }
+        }
         // Zero-obligation completion at the earliest normal publication: a
         // binding with no frozen switch members, no feedback gate, and no
         // native obligation is vacuously satisfied, so the issuing reply

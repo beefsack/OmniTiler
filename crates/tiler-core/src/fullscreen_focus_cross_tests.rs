@@ -30,7 +30,7 @@ use crate::settings_state::EffectiveSetting;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    EffectKind, PresentationIngressV4, PresentationRowV4, ScreenReport, WORLD_CONTRACT_VERSION_V4,
+    PresentationIngressV4, PresentationRowV4, ScreenReport, WORLD_CONTRACT_VERSION_V4,
     WindowFact, WorldCommand, WorldReportV4,
 };
 use std::collections::BTreeMap;
@@ -694,13 +694,30 @@ fn one_screen() -> Vec<ScreenReport> {
     vec![screen("out-a", 0)]
 }
 
-fn focus_targets(reply: &crate::world_report::WorldReplyV4) -> Vec<WindowId> {
-    reply
-        .effects
-        .iter()
-        .filter(|e| e.kind == EffectKind::Focus)
-        .map(|e| e.target.clone())
-        .collect()
+fn expect_explicit_focus(
+    reply: &crate::world_report::WorldReplyV4,
+    target: &str,
+    cmd_seq: u64,
+    rev: u64,
+) {
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {:?}",
+        reply.effects
+    );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
+    assert_eq!(request.target, WindowId(target.to_owned()));
+    assert_eq!(request.id, format!("focus-{rev}"));
+    assert_eq!(request.issued_revision, rev);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(cmd_seq));
+    assert_eq!(request.after_shown, None);
 }
 
 fn home_of(engine: &WorldEngine, window: &WindowId) -> Option<DomainKey> {
@@ -762,11 +779,7 @@ fn world_fullscreen_tiled_skips_sibling_and_crosses_output() {
             }),
         ),
     );
-    assert_eq!(
-        focus_targets(&reply),
-        vec![WindowId("win-c".to_owned())],
-        "fullscreen focus crosses to the adjacent output, never the sibling"
-    );
+    expect_explicit_focus(&reply, "win-c", 11, 2);
 }
 
 #[test]
@@ -832,11 +845,7 @@ fn world_non_fullscreen_control_plans_local_sibling() {
             }),
         ),
     );
-    assert_eq!(
-        focus_targets(&reply),
-        vec![WindowId("win-b".to_owned())],
-        "ordinary focus still takes the same-output sibling"
-    );
+    expect_explicit_focus(&reply, "win-b", 11, 2);
 }
 
 #[test]
@@ -890,9 +899,9 @@ fn world_fullscreen_single_output_retains_without_effect() {
         other => panic!("unexpected outcome: {other:?}"),
     };
     assert!(
-        focus_targets(&reply).is_empty(),
-        "no focus effect without an adjacent output, got {:?}",
-        reply.effects
+        reply.focus_request.is_none(),
+        "no focus request without an adjacent output, got {:?}",
+        reply.focus_request
     );
     assert_eq!(
         session_focused(&engine, &key),
@@ -957,9 +966,9 @@ fn world_fullscreen_vertical_is_noop() {
         other => panic!("unexpected outcome: {other:?}"),
     };
     assert!(
-        focus_targets(&reply).is_empty(),
+        reply.focus_request.is_none(),
         "vertical fullscreen never crosses, got {:?}",
-        reply.effects
+        reply.focus_request
     );
     assert_eq!(
         session_focused(&engine, &key),
@@ -1047,11 +1056,7 @@ fn world_fullscreen_float_skips_lattice_and_crosses_remembered() {
             }),
         ),
     );
-    assert_eq!(
-        focus_targets(&reply),
-        vec![WindowId("win-t".to_owned())],
-        "fullscreen float crosses to the remembered target, never the sibling"
-    );
+    expect_explicit_focus(&reply, "win-t", 13, 4);
 }
 
 #[test]
@@ -1099,9 +1104,9 @@ fn world_fullscreen_float_vertical_retains() {
     });
     assert_eq!(outcome, Some("focus-float-retained"));
     assert!(
-        focus_targets(&reply).is_empty(),
+        reply.focus_request.is_none(),
         "vertical fullscreen float retains, got {:?}",
-        reply.effects
+        reply.focus_request
     );
 }
 
@@ -1150,9 +1155,9 @@ fn world_fullscreen_float_single_output_retains() {
     });
     assert_eq!(outcome, Some("focus-float-retained"));
     assert!(
-        focus_targets(&reply).is_empty(),
+        reply.focus_request.is_none(),
         "single-output fullscreen float retains, got {:?}",
-        reply.effects
+        reply.focus_request
     );
 }
 
@@ -1193,9 +1198,5 @@ fn world_explicit_focus_by_window_works_under_fullscreen() {
             }),
         ),
     );
-    assert_eq!(
-        focus_targets(&reply),
-        vec![WindowId("win-b".to_owned())],
-        "explicit focus still reaches the sibling under fullscreen"
-    );
+    expect_explicit_focus(&reply, "win-b", 11, 2);
 }

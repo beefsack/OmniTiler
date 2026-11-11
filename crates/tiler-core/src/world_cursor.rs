@@ -34,7 +34,9 @@ pub(crate) fn cursor_game_paused(engine: &WorldEngine) -> bool {
 
 /// Whether one staged window is focus-eligible for hover coupling: homed to
 /// a readable unheld non-floating scope, with no unexplained fit exclusion
-/// (ordinary floats stay eligible).
+/// (ordinary floats stay eligible for admission, never for hover), and never
+/// a fullscreen, sticky, floating, or excluded target per the normative
+/// automatic restrictions.
 fn hover_eligible(
     engine: &WorldEngine,
     held_scopes: &BTreeSet<DomainKey>,
@@ -57,6 +59,12 @@ fn hover_eligible(
     }
     let derived = engine.derived_for(window);
     if derived.hidden || derived.hold || derived.excluded {
+        return false;
+    }
+    // Normative automatic target restrictions: hover never targets
+    // floating, sticky, or fullscreen victims. Admission alone keeps its
+    // ordinary-float exception; hover gains none.
+    if derived.floating || derived.sticky || derived.overlay_fullscreen {
         return false;
     }
     // Unexplained fit-excluded newcomers never take automatic focus
@@ -85,6 +93,13 @@ fn hover_candidate(engine: &WorldEngine, held_scopes: &BTreeSet<DomainKey>) -> O
     if fact.minimized == Some(true) {
         return None;
     }
+    // Normative automatic target restrictions: hover never targets
+    // fullscreen, sticky, or host-hidden victims, even when classification
+    // lags. Admission alone keeps its ordinary-float path.
+    if fact.fullscreen == Some(true) || fact.sticky == Some(true) || fact.host_hidden == Some(true)
+    {
+        return None;
+    }
     let home = engine.staged.homing.get(&hit)?.clone();
     // Current-view gate: only the retained logical view of the hit
     // window's output is actually shown.
@@ -98,23 +113,19 @@ fn hover_candidate(engine: &WorldEngine, held_scopes: &BTreeSet<DomainKey>) -> O
     if !hover_eligible(engine, held_scopes, &home, &hit) {
         return None;
     }
-    // Visible staged membership: the hit must ride the tiled carriers or
-    // the float exceptions of its home domain. Minimized, unreadable, and
-    // unhomed lifetimes never match, whatever the adapter reported.
+    // Visible staged membership: the hit must ride the tiled carriers of
+    // its home domain. Float exceptions never authorize hover: admission
+    // alone keeps the ordinary-float path, and broadening hover to floats
+    // or overlays would violate the normative automatic restrictions.
+    // Minimized, unreadable, and unhomed lifetimes never match, whatever
+    // the adapter reported.
     let domain = engine
         .staged
         .domains
         .iter()
         .find(|domain| domain.key == home)?;
     let tiled = domain.windows.iter().any(|window| window.window == hit);
-    let floated = engine.engine.session(&home).is_some_and(|session| {
-        session.exception_observed().iter().any(|observed| {
-            observed.window == hit
-                && observed.output == home.output
-                && observed.workspace == home.workspace
-        })
-    });
-    if tiled || floated { Some(hit) } else { None }
+    if tiled { Some(hit) } else { None }
 }
 
 /// Push one focus-follows-cursor effect unless a stronger focus effect was
@@ -133,6 +144,12 @@ pub(crate) fn maybe_push_focus_follows(
         return;
     }
     if let Some(follow) = engine.take_focus_follows(held_scopes) {
+        // The accepted hover advances the execution-time cursor
+        // immediately (best-effort, like every other accepted focus
+        // choice), so a later command in the same batch resolves its
+        // implicit subject from post-hover core state. Only the final
+        // winner publishes.
+        let _ = engine.record_canonical(&follow.target, held_scopes, false);
         effects.push(follow);
     }
 }
@@ -170,10 +187,32 @@ impl WorldEngine {
         if self.staged.gesture_barrier || self.gesture.is_some() {
             return None;
         }
-        let hovered = hover_candidate(self, held_scopes)?;
+        // Departure tracking (Q3): leaving the live hover target onto an
+        // empty or ineligible pointer position clears the last-hover memory
+        // without minting, so a later return to the same target counts as a
+        // fresh qualifying entry even when the pending row survived while
+        // away. Pauses above return without touching the memory.
+        let Some(hovered) = hover_candidate(self, held_scopes) else {
+            self.ffc_last_hover = None;
+            return None;
+        };
         let previous = self.ffc_last_hover.clone();
         self.ffc_last_hover = Some(hovered.clone());
         if hovered.0 == self.staged.observation.focused_global {
+            return None;
+        }
+        // Q3: pointer movement over an already-pending hover target keeps
+        // the live id only while the pointer never left: a fresh candidate
+        // here would mint a new id and a new adapter call, so continuous
+        // presence over the pending target suppresses the duplicate. After
+        // a departure (previous cleared or moved elsewhere) the same target
+        // is a fresh entry and must remint below.
+        if previous.as_ref() == Some(&hovered)
+            && self.pending_focus.as_ref().is_some_and(|pending| {
+                pending.cause == crate::world_report::FocusRequestCause::FocusFollowsCursor
+                    && pending.target == hovered
+            })
+        {
             return None;
         }
         // Genuine movement or hover transition only: a static cursor over

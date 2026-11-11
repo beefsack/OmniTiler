@@ -83,24 +83,25 @@ use tiler_core::world_presentation::{
     GroupHideReason, PagerScreen, PagerWindow, PagerWorkspace, PresentationUnderlay,
 };
 use tiler_core::world_report::{
-    ActivationPolicy, ArrivalBracket, ArrivalLocation, AttemptLaneV4, AuthorityScope,
-    BorderHideReasonV4, BorderPresentationV4, CloseFocusCause, CloseFocusRequest,
-    CommandRejectKind, CommandResult, EffectKind, FloatOrigin, FocusFeedback, FrameWitness,
-    FullscreenOwner, HeldAttemptRow, HeldNativeRow, HeldPresentationRow, HeldScreenRow,
-    HeldWindowRow, HoldReason, IntentRecord, IntentWrite, LastWrite, LastWritePath,
-    LastWriteProperty, MAX_INTENT_RECORDS, MAX_INTENT_WRITES, MAX_REPLY_DIAGNOSTICS,
-    MAX_REPLY_EFFECTS, MAX_REPLY_NATIVE_CREATIONS, MAX_REPLY_OPERATIONS, MAX_REPLY_OUTPUTS,
-    MAX_REPLY_SCOPES, MAX_REPLY_SWITCH_EVENTS, MAX_REPLY_TRANSFERS, MAX_REPLY_WINDOWS,
-    MAX_REPLY_WORKSPACES, MAX_STATE_TARGETS_PER_WINDOW, NativeCreationDesire, NativeObservation,
-    NativeWorkspaceFact, OneShotEffect, OperationEvent, OperationOutcome, OutputDesire,
-    OutputIdentity, PresentationIngressV4, PresentationPagerFrameV4, PresentationRowV4,
-    RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
-    ScopeAuthority, ScopeStatus, ScreenReport, StateProperty, StateTarget, SwitchEvent,
-    SwitchFocus, SwitchOutcome, TilingMode, TransferKind, TransferTargetV4, VisibilityFact,
-    VisibilityReason, VisibilitySample, VisibilitySetter, VisibilityTarget, WindowDesire,
-    WindowFact, WindowType, WorkspaceDesire, WorkspaceRef, WorldCommand, WorldPresentationV4,
-    WorldReplyV4, WorldReportV4, check_screen_structure, check_window_structure,
-    push_raw_setting_value,
+    ActivationPolicy, AfterShown, AfterShownMember, AfterShownScope, ArrivalBracket,
+    ArrivalLocation, AttemptLaneV4, AuthorityScope, BorderHideReasonV4, BorderPresentationV4,
+    CommandRejectKind, CommandResult, EffectKind, FloatOrigin, FocusFeedback, FocusRequest,
+    FocusRequestCause, FrameWitness, FullscreenOwner, HeldAttemptRow, HeldNativeRow,
+    HeldPresentationRow, HeldScreenRow, HeldWindowRow, HoldReason, IntentRecord, IntentWrite,
+    LastWrite, LastWritePath, LastWriteProperty, MAX_FOCUS_DEPARTING, MAX_FOCUS_MEMBERS,
+    MAX_FOCUS_SELECTED, MAX_FOCUS_VIEWS, MAX_INTENT_RECORDS, MAX_INTENT_WRITES,
+    MAX_REPLY_DIAGNOSTICS, MAX_REPLY_EFFECTS, MAX_REPLY_NATIVE_CREATIONS, MAX_REPLY_OPERATIONS,
+    MAX_REPLY_OUTPUTS, MAX_REPLY_SCOPES, MAX_REPLY_SWITCH_EVENTS, MAX_REPLY_TRANSFERS,
+    MAX_REPLY_WINDOWS, MAX_REPLY_WORKSPACES, MAX_STATE_TARGETS_PER_WINDOW, NativeCreationDesire,
+    NativeObservation, NativeWorkspaceFact, OneShotEffect, OperationEvent, OperationOutcome,
+    OutputDesire, OutputIdentity, PresentationIngressV4, PresentationPagerFrameV4,
+    PresentationRowV4, RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind,
+    RowDiagnosticLane, ScopeAuthority, ScopeStatus, ScreenReport, StateProperty, StateTarget,
+    SwitchEvent, SwitchFocus, SwitchOutcome, TilingMode, TransferKind, TransferTargetV4,
+    VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter, VisibilityTarget,
+    WindowDesire, WindowFact, WindowType, WorkspaceDesire, WorkspaceRef, WorldCommand,
+    WorldPresentationV4, WorldReplyV4, WorldReportV4, check_screen_structure,
+    check_window_structure, push_raw_setting_value,
 };
 
 /// World protocol contract version (equals the core world contract version:
@@ -5365,19 +5366,155 @@ fn decode_effect(value: &serde_json::Value) -> Result<OneShotEffect> {
     })
 }
 
-fn decode_close_focus(value: &serde_json::Value) -> Result<Option<CloseFocusRequest>> {
+fn decode_after_shown_scope(value: &serde_json::Value) -> Result<AfterShownScope> {
+    let map = as_object(value)?;
+    check_keys(map, &["out", "ws"])?;
+    Ok(AfterShownScope {
+        out: OutputId(req_id(map, "out")?),
+        ws: req_id(map, "ws")?,
+    })
+}
+
+fn decode_after_shown(value: &serde_json::Value) -> Result<Option<AfterShown>> {
     match value {
         serde_json::Value::Null => Ok(None),
         serde_json::Value::Object(map) => {
-            check_keys(map, &["id", "target", "rev", "cause", "out", "ws"])?;
-            let cause = CloseFocusCause::parse(req_str(map, "cause")?).ok_or_else(unknown_value)?;
-            Ok(Some(CloseFocusRequest {
+            check_keys(
+                map,
+                &["op", "obs", "members", "views", "selected", "departing"],
+            )?;
+            let op = req_id(map, "op")?;
+            let obs = req_u64_str(map, "obs")?;
+            let members_value = map.get("members").ok_or_else(malformed)?;
+            let member_items = members_value.as_array().ok_or_else(malformed)?;
+            if member_items.len() > MAX_FOCUS_MEMBERS {
+                return Err(reply_snapshot("focus-members-over-cap"));
+            }
+            let mut members = Vec::with_capacity(member_items.len());
+            let mut seen_members = std::collections::BTreeSet::new();
+            for item in member_items {
+                let row = as_object(item)?;
+                check_keys(row, &["win", "out", "ws", "frame"])?;
+                let win = req_id(row, "win")?;
+                if !seen_members.insert(win.clone()) {
+                    return Err(reply_snapshot("focus-duplicate-member"));
+                }
+                members.push(AfterShownMember {
+                    win: WindowId(win),
+                    out: OutputId(req_id(row, "out")?),
+                    ws: req_id(row, "ws")?,
+                    frame: opt_rect_or_null(row, "frame")?,
+                });
+            }
+            let mut views = Vec::new();
+            let mut seen_view_outs = std::collections::BTreeSet::new();
+            let mut seen_views = std::collections::BTreeSet::new();
+            for item in map
+                .get("views")
+                .ok_or_else(malformed)?
+                .as_array()
+                .ok_or_else(malformed)?
+            {
+                if views.len() >= MAX_FOCUS_VIEWS {
+                    return Err(reply_snapshot("focus-views-over-cap"));
+                }
+                let scope = decode_after_shown_scope(item)?;
+                if !seen_view_outs.insert(scope.out.0.clone()) {
+                    return Err(reply_snapshot("focus-duplicate-view-output"));
+                }
+                seen_views.insert((scope.out.0.clone(), scope.ws.clone()));
+                views.push(scope);
+            }
+            let mut selected = Vec::new();
+            let mut seen_selected = std::collections::BTreeSet::new();
+            for item in map
+                .get("selected")
+                .ok_or_else(malformed)?
+                .as_array()
+                .ok_or_else(malformed)?
+            {
+                if selected.len() >= MAX_FOCUS_SELECTED {
+                    return Err(reply_snapshot("focus-selected-over-cap"));
+                }
+                let scope = decode_after_shown_scope(item)?;
+                if !seen_selected.insert((scope.out.0.clone(), scope.ws.clone())) {
+                    return Err(reply_snapshot("focus-duplicate-scope"));
+                }
+                selected.push(scope);
+            }
+            let mut departing = Vec::new();
+            let mut seen_departing = std::collections::BTreeSet::new();
+            for item in map
+                .get("departing")
+                .ok_or_else(malformed)?
+                .as_array()
+                .ok_or_else(malformed)?
+            {
+                if departing.len() >= MAX_FOCUS_DEPARTING {
+                    return Err(reply_snapshot("focus-departing-over-cap"));
+                }
+                let scope = decode_after_shown_scope(item)?;
+                if !seen_departing.insert((scope.out.0.clone(), scope.ws.clone())) {
+                    return Err(reply_snapshot("focus-duplicate-scope"));
+                }
+                departing.push(scope);
+            }
+            // Every view target must occur in `selected`.
+            for view in &views {
+                if !seen_selected.contains(&(view.out.0.clone(), view.ws.clone())) {
+                    return Err(reply_snapshot("focus-view-not-selected"));
+                }
+            }
+            Ok(Some(AfterShown {
+                op,
+                obs,
+                members,
+                views,
+                selected,
+                departing,
+            }))
+        }
+        _ => Err(malformed()),
+    }
+}
+
+fn decode_focus_request(value: &serde_json::Value) -> Result<Option<FocusRequest>> {
+    match value {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Object(map) => {
+            check_keys(
+                map,
+                &[
+                    "id",
+                    "target",
+                    "rev",
+                    "cause",
+                    "out",
+                    "ws",
+                    "cmdSeq",
+                    "afterShown",
+                ],
+            )?;
+            let cause =
+                FocusRequestCause::parse(req_str(map, "cause")?).ok_or_else(unknown_value)?;
+            let explicit = cause == FocusRequestCause::ExplicitCommand;
+            let cmd_seq = opt_u64_or_null(map, "cmdSeq")?;
+            if explicit != cmd_seq.is_some() {
+                return Err(reply_snapshot("focus-request-cmdseq-mismatch"));
+            }
+            let after_shown = decode_after_shown(map.get("afterShown").ok_or_else(malformed)?)?;
+            if after_shown.is_some() && !explicit {
+                return Err(reply_snapshot("focus-request-aftershown-non-explicit"));
+            }
+            Ok(Some(FocusRequest {
                 id: req_id(map, "id")?,
                 target: WindowId(req_id(map, "target")?),
                 issued_revision: req_u64_str(map, "rev")?,
                 cause,
                 output: OutputId(req_id(map, "out")?),
                 workspace: req_id(map, "ws")?,
+                cmd_seq,
+                after_shown,
             }))
         }
         _ => Err(malformed()),
@@ -6041,7 +6178,7 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
             "windows",
             "transfers",
             "effects",
-            "closeFocus",
+            "focusRequest",
             "result",
             "gestureSettled",
             "operationSettled",
@@ -6148,6 +6285,11 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
     let mut seen_effects = std::collections::BTreeSet::new();
     for item in effect_items {
         let effect = decode_effect(item)?;
+        // Focus left the effects lane: the retained `focusRequest` carries
+        // every cause now. A focus row on the wire refuses.
+        if effect.kind == EffectKind::Focus {
+            return Err(reply_snapshot("effect-focus-removed"));
+        }
         if !seen_effects.insert(effect.id.clone()) {
             return Err(reply_snapshot("duplicate-effect"));
         }
@@ -6248,7 +6390,7 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
             windows,
             transfers,
             effects,
-            close_focus: decode_close_focus(map.get("closeFocus").ok_or_else(malformed)?)?,
+            focus_request: decode_focus_request(map.get("focusRequest").ok_or_else(malformed)?)?,
             command_result,
             gesture_settled,
             operation_settled,
@@ -6571,9 +6713,141 @@ fn encode_transfer_v4(row: &TransferTargetV4, out: &mut String) -> Result<()> {
     Ok(())
 }
 
+/// Checked canonical writer for one `afterShown` scope row: exactly
+/// `{out,ws}`.
+fn encode_after_shown_scope_v4(scope: &AfterShownScope, out: &mut String) -> Result<()> {
+    check_reply_id(&scope.out.0)?;
+    check_reply_id(&scope.ws)?;
+    out.push_str("{\"out\":");
+    push_json_string(out, &scope.out.0);
+    out.push_str(",\"ws\":");
+    push_json_string(out, &scope.ws);
+    out.push('}');
+    Ok(())
+}
+
+/// Checked canonical writer for the nullable `afterShown` projection:
+/// `null` when absent, else the exact object in contract key order
+/// (`op,obs,members,views,selected,departing`). Mirrors the decode caps
+/// and the cross-field subset rule instead of emitting over-cap rows.
+fn encode_after_shown_v4(shown: &Option<AfterShown>, out: &mut String) -> Result<()> {
+    let Some(shown) = shown else {
+        out.push_str("null");
+        return Ok(());
+    };
+    if shown.members.len() > MAX_FOCUS_MEMBERS {
+        return Err(reply_snapshot("focus-members-over-cap"));
+    }
+    if shown.views.len() > MAX_FOCUS_VIEWS {
+        return Err(reply_snapshot("focus-views-over-cap"));
+    }
+    if shown.selected.len() > MAX_FOCUS_SELECTED {
+        return Err(reply_snapshot("focus-selected-over-cap"));
+    }
+    if shown.departing.len() > MAX_FOCUS_DEPARTING {
+        return Err(reply_snapshot("focus-departing-over-cap"));
+    }
+    check_reply_id(&shown.op)?;
+    out.push_str("{\"op\":");
+    push_json_string(out, &shown.op);
+    out.push_str(",\"obs\":\"");
+    out.push_str(&shown.obs.to_string());
+    out.push_str("\",\"members\":[");
+    for (i, member) in shown.members.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        check_reply_id(&member.win.0)?;
+        check_reply_id(&member.out.0)?;
+        check_reply_id(&member.ws)?;
+        out.push_str("{\"win\":");
+        push_json_string(out, &member.win.0);
+        out.push_str(",\"out\":");
+        push_json_string(out, &member.out.0);
+        out.push_str(",\"ws\":");
+        push_json_string(out, &member.ws);
+        out.push_str(",\"frame\":");
+        push_checked_opt_rect(out, &member.frame)?;
+        out.push('}');
+    }
+    out.push_str("],\"views\":[");
+    for (i, scope) in shown.views.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        encode_after_shown_scope_v4(scope, out)?;
+    }
+    out.push_str("],\"selected\":[");
+    for (i, scope) in shown.selected.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        encode_after_shown_scope_v4(scope, out)?;
+    }
+    out.push_str("],\"departing\":[");
+    for (i, scope) in shown.departing.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        encode_after_shown_scope_v4(scope, out)?;
+    }
+    out.push_str("]}");
+    Ok(())
+}
+
+/// Checked canonical writer for the nullable retained focus request:
+/// contract key order
+/// (`id,target,rev,cause,out,ws,cmdSeq,afterShown`). Mirrors the decode
+/// cross-field rules: `cmdSeq` non-null exactly for `explicit-command`,
+/// `afterShown` non-null only for `explicit-command`.
+fn encode_focus_request_v4(request: &FocusRequest, out: &mut String) -> Result<()> {
+    check_reply_id(&request.id)?;
+    check_reply_id(&request.target.0)?;
+    check_reply_id(&request.output.0)?;
+    check_reply_id(&request.workspace)?;
+    let explicit = request.cause == FocusRequestCause::ExplicitCommand;
+    if explicit != request.cmd_seq.is_some() {
+        return Err(reply_snapshot("focus-request-cmdseq-mismatch"));
+    }
+    if request.after_shown.is_some() && !explicit {
+        return Err(reply_snapshot("focus-request-aftershown-non-explicit"));
+    }
+    out.push_str("{\"id\":");
+    push_json_string(out, &request.id);
+    out.push_str(",\"target\":");
+    push_json_string(out, &request.target.0);
+    out.push_str(",\"rev\":\"");
+    out.push_str(&request.issued_revision.to_string());
+    out.push_str("\",\"cause\":");
+    push_json_string(out, request.cause.as_str());
+    out.push_str(",\"out\":");
+    push_json_string(out, &request.output.0);
+    out.push_str(",\"ws\":");
+    push_json_string(out, &request.workspace);
+    out.push_str(",\"cmdSeq\":");
+    match request.cmd_seq {
+        None => out.push_str("null"),
+        Some(seq) => {
+            out.push('"');
+            out.push_str(&seq.to_string());
+            out.push('"');
+        }
+    }
+    out.push_str(",\"afterShown\":");
+    encode_after_shown_v4(&request.after_shown, out)?;
+    out.push('}');
+    Ok(())
+}
+
 fn encode_effect_v4(row: &OneShotEffect, out: &mut String) -> Result<()> {
     check_reply_id(&row.id)?;
     check_reply_id(&row.target.0)?;
+    // Focus never encodes on the wire: the retained `focusRequest` lane
+    // carries every cause. The core strips focus carriers before publish;
+    // a focus row reaching the writer refuses instead of emitting.
+    if row.kind == EffectKind::Focus {
+        return Err(reply_snapshot("effect-focus-removed"));
+    }
     let explicit = row.cause == tiler_core::world_report::EffectCause::ExplicitCommand;
     if explicit && row.command_seq.is_none() {
         return Err(reply_snapshot("effect-explicit-null-seq"));
@@ -7178,24 +7452,10 @@ pub fn encode_reply_v4(decoded: &DecodedReplyV4) -> Result<String> {
         }
         encode_effect_v4(effect, &mut out)?;
     }
-    out.push_str("],\"closeFocus\":");
-    match &reply.close_focus {
+    out.push_str("],\"focusRequest\":");
+    match &reply.focus_request {
         None => out.push_str("null"),
-        Some(request) => {
-            out.push_str("{\"id\":");
-            push_json_string(&mut out, &request.id);
-            out.push_str(",\"target\":");
-            push_json_string(&mut out, &request.target.0);
-            out.push_str(",\"rev\":\"");
-            out.push_str(&request.issued_revision.to_string());
-            out.push_str("\",\"cause\":\"");
-            out.push_str(request.cause.as_str());
-            out.push_str("\",\"out\":");
-            push_json_string(&mut out, &request.output.0);
-            out.push_str(",\"ws\":");
-            push_json_string(&mut out, &request.workspace);
-            out.push('}');
-        }
+        Some(request) => encode_focus_request_v4(request, &mut out)?,
     }
     out.push_str(",\"result\":");
     encode_command_result_v4(&reply.command_result, &mut out)?;
@@ -8613,7 +8873,7 @@ mod tests {
             windows: Vec::new(),
             transfers: Vec::new(),
             effects: Vec::new(),
-            close_focus: None,
+            focus_request: None,
             command_result: None,
             gesture_settled: None,
             operation_settled: Vec::new(),

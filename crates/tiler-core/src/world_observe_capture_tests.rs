@@ -3633,11 +3633,16 @@ fn cursor_v4_capability_hold_kills_hover() {
     );
     supported.prev_cursor = Some((0, 0));
     held.prev_cursor = Some((0, 0));
-    let effect = supported
-        .take_focus_follows(&BTreeSet::new())
-        .expect("supported hit couples over the eligible join");
-    assert_eq!(effect.target.0, "win-a");
-    assert_eq!(effect.cause, EffectCause::FocusFollowsCursor);
+    // Normative automatic restriction (docs/decisions/focus.md): hover
+    // never targets a sticky victim, so the supported engine mints nothing
+    // despite classifying the fact; the held engine mints nothing because
+    // the sticky conflict grades to a held row with no classified fact.
+    // The classification split above (held row vs classified fact) is the
+    // capability-hold discriminator.
+    assert!(
+        supported.take_focus_follows(&BTreeSet::new()).is_none(),
+        "sticky hover never couples even when classified"
+    );
     assert!(
         held.take_focus_follows(&BTreeSet::new()).is_none(),
         "capability-held hit mints nothing"

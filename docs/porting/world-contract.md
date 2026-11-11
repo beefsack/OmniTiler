@@ -31,14 +31,16 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | Native backing and consolidated references | [Native facts](#native-observation), [attempts](#raw-attempts-and-settlement) | [R19](../decisions/layout-and-admission.md#native-workspace-adoption-and-r19), [G1 reconciliation](../changes/v4-migration.md#b-reconciliations-and-open-points) |
 | Named decorations, shared revision, anchored border | [Presentation](#presentation-and-renderer-input) | [Decorations](../decisions/contract.md#decorations), [R20](../decisions/contract.md#anchored-border-r20) |
 | Exact conformance and shared scripting verbs | [Conformance](#conformance), [commands](#commands-and-results) | [Testing](../principles.md#testing), [R18](../decisions/contract.md#scripting-command-surface-r18) |
-| Retained positive-close refocus | [Foreground](#worldreport), [close request](#retained-positive-close-focus) | [Approved design](../changes/core-owned-close-refocus.md) |
+| One retained focus request | [Foreground](#worldreport), [focus request](#one-retained-focus-request) | [Approved design](../changes/retained-focus-requests.md) |
 
 - The pre-release v4 close-focus amendment is an in-place breaking change:
-  `foregroundKnown` and nullable `closeFocus` are required, with no version bump
-  or dual-shape fallback. Core, codecs, fixtures and macOS implement the amended
-  shape. KDE adopts the strict report/reply shape and retained consumer offline;
-  Windows adopts it during its v4 port. A matching component set is required
-  for execution; offline conformance is not native acceptance.
+  `foregroundKnown` and required nullable `focusRequest` are present, with
+  no version bump or dual-shape fallback. Core, codecs, fixtures and macOS
+  implement the amended shape with offline verification in progress; KDE's
+  strict reply reader rejects it until updated, and Windows adopts it during
+  its v4 port. The amended shape carries no `closeFocus` and no `Focus`
+  effects. A matching component set is required for execution; offline
+  conformance is not native acceptance.
 - The pre-release shared-roster amendment also keeps version 4 and requires
   `sharedNativeRoster` on every handshake, without a missing-key default or
   dual-shape fallback. Current connection conformance uses
@@ -361,7 +363,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | `primary` | OutputId | omit | Host-designated primary, unknown if absent. |
 | `intentRecords` | IntentRecord[] | no | Opaque host storage return. |
 | `stateAttempts` | StateAttempt[] | no | Raw fullscreen/maximize/sticky/above writes. |
-| `focusFeedback` | FocusFeedback[] | no | Correlated native evidence for one-shot focus or the retained close request. |
+| `focusFeedback` | FocusFeedback[] | no | Correlated native evidence for the retained focus request. |
 | `rendererInput` | RendererInput | yes | One exact core-drawn target per command. |
 
 - Removed report keys: `owner,mode,views,hostOwned,equalCount,birthClear,predicate,refill,defaultTiled,switchTarget,freshPlacement,focusFollowsCursor,cursorWarp,anchorFallback,noSpaceResult,bornMaximized`.
@@ -890,7 +892,7 @@ acceptance or adopt the separate close-focus amendment.
 | `scopes` | ScopeStatus[] | no | Every known scope's authority. |
 | `workspaces,outputs,windows` | WorkspaceDesire[], OutputDesire[], WindowDesire[] | no | Full desired snapshot, not a diff. |
 | `transfers,effects` | TransferTarget[], OneShotEffect[] | no | Retained correlations and one-shot work. |
-| `closeFocus` | CloseFocusRequest | yes | Required nullable retained positive-close request, independent of effects. |
+| `focusRequest` | FocusRequest | yes | Required nullable retained request for every cause, independent of effects. |
 | `result` | CommandResult | yes | Issuing-reply-only result. |
 | `gestureSettled` | GestureSettled | yes | Core mutation acknowledgement, not native completion. |
 | `operationSettled` | OperationEvent[] | no | Existing clear/float terminals. |
@@ -949,10 +951,10 @@ acceptance or adopt the separate close-focus amendment.
 | | `cmdSeq` | Counter | yes | Command correlation, not parsed operation text. |
 | `TransferTarget` | `op,kind,win,out,ws,follow,held` | Id, TransferKind, WindowId, OutputId, WorkspaceId, bool, bool | win empty except window kind | Existing window/view/migration target shape. |
 | | `cmdSeq` | Counter | yes | Original command sequence, null for commandless work. |
-| `OneShotEffect` | `id,kind,target,rev` | Id, EffectKind, WindowId, Counter | no | Existing focus/raise/stack and issuing revision. |
-| | `cause` | `explicit-command/automatic-admission/focus-follows-cursor` | no | Replaces fx-/af-/ffc- interpretation. |
-| | `cmdSeq` | Counter | yes | Non-null for explicit-command; null otherwise. |
-| | `awaitShown` | bool | no | Only explicit selection may grant arrival-ready focus. |
+| `OneShotEffect` | `id,kind,target,rev` | Id, EffectKind, WindowId, Counter | no | Target shape: raise/stack only; focus is authorized only through the retained request (target approved, not yet implemented). |
+| | `cause` | `explicit-command/automatic-admission/focus-follows-cursor` | no | Existing reserved metadata; no active raise/stack producers or focus authority. |
+| | `cmdSeq` | Counter | yes | Existing reserved metadata; no new correlation introduced. |
+| | `awaitShown` | bool | no | Existing reserved metadata, not focus authority; arrival-ready focus uses the retained request's frozen dependencies. |
 
 - V4 `WorkspaceDesire` row uniqueness is keyed by `(out,id)` in both
   reply codecs. Shared mode may repeat one logical id on different outputs;
@@ -966,62 +968,140 @@ acceptance or adopt the separate close-focus amendment.
   fact. `CommandResult::Maximize` remains the existing shape and describes the
   core-resolved toggle, not native completion or independent write permission.
 
-### Retained positive-close focus
+<a id="retained-positive-close-focus"></a>
+
+### One retained focus request
 
 | Record | Key | Type | Null/absence | Meaning |
 | --- | --- | --- | --- | --- |
-| `CloseFocusRequest` | `id,target,rev` | Id, WindowId, Counter | no | Opaque request identity, frozen target lifetime and immutable issuing revision. |
-| | `cause` | `positive-close` | no | Closed vocabulary, distinct from OneShotEffect causes. |
-| | `out,ws` | OutputId, WorkspaceId | no | Frozen source domain; target must still home here. |
+| `FocusRequest` | `id,target,rev` | Id, WindowId, Counter | no | Opaque request identity, frozen target lifetime and immutable issuing revision. |
+| | `cause` | `explicit-command/automatic-admission/focus-follows-cursor/positive-close` | no | Closed vocabulary, distinct from one-shot effect kinds. |
+| | `out,ws` | OutputId, WorkspaceId | no | Frozen activation scope; close retains its frozen source domain. |
+| | `cmdSeq` | Counter | yes | Originating explicit command only; null for every other cause. |
+| | `afterShown` | AfterShown | yes | Frozen issuing selection dependencies, defined below. |
 
-- Zero or one global request. On positive close of the previously observed
-  focused lifetime, core freezes the pre-close source-domain tiled MRU survivor
-  before ingesting native fallback; deterministic layout order is the existing
-  fallback. Exclude the whole close cohort. Ordinary float close uses the same
-  tiled survivor policy, with no float/sticky/fullscreen candidate expansion.
-  Bare absence, incomplete inventory and off-current omission never originate
-  a request. Survivor reflow is independent of activation or observed focus.
+| Record | Required keys | Types / nullability |
+| --- | --- | --- |
+| `AfterShown` | `op,obs,members,views,selected,departing` | Parent operation Id; issuing observation Counter; four non-null arrays. |
+| `members[]` | `win,out,ws,frame` | WindowId lifetime, OutputId, WorkspaceId, required nullable Rect. |
+| `views[]`, `selected[]`, `departing[]` | `out,ws` | OutputId, WorkspaceId; non-null. |
+
+- All keys are required and objects are closed; reject duplicate keys, duplicate
+  member lifetimes, duplicate scope pairs and duplicate native-view outputs.
+  View targets must occur in `selected`; the view target output is its own `out`.
+  Arrays may be empty. Existing Id, quoted-decimal Counter and Rect grammars apply.
+  Only `afterShown` itself and member `frame` may be null; null frame waives frame
+  equality, never readable live geometry. A non-null dependency requires
+  `explicit-command`, and `cmdSeq` is non-null exactly for that cause.
+- `members` has at most 10,000 rows (the existing window-inventory cap);
+  `views`, `selected` and `departing` each have at most 16 rows (the output cap).
+  Exact and conservative upper-bound sizing include every frozen dependency
+  within the unchanged independent 4 MiB reply limit. Overflow refuses before
+  mutation; never truncate. Parent transfer presence and later window-row presence
+  are not validity requirements. Operation-id prefixes grant no authority.
+
+- Zero or one global request for every cause. This lane is approved
+  2026-11-11 ([design](../changes/retained-focus-requests.md)) and not yet
+  implemented. Current implementation carries `closeFocus` plus ordinary
+  one-shot focus effects until the coordinated migration; that is the
+  implemented wire, not an alternate accepted shape. Explicit-command
+  requests originate from direct/directional focus, remembered selection,
+  send-follow and operation focus producers under existing execution-time
+  subject gates. Automatic-admission requests originate from the
+  complete-inventory newcomer selection, keeping the last non-withheld newcomer
+  per batch and spending withheld automatic-fixed newcomers, with no repair,
+  eviction or alternate-anchor focus. Focus-follows-cursor requests originate
+  from a genuine observed cursor hit/movement or hover transition while the
+  setting is on. Positive-close requests freeze the pre-close source-domain
+  tiled MRU survivor before ingesting native fallback, excluding the whole
+  close cohort; ordinary float close uses the same tiled survivor policy, with
+  no float/sticky/fullscreen candidate expansion. Bare absence, incomplete
+  inventory and off-current omission never originate a request. Survivor reflow
+  is independent of activation or observed focus.
+- Same-report candidates resolve explicit-command, then automatic-admission,
+  then positive-close, then focus-follows-cursor: a positive close selecting
+  MRU survivor C plus an ordinary newcomer N in one report retains N only.
 - Target equality satisfies first, including native fallback already at the
   winner, with no setter. A different eligible same-domain tiled survivor in
   the close report is attributed to close fallback and permits one correction;
   positively known no-client also permits it. Unknown/foreign foreground does
-  not. A later sampled change from the close-report baseline supersedes, unless
-  it equals the target and satisfies. Commands (including consumed/refused
-  commands), view/output changes, loss of lifetime/home/readability, hidden or
-  minimized state and existing automatic-focus/fullscreen/game fences retire.
-  No alternate target search, unhide, unminimize, Space switch or retry follows.
-- Every publication retains the identical id/target/issuing revision until
-  satisfied, superseded, ineligible or refused. Core ingests reports even when
-  adapters skip publications. Adapters need only apply the latest publication,
-  never intermediate replies: an issuing reply may be skipped and its request
-  acted on from a later retained snapshot. No fabricated command, cmdSeq,
-  awaitShown, transfer or raise/stack authority is attached.
+  not. A later incorporated focus decision of any cause, an observed user focus
+  change, or a view/output change or target loss making the target ineligible
+  retires the old request, plus satisfaction/refusal settlement. Non-focus
+  commands never cancel pending focus in any batch, including refused
+  commands without a focus decision. This amends the earlier rule under which
+  newer commands superseded. Cause-appropriate fences still apply: close and
+  ordinary automatic focus get no alternate target search, unhide, unminimize,
+  Space switch or retry; explicit focus and send-follow keep their
+  automatic-focus exemptions and existing selection/send-follow view authority,
+  with independent native identity/session/game safety still applying.
+- Every publication retains the identical id/target/issuing revision/cause
+  until satisfied, superseded, ineligible or refused. Core ingests reports even
+  when adapters skip publications. Adapters need only apply the latest
+  publication, never intermediate replies: an issuing reply may be skipped and
+  its request acted on from a later retained snapshot. No fabricated command,
+  awaitShown, transfer or raise/stack authority is attached; only an explicit
+  command carries its originating cmdSeq, never the currently applying ticket.
 - After nonactivating geometry, validate current bound reply, target lifetime,
-  source home/shown native view, visibility, foreground baseline and existing
-  safety fences. Already-target is zero setters. Otherwise spend before at most
-  one native attempt or safety no-call per `(adapter,gen,id)`, even if feedback
-  is lost. Null/newer requests cancel queued unstarted old work; stale envelopes
-  and late callbacks cannot reactivate it. Retain bounded current-record plus
-  retired-revision accounting, not an unbounded spent-id set. Transport loss
-  retaining context retains accounting; losing accounting requires a fresh
-  handshake, which cannot replay old intent.
+  frozen scope home/shown native view, visibility, foreground baseline and
+  existing safety fences. Already-target is zero setters. Otherwise spend before
+  at most one native attempt or safety no-call per `(adapter,gen,id)`, even if
+  feedback is lost. Null/newer requests cancel queued unstarted old work;
+  stale envelopes and late callbacks cannot reactivate it. Retain bounded
+  current-record plus retired-revision accounting, not an unbounded spent-id
+  set. Transport loss retaining context retains accounting; losing accounting
+  requires a fresh handshake, which cannot replay old intent.
+- Core keeps an execution-time logical focus cursor separate from observed
+  foreground and per-workspace history. Same-capture admission enters the
+  ordering before commands. Within a batch each accepted focus choice advances
+  the cursor immediately in FIFO order, even though only the final winner
+  publishes; the final winner follows same-report cause precedence. A new
+  implicit command resolves its subject from the cursor before the older
+  request is retired for a newer focus decision. A still-live retained request
+  preserves its target across unchanged-baseline reports and stale observed
+  foreground must not overwrite it. Non-focus commands never retire the
+  cursor's pending choice. After refusal or ineligibility, use current eligible
+  observed focus, never the abandoned target; never fabricate native
+  foreground.
+- The winning request is frozen once per accepted publication with a
+  generation-scoped revision-derived opaque id. Re-emission never changes
+  id/target/issuing revision/cause/command correlation/frozen dependencies.
+  Each fresh qualifying hover entry after leaving the live target and returning
+  mints a new id; unchanged reports or pointer movement over the already-pending
+  target keep the id and never retry. This replaces lifetime `ffc-<token>` spent
+  identity.
+- `afterShown:null` replaces ordinary `awaitShown:false`. Explicit selections
+  and eligible follow/migration requests carry the existing parent operation
+  and frozen application dependencies instead of `awaitShown:true`: issuing
+  observation, required members with lifetime/home/frame, native-view targets
+  and affected selected/departing scopes. This is a projection of existing
+  selection state, not a new work id or selection policy; a later snapshot
+  carries these dependencies even if the parent transfer has settled. Freeze the
+  projection above at the existing post-layout selection snapshot, including its
+  issuing departing scopes; keep terminal/evidence bookkeeping separate. Never
+  recover dependencies from an
+  old ticket or reconstruct them from later window rows.
 - Reuse `focusFeedback` by exact opaque `(id,target,rev)` equality, with rev the
   immutable issuing revision, not the later applied publication revision. Latch
   the first correlated raw row/stamp only. Proven refusal or informative safety
   no-call retires; accepted dispatch without target equality is unproven and
   retains an inert request, never authorizing another call. Current observed
   equality satisfies independently of setter evidence. Feedback for a retired
-  request grants nothing. No adapter verdict ingress is added.
+  request grants nothing. No adapter verdict ingress is added. Freeze the issuing
+  report's truthful foreground baseline for later comparison; the issuing
+  baseline itself is never a newer focus event.
 - Sole close keeps the source output's shown empty workspace and no focused
-  member, with `closeFocus:null`; no other-domain activation or native clear.
+  member, with `focusRequest:null`; no other-domain activation or native clear.
   Observed native desktop/app foreground remains truthful. Same-report
   attribution can override a click before the first close report once; entirely
   between-capture A->B->A changes remain invisible. No causal input guard or new
   interception is implied.
-- Both required fields participate in strict validation, canonical codecs and
-  exact/upper-bound byte sizing; the foreground bit participates in report
-  digest/replay equality. Bootstrap/not-ready replies carry `closeFocus:null`.
-  Bounds remain 4 MiB independently per report/reply and at most one close row.
+- All required keys participate in strict validation, canonical codecs and
+  exact/upper-bound byte sizing; frozen dependencies must fit the existing
+  whole-message bounds, never silently truncate. The foreground bit
+  participates in report digest/replay equality. Bootstrap/not-ready replies
+  carry `focusRequest:null`. Bounds remain 4 MiB independently per
+  report/reply and at most one focus row.
 
 ### Persistent stacking
 
@@ -1190,7 +1270,7 @@ acceptance or adopt the separate close-focus amendment.
 | | `out` | OutputId | null; omit in native arm | Observed native output affinity BETWEEN before/after, never copied from desired home. |
 | | `frame` | Rect | yes | Native frame read BETWEEN before/after; null cannot prove readiness. |
 | | `after` | VisibilitySample | no | Final lifetime/visibility read with no intervening invalidation. |
-| `FocusFeedback` | `id,target,rev` | Id, WindowId, Counter | no | Exact one-shot grant or retained close-request correlation. |
+| `FocusFeedback` | `id,target,rev` | Id, WindowId, Counter | no | Exact retained-request correlation by opaque id, target and issuing revision. |
 | | `setter` | SetterOutcome or `not-called` | no | At-most-once call/no-call. |
 | | `reason` | VisibilityReason | empty on ordinary call | Mechanical blocked/refusal fact. |
 | | `pre,post` | WindowId | yes | Live foreground before/after; null means unknown. |
@@ -1209,8 +1289,9 @@ acceptance or adopt the separate close-focus amendment.
   zero visibility members and native-owned focusless selections. An explicit
   selection whose resolved focus target fails route eligibility freezes a
   binding with no required focus target; visibility completes through this same
-  path and focus reports `unproven`. The direct focus effect stays and the
-  eligibility gates are unchanged. Focus-bearing
+   path and focus reports `unproven`. Independent focus authority uses only the
+   global retained request, never a parallel direct effect; eligibility gates
+   are unchanged. Focus-bearing
   switches still require proven focus for complete. Empty/minimized-only
   workspaces retain no focused client. This is the same completion rule, not a
   new token, wire shape, fake focus, fallback, retry or second completion path.
@@ -1225,8 +1306,9 @@ acceptance or adopt the separate close-focus amendment.
   selection binding as an ordinary explicit selection. Window membership
   settles the transfer independently; the binding owns destination visibility
   and focus through the existing selection completion, with no follow-specific
-  predicate or second completion path. The `{op}-follow` child is removed; the
-  follow focus effect waits until the destination is shown. Existing
+  predicate or second completion path. The `{op}-follow` child is removed;
+  retained follow focus waits until the destination is shown, carrying the
+  frozen issuing dependencies. Existing
   refusal/safety fences are unchanged.
   [Follow settlement](../decisions/workspaces.md#workspace-send-follow-settlement).
 - Native-free workspace migration takes one frozen selection binding covering
@@ -1235,6 +1317,11 @@ acceptance or adopt the separate close-focus amendment.
   and the refill child is removed. Empty migration uses the zero-member
   completion rule. Native-owned migration keeps its native proof.
   [Migration settlement](../decisions/workspaces.md#workspace-migration-d6-focus-settlement).
+- Superseding the global focus slot cancels its unstarted focus authorization
+  only: frozen parent/member visibility and terminal obligations persist under
+  their own rules, and a fulfilled slot never fabricates missing arrival
+  evidence or a SwitchEvent. A later snapshot carries the frozen original
+  dependency set even when the parent transfer has settled.
 
 - `VisibilityReason` is `""` or
   `identity-stale,scope-held,unreadable,unsupported,preimage-unavailable,foreground-changed,fullscreen,game,show-blocked,focus-unproven,superseded,native-refused`.
@@ -1268,12 +1355,13 @@ acceptance or adopt the separate close-focus amendment.
 
 1. Latest desired state wins; drop superseded unissued targets.
 2. Apply shows first, batched and nonactivating.
-3. An `awaitShown` focus runs once only after every controlled desired-shown
-   window on its output in the issuing revision's snapshot has a fresh arrival
-   bracket or reported no-call reason.
+3. A retained request with frozen selection dependencies runs once only after
+   every controlled desired-shown window on its output in the issuing
+   revision's snapshot has a fresh arrival bracket or reported no-call reason.
    Any failed/blocked required show withholds focus. Spend before native dispatch.
-4. Across outputs, hides wait for every outstanding `awaitShown` effect from
-   the same or an earlier revision. After proven foreground they run staged.
+4. Across outputs, hides wait for every outstanding retained request with
+   frozen dependencies from the same or an earlier revision. After proven
+   foreground they run staged.
    After refused/unproven focus, only separately approved fallback hides run
    under fresh identity/desktop/foreground/game/fullscreen/visibility/property
    gates and `visibility.fallback:true`, reported as fallback; otherwise report
@@ -1311,8 +1399,8 @@ acceptance or adopt the separate close-focus amendment.
 - Effects are spent before dispatch, never replayed by subscribers or reconnect;
   retained transfers remain until observed, externally superseded or proven
   refused. Issuing-only result/terminal delivery is not a snapshot cache.
-  The separate retained `closeFocus` lane follows its
-  [latest-only, once-per-id rules](#retained-positive-close-focus), not one-shot
+  The separate retained `focusRequest` lane follows its
+  [latest-only, once-per-id rules](#one-retained-focus-request), not one-shot
   delivery: skipping its issuing publication cannot drop or renew the request.
   [Desired-state baseline](world-contract-v3.md#4-desired-world-state-what-the-reply-authorizes).
 - Before hide, stripped fullscreen chrome, project keep-above or sticky stacking

@@ -15,7 +15,10 @@ use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
-use tiler_core::world_report::{ScreenReport, SendSource, WindowFact, WorldCommand, WorldReportV4};
+use tiler_core::world_report::{
+    FocusRequestCause, ScreenReport, SendSource, WindowFact, WorldCommand, WorldReplyV4,
+    WorldReportV4,
+};
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
@@ -275,12 +278,50 @@ fn allocation(reply: &tiler_core::world_report::WorldReplyV4, window: &str) -> R
         .expect("tiled allocation")
 }
 
-fn view_of(reply: &tiler_core::world_report::WorldReplyV4, output: &str) -> Option<String> {
+fn view_of(reply: &WorldReplyV4, output: &str) -> Option<String> {
     reply
         .outputs
         .iter()
         .find(|row| row.output.0 == output)
         .and_then(|row| row.logical_view.clone())
+}
+
+/// Retained admission focus: focus never publishes as one-shot effects on
+/// the v4 wire; the newcomer carries a retained `automatic-admission`
+/// request with the routed scope frozen.
+fn expect_admission_request(reply: &WorldReplyV4, window: &str) {
+    assert!(
+        reply.effects.is_empty(),
+        "admission never publishes wire effects: {:?}",
+        reply.effects
+    );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .unwrap_or_else(|| panic!("admission request for {window}: {reply:?}"));
+    assert_eq!(request.target.0, window, "admission target");
+    assert_eq!(
+        request.cause,
+        FocusRequestCause::AutomaticAdmission,
+        "admission cause"
+    );
+    assert_eq!(request.cmd_seq, None, "admission carries no command");
+    assert_eq!(request.after_shown, None, "admission carries no selection");
+    assert_eq!(
+        request.id,
+        format!("focus-{}", reply.state_revision),
+        "admission id quotes issuing revision"
+    );
+    assert_eq!(
+        request.issued_revision, reply.state_revision,
+        "admission revision quotes publication"
+    );
+    let (output, workspace) = homed(reply, window);
+    assert_eq!(request.output.0, output, "admission scope follows routing");
+    assert_eq!(
+        request.workspace, workspace,
+        "admission scope follows routing"
+    );
 }
 
 /// Seeds A on out-a (focused) plus B1/B2 side by side on out-b with B2
@@ -1178,7 +1219,7 @@ fn out_of_bounds_cursor_refuses_at_validation() {
 fn empty_seed_routes_first_newcomer_by_policy_both_directions() {
     // Empty complete seed bootstraps the phase; the first newcomer still
     // routes by cursor policy in both disagreement directions with a
-    // one-shot focus intent.
+    // retained admission request.
     for (native, cursor, expect) in [
         ("out-a", Some((1000, 300)), "out-b"),
         ("out-b", Some((100, 300)), "out-a"),
@@ -1198,11 +1239,7 @@ fn empty_seed_routes_first_newcomer_by_policy_both_directions() {
             ),
         );
         assert_eq!(homed(&arrival, "win-n").0, expect, "native {native}");
-        assert!(
-            arrival.effects.iter().any(|e| e.target.0 == "win-n"),
-            "newcomer focuses: {:?}",
-            arrival.effects
-        );
+        expect_admission_request(&arrival, "win-n");
     }
 }
 
@@ -1236,11 +1273,7 @@ fn close_all_then_new_lifetime_routes_by_policy() {
         ),
     );
     assert_eq!(homed(&arrival, "win-n").0, "out-a");
-    assert!(
-        arrival.effects.iter().any(|e| e.target.0 == "win-n"),
-        "reopened lifetime focuses: {:?}",
-        arrival.effects
-    );
+    expect_admission_request(&arrival, "win-n");
 }
 
 #[test]
@@ -1279,11 +1312,7 @@ fn incomplete_gap_then_complete_newcomer_routes() {
         ),
     );
     assert_eq!(homed(&arrival, "win-n").0, "out-a");
-    assert!(
-        arrival.effects.iter().any(|e| e.target.0 == "win-n"),
-        "post-gap newcomer focuses: {:?}",
-        arrival.effects
-    );
+    expect_admission_request(&arrival, "win-n");
 }
 
 #[test]
@@ -1331,11 +1360,7 @@ fn initial_incomplete_then_first_complete_stays_native_then_later_routes() {
         ),
     );
     assert_eq!(homed(&arrival, "win-c").0, "out-a");
-    assert!(
-        arrival.effects.iter().any(|e| e.target.0 == "win-c"),
-        "later newcomer focuses: {:?}",
-        arrival.effects
-    );
+    expect_admission_request(&arrival, "win-c");
 }
 
 #[test]
@@ -1416,9 +1441,5 @@ fn rebind_baseline_quiet_then_later_newcomer_routes() {
     later.core_generation = engine.core_generation().to_owned();
     let arrival = accepted(&mut engine, &later);
     assert_eq!(homed(&arrival, "win-d").0, "out-a");
-    assert!(
-        arrival.effects.iter().any(|e| e.target.0 == "win-d"),
-        "post-rebind newcomer focuses: {:?}",
-        arrival.effects
-    );
+    expect_admission_request(&arrival, "win-d");
 }

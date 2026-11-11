@@ -59,8 +59,16 @@ struct SimV4 {
     /// Commanded homing truth (window id -> home/away alias), updated at
     /// command/admit time so `focus-window` validation is schedule-stable.
     homing_alias: BTreeMap<String, String>,
-    /// Last non-empty one-shot effect target (window id, "" when none yet).
+    /// Last minted retained focus target (window id, "" when none yet).
+    /// Latched from each published `focusRequest` and kept across
+    /// satisfaction: hiding/satisfaction never clears it, so settled
+    /// checkpoints still name the last requested target while the
+    /// foreground oracle carries the observed truth separately.
     focus: String,
+    /// Previous published retained request for re-emission stability:
+    /// the same id must resend the identical target/issuing revision,
+    /// cause and command correlation, never a renewed row.
+    prev_request: Option<tiler_core::world_report::FocusRequest>,
     /// Recorded desire at issue (pending, not proof): per-window commanded
     /// target and issuing revision from the actual issuing reply's own
     /// visibility rows. Blocked-only lane, identical to the legacy driver:
@@ -251,6 +259,7 @@ fn bootstrap_binding_v4(
             .map(|w| (w.clone(), "home".to_owned()))
             .collect(),
         focus: String::new(),
+        prev_request: None,
         grants: BTreeMap::new(),
         pairs: Vec::new(),
     };
@@ -351,9 +360,48 @@ fn note_effects_v4(sim: &mut SimV4, reply: &WorldReplyV4, at: &str) -> Result<()
         if effect.issued_revision != reply.state_revision {
             return Err(fail(at, "effect issued_revision != reply revision"));
         }
+        if effect.kind == tiler_core::world_report::EffectKind::Focus {
+            return Err(fail(at, "focus never publishes as wire effects"));
+        }
     }
-    if let Some(last) = reply.effects.last() {
-        sim.focus = last.target.0.clone();
+    // Retained focus lane: latest-only, once-per-id. Re-emission of the
+    // same id resends the identical row; satisfaction clears the pending
+    // row but the latched last target above stays for the oracle.
+    if let Some(request) = reply.focus_request.clone() {
+        if request.issued_revision > reply.state_revision {
+            return Err(fail(at, "focus request issued past the reply revision"));
+        }
+        if request.id != format!("focus-{}", request.issued_revision) {
+            return Err(fail(
+                at,
+                format!("focus request id {:?} != issuing revision", request.id),
+            ));
+        }
+        if (request.cmd_seq.is_some())
+            != (request.cause == tiler_core::world_report::FocusRequestCause::ExplicitCommand)
+        {
+            return Err(fail(
+                at,
+                "focus request cmdSeq must ride exactly explicit-command",
+            ));
+        }
+        if let Some(prev) = sim.prev_request.clone() {
+            if prev.id == request.id
+                && (prev.target != request.target
+                    || prev.issued_revision != request.issued_revision
+                    || prev.cause != request.cause
+                    || prev.cmd_seq != request.cmd_seq)
+            {
+                return Err(fail(
+                    at,
+                    "focus request re-emission changed the retained row",
+                ));
+            }
+        }
+        sim.focus.clone_from(&request.target.0);
+        sim.prev_request = Some(request);
+    } else {
+        sim.prev_request = None;
     }
     if reply.command_result.is_some()
         || reply.gesture_settled.is_some()
@@ -591,7 +639,8 @@ fn check_oracle_v4(
     if !reply.transfers.is_empty() {
         return Err(fail(at, "checkpoint carries a pending transfer"));
     }
-    // Tracked one-shot focus (retained while its workspace hides).
+    // Tracked retained focus: the last minted request target, kept
+    // across satisfaction while its workspace hides.
     if sim.focus != focus {
         return Err(fail(
             at,
@@ -892,17 +941,43 @@ fn submit_command_v4(
     }
     let reply = &sim.pairs.last().expect("just pushed").1;
     if action.op == "focus-directional" || action.op == "move-directional" {
-        let want_id = action.expect_effect.clone().expect("validated");
+        // No id-prefix authority: the `expect_effect` marker only proves
+        // the fixture intends an explicit focus outcome; correlation reads
+        // the retained request's exact target/cause/command row.
+        let _marker = action.expect_effect.clone().expect("validated");
         let want_target = action.expect_target.clone().expect("validated");
-        let got: Vec<(String, String, String)> = reply
+        if reply
             .effects
             .iter()
-            .map(|e| (e.id.clone(), e.kind.as_str().to_owned(), e.target.0.clone()))
-            .collect();
-        if got != vec![(want_id, "focus".to_owned(), want_target)] {
+            .any(|e| e.kind == tiler_core::world_report::EffectKind::Focus)
+        {
             return Err(fail(
                 at,
-                format!("{op} effect {got:?} != expected one-shot", op = action.op),
+                format!("{op} carries a focus effect on the v4 wire", op = action.op),
+            ));
+        }
+        let request = reply.focus_request.clone().ok_or_else(|| {
+            fail(
+                at,
+                format!("{op} minted no retained focus request", op = action.op),
+            )
+        })?;
+        if request.target.0 != want_target
+            || request.cause != tiler_core::world_report::FocusRequestCause::ExplicitCommand
+            || request.cmd_seq != Some(seq)
+            || request.issued_revision != reply.state_revision
+            || request.id != format!("focus-{}", reply.state_revision)
+        {
+            return Err(fail(
+                at,
+                format!(
+                    "{op} request ({:?},{:?},{:?},{:?}) != expected retained target {want_target:?}",
+                    request.id,
+                    request.target.0,
+                    request.cause,
+                    request.cmd_seq,
+                    op = action.op
+                ),
             ));
         }
     }
@@ -1049,6 +1124,7 @@ pub fn run_stress_v4(
             .map(|w| (w.clone(), "home".to_owned()))
             .collect(),
         focus: String::new(),
+        prev_request: None,
         grants: BTreeMap::new(),
         pairs: Vec::new(),
     };
@@ -1424,6 +1500,7 @@ fn probe_completions_v4(
             foreground: sim.foreground.clone(),
             homing_alias: sim.homing_alias.clone(),
             focus: sim.focus.clone(),
+            prev_request: sim.prev_request.clone(),
             grants: BTreeMap::new(),
             pairs: Vec::new(),
         };
@@ -1540,6 +1617,7 @@ mod tests {
                 .map(|w| (w.clone(), "home".to_owned()))
                 .collect(),
             focus: String::new(),
+            prev_request: None,
             grants: BTreeMap::new(),
             pairs: Vec::new(),
         };

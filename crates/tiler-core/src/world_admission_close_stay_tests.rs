@@ -233,17 +233,20 @@ fn bootstrap_seed_is_quiet_then_first_newcomer_focuses_once() {
             None,
         ),
     );
-    assert_eq!(third.effects.len(), 1, "{:?}", third.effects);
-    assert_eq!(third.effects[0].target.0, "win-c");
-    assert!(third.effects[0].id.starts_with("af-"));
-    assert_eq!(
-        third.effects[0].cause,
-        crate::world_report::EffectCause::AutomaticAdmission,
-        "admission cause: {:?}",
-        third.effects[0]
+    assert!(
+        third.effects.is_empty(),
+        "focus never publishes as wire effects: {third:?}"
     );
-    assert_eq!(third.effects[0].command_seq, None);
-    assert!(!third.effects[0].await_shown);
+    let request = third.focus_request.as_ref().expect("admission request");
+    assert_eq!(request.target.0, "win-c");
+    assert_eq!(request.id, format!("focus-{}", third.state_revision));
+    assert_eq!(request.issued_revision, third.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::AutomaticAdmission
+    );
+    assert_eq!(request.cmd_seq, None);
+    assert_eq!(request.after_shown, None);
     // Never replayed.
     let fourth = accepted(
         &mut engine,
@@ -295,7 +298,20 @@ fn reopened_window_focuses_again_after_close() {
             None,
         ),
     );
-    assert_eq!(second.effects.len(), 1);
+    assert!(
+        second.effects.is_empty(),
+        "focus never publishes as wire effects: {second:?}"
+    );
+    let request = second.focus_request.as_ref().expect("admission request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(request.id, format!("focus-{}", second.state_revision));
+    assert_eq!(request.issued_revision, second.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::AutomaticAdmission
+    );
+    assert_eq!(request.cmd_seq, None);
+    assert_eq!(request.after_shown, None);
     // Explicit close spends the intent: no focus on the closing report.
     let third = accepted(
         &mut engine,
@@ -336,8 +352,20 @@ fn reopened_window_focuses_again_after_close() {
             None,
         ),
     );
-    assert_eq!(fifth.effects.len(), 1, "{:?}", fifth.effects);
-    assert_eq!(fifth.effects[0].target.0, "win-b");
+    assert!(
+        fifth.effects.is_empty(),
+        "focus never publishes as wire effects: {fifth:?}"
+    );
+    let request = fifth.focus_request.as_ref().expect("admission request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(request.id, format!("focus-{}", fifth.state_revision));
+    assert_eq!(request.issued_revision, fifth.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::AutomaticAdmission
+    );
+    assert_eq!(request.cmd_seq, None);
+    assert_eq!(request.after_shown, None);
 }
 
 #[test]
@@ -860,9 +888,19 @@ fn numbered_select_return_emits_remembered_focus() {
         ),
     );
     assert_eq!(view_of(&back, "out-a"), view_a);
-    assert_eq!(back.effects.len(), 1, "{:?}", back.effects);
-    assert_eq!(back.effects[0].target.0, "win-b");
-    assert_eq!(back.effects[0].id, "fx-12");
+    assert!(
+        back.effects.is_empty(),
+        "focus never publishes as wire effects: {back:?}"
+    );
+    let request = back.focus_request.as_ref().expect("explicit focus request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(request.id, format!("focus-{}", back.state_revision));
+    assert_eq!(request.issued_revision, back.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(12));
     // Post-hide desktop observation: native focus is empty while the
     // returned view is current, so the pager marks no workspace focused.
     // The reply focus mark never invents the remembered leaf.
@@ -977,8 +1015,19 @@ fn numbered_select_empty_and_minimized_targets_stay_quiet() {
         ),
     );
     assert_eq!(view_of(&back, "out-a"), view_a);
-    assert_eq!(back.effects.len(), 1, "{:?}", back.effects);
-    assert_eq!(back.effects[0].target.0, "win-a");
+    assert!(
+        back.effects.is_empty(),
+        "focus never publishes as wire effects: {back:?}"
+    );
+    let request = back.focus_request.as_ref().expect("explicit focus request");
+    assert_eq!(request.target.0, "win-a");
+    assert_eq!(request.id, format!("focus-{}", back.state_revision));
+    assert_eq!(request.issued_revision, back.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(12));
     // Sole-minimized workspace (REQ-MNZ-03): no tiled survivor exists, so
     // the return stays quiet.
     let mut sole = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
@@ -1235,9 +1284,19 @@ fn numbered_select_occupied_return_both_directions_stale_then_desktop() {
         ),
     );
     assert_eq!(view_of(&back_a, "out-a"), view_a);
-    assert_eq!(back_a.effects.len(), 1, "{:?}", back_a.effects);
-    assert_eq!(back_a.effects[0].target.0, "win-b");
-    assert_eq!(back_a.effects[0].id, "fx-12");
+    assert!(
+        back_a.effects.is_empty(),
+        "focus never publishes as wire effects: {back_a:?}"
+    );
+    let request = back_a.focus_request.as_ref().expect("explicit focus request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(request.id, format!("focus-{}", back_a.state_revision));
+    assert_eq!(request.issued_revision, back_a.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(12));
     assert_eq!(
         committed_focus(&engine, "out-a", &view_a).as_deref(),
         Some("win-b")
@@ -1341,9 +1400,19 @@ fn numbered_select_occupied_return_both_directions_stale_then_desktop() {
         ),
     );
     assert_eq!(view_of(&back_b, "out-a"), view_b);
-    assert_eq!(back_b.effects.len(), 1, "{:?}", back_b.effects);
-    assert_eq!(back_b.effects[0].target.0, "win-d");
-    assert_eq!(back_b.effects[0].id, "fx-13");
+    assert!(
+        back_b.effects.is_empty(),
+        "focus never publishes as wire effects: {back_b:?}"
+    );
+    let request = back_b.focus_request.as_ref().expect("explicit focus request");
+    assert_eq!(request.target.0, "win-d");
+    assert_eq!(request.id, format!("focus-{}", back_b.state_revision));
+    assert_eq!(request.issued_revision, back_b.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(13));
     assert!(!pager_contains_focused_any(&back_b, "out-a"));
     // Memory on both workspaces survives the roundtrip.
     assert_eq!(
@@ -1399,9 +1468,19 @@ fn stay_send_pins_exact_source_focus_or_empty_or_unknown() {
     assert_eq!(reply.transfers[0].operation_id, "op-11");
     // The stay names the engine's source-MRU survivor as an explicit focus
     // outcome; an emptied source names nothing.
-    assert_eq!(reply.effects.len(), 1, "{:?}", reply.effects);
-    assert_eq!(reply.effects[0].target.0, "win-b");
-    assert!(reply.effects[0].is_explicit_focus_for(11));
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let request = reply.focus_request.as_ref().expect("explicit focus request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
     match engine.stay_source_focus("op-11", &source) {
         StaySourceFocus::Resident(window) => assert_eq!(window.0, "win-b"),
         other => panic!("sole survivor exact, got {other:?}"),
@@ -1676,9 +1755,19 @@ fn select_hidden_stay_arrival_without_history_focuses_first_leaf() {
         ),
     );
     assert_eq!(view_of(&shown, "out-a"), other);
-    assert_eq!(shown.effects.len(), 1, "{:?}", shown.effects);
-    assert_eq!(shown.effects[0].target.0, "win-b");
-    assert_eq!(shown.effects[0].id, "fx-12");
+    assert!(
+        shown.effects.is_empty(),
+        "focus never publishes as wire effects: {shown:?}"
+    );
+    let request = shown.focus_request.as_ref().expect("explicit focus request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(request.id, format!("focus-{}", shown.state_revision));
+    assert_eq!(request.issued_revision, shown.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(12));
 }
 
 #[test]
@@ -1970,9 +2059,19 @@ fn select_first_layout_sticky_skips_to_later_arrival() {
         ),
     );
     assert_eq!(view_of(&shown, "out-a"), other);
-    assert_eq!(shown.effects.len(), 1, "{:?}", shown.effects);
-    assert_eq!(shown.effects[0].target.0, "win-a");
-    assert_eq!(shown.effects[0].id, "fx-13");
+    assert!(
+        shown.effects.is_empty(),
+        "focus never publishes as wire effects: {shown:?}"
+    );
+    let request = shown.focus_request.as_ref().expect("explicit focus request");
+    assert_eq!(request.target.0, "win-a");
+    assert_eq!(request.id, format!("focus-{}", shown.state_revision));
+    assert_eq!(request.issued_revision, shown.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(13));
 }
 
 #[test]
@@ -2190,9 +2289,19 @@ fn select_without_native_focus_returns_recorded_leaf() {
         ),
     );
     assert_eq!(view_of(&back, "out-a"), view_a);
-    assert_eq!(back.effects.len(), 1, "{:?}", back.effects);
-    assert_eq!(back.effects[0].id, "fx-12", "{:?}", back.effects);
-    assert_eq!(back.effects[0].target.0, "win-a", "{:?}", back.effects);
+    assert!(
+        back.effects.is_empty(),
+        "focus never publishes as wire effects: {back:?}"
+    );
+    let request = back.focus_request.as_ref().expect("explicit focus request");
+    assert_eq!(request.target.0, "win-a");
+    assert_eq!(request.id, format!("focus-{}", back.state_revision));
+    assert_eq!(request.issued_revision, back.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(12));
     // And back again: the spare restores the latest chosen newcomer win-d.
     let back_other = accepted(
         &mut engine,
@@ -2215,9 +2324,19 @@ fn select_without_native_focus_returns_recorded_leaf() {
         ),
     );
     assert_eq!(view_of(&back_other, "out-a"), other);
-    assert_eq!(back_other.effects.len(), 1, "{:?}", back_other.effects);
-    assert_eq!(back_other.effects[0].target.0, "win-d");
-    assert_eq!(back_other.effects[0].id, "fx-13");
+    assert!(
+        back_other.effects.is_empty(),
+        "focus never publishes as wire effects: {back_other:?}"
+    );
+    let request = back_other.focus_request.as_ref().expect("explicit focus request");
+    assert_eq!(request.target.0, "win-d");
+    assert_eq!(request.id, format!("focus-{}", back_other.state_revision));
+    assert_eq!(request.issued_revision, back_other.state_revision);
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(13));
 }
 
 /// First layout leaf window for one workspace domain, in deterministic

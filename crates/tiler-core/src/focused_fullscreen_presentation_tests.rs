@@ -555,7 +555,10 @@ fn window_actions_and_shortcuts_during_suspension() {
             ingress_fullscreen("win-a"),
         ),
     );
-    assert!(!focused.effects.is_empty(), "focus shortcut still mints");
+    assert!(
+        focused.focus_request.is_some(),
+        "focus shortcut still mints"
+    );
     assert!(!sent.transfers.is_empty(), "send still retains");
     // Real view transfer on the fullscreen window's output: the desired
     // view actually moves to the selected non-current workspace, and the

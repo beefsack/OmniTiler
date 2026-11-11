@@ -1317,15 +1317,13 @@ fn reply_encode_matches_core_canonical_writer() {
 }
 
 #[test]
-fn compact_automatic_effects_encode_through_v4_writer() {
-    // Correlation-valid compact producer shapes at maximum widths (token
-    // and revision at u64::MAX, distinct 128-byte subjects, longest
-    // explicit sequence): synthetic encoder witnesses only, never a real
-    // coexisting pair (same-target admission dedups in favor of the
-    // explicit winner). The canonical v4 writer must spell them with
-    // exact size accounting (independent core byte count plus a decoder
-    // roundtrip), and the row widths must match the core reserve
-    // (explicit 294, compact admission 279, pair plus comma 574).
+fn focus_effects_refuse_through_v4_writer() {
+    // Focus left the effects lane: even correlation-valid synthetic
+    // producer shapes at maximum widths (token and revision at u64::MAX,
+    // distinct 128-byte subjects, longest explicit sequence) refuse on
+    // the canonical v4 writer with the fixed removed-focus token. Only
+    // the retained `focusRequest` lane carries focus; raise/stack keep
+    // the reserved one-shot shape.
     use tiler_core::directional::WindowId;
     use tiler_core::world_report::{EffectCause, EffectKind, OneShotEffect};
     let report = decode_request(&one_window_request()).expect("decodes");
@@ -1337,38 +1335,38 @@ fn compact_automatic_effects_encode_through_v4_writer() {
     let admission_target = WindowId("a".repeat(128));
     let explicit_target = WindowId("b".repeat(128));
     assert_ne!(admission_target, explicit_target);
-    reply.effects = vec![
-        OneShotEffect {
+    for effects in [
+        vec![OneShotEffect {
             id: format!("af-{}", u64::MAX),
             kind: EffectKind::Focus,
-            target: admission_target,
+            target: admission_target.clone(),
             issued_revision: u64::MAX,
             cause: EffectCause::AutomaticAdmission,
             command_seq: None,
             await_shown: false,
-        },
-        OneShotEffect {
+        }],
+        vec![OneShotEffect {
             id: format!("fx-{}", u64::MAX),
             kind: EffectKind::Focus,
-            target: explicit_target,
+            target: explicit_target.clone(),
             issued_revision: u64::MAX,
             cause: EffectCause::ExplicitCommand,
             command_seq: Some(u64::MAX),
             await_shown: false,
-        },
-    ];
-    let wire = reply_wire(&reply);
-    let empty_wire = reply_wire(&{
-        let mut empty = reply.clone();
-        empty.effects = Vec::new();
-        empty
-    });
-    assert_eq!(
-        wire.len() - empty_wire.len(),
-        279 + 294 + 1,
-        "compact coexistence spells the reserved widths"
-    );
-    assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
+        }],
+    ] {
+        let mut refused = reply.clone();
+        refused.effects = effects;
+        let error = encode_reply_v4(&DecodedReplyV4 {
+            reply: refused.clone(),
+            wire: ReplyWireOptionals {
+                suspended_output_present: refused.presentation.suspended_output.is_some(),
+            },
+        })
+        .expect_err("focus carrier never encodes");
+        assert_eq!(error.kind, "snapshot-invalid");
+        assert_eq!(error.message, "effect-focus-removed");
+    }
 }
 
 #[test]
@@ -1560,7 +1558,7 @@ fn golden_bootstrap_reply_bytes_lock_wire_shape() {
         "{\"v\":4,\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\"req\":\"req-1\",\
         \"obs\":\"1\",\"rev\":\"0\",\"ready\":false,\"consumed\":false,\"scopes\":[],\
         \"workspaces\":[],\"outputs\":[],\"windows\":[],\"transfers\":[],\"effects\":[],\
-        \"closeFocus\":null,\"result\":null,\"gestureSettled\":null,\"operationSettled\":[],\"nativeCreations\":[],\
+        \"focusRequest\":null,\"result\":null,\"gestureSettled\":null,\"operationSettled\":[],\"nativeCreations\":[],\
         \"warpCursor\":null,\"presentation\":{\"foreground\":\"\",\"rev\":\"0\",\
         \"border\":{\"visible\":false,\"reason\":\"\",\"subject\":null,\"outsets\":null,\
         \"width\":null,\"radius\":null,\"witness\":null},\
@@ -2083,13 +2081,26 @@ fn focus_directional_no_focus_decodes_and_crosses_end_to_end() {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
-    let focus: Vec<&tiler_core::world_report::OneShotEffect> = reply
-        .effects
-        .iter()
-        .filter(|effect| effect.is_explicit_focus_for(11))
-        .collect();
-    assert_eq!(focus.len(), 1, "one crossing effect: {:?}", reply.effects);
-    assert_eq!(focus[0].target.0, "win-b");
+    assert!(
+        reply
+            .effects
+            .iter()
+            .all(|effect| effect.kind != tiler_core::world_report::EffectKind::Focus),
+        "focus never publishes as wire effects: {:?}",
+        reply.effects
+    );
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("crossing mints one retained request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(
+        request.cause,
+        tiler_core::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
     assert!(reply.command_result.is_none());
     reply_wire(&reply);
 }
@@ -2158,24 +2169,33 @@ fn explicit_focus_effect_wire_carries_cause_metadata() {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
-    let focus: Vec<&tiler_core::world_report::OneShotEffect> = reply
-        .effects
-        .iter()
-        .filter(|effect| effect.is_explicit_focus_for(11))
-        .collect();
-    assert_eq!(focus.len(), 1, "one crossing effect: {:?}", reply.effects);
-    assert_eq!(focus[0].target.0, "win-b");
+    let focus_request = reply.focus_request.as_ref().expect("one retained request");
+    assert_eq!(focus_request.target.0, "win-b");
     assert_eq!(
-        focus[0].cause,
-        tiler_core::world_report::EffectCause::ExplicitCommand,
+        focus_request.cause,
+        tiler_core::world_report::FocusRequestCause::ExplicitCommand,
         "typed cause: {:?}",
-        focus[0]
+        focus_request
     );
-    assert_eq!(focus[0].command_seq, Some(11));
-    assert!(!focus[0].await_shown);
+    assert_eq!(focus_request.cmd_seq, Some(11));
+    assert_eq!(focus_request.issued_revision, reply.state_revision);
+    assert_eq!(focus_request.id, format!("focus-{}", reply.state_revision));
+    assert!(
+        reply
+            .effects
+            .iter()
+            .all(|effect| effect.kind != tiler_core::world_report::EffectKind::Focus),
+        "focus never publishes as wire effects: {:?}",
+        reply.effects
+    );
     let wire = reply_wire(&reply);
     let wire_value: serde_json::Value = serde_json::from_str(&wire).expect("wire is JSON");
-    let row = &wire_value["effects"][0];
+    let row = &wire_value["focusRequest"];
+    assert_eq!(
+        row["target"],
+        serde_json::json!("win-b"),
+        "wire target: {row}"
+    );
     assert_eq!(
         row["cause"],
         serde_json::json!("explicit-command"),
@@ -2183,9 +2203,9 @@ fn explicit_focus_effect_wire_carries_cause_metadata() {
     );
     assert_eq!(row["cmdSeq"], serde_json::json!("11"), "wire cmdSeq: {row}");
     assert_eq!(
-        row["awaitShown"],
-        serde_json::json!(false),
-        "wire awaitShown: {row}"
+        row["afterShown"],
+        serde_json::Value::Null,
+        "wire grant: {row}"
     );
 }
 
@@ -4261,21 +4281,15 @@ fn test_only_typed_effect(
 #[test]
 fn immutable_effect_rows_match_fixture_bytes() {
     // Independent conformance: raw immutable fixture bytes on one side,
-    // actual code encoding on the other. For each manifest effect row,
-    // map ONLY the effect fields into a typed row (test-only token
-    // mapping, never a production decoder), publish it through a
+    // actual code encoding on the other. For each manifest raise/stack
+    // effect row, map ONLY the effect fields into a typed row (test-only
+    // token mapping, never a production decoder), publish it through a
     // bootstrap reply, and compare the encoded effects array against the
-    // raw bytes sliced from the fixture. The focus `awaitShown: true`
-    // witness is a manually constructed typed row only: every engine
-    // producer publishes false until explicit-selection readiness is
-    // implemented.
+    // raw bytes sliced from the fixture. Focus left the effects lane: the
+    // three retired focus witnesses now carry an empty effects array plus
+    // a retained `focusRequest`, and any focus carrier refuses on both
+    // the decode and encode sides (asserted below).
     for (name, expected) in [
-        (
-            "reply-effect-focus",
-            "{\"id\":\"effect-a\",\"kind\":\"focus\",\"target\":\"win-a\",\
-             \"rev\":\"1\",\"cause\":\"explicit-command\",\"cmdSeq\":\"1\",\
-             \"awaitShown\":true}",
-        ),
         (
             "reply-effect-raise",
             "{\"id\":\"effect-a\",\"kind\":\"raise\",\"target\":\"win-a\",\
@@ -4287,18 +4301,6 @@ fn immutable_effect_rows_match_fixture_bytes() {
             "{\"id\":\"effect-a\",\"kind\":\"stack\",\"target\":\"win-a\",\
              \"rev\":\"1\",\"cause\":\"explicit-command\",\"cmdSeq\":\"1\",\
              \"awaitShown\":false}",
-        ),
-        (
-            "reply-effect-automatic-admission",
-            "{\"id\":\"effect-a\",\"kind\":\"focus\",\"target\":\"win-a\",\
-             \"rev\":\"1\",\"cause\":\"automatic-admission\",\
-             \"cmdSeq\":null,\"awaitShown\":false}",
-        ),
-        (
-            "reply-effect-focus-follows-cursor",
-            "{\"id\":\"effect-a\",\"kind\":\"focus\",\"target\":\"win-a\",\
-             \"rev\":\"1\",\"cause\":\"focus-follows-cursor\",\
-             \"cmdSeq\":null,\"awaitShown\":false}",
         ),
     ] {
         let wire = fixture_text(name);
@@ -4332,6 +4334,57 @@ fn immutable_effect_rows_match_fixture_bytes() {
             "estimate covers {name}"
         );
     }
+    // Retired focus witnesses carry no effect row: the effects array is
+    // empty and the retained lane holds the cause.
+    for (name, cause) in [
+        ("reply-effect-focus", "explicit-command"),
+        ("reply-effect-automatic-admission", "automatic-admission"),
+        ("reply-effect-focus-follows-cursor", "focus-follows-cursor"),
+    ] {
+        let wire = fixture_text(name);
+        assert_eq!(
+            fixture_effects_slice(&wire),
+            "[]",
+            "{name} carries no effect row"
+        );
+        let value: serde_json::Value = serde_json::from_str(&wire).expect("fixture parses");
+        assert_eq!(
+            value
+                .get("focusRequest")
+                .and_then(|lane| lane.get("cause"))
+                .and_then(serde_json::Value::as_str),
+            Some(cause),
+            "{name} retains {cause}"
+        );
+    }
+    // A focus carrier refuses on the wire in both directions.
+    let report = decode_request(&one_window_request()).expect("decodes");
+    let mut engine = connected_engine("gen-1", HostCapabilities::default());
+    let mut reply = match engine.handle_report(&report) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    reply.effects = vec![tiler_core::world_report::OneShotEffect {
+        id: "effect-a".to_owned(),
+        kind: tiler_core::world_report::EffectKind::Focus,
+        target: tiler_core::directional::WindowId("win-a".to_owned()),
+        issued_revision: 1,
+        cause: tiler_core::world_report::EffectCause::ExplicitCommand,
+        command_seq: Some(1),
+        await_shown: false,
+    }];
+    assert!(
+        tiler_protocol::world_protocol::encode_reply_v4(
+            &tiler_protocol::world_protocol::DecodedReplyV4 {
+                reply: reply.clone(),
+                wire: tiler_protocol::world_protocol::ReplyWireOptionals {
+                    suspended_output_present: reply.presentation.suspended_output.is_some(),
+                },
+            }
+        )
+        .is_err(),
+        "focus carrier never encodes"
+    );
 }
 
 #[test]
@@ -4386,19 +4439,27 @@ fn admission_focus_effect_carries_causal_metadata() {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
-    assert_eq!(reply.effects.len(), 1, "one admission: {:?}", reply.effects);
-    let effect = &reply.effects[0];
-    assert_eq!(effect.kind, tiler_core::world_report::EffectKind::Focus);
-    assert_eq!(
-        effect.cause,
-        tiler_core::world_report::EffectCause::AutomaticAdmission
+    assert!(
+        reply
+            .effects
+            .iter()
+            .all(|effect| effect.kind != tiler_core::world_report::EffectKind::Focus),
+        "focus never publishes as wire effects: {:?}",
+        reply.effects
     );
-    assert_eq!(effect.command_seq, None);
-    assert!(!effect.await_shown);
-    assert!(!effect.is_explicit_focus_for(2));
+    let request = reply.focus_request.as_ref().expect("one admission request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(
+        request.cause,
+        tiler_core::world_report::FocusRequestCause::AutomaticAdmission
+    );
+    assert_eq!(request.cmd_seq, None);
+    assert_eq!(request.after_shown, None);
+    assert_eq!(request.issued_revision, reply.state_revision);
+    assert_eq!(request.id, format!("focus-{}", reply.state_revision));
     let wire = reply_wire(&reply);
     let wire_value: serde_json::Value = serde_json::from_str(&wire).expect("wire is JSON");
-    let row = &wire_value["effects"][0];
+    let row = &wire_value["focusRequest"];
     assert_eq!(
         row["cause"],
         serde_json::json!("automatic-admission"),
@@ -4406,8 +4467,8 @@ fn admission_focus_effect_carries_causal_metadata() {
     );
     assert_eq!(row["cmdSeq"], serde_json::Value::Null, "wire cmdSeq: {row}");
     assert_eq!(
-        row["awaitShown"],
-        serde_json::json!(false),
+        row["afterShown"],
+        serde_json::Value::Null,
         "wire grant: {row}"
     );
 }
@@ -4449,12 +4510,22 @@ fn consumed_command_replays_no_explicit_effect_with_metadata() {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
+    let first_request = before
+        .focus_request
+        .clone()
+        .expect("first execution mints the retained explicit request");
+    assert_eq!(first_request.target.0, "win-a");
+    assert_eq!(
+        first_request.cause,
+        tiler_core::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(first_request.cmd_seq, Some(5));
     assert!(
         before
             .effects
             .iter()
-            .any(|effect| effect.is_explicit_focus_for(5)),
-        "first execution emits the explicit focus: {:?}",
+            .all(|effect| effect.kind != tiler_core::world_report::EffectKind::Focus),
+        "focus never publishes as wire effects: {:?}",
         before.effects
     );
     let retry_value: serde_json::Value = {
@@ -4471,12 +4542,17 @@ fn consumed_command_replays_no_explicit_effect_with_metadata() {
     };
     assert!(reply.command_consumed, "repeat consumes: {reply:?}");
     assert!(
-        !reply
+        reply
             .effects
             .iter()
-            .any(|effect| effect.is_explicit_focus_for(5)),
-        "no explicit re-emission on the consumed path: {:?}",
+            .all(|effect| effect.kind != tiler_core::world_report::EffectKind::Focus),
+        "no focus re-emission on the consumed path: {:?}",
         reply.effects
+    );
+    assert_eq!(
+        reply.focus_request,
+        Some(first_request),
+        "consumed path retains the identical row, never a new mint: {reply:?}"
     );
     assert!(
         reply.command_result.is_none(),

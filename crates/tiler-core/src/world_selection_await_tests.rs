@@ -367,14 +367,23 @@ fn feedback_row(
 fn selection_grants_await_shown_with_show_and_hide_targets() {
     let (mut engine, _home, away) = select_setup();
     let reply = select(&mut engine, 3, &away);
-    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
-    let effect = &reply.effects[0];
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let effect = reply
+        .focus_request
+        .as_ref()
+        .expect("retained focus request");
     assert_eq!(effect.target.0, "w2");
-    assert!(effect.await_shown, "selection focus awaits arrival");
-    assert_eq!(effect.command_seq, Some(3));
+    assert!(
+        effect.after_shown.is_some(),
+        "selection focus awaits arrival"
+    );
+    assert_eq!(effect.cmd_seq, Some(3));
     assert_eq!(
         effect.cause,
-        crate::world_report::EffectCause::ExplicitCommand
+        crate::world_report::FocusRequestCause::ExplicitCommand
     );
 
     let shown = row(&reply, "w2");
@@ -410,7 +419,18 @@ fn selection_grants_await_shown_with_show_and_hide_targets() {
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("selection binding retained");
-    assert_eq!(binding.effect, Some(effect.clone()));
+    let frozen = binding
+        .effect
+        .as_ref()
+        .expect("selection freezes its internal grant");
+    assert_eq!(
+        frozen.target, effect.target,
+        "frozen grant names the requested target"
+    );
+    assert_eq!(
+        frozen.command_seq, effect.cmd_seq,
+        "frozen grant correlates the same command"
+    );
     assert_eq!(binding.parent_op, "op-3", "parent view op retained");
     assert_eq!(
         binding.members.len(),
@@ -434,7 +454,11 @@ fn selection_grants_await_shown_with_show_and_hide_targets() {
         "estimate {estimate} bounds wire {actual}"
     );
     let mut stripped = reply.clone();
-    stripped.effects[0].await_shown = false;
+    stripped
+        .focus_request
+        .as_mut()
+        .expect("retained focus request")
+        .after_shown = None;
     assert_ne!(
         reply_exact_bytes_v4(&reply),
         reply_exact_bytes_v4(&stripped),
@@ -473,7 +497,7 @@ fn selection_targets_stay_stable_across_observations() {
 fn selection_arrival_proof_needs_every_frozen_shown_member() {
     let (mut engine, _home, away) = select_setup();
     let reply = select(&mut engine, 3, &away);
-    let effect = reply.effects[0].clone();
+    let effect = reply.focus_request.clone().expect("retained focus request");
     let frame = row(&reply, "w2").effective_frame;
     assert!(frame.is_some(), "tiled member publishes a desire frame");
     // Bracket watermark 5 against report watermark 6 is legitimate: the
@@ -523,7 +547,7 @@ fn selection_arrival_rejects_partial_or_mismatched_evidence() {
     ] {
         let (mut engine, _home, away) = select_setup();
         let reply = select(&mut engine, 3, &away);
-        let effect = reply.effects[0].clone();
+        let effect = reply.focus_request.clone().expect("retained focus request");
         let frame = row(&reply, "w2").effective_frame;
         let arrival = if empty {
             Vec::new()
@@ -571,7 +595,7 @@ fn selection_arrival_rejects_partial_or_mismatched_evidence() {
 fn selection_arrival_rejects_bad_lifetime_facts() {
     let (mut engine, _home, away) = select_setup();
     let reply = select(&mut engine, 3, &away);
-    let effect = reply.effects[0].clone();
+    let effect = reply.focus_request.clone().expect("retained focus request");
     let frame = row(&reply, "w2").effective_frame;
     let mut bad = bracket("w2", "out-a", 5, frame);
     bad.after = sample(5, false, true, false, false);
@@ -633,8 +657,19 @@ fn ordinary_direct_focus_grants_no_arrival() {
             "",
         ),
     );
-    assert_eq!(reply.effects.len(), 1);
-    assert!(!reply.effects[0].await_shown, "ordinary focus never awaits");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    assert!(
+        reply
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_none(),
+        "ordinary focus never awaits"
+    );
     for row in &reply.windows {
         assert!(row.visibility.is_none(), "ordinary focus grants no targets");
     }
@@ -669,7 +704,7 @@ fn report_multi(
 fn selection_accepted_setter_without_foreground_proves_arrival_only() {
     let (mut engine, _home, away) = select_setup();
     let reply = select(&mut engine, 3, &away);
-    let effect = reply.effects[0].clone();
+    let effect = reply.focus_request.clone().expect("retained focus request");
     let frame = row(&reply, "w2").effective_frame;
     // Accepted setter with no foreground equality: arrival still proves on
     // its own evidence, while the foreground verdict stays unproven. A bare
@@ -711,7 +746,7 @@ fn selection_arrival_rejects_watermark_violations() {
     for name in ["stale-obs", "future-obs", "sample-mismatch"] {
         let (mut engine, _home, away) = select_setup();
         let reply = select(&mut engine, 3, &away);
-        let effect = reply.effects[0].clone();
+        let effect = reply.focus_request.clone().expect("retained focus request");
         let frame = row(&reply, "w2").effective_frame;
         let arrival = match name {
             // The frozen issuing observation is 3: an older bracket never
@@ -763,7 +798,7 @@ fn selection_arrival_rejects_watermark_violations() {
 fn selection_native_arm_bracket_is_refused_before_adoption() {
     let (mut engine, _home, away) = select_setup();
     let reply = select(&mut engine, 3, &away);
-    let effect = reply.effects[0].clone();
+    let effect = reply.focus_request.clone().expect("retained focus request");
     let frame = row(&reply, "w2").effective_frame;
     // A native-arm bracket on a native-free host never reaches settlement:
     // the authoritative host-arm gate refuses the report, adopting nothing.
@@ -816,7 +851,7 @@ fn selection_native_arm_bracket_is_refused_before_adoption() {
 fn selection_close_prunes_binding_and_targets_without_stale_reuse() {
     let (mut engine, _home, away) = select_setup();
     let reply = select(&mut engine, 3, &away);
-    let effect = reply.effects[0].clone();
+    let effect = reply.focus_request.clone().expect("retained focus request");
     // Explicit close of the focus target prunes the binding and its target.
     // The surviving departing member keeps its own entry: pruning drops
     // departed identities, never the live scope.
@@ -921,7 +956,7 @@ fn selection_close_prunes_binding_and_targets_without_stale_reuse() {
 fn selection_refusal_consumed_and_envelope_keep_first_feedback() {
     let (mut engine, _home, away) = select_setup();
     let reply = select(&mut engine, 3, &away);
-    let effect = reply.effects[0].clone();
+    let effect = reply.focus_request.clone().expect("retained focus request");
     let frame = row(&reply, "w2").effective_frame;
     // Latch the first exact-tuple row: bracket obs 4 sits between the
     // issuing obs 3 and the report obs 4.
@@ -1114,7 +1149,10 @@ fn selection_late_admission_registers_fresh_revision_outside_frozen_set() {
     );
     // Arrival proves on the frozen member alone: the late member is not
     // required and cannot silently extend the old snapshot.
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let ready = feedback_row(
         &effect.id,
         "w2",
@@ -1157,7 +1195,10 @@ fn selection_multimember_snapshot_needs_every_member() {
             "",
         ),
     );
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     assert!(
         ["w2", "w3"].contains(&effect.target.0.as_str()),
         "focus resolves a selected member: {effect:?}"
@@ -1230,7 +1271,10 @@ fn selection_multimember_snapshot_needs_every_member() {
             "",
         ),
     );
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let frames: std::collections::BTreeMap<String, Option<Rect>> = granted
         .windows
         .iter()
@@ -1405,10 +1449,26 @@ fn selection_without_suppression_caps_binds_focusless_with_direct_effect() {
             "",
         ),
     );
-    assert_eq!(reply.effects.len(), 1, "legacy direct focus stays");
-    assert_eq!(reply.effects[0].target.0, "w2");
     assert!(
-        !reply.effects[0].await_shown,
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    assert_eq!(
+        reply
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .target
+            .0,
+        "w2"
+    );
+    assert!(
+        !reply
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some(),
         "no suppression means no await"
     );
     assert!(
@@ -1617,7 +1677,10 @@ fn empty_selection_freezes_hide_then_supersedes_without_completing() {
     // A newer selection supersedes the pending focusless binding without
     // an event: selecting home resolves w1 and drops op-4 silently.
     let back = select(&mut engine, 5, &home);
-    assert_eq!(back.effects.len(), 1, "home resolves w1: {back:?}");
+    assert!(
+        back.effects.is_empty(),
+        "focus never publishes as wire effects: {back:?}"
+    );
     assert!(
         back.switch_settled.is_empty(),
         "superseded focusless emits nothing: {back:?}"
@@ -1729,9 +1792,28 @@ fn selection_two_outputs_retain_independent_bindings() {
             screens.clone(),
         ),
     );
-    assert_eq!(first.effects.len(), 1, "out-a selection focuses: {first:?}");
-    assert_eq!(first.effects[0].target.0, "w2");
-    assert!(first.effects[0].await_shown, "out-a awaits arrival");
+    assert!(
+        first.effects.is_empty(),
+        "focus never publishes as wire effects: {first:?}"
+    );
+    assert_eq!(
+        first
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .target
+            .0,
+        "w2"
+    );
+    assert!(
+        first
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some(),
+        "out-a awaits arrival"
+    );
     let rev_a = first.state_revision;
     let second = accepted(
         &mut engine,
@@ -1749,13 +1831,28 @@ fn selection_two_outputs_retain_independent_bindings() {
             screens.clone(),
         ),
     );
-    assert_eq!(
-        second.effects.len(),
-        1,
-        "out-b selection focuses: {second:?}"
+    assert!(
+        second.effects.is_empty(),
+        "focus never publishes as wire effects: {second:?}"
     );
-    assert_eq!(second.effects[0].target.0, "w4");
-    assert!(second.effects[0].await_shown, "out-b awaits arrival");
+    assert_eq!(
+        second
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .target
+            .0,
+        "w4"
+    );
+    assert!(
+        second
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some(),
+        "out-b awaits arrival"
+    );
     let rev_b = second.state_revision;
     assert!(rev_b > rev_a, "later intent stamps its own revision");
     // Each output keeps its own show/hide pair under its own revision.
@@ -1881,8 +1978,18 @@ fn selection_follow_send_home_invalidates_stale_hide() {
         attempt_ms: 7,
     }];
     let granted = accepted(&mut engine, &proving);
-    assert_eq!(granted.effects.len(), 1, "one selection focus: {granted:?}");
-    assert!(granted.effects[0].await_shown);
+    assert!(
+        granted.effects.is_empty(),
+        "focus never publishes as wire effects: {granted:?}"
+    );
+    assert!(
+        granted
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some()
+    );
     assert_eq!(
         row(&granted, "w1").visibility_authority,
         ScopeAuthority::Controlled,
@@ -1905,14 +2012,26 @@ fn selection_follow_send_home_invalidates_stale_hide() {
             "w2",
         ),
     );
-    assert_eq!(
-        followed.effects.len(),
-        1,
-        "follow still focuses: {followed:?}"
-    );
-    assert_eq!(followed.effects[0].target.0, "w2");
     assert!(
-        followed.effects[0].await_shown,
+        followed.effects.is_empty(),
+        "focus never publishes as wire effects: {followed:?}"
+    );
+    assert_eq!(
+        followed
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .target
+            .0,
+        "w2"
+    );
+    assert!(
+        followed
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some(),
         "follow focus waits until the destination is shown"
     );
     assert!(
@@ -1972,7 +2091,11 @@ fn selection_follow_send_home_invalidates_stale_hide() {
         "estimate {estimate} bounds wire {actual}"
     );
     let mut stripped = followed.clone();
-    stripped.effects[0].await_shown = false;
+    stripped
+        .focus_request
+        .as_mut()
+        .expect("retained focus request")
+        .after_shown = None;
     assert_ne!(
         reply_exact_bytes_v4(&followed),
         reply_exact_bytes_v4(&stripped),
@@ -2020,9 +2143,22 @@ fn follow_send_settles_membership_before_selection_terminal() {
         attempt_ms: 7,
     }];
     let followed = accepted(&mut engine, &follow_report);
-    assert_eq!(followed.effects.len(), 1);
-    assert_eq!(followed.effects.len(), 1);
-    assert!(followed.effects[0].await_shown);
+    assert!(
+        followed.effects.is_empty(),
+        "focus never publishes as wire effects: {followed:?}"
+    );
+    assert!(
+        followed.effects.is_empty(),
+        "focus never publishes as wire effects: {followed:?}"
+    );
+    assert!(
+        followed
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some()
+    );
     let rev = followed.state_revision;
     let frame = row(&followed, "w2").effective_frame;
     assert!(
@@ -2081,7 +2217,10 @@ fn follow_send_settles_membership_before_selection_terminal() {
         "no terminal without visibility verdicts"
     );
     // The common terminal path completes the follow binding.
-    let effect = followed.effects[0].clone();
+    let effect = followed
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let w_lw = last_write_confirmed(true, rev, 5);
     let frame_w1 = row(&followed, "w1").effective_frame;
     let feedback = feedback_row(
@@ -2221,8 +2360,18 @@ fn follow_to_different_workspace_prunes_stale_select_view_flight() {
     follow_report.focused_global = "w2".to_owned();
     follow_report.foreground_known = true;
     let followed = accepted(&mut engine, &follow_report);
-    assert_eq!(followed.effects.len(), 1, "follow grants: {followed:?}");
-    assert!(followed.effects[0].await_shown);
+    assert!(
+        followed.effects.is_empty(),
+        "focus never publishes as wire effects: {followed:?}"
+    );
+    assert!(
+        followed
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some()
+    );
     assert!(
         followed
             .transfers
@@ -2405,10 +2554,26 @@ fn follow_cross_output_binds_current_destination_and_settles_window_first() {
             screens.clone(),
         ),
     );
-    assert_eq!(followed.effects.len(), 1, "follow focuses: {followed:?}");
-    assert_eq!(followed.effects[0].target.0, "w1");
     assert!(
-        followed.effects[0].await_shown,
+        followed.effects.is_empty(),
+        "focus never publishes as wire effects: {followed:?}"
+    );
+    assert_eq!(
+        followed
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .target
+            .0,
+        "w1"
+    );
+    assert!(
+        followed
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some(),
         "follow focus waits until the destination is shown"
     );
     assert!(
@@ -2523,7 +2688,14 @@ fn follow_binding_superseded_then_close_drops_without_event() {
         attempt_ms: 7,
     }];
     let first = accepted(&mut engine, &first_report);
-    assert!(first.effects[0].await_shown);
+    assert!(
+        first
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some()
+    );
     assert_eq!(
         engine
             .retained_selection
@@ -2555,8 +2727,18 @@ fn follow_binding_superseded_then_close_drops_without_event() {
         "w2",
     );
     let second = accepted(&mut engine, &second_report);
-    assert_eq!(second.effects.len(), 1, "second follow grants: {second:?}");
-    assert!(second.effects[0].await_shown);
+    assert!(
+        second.effects.is_empty(),
+        "focus never publishes as wire effects: {second:?}"
+    );
+    assert!(
+        second
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some()
+    );
     assert_eq!(
         engine
             .retained_selection
@@ -2638,8 +2820,18 @@ fn native_free_follow_source_echo_survives_then_proves() {
         attempt_ms: 7,
     }];
     let granted = accepted(&mut engine, &first_report);
-    assert_eq!(granted.effects.len(), 1, "follow grants: {granted:?}");
-    assert!(granted.effects[0].await_shown);
+    assert!(
+        granted.effects.is_empty(),
+        "focus never publishes as wire effects: {granted:?}"
+    );
+    assert!(
+        granted
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some()
+    );
     let binding = engine
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
@@ -2728,7 +2920,10 @@ fn native_free_follow_source_echo_survives_then_proves() {
         "no terminal without visibility verdicts"
     );
     // Common terminal: LastWrites plus exact brackets at the destination.
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let rev = granted.state_revision;
     let w_lw = last_write_confirmed(true, rev, 6);
     let frames: std::collections::BTreeMap<WindowId, Option<Rect>> = granted
@@ -2985,10 +3180,26 @@ fn host_owned_follow_binds_native_obligation_and_settles_window_first() {
     followed_report.focused_global = "w0".to_owned();
     followed_report.foreground_known = true;
     let followed = accepted(&mut engine, &followed_report);
-    assert_eq!(followed.effects.len(), 1, "follow focuses: {followed:?}");
-    assert_eq!(followed.effects[0].target.0, "w0");
     assert!(
-        followed.effects[0].await_shown,
+        followed.effects.is_empty(),
+        "focus never publishes as wire effects: {followed:?}"
+    );
+    assert_eq!(
+        followed
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .target
+            .0,
+        "w0"
+    );
+    assert!(
+        followed
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some(),
         "follow focus awaits arrival"
     );
     assert!(
@@ -3122,7 +3333,10 @@ fn host_owned_follow_binds_native_obligation_and_settles_window_first() {
     // Native echo plus the correlated view attempt and exact feedback
     // brackets (every frozen member at its destination home) complete
     // through the shared terminal path.
-    let effect = followed.effects[0].clone();
+    let effect = followed
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let frames = host_member_frames(&followed);
     let arrival_brackets: Vec<crate::world_report::ArrivalBracket> = binding
         .members
@@ -3238,8 +3452,14 @@ fn host_owned_follow_source_home_bracket_never_proves_arrival() {
     followed_report.focused_global = "w0".to_owned();
     followed_report.foreground_known = true;
     let followed = accepted(&mut engine, &followed_report);
-    assert_eq!(followed.effects.len(), 1, "follow focuses: {followed:?}");
-    let effect = followed.effects[0].clone();
+    assert!(
+        followed.effects.is_empty(),
+        "focus never publishes as wire effects: {followed:?}"
+    );
+    let effect = followed
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let frames = host_member_frames(&followed);
     let binding = engine
         .retained_selection
@@ -3484,8 +3704,18 @@ fn selection_shared_mode_fans_out_scopes_and_survives_member_close() {
             screens.clone(),
         ),
     );
-    assert_eq!(granted.effects.len(), 1, "one selection focus: {granted:?}");
-    assert!(granted.effects[0].await_shown);
+    assert!(
+        granted.effects.is_empty(),
+        "focus never publishes as wire effects: {granted:?}"
+    );
+    assert!(
+        granted
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some()
+    );
     let rev = granted.state_revision;
     // Both affected outputs carry an active scope under the same revision.
     for output in ["out-a", "out-b"] {
@@ -3747,7 +3977,10 @@ fn selection_held_screen_preserves_grant_and_recovery_rehomes_with_fresh_target(
     let (rev_a, rev_b) = (first.state_revision, second.state_revision);
     let frozen_w4_frame = row(&second, "w4").effective_frame;
     assert!(frozen_w4_frame.is_some(), "frozen w4 publishes a frame");
-    let grant_effect = second.effects[0].clone();
+    let grant_effect = second
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     // Hold out-b's screen while its facts keep flowing.
     let mut held = report_multi(
         6,
@@ -3839,10 +4072,14 @@ fn selection_held_screen_preserves_grant_and_recovery_rehomes_with_fresh_target(
         .get(&OutputId("out-b".to_owned()))
         .expect("held grant survives")
         .clone();
+    let held_frozen = held_binding.effect.as_ref().expect("held grant survives");
     assert_eq!(
-        held_binding.effect,
-        Some(grant_effect.clone()),
+        held_frozen.target, grant_effect.target,
         "held grant is the out-b award"
+    );
+    assert_eq!(
+        held_frozen.command_seq, grant_effect.cmd_seq,
+        "held grant keeps its correlation"
     );
     assert_eq!(held_binding.members.len(), 1, "frozen set is w4 alone");
     assert_eq!(held_binding.members[0].window.0, "w4");
@@ -3950,10 +4187,14 @@ fn selection_held_screen_preserves_grant_and_recovery_rehomes_with_fresh_target(
         .retained_selection
         .get(&OutputId("out-b".to_owned()))
         .expect("grant survives recovery");
+    let kept_frozen = binding.effect.as_ref().expect("grant survives recovery");
     assert_eq!(
-        binding.effect,
-        Some(grant_effect.clone()),
+        kept_frozen.target, grant_effect.target,
         "same finite grant, no renewal"
+    );
+    assert_eq!(
+        kept_frozen.command_seq, grant_effect.cmd_seq,
+        "grant keeps its correlation"
     );
     assert_eq!(binding.rev, rev_b, "grant keeps its revision");
     assert_eq!(binding.members.len(), 1, "frozen set still w4 alone");
@@ -4026,15 +4267,37 @@ fn selection_composed_sticky_members_join_frozen_arrival_with_precedence() {
                 "",
             ),
         );
-        assert_eq!(granted.effects.len(), 1, "one selection focus: {granted:?}");
-        assert_eq!(granted.effects[0].target.0, "w2");
-        assert!(granted.effects[0].await_shown, "selection awaits arrival");
+        assert!(
+            granted.effects.is_empty(),
+            "focus never publishes as wire effects: {granted:?}"
+        );
+        assert_eq!(
+            granted
+                .focus_request
+                .as_ref()
+                .expect("retained focus request")
+                .target
+                .0,
+            "w2"
+        );
+        assert!(
+            granted
+                .focus_request
+                .as_ref()
+                .expect("retained focus request")
+                .after_shown
+                .is_some(),
+            "selection awaits arrival"
+        );
         (engine, away, granted)
     }
     // Partial evidence on the first engine: w2 alone never proves the
     // two-member snapshot, while the foreground verdict still proves.
     let (mut engine, _away, granted) = setup();
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let frames: std::collections::BTreeMap<String, Option<Rect>> = granted
         .windows
         .iter()
@@ -4117,7 +4380,10 @@ fn selection_composed_sticky_members_join_frozen_arrival_with_precedence() {
     // Full evidence on a separate engine: both brackets prove readiness
     // with the first row latched.
     let (mut engine, _away, granted) = setup();
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let frames: std::collections::BTreeMap<String, Option<Rect>> = granted
         .windows
         .iter()
@@ -4159,7 +4425,10 @@ fn selection_historical_readiness_does_not_authorize_fresh_visibility() {
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
     let rev = granted.state_revision;
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let frame = row(&granted, "w2").effective_frame;
     assert!(frame.is_some(), "tiled member publishes a frame");
     let latched = feedback_row(
@@ -4345,7 +4614,10 @@ fn notcalled_feedback(id: &str, target: &str, revision: u64) -> FocusFeedback {
 fn switch_all_confirmed_completes_with_proven_focus() {
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
     assert!(frame.is_some());
@@ -4443,7 +4715,10 @@ fn switch_all_confirmed_completes_with_proven_focus() {
 fn switch_foreground_without_arrival_never_proves_focus_or_complete() {
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let rev = granted.state_revision;
     let w2_lw = last_write_confirmed(true, rev, 4);
     let w1_lw = last_write_confirmed(false, rev, 4);
@@ -4489,7 +4764,10 @@ fn switch_foreground_without_arrival_never_proves_focus_or_complete() {
 fn switch_refused_focus_with_confirmed_visibility_fails_outcome() {
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let rev = granted.state_revision;
     let w2_lw = last_write_confirmed(true, rev, 4);
     let w1_lw = last_write_confirmed(false, rev, 4);
@@ -4519,7 +4797,10 @@ fn switch_refused_focus_with_confirmed_visibility_fails_outcome() {
 fn switch_hide_refused_terminates_with_failed_without_readiness() {
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let rev = granted.state_revision;
     let w2_lw = last_write_confirmed(true, rev, 4);
     let w1_lw = last_write_with(
@@ -4566,7 +4847,10 @@ fn switch_hide_refused_terminates_with_failed_without_readiness() {
 fn switch_blocked_show_and_nocall_focus_terminates() {
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let rev = granted.state_revision;
     let w2_lw = last_write_with(
         true,
@@ -4602,7 +4886,10 @@ fn switch_blocked_show_and_nocall_focus_terminates() {
 fn switch_missing_or_uncorrelated_evidence_stays_pending() {
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
     let w2_lw = last_write_confirmed(true, rev, 4);
@@ -4640,7 +4927,10 @@ fn switch_missing_or_uncorrelated_evidence_stays_pending() {
     );
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
     let bad_rev = last_write_confirmed(true, rev + 1, 4);
@@ -4678,7 +4968,10 @@ fn switch_missing_or_uncorrelated_evidence_stays_pending() {
 fn switch_first_evidence_immutable_and_future_stays_failed() {
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
     let future_w2 = last_write_confirmed(true, rev, 5);
@@ -4738,7 +5031,10 @@ fn switch_held_raw_evidence_correlates_without_healthy_visibility() {
     use crate::world_report::retained_window_fields;
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
     let w1_lw = last_write_confirmed(false, rev, 4);
@@ -4946,7 +5242,10 @@ fn switch_shared_fanout_freezes_all_outputs_and_retires_flight() {
         ),
     );
     let rev = granted.state_revision;
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let binding = engine
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
@@ -5205,7 +5504,10 @@ fn switch_pre_mutation_reserve_rejects_before_mutation_with_retry() {
 fn switch_rejected_command_keeps_presettled_terminal_and_consumes_seq() {
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
     // The switch evidence is spent before the command-only rollback
@@ -5314,7 +5616,10 @@ fn switch_rejected_command_keeps_presettled_terminal_and_consumes_seq() {
 fn switch_incomplete_inventory_settles_spent_evidence_without_renewal() {
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
     let mut gapped = report(
@@ -5452,7 +5757,15 @@ fn switch_two_output_bindings_settle_two_events_in_one_report() {
             screens.clone(),
         ),
     );
-    assert_eq!(first.effects[0].target.0, "w2");
+    assert_eq!(
+        first
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .target
+            .0,
+        "w2"
+    );
     let rev_a = first.state_revision;
     let second = accepted(
         &mut engine,
@@ -5470,10 +5783,21 @@ fn switch_two_output_bindings_settle_two_events_in_one_report() {
             screens.clone(),
         ),
     );
-    assert_eq!(second.effects[0].target.0, "w4");
+    assert_eq!(
+        second
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .target
+            .0,
+        "w4"
+    );
     let rev_b = second.state_revision;
-    let effect_a = first.effects[0].clone();
-    let effect_b = second.effects[0].clone();
+    let effect_a = first.focus_request.clone().expect("retained focus request");
+    let effect_b = second
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let frame_a = row(&second, "w2").effective_frame;
     let frame_b = row(&second, "w4").effective_frame;
     // Pre-mutation reserve covers both concurrent terminals exactly.
@@ -5588,7 +5912,10 @@ fn switch_two_output_bindings_settle_two_events_in_one_report() {
 fn switch_duplicate_replays_identical_event_then_next_report_empties() {
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
     let settle = report(
@@ -5645,7 +5972,10 @@ fn switch_conflicting_held_row_correlates_without_healthy_visibility() {
     use crate::world_report::retained_window_fields;
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
     let w1_lw = last_write_confirmed(false, rev, 4);
@@ -5696,7 +6026,10 @@ fn switch_conflicting_held_row_correlates_without_healthy_visibility() {
 fn switch_nocall_hide_terminates_without_retry_and_preserves_state() {
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let rev = granted.state_revision;
     let home_w1 = engine
         .selection_targets
@@ -5791,7 +6124,10 @@ fn switch_nocall_hide_terminates_without_retry_and_preserves_state() {
 fn switch_threw_hide_with_mismatched_post_terminates() {
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let rev = granted.state_revision;
     // Throwing hide with a mismatched post (visible where hidden was
     // granted) is a correlated failure; accepted focus feedback that
@@ -5874,7 +6210,10 @@ fn switch_partial_hide_failure_with_proven_arrival_and_focus() {
             "",
         ),
     );
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     assert_eq!(effect.target.0, "w2", "focus resolves the selected member");
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
@@ -6004,7 +6343,10 @@ fn switch_partial_hide_failure_with_proven_arrival_and_focus() {
 fn focusless_occupied_to_empty_freezes_hide_and_completes_unproven() {
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    assert_eq!(granted.effects.len(), 1, "setup focuses: {granted:?}");
+    assert!(
+        granted.effects.is_empty(),
+        "focus never publishes as wire effects: {granted:?}"
+    );
     let ring = ring_ids(&granted, "out-a");
     let empty = ring.last().expect("fresh trailing spare").clone();
     assert_ne!(empty, away, "spare is not the occupied workspace");
@@ -6459,14 +6801,23 @@ fn host_owned_focus_bearing_grants_await_shown_with_native_obligations() {
         "n0",
         "w2",
     );
-    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
-    let effect = &reply.effects[0];
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let effect = reply
+        .focus_request
+        .as_ref()
+        .expect("retained focus request");
     assert_eq!(effect.target.0, "w2");
-    assert!(effect.await_shown, "host-owned focus awaits arrival");
-    assert_eq!(effect.command_seq, Some(3));
+    assert!(
+        effect.after_shown.is_some(),
+        "host-owned focus awaits arrival"
+    );
+    assert_eq!(effect.cmd_seq, Some(3));
     assert_eq!(
         effect.cause,
-        crate::world_report::EffectCause::ExplicitCommand
+        crate::world_report::FocusRequestCause::ExplicitCommand
     );
     for row in &reply.windows {
         assert!(
@@ -6482,7 +6833,18 @@ fn host_owned_focus_bearing_grants_await_shown_with_native_obligations() {
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("selection binding retained");
-    assert_eq!(binding.effect, Some(effect.clone()));
+    let frozen = binding
+        .effect
+        .as_ref()
+        .expect("selection freezes its internal grant");
+    assert_eq!(
+        frozen.target, effect.target,
+        "frozen grant names the requested target"
+    );
+    assert_eq!(
+        frozen.command_seq, effect.cmd_seq,
+        "frozen grant correlates the same command"
+    );
     assert_eq!(binding.parent_op, "op-3");
     assert!(
         binding.switch_members.is_empty(),
@@ -6533,7 +6895,11 @@ fn host_owned_focus_bearing_grants_await_shown_with_native_obligations() {
         "estimate {estimate} bounds wire {actual}"
     );
     let mut stripped = reply.clone();
-    stripped.effects[0].await_shown = false;
+    stripped
+        .focus_request
+        .as_mut()
+        .expect("retained focus request")
+        .after_shown = None;
     assert_ne!(
         reply_exact_bytes_v4(&reply),
         reply_exact_bytes_v4(&stripped),
@@ -6555,12 +6921,28 @@ fn host_focus_grant() -> (WorldEngine, String, crate::world_report::WorldReplyV4
     staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let reply = host_select_windows(&mut engine, 3, &away, stage(), "n0", "w2");
-    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
     assert!(
-        reply.effects[0].await_shown,
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    assert!(
+        reply
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some(),
         "host-owned focus awaits arrival"
     );
-    assert_eq!(reply.effects[0].target.0, "w2");
+    assert_eq!(
+        reply
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .target
+            .0,
+        "w2"
+    );
     (engine, away, reply)
 }
 
@@ -6585,7 +6967,7 @@ fn host_proof_windows(visible: bool) -> Vec<WindowFact> {
 #[test]
 fn host_owned_focus_bearing_native_arrival_and_selector_complete_proven() {
     let (mut engine, away, grant) = host_focus_grant();
-    let effect = grant.effects[0].clone();
+    let effect = grant.focus_request.clone().expect("retained focus request");
     let frames = host_member_frames(&grant);
     let arrival = ["w1", "w2"]
         .into_iter()
@@ -6649,7 +7031,7 @@ fn host_owned_focus_bearing_selector_proof_alone_holds() {
 #[test]
 fn host_owned_focus_bearing_arrival_without_selector_holds() {
     let (mut engine, _away, grant) = host_focus_grant();
-    let effect = grant.effects[0].clone();
+    let effect = grant.focus_request.clone().expect("retained focus request");
     let frames = host_member_frames(&grant);
     // Foreground proves and every frozen member proves its Native arm,
     // but the current stays home with no attempt rows: the native
@@ -6690,7 +7072,7 @@ fn host_owned_focus_bearing_omitted_target_arrival_fails_unproven() {
     // member but no bracket for the effect target still fails the
     // terminal with focus unproven.
     let (mut engine, _away, grant) = host_focus_grant();
-    let effect = grant.effects[0].clone();
+    let effect = grant.focus_request.clone().expect("retained focus request");
     let frames = host_member_frames(&grant);
     let arrival = vec![native_bracket(
         "w1",
@@ -6723,7 +7105,7 @@ fn host_owned_focus_bearing_omitted_target_arrival_fails_unproven() {
 #[test]
 fn host_owned_focus_bearing_accepted_without_foreground_fails() {
     let (mut engine, _away, grant) = host_focus_grant();
-    let effect = grant.effects[0].clone();
+    let effect = grant.focus_request.clone().expect("retained focus request");
     let frames = host_member_frames(&grant);
     // Setter success without foreground equality is Unproven, never a
     // completion: the shared predicate fails the terminal.
@@ -6776,7 +7158,7 @@ fn host_owned_focus_bearing_rejects_wrong_native_evidence() {
         "partial-members",
     ] {
         let (mut engine, _away, grant) = host_focus_grant();
-        let effect = grant.effects[0].clone();
+        let effect = grant.focus_request.clone().expect("retained focus request");
         let frames = host_member_frames(&grant);
         let frame = frames[&WindowId("w1".to_owned())];
         let good = |window: &str| native_bracket(window, "n1", 3, frame);
@@ -6858,7 +7240,7 @@ fn host_owned_focus_bearing_wrong_host_arms_refuse_at_ingress() {
         ),
     ] {
         let (mut engine, _away, grant) = host_focus_grant();
-        let effect = grant.effects[0].clone();
+        let effect = grant.focus_request.clone().expect("retained focus request");
         let frames = host_member_frames(&grant);
         let mut bad = native_bracket("w1", "n1", 3, frames[&WindowId("w1".to_owned())]);
         bad.location = location;
@@ -6888,7 +7270,7 @@ fn host_owned_focus_bearing_wrong_host_arms_refuse_at_ingress() {
 #[test]
 fn host_owned_focus_bearing_native_refusal_fails_with_feedback() {
     let (mut engine, away, grant) = host_focus_grant();
-    let effect = grant.effects[0].clone();
+    let effect = grant.focus_request.clone().expect("retained focus request");
     // Proven selector refusal plus the latched focus feedback in the same
     // report: the shared predicate fails the switch even though focus
     // proves (settle runs before the publish reconcile).
@@ -6930,7 +7312,7 @@ fn host_owned_focus_bearing_native_refusal_fails_with_feedback() {
 #[test]
 fn host_owned_focus_bearing_refusal_without_feedback_pends_until_feedback() {
     let (mut engine, away, grant) = host_focus_grant();
-    let effect = grant.effects[0].clone();
+    let effect = grant.focus_request.clone().expect("retained focus request");
     // Proven selector refusal with no focus feedback: the flight retires
     // as refused, but the refusal is the engine's own correlated attempt
     // with an unchanged preimage and the echo still home - not newer
@@ -7052,7 +7434,7 @@ fn host_owned_focus_bearing_refusal_then_reselect_supersedes_silently() {
 #[test]
 fn host_owned_focus_bearing_held_refusal_recovers_from_latched_raw() {
     let (mut engine, away, grant) = host_focus_grant();
-    let effect = grant.effects[0].clone();
+    let effect = grant.focus_request.clone().expect("retained focus request");
     let frames = host_member_frames(&grant);
     let arrival = ["w1", "w2"]
         .into_iter()
@@ -7217,10 +7599,19 @@ fn host_owned_focus_bearing_shared_needs_every_output_proof() {
     selecting.focused_global = "wA".to_owned();
     selecting.foreground_known = true;
     let reply = accepted(&mut engine, &selecting);
-    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
-    let effect = &reply.effects[0];
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let effect = reply
+        .focus_request
+        .as_ref()
+        .expect("retained focus request");
     assert_eq!(effect.target.0, "wA");
-    assert!(effect.await_shown, "host-owned focus awaits arrival");
+    assert!(
+        effect.after_shown.is_some(),
+        "host-owned focus awaits arrival"
+    );
     for row in &reply.windows {
         assert!(
             row.visibility.is_none(),
@@ -7438,10 +7829,13 @@ fn host_owned_focus_bearing_shared_nonfocus_external_move_drops_binding() {
     selecting.focused_global = "wA".to_owned();
     selecting.foreground_known = true;
     let reply = accepted(&mut engine, &selecting);
-    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
-    let effect = reply.effects[0].clone();
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let effect = reply.focus_request.clone().expect("retained focus request");
     assert_eq!(effect.target.0, "wA");
-    assert!(effect.await_shown, "shared focus awaits arrival");
+    assert!(effect.after_shown.is_some(), "shared focus awaits arrival");
     assert_eq!(
         engine
             .retained_selection
@@ -7616,8 +8010,11 @@ fn host_owned_focus_bearing_shared_partial_then_external_move_drops_binding() {
     selecting.focused_global = "wA".to_owned();
     selecting.foreground_known = true;
     let reply = accepted(&mut engine, &selecting);
-    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
-    let effect = reply.effects[0].clone();
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let effect = reply.focus_request.clone().expect("retained focus request");
     assert_eq!(effect.target.0, "wA");
     let frame = host_member_frames(&reply)[&WindowId("wA".to_owned())];
     // Partial proof first: out-a lands on the target while out-b still
@@ -7810,8 +8207,11 @@ fn host_owned_focus_bearing_shared_nonfocus_own_refusal_pends_then_fails() {
     selecting.focused_global = "wA".to_owned();
     selecting.foreground_known = true;
     let reply = accepted(&mut engine, &selecting);
-    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
-    let effect = reply.effects[0].clone();
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    let effect = reply.focus_request.clone().expect("retained focus request");
     assert_eq!(effect.target.0, "wA");
     let out_b_home = engine
         .retained_selection
@@ -8103,9 +8503,26 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
             vec![],
         ),
     );
-    assert_eq!(grant.effects.len(), 1);
-    assert!(grant.effects[0].await_shown);
-    assert_eq!(grant.effects[0].command_seq, Some(3));
+    assert!(
+        grant.effects.is_empty(),
+        "focus never publishes as wire effects: {grant:?}"
+    );
+    assert!(
+        grant
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some()
+    );
+    assert_eq!(
+        grant
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .cmd_seq,
+        Some(3)
+    );
     assert!(grant.switch_settled.is_empty());
     assert!(!grant.command_consumed);
     assert!(grant.command_result.is_none());
@@ -8155,9 +8572,26 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
             crate::world_report::WORLD_CONTRACT_VERSION_V4
         );
         assert!(reply.switch_settled.is_empty());
-        assert_eq!(reply.effects.len(), 1);
-        assert!(reply.effects[0].await_shown);
-        assert_eq!(reply.effects[0].command_seq, Some(seq));
+        assert!(
+            reply.effects.is_empty(),
+            "focus never publishes as wire effects: {reply:?}"
+        );
+        assert!(
+            reply
+                .focus_request
+                .as_ref()
+                .expect("retained focus request")
+                .after_shown
+                .is_some()
+        );
+        assert_eq!(
+            reply
+                .focus_request
+                .as_ref()
+                .expect("retained focus request")
+                .cmd_seq,
+            Some(seq)
+        );
         assert!(!reply.command_consumed);
         assert!(reply.command_result.is_none());
         assert_eq!(engine.retained_selection.len(), 1);
@@ -9320,10 +9754,26 @@ fn host_owned_focus_bearing_fullscreen_focus_freezes_frameless_and_proves() {
     staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let reply = host_select_windows(&mut engine, 3, &away, stage(), "n0", "w2");
-    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
-    assert_eq!(reply.effects[0].target.0, "w2");
     assert!(
-        reply.effects[0].await_shown,
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    assert_eq!(
+        reply
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .target
+            .0,
+        "w2"
+    );
+    assert!(
+        reply
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some(),
         "fullscreen focus awaits arrival"
     );
     let binding = engine
@@ -9338,7 +9788,7 @@ fn host_owned_focus_bearing_fullscreen_focus_freezes_frameless_and_proves() {
     assert_eq!(frozen.frame, None);
     assert_eq!(frozen.home.workspace.0, away);
     // Any readable live frame proves: null desired waives equality only.
-    let effect = reply.effects[0].clone();
+    let effect = reply.focus_request.clone().expect("retained focus request");
     let frames = host_member_frames(&reply);
     let arrival = vec![
         native_bracket("w1", "n1", 3, frames[&WindowId("w1".to_owned())]),
@@ -9388,9 +9838,28 @@ fn host_owned_focus_bearing_float_focus_freezes_frameless_and_proves() {
     staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let reply = host_select_windows(&mut engine, 3, &away, stage(), "n0", "w2");
-    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
-    assert_eq!(reply.effects[0].target.0, "w2");
-    assert!(reply.effects[0].await_shown, "float focus awaits arrival");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    assert_eq!(
+        reply
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .target
+            .0,
+        "w2"
+    );
+    assert!(
+        reply
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some(),
+        "float focus awaits arrival"
+    );
     let binding = engine
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
@@ -9402,7 +9871,7 @@ fn host_owned_focus_bearing_float_focus_freezes_frameless_and_proves() {
         .expect("frameless float focus freezes: {binding:?}");
     assert_eq!(frozen.frame, None);
     assert_eq!(frozen.home.workspace.0, away);
-    let effect = reply.effects[0].clone();
+    let effect = reply.focus_request.clone().expect("retained focus request");
     let frames = host_member_frames(&reply);
     let arrival = vec![
         native_bracket("w1", "n1", 3, frames[&WindowId("w1".to_owned())]),
@@ -9470,12 +9939,29 @@ fn host_owned_focus_bearing_freezes_sticky_focus_at_actual_home() {
     selecting.focused_global = "ws".to_owned();
     selecting.foreground_known = true;
     let reply = accepted(&mut engine, &selecting);
-    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
     assert_eq!(
-        reply.effects[0].target.0, "ws",
+        reply
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .target
+            .0,
+        "ws",
         "remembered sticky focus resolves: {reply:?}"
     );
-    assert!(reply.effects[0].await_shown, "sticky focus awaits arrival");
+    assert!(
+        reply
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some(),
+        "sticky focus awaits arrival"
+    );
     let home = reply
         .workspaces
         .iter()
@@ -9520,7 +10006,7 @@ fn host_owned_focus_bearing_freezes_sticky_focus_at_actual_home() {
     );
     // Native proof translates each frozen per-window home through this
     // engine's own bindings: the sticky bracket names n0, the rest n1.
-    let effect = reply.effects[0].clone();
+    let effect = reply.focus_request.clone().expect("retained focus request");
     let frames = host_member_frames(&reply);
     let mut arrival = vec![
         native_bracket("w1", "n1", 4, frames[&WindowId("w1".to_owned())]),
@@ -9572,10 +10058,26 @@ fn host_focus_grant_fullscreen_nonfocus() -> (WorldEngine, String, crate::world_
     staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let reply = host_select_windows(&mut engine, 3, &away, stage(), "n0", "w2");
-    assert_eq!(reply.effects.len(), 1, "one selection focus: {reply:?}");
-    assert_eq!(reply.effects[0].target.0, "w2");
     assert!(
-        reply.effects[0].await_shown,
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
+    );
+    assert_eq!(
+        reply
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .target
+            .0,
+        "w2"
+    );
+    assert!(
+        reply
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some(),
         "host-owned focus awaits arrival"
     );
     (engine, away, reply)
@@ -9619,7 +10121,7 @@ fn host_owned_focus_bearing_freezes_frameless_fullscreen_nonfocus_member() {
 #[test]
 fn host_owned_focus_bearing_missing_frameless_bracket_holds_not_ready() {
     let (mut engine, _away, grant) = host_focus_grant_fullscreen_nonfocus();
-    let effect = grant.effects[0].clone();
+    let effect = grant.focus_request.clone().expect("retained focus request");
     let frames = host_member_frames(&grant);
     // Arrival covers every frozen member except the frameless one: the
     // switch holds with foreground proven but arrival unreadiness.
@@ -9664,7 +10166,7 @@ fn host_owned_focus_bearing_missing_frameless_bracket_holds_not_ready() {
 #[test]
 fn host_owned_focus_bearing_null_live_frame_never_proves() {
     let (mut engine, _away, grant) = host_focus_grant_fullscreen_nonfocus();
-    let effect = grant.effects[0].clone();
+    let effect = grant.focus_request.clone().expect("retained focus request");
     let frames = host_member_frames(&grant);
     // A null live frame for the frameless member never proves: waived
     // equality still needs a readable live frame.
@@ -9706,7 +10208,7 @@ fn host_owned_focus_bearing_null_live_frame_never_proves() {
 #[test]
 fn host_owned_focus_bearing_frameless_member_proves_on_readable_frame() {
     let (mut engine, away, grant) = host_focus_grant_fullscreen_nonfocus();
-    let effect = grant.effects[0].clone();
+    let effect = grant.focus_request.clone().expect("retained focus request");
     let frames = host_member_frames(&grant);
     // Any readable live frame proves the frameless member: null desired
     // waives equality only.
@@ -9973,9 +10475,27 @@ fn migration_focused_producer_binds_both_outputs_and_settles_terminal() {
         "MRU refill selects the occupied away: {binding:?}"
     );
     // D6: only the moved active client refocuses, awaiting arrival.
-    assert_eq!(granted.effects.len(), 1, "one focus effect: {granted:?}");
-    assert_eq!(granted.effects[0].target.0, "w2");
-    assert!(granted.effects[0].await_shown);
+    assert!(
+        granted.effects.is_empty(),
+        "focus never publishes as wire effects: {granted:?}"
+    );
+    assert_eq!(
+        granted
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .target
+            .0,
+        "w2"
+    );
+    assert!(
+        granted
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .after_shown
+            .is_some()
+    );
     // B1 pin: the mover freezes at the TARGET with its final published
     // frame even though the pre-arrival target domain decorates Hold.
     let w2_row = row(&granted, "w2");
@@ -10015,7 +10535,10 @@ fn migration_focused_producer_binds_both_outputs_and_settles_terminal() {
     );
     // Source-homing report holds both flights with no terminal.
     let rev = granted.state_revision;
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let frame = w2_row.effective_frame;
     let held = accepted(
         &mut engine,
@@ -10484,7 +11007,10 @@ fn migration_close_mover_drops_binding_without_terminal() {
     // with no terminal: the closed lifetime can never prove arrival.
     let (mut engine, home, _) = migration_boot();
     let granted = migrate(&mut engine, 5, "out-a", &home, "w2");
-    assert_eq!(granted.effects.len(), 1, "one focus effect: {granted:?}");
+    assert!(
+        granted.effects.is_empty(),
+        "focus never publishes as wire effects: {granted:?}"
+    );
     let screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let closed = accepted(
         &mut engine,
@@ -10633,7 +11159,10 @@ fn migration_source_output_bracket_never_proves_arrival() {
     // upgrade or replay the terminal.
     let (mut engine, home, _) = migration_boot();
     let granted = migrate(&mut engine, 5, "out-a", &home, "w2");
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
     let w0_frame = row(&granted, "w0").effective_frame;
@@ -11021,12 +11550,18 @@ fn selection_eligible_ignores_logical_echo_then_completes_on_verdicts() {
         let (mut engine, home, away) = select_setup();
         let _ = home;
         let granted = select(&mut engine, 3, &away);
-        assert_eq!(
-            granted.effects.len(),
-            1,
-            "eligible select grants: {granted:?}"
+        assert!(
+            granted.effects.is_empty(),
+            "focus never publishes as wire effects: {granted:?}"
         );
-        assert!(granted.effects[0].await_shown);
+        assert!(
+            granted
+                .focus_request
+                .as_ref()
+                .expect("retained focus request")
+                .after_shown
+                .is_some()
+        );
         let binding = engine
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
@@ -11064,7 +11599,10 @@ fn selection_eligible_ignores_logical_echo_then_completes_on_verdicts() {
     let (mut engine, home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
     let _ = home;
-    let effect = granted.effects[0].clone();
+    let effect = granted
+        .focus_request
+        .clone()
+        .expect("retained focus request");
     let rev = granted.state_revision;
     let binding = engine
         .retained_selection
@@ -11337,7 +11875,10 @@ fn policy_pending_loses_to_overlapping_command_in_the_same_cycle() {
         "no policy flight survives the race: {:?}",
         raced.transfers
     );
-    assert_eq!(raced.effects.len(), 1, "command effect only: {raced:?}");
+    assert!(
+        raced.effects.is_empty(),
+        "focus never publishes as wire effects: {raced:?}"
+    );
     let binding = engine
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
@@ -11358,7 +11899,10 @@ fn selection_redundant_unchanged_preserves_binding_history_and_mints_nothing() {
     // (supersession end-state, history, and per-window targets untouched).
     let (mut engine, home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    assert_eq!(granted.effects.len(), 1, "prior select grants");
+    assert!(
+        granted.effects.is_empty(),
+        "focus never publishes as wire effects: {granted:?}"
+    );
     // First redundant: converge catches history up to the op-3 move (not
     // the command: the command itself mints nothing).
     let first = select(&mut engine, 4, &away);
@@ -12840,7 +13384,7 @@ fn disconnect_control_genuine_newcomer_still_mints_admission_focus() {
     // admitted onto the survivor after the disconnect keeps its
     // automatic-admission focus effect.
     use crate::world_report::{
-        EffectCause, NativeObservation, NativeOccupancy, NativeWorkspaceFact,
+        FocusRequestCause, NativeObservation, NativeOccupancy, NativeWorkspaceFact,
     };
     fn hfact(window: &str, output: &str, native: &str, x: i32) -> WindowFact {
         let mut fact = sfact(window, output, x);
@@ -12920,13 +13464,27 @@ fn disconnect_control_genuine_newcomer_still_mints_admission_focus() {
     );
     admit.native = vec![native("out-left", &["l0", "l1"], "l0")];
     let reply = accepted(&mut engine, &admit);
-    assert_eq!(
-        reply.effects.len(),
-        1,
-        "genuine newcomer mints once: {reply:?}"
+    assert!(
+        reply.effects.is_empty(),
+        "focus never publishes as wire effects: {reply:?}"
     );
-    assert_eq!(reply.effects[0].target.0, "win-e");
-    assert_eq!(reply.effects[0].cause, EffectCause::AutomaticAdmission);
+    assert_eq!(
+        reply
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .target
+            .0,
+        "win-e"
+    );
+    assert_eq!(
+        reply
+            .focus_request
+            .as_ref()
+            .expect("retained focus request")
+            .cause,
+        FocusRequestCause::AutomaticAdmission
+    );
     let found = row(&reply, "win-e");
     assert_eq!(found.output.0, "out-left");
 }

@@ -99,13 +99,18 @@ impl WorldEngine {
                 local_held.insert(key);
             }
         }
-        // Focus, Raise, and Stack are all native effects: any kind homed
-        // on the style-held output never records, retains, warps, or
-        // publishes, so the adapter never actuates what it cannot verify.
+        // One retained focus request: focus never publishes as one-shot
+        // effects on the v4 wire. Focus carriers stay INTERNAL through row
+        // assembly so the selection freeze below still sees them; only the
+        // wire reply strips focus. Focus homed on the style-held output
+        // never records, retains, warps, or publishes.
         // Unknown homing passes through.
-        let effects: Vec<OneShotEffect> = effects
-            .into_iter()
+        let wire_effects: Vec<OneShotEffect> = effects
+            .iter()
             .filter(|effect| {
+                if effect.kind == crate::world_report::EffectKind::Focus {
+                    return false;
+                }
                 let Some(output) = &style_output else {
                     return true;
                 };
@@ -114,6 +119,7 @@ impl WorldEngine {
                     .get(&effect.target)
                     .is_none_or(|home| home.output != *output)
             })
+            .cloned()
             .collect();
         let rows =
             self.assemble_publication_rows(false, &effects, &local_held, style_output.as_ref());
@@ -178,11 +184,14 @@ impl WorldEngine {
         let mut presentation = self.presentation_for_publish_v4();
         presentation.rev = envelope.issuing_revision;
         self.latest_published_presentation_rev_v4 = envelope.issuing_revision;
-        // Retained close-focus lane: post-convergence eligibility gates run
+        // Retained focus lane: post-convergence eligibility gates run
         // here so every publication carries the current row, and re-emission
-        // alone never marks it attempted.
-        self.validate_pending_close_focus();
-        let close_focus = self.pending_close_focus_request();
+        // alone never marks it attempted. The `afterShown` projection
+        // copies the frozen selection binding (frozen above at the same
+        // selection freeze); parent settlement cannot erase the copy.
+        self.validate_pending_focus();
+        self.freeze_focus_after_shown();
+        let focus_request = self.pending_focus_request();
         WorldReplyV4 {
             contract_version: WORLD_CONTRACT_VERSION_V4,
             adapter_incarnation: envelope.adapter_incarnation,
@@ -198,8 +207,8 @@ impl WorldEngine {
             diagnostics: self.staged.diagnostics.clone(),
             windows,
             transfers,
-            effects,
-            close_focus,
+            effects: wire_effects,
+            focus_request,
             command_result,
             gesture_settled,
             operation_settled,
