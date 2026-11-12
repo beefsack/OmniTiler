@@ -1236,25 +1236,3 @@ fn explicit_focus_correlation_is_typed_never_id_spelling() {
     };
     assert!(granted.is_explicit_focus_for(11));
 }
-
-#[test]
-fn non_focus_kinds_never_correlate_as_explicit_focus() {
-    // Raise/Stack have no core producers; their closed kinds stay
-    // encodable, and even an explicit cause plus sequence on a non-focus
-    // kind never reads as explicit focus.
-    for kind in [EffectKind::Raise, EffectKind::Stack] {
-        let row = OneShotEffect {
-            id: "effect-a".to_owned(),
-            kind,
-            target: WindowId("win-a".to_owned()),
-            issued_revision: 1,
-            cause: EffectCause::ExplicitCommand,
-            command_seq: Some(11),
-            await_shown: false,
-        };
-        assert!(
-            !row.is_explicit_focus_for(11),
-            "{kind:?} must not correlate as explicit focus"
-        );
-    }
-}

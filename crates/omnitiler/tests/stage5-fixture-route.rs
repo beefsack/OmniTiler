@@ -4,7 +4,7 @@
 //! `test-fixtures/stage5-v4-active/{full,s2}` (offline `broker_world_eval`
 //! entry recordings over the `kwin-stage5-v4` adapter, carrying the required
 //! `sharedNativeRoster` handshake capability, the `foregroundKnown` report
-//! bit, and the nullable `closeFocus` reply lane) through the production
+//! bit, and the nullable `focusRequest` reply lane) through the production
 //! `WorldService` capture/read path, and asserts the served projections equal
 //! the recorded `projection-*.json` bytes exactly.
 //!
@@ -129,7 +129,7 @@ fn assert_creation_receipt_margin(chain: &str, replay: &[(&str, String)]) {
 /// checks. Bounded so the settle sleep can never wait unboundedly.
 fn clock_settle_ms(chain: &str, replay: &[(&str, String)]) -> u64 {
     let mut max = 0u64;
-    for (envelope, body) in replay {
+    for (_envelope, body) in replay {
         let value: serde_json::Value = serde_json::from_str(body).expect("envelope is JSON");
         let report = &value["report"];
         for lane in [
@@ -167,7 +167,7 @@ fn feed_raw(
     recorded: &str,
 ) -> serde_json::Value {
     let recorded_value: serde_json::Value =
-        serde_json::from_str(&recorded).expect("envelope is JSON");
+        serde_json::from_str(recorded).expect("envelope is JSON");
     let live = recorded.replace(GEN, generation);
     let reply: serde_json::Value =
         serde_json::from_str(&service.evaluate_capture(&live).expect("in-band"))

@@ -200,7 +200,7 @@ impl WorldEngine {
         // Freeze the positive-close survivor before convergence ingests the
         // host fallback: the retained request records the pre-close MRU
         // winner while later observations stay truthful.
-        self.freeze_close_focus(report, issuing_revision, consumed);
+        self.freeze_close_focus(report, issuing_revision);
         self.converge_logical_pre();
         self.settle_views_pre();
         self.build_staged_domains();
@@ -208,7 +208,6 @@ impl WorldEngine {
         self.settle_rest(report.command.as_ref(), issue, consumed);
         self.build_staged_domains();
         self.settle_states();
-        self.settle_focus_feedback();
         self.settle_selection_feedback();
         self.settle_selection_switch();
         self.settle_frames();
@@ -370,13 +369,6 @@ impl WorldEngine {
                 // when the fail-closed record above skipped, the stale slot
                 // must not survive under the new event.
                 if self
-                    .implicit_focus
-                    .as_ref()
-                    .is_none_or(|slot| slot.0 != current_focused)
-                {
-                    self.implicit_focus = None;
-                }
-                if self
                     .logical_focus_cursor
                     .as_ref()
                     .is_none_or(|slot| slot.0 != current_focused)
@@ -388,16 +380,10 @@ impl WorldEngine {
                 // subject. Per-workspace canonical memory
                 // (`last_active_window`) is untouched: it stays best-effort
                 // for workspace return.
-                self.implicit_focus = None;
                 self.logical_focus_cursor = None;
             }
             // Close or departure clears a slot target that left the live
             // set; unchanged re-reports keep an unlanded command choice.
-            if let Some(slot) = self.implicit_focus.clone()
-                && (self.staged.closes.contains(&slot) || !self.staged.homing.contains_key(&slot))
-            {
-                self.implicit_focus = None;
-            }
             if let Some(slot) = self.logical_focus_cursor.clone()
                 && (self.staged.closes.contains(&slot) || !self.staged.homing.contains_key(&slot))
             {
@@ -509,8 +495,7 @@ impl WorldEngine {
         // Admission focus effects above are history, never promises: the
         // first explicit batch Focus supersedes every unissued prior Focus
         // (admission or earlier batch), so only the latest batch Focus
-        // publishes. Raise/Stack have no core producer and pass through
-        // untouched (no blanket supersession assumed). Trailing non-focus
+        // publishes. Focus is the only effect kind. Trailing non-focus
         // commands never clear the surviving focus.
         if commands.is_empty() {
             let result = self.command_result.take();

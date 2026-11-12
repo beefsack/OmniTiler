@@ -2015,9 +2015,7 @@ fn selection_terminal(
                 FocusVerdict::Proven if binding.arrival_ready => SwitchFocus::Proven,
                 FocusVerdict::Proven => SwitchFocus::Unproven,
                 FocusVerdict::Refused => SwitchFocus::Refused,
-                // Classify never returns Pending for a correlated row; the
-                // arm is unreachable but exhaustive, and maps to Unproven.
-                FocusVerdict::Unproven | FocusVerdict::Pending => SwitchFocus::Unproven,
+                FocusVerdict::Unproven => SwitchFocus::Unproven,
             }
         }
     };

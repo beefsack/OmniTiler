@@ -1659,7 +1659,7 @@ fn hidden_focus_target_refuses_complete_and_incomplete() {
             assert_eq!(staged.host_hidden, Some(true));
         }
         assert!(
-            engine.implicit_focus != Some(WindowId("win-b".to_owned())),
+            engine.logical_focus_cursor != Some(WindowId("win-b".to_owned())),
             "refused hidden focus records nothing",
         );
     }

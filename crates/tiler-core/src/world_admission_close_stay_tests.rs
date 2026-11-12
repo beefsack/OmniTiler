@@ -1288,7 +1288,10 @@ fn numbered_select_occupied_return_both_directions_stale_then_desktop() {
         back_a.effects.is_empty(),
         "focus never publishes as wire effects: {back_a:?}"
     );
-    let request = back_a.focus_request.as_ref().expect("explicit focus request");
+    let request = back_a
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
     assert_eq!(request.target.0, "win-b");
     assert_eq!(request.id, format!("focus-{}", back_a.state_revision));
     assert_eq!(request.issued_revision, back_a.state_revision);
@@ -1404,7 +1407,10 @@ fn numbered_select_occupied_return_both_directions_stale_then_desktop() {
         back_b.effects.is_empty(),
         "focus never publishes as wire effects: {back_b:?}"
     );
-    let request = back_b.focus_request.as_ref().expect("explicit focus request");
+    let request = back_b
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
     assert_eq!(request.target.0, "win-d");
     assert_eq!(request.id, format!("focus-{}", back_b.state_revision));
     assert_eq!(request.issued_revision, back_b.state_revision);
@@ -1472,7 +1478,10 @@ fn stay_send_pins_exact_source_focus_or_empty_or_unknown() {
         reply.effects.is_empty(),
         "focus never publishes as wire effects: {reply:?}"
     );
-    let request = reply.focus_request.as_ref().expect("explicit focus request");
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
     assert_eq!(request.target.0, "win-b");
     assert_eq!(request.id, format!("focus-{}", reply.state_revision));
     assert_eq!(request.issued_revision, reply.state_revision);
@@ -1759,7 +1768,10 @@ fn select_hidden_stay_arrival_without_history_focuses_first_leaf() {
         shown.effects.is_empty(),
         "focus never publishes as wire effects: {shown:?}"
     );
-    let request = shown.focus_request.as_ref().expect("explicit focus request");
+    let request = shown
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
     assert_eq!(request.target.0, "win-b");
     assert_eq!(request.id, format!("focus-{}", shown.state_revision));
     assert_eq!(request.issued_revision, shown.state_revision);
@@ -2063,7 +2075,10 @@ fn select_first_layout_sticky_skips_to_later_arrival() {
         shown.effects.is_empty(),
         "focus never publishes as wire effects: {shown:?}"
     );
-    let request = shown.focus_request.as_ref().expect("explicit focus request");
+    let request = shown
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
     assert_eq!(request.target.0, "win-a");
     assert_eq!(request.id, format!("focus-{}", shown.state_revision));
     assert_eq!(request.issued_revision, shown.state_revision);
@@ -2328,7 +2343,10 @@ fn select_without_native_focus_returns_recorded_leaf() {
         back_other.effects.is_empty(),
         "focus never publishes as wire effects: {back_other:?}"
     );
-    let request = back_other.focus_request.as_ref().expect("explicit focus request");
+    let request = back_other
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
     assert_eq!(request.target.0, "win-d");
     assert_eq!(request.id, format!("focus-{}", back_other.state_revision));
     assert_eq!(request.issued_revision, back_other.state_revision);
@@ -2363,4 +2381,745 @@ fn first_leaf_window(engine: &WorldEngine, output: &str, workspace: &str) -> Opt
             }
         }
     }
+}
+
+/// A withheld newcomer must never take canonical memory: the accepted
+/// slot keeps its prior occupant instead of the forbidden birth.
+fn assert_no_newcomer_memory(
+    engine: &WorldEngine,
+    reply: &crate::world_report::WorldReplyV4,
+    output: &str,
+    newcomer: &str,
+    what: &str,
+) {
+    let view = view_of(reply, output);
+    let home = crate::session::DomainKey {
+        output: OutputId(output.to_owned()),
+        workspace: crate::directional::WorkspaceId(view),
+    };
+    assert_ne!(
+        engine.canonical_memory(&home),
+        Some(WindowId(newcomer.to_owned())),
+        "{what}"
+    );
+}
+
+#[test]
+fn admission_withheld_over_different_focused_floating() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    // A newcomer arriving while native focus names a different floating
+    // window never takes automatic activation; the birth spends silently.
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![
+                WindowFact {
+                    transient: Some(true),
+                    ..fact("win-a", "out-a", 0)
+                },
+                fact("win-b", "out-a", 100),
+            ],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        second.focus_request.is_none(),
+        "automatic admission never activates over a different focused floating window: {second:?}"
+    );
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![
+                WindowFact {
+                    transient: Some(true),
+                    ..fact("win-a", "out-a", 0)
+                },
+                fact("win-b", "out-a", 100),
+            ],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        third.focus_request.is_none(),
+        "withheld birth spends, never rearms: {third:?}"
+    );
+    // Lifting the veto restores nothing: the same lifetime reports tiled
+    // foreground again, yet the spent birth never reissues.
+    let fourth = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        fourth.focus_request.is_none(),
+        "spent birth never rearms on restore: {fourth:?}"
+    );
+}
+
+#[test]
+fn admission_withheld_over_different_focused_sticky() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![
+                WindowFact {
+                    sticky: Some(true),
+                    ..fact("win-a", "out-a", 0)
+                },
+                fact("win-b", "out-a", 100),
+            ],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        second.focus_request.is_none(),
+        "automatic admission never activates over a different focused sticky window: {second:?}"
+    );
+    assert_no_newcomer_memory(
+        &engine,
+        &second,
+        "out-a",
+        "win-b",
+        "withheld birth takes no memory",
+    );
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![
+                WindowFact {
+                    sticky: Some(true),
+                    ..fact("win-a", "out-a", 0)
+                },
+                fact("win-b", "out-a", 100),
+            ],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        third.focus_request.is_none(),
+        "withheld birth spends, never rearms: {third:?}"
+    );
+    // Lifting the veto restores nothing: the spent birth never reissues.
+    let fourth = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        fourth.focus_request.is_none(),
+        "spent birth never rearms on restore: {fourth:?}"
+    );
+}
+
+#[test]
+fn admission_never_targets_sticky() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    // A sticky newcomer is never an automatic target, even with a plain
+    // tiled foreground that imposes no foreground guard.
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![
+                fact("win-a", "out-a", 0),
+                WindowFact {
+                    sticky: Some(true),
+                    ..fact("win-b", "out-a", 100)
+                },
+            ],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        second.focus_request.is_none(),
+        "automatic admission never targets sticky: {second:?}"
+    );
+    assert_no_newcomer_memory(
+        &engine,
+        &second,
+        "out-a",
+        "win-b",
+        "withheld sticky birth takes no memory",
+    );
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![
+                fact("win-a", "out-a", 0),
+                WindowFact {
+                    sticky: Some(true),
+                    ..fact("win-b", "out-a", 100)
+                },
+            ],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        third.focus_request.is_none(),
+        "withheld birth spends, never rearms: {third:?}"
+    );
+    // The same lifetime reporting non-sticky restores nothing: the spent
+    // birth never rearms on restore.
+    let fourth = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        fourth.focus_request.is_none(),
+        "spent birth never rearms on restore: {fourth:?}"
+    );
+}
+
+#[test]
+fn admission_float_never_targets_maximized() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    // An ordinary float carrying maximized is not an eligible ordinary
+    // float: automatic admission withholds it like fullscreen.
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![
+                fact("win-a", "out-a", 0),
+                WindowFact {
+                    transient: Some(true),
+                    maximized: Some(true),
+                    ..fact("win-b", "out-a", 100)
+                },
+            ],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        second.focus_request.is_none(),
+        "ordinary admission float never targets maximized: {second:?}"
+    );
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![
+                fact("win-a", "out-a", 0),
+                WindowFact {
+                    transient: Some(true),
+                    maximized: Some(true),
+                    ..fact("win-b", "out-a", 100)
+                },
+            ],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        third.focus_request.is_none(),
+        "withheld birth spends, never rearms: {third:?}"
+    );
+    // Dropping maximized restores an eligible ordinary float shape, yet
+    // the same lifetime never reissues: the birth stays spent.
+    let fourth = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![
+                fact("win-a", "out-a", 0),
+                WindowFact {
+                    transient: Some(true),
+                    ..fact("win-b", "out-a", 100)
+                },
+            ],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        fourth.focus_request.is_none(),
+        "spent birth never rearms on restore: {fourth:?}"
+    );
+}
+
+#[test]
+fn maximized_tiled_newcomer_still_takes_automatic_admission() {
+    // No blanket maximized veto: a maximized tiled newcomer is an
+    // ordinary automatic target (the sibling fence still owns the
+    // behind-overlay case).
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![
+                fact("win-a", "out-a", 0),
+                WindowFact {
+                    maximized: Some(true),
+                    ..fact("win-b", "out-a", 100)
+                },
+            ],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    let request = second.focus_request.as_ref().expect("admission request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::AutomaticAdmission
+    );
+}
+
+#[test]
+fn explicit_focus_stays_exempt_from_automatic_guards() {
+    // A direct focus command still actuates while a different floating
+    // window holds native foreground: the automatic foreground guard
+    // never leaks onto explicit decisions.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![
+                WindowFact {
+                    transient: Some(true),
+                    ..fact("win-a", "out-a", 0)
+                },
+                fact("win-b", "out-a", 100),
+            ],
+            vec![],
+            vec![],
+            "win-a",
+            Some(11),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-b".to_owned()),
+                direction: "left".to_owned(),
+            }),
+        ),
+    );
+    let request = second.focus_request.as_ref().expect("explicit request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
+}
+
+#[test]
+fn explicit_focus_stays_exempt_for_maximized_float_target() {
+    // The same maximized-float shape the automatic lane withholds still
+    // actuates by direct command: the target veto never leaks onto
+    // explicit decisions.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![
+                fact("win-a", "out-a", 0),
+                WindowFact {
+                    transient: Some(true),
+                    maximized: Some(true),
+                    ..fact("win-b", "out-a", 100)
+                },
+            ],
+            vec![],
+            vec![],
+            "win-a",
+            Some(11),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-b".to_owned()),
+                direction: "left".to_owned(),
+            }),
+        ),
+    );
+    let request = second.focus_request.as_ref().expect("explicit request");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(request.cmd_seq, Some(11));
+}
+
+#[test]
+fn retained_admission_retires_when_foreground_turns_floating() {
+    // Retained revalidation: an eligible admission publishes while the
+    // foreground is tiled; when the same foreground identity turns
+    // floating with no baseline change, the retained row retires at
+    // publication instead of activating behind it. Restoring the tile
+    // reissues nothing.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    let issued = second.focus_request.as_ref().expect("issued request");
+    assert_eq!(issued.target.0, "win-b");
+    assert_eq!(
+        issued.cause,
+        crate::world_report::FocusRequestCause::AutomaticAdmission
+    );
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![
+                WindowFact {
+                    transient: Some(true),
+                    ..fact("win-a", "out-a", 0)
+                },
+                fact("win-b", "out-a", 100),
+            ],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        third.focus_request.is_none(),
+        "retained admission retires when its foreground turns floating: {third:?}"
+    );
+    let fourth = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        fourth.focus_request.is_none(),
+        "retired row never reissues on restore: {fourth:?}"
+    );
+}
+
+#[test]
+fn retained_admission_retires_when_target_turns_sticky() {
+    // Retained revalidation: the target turning sticky retires the live
+    // admission row; restoring the tile reissues nothing.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    second.focus_request.as_ref().expect("issued request");
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![
+                fact("win-a", "out-a", 0),
+                WindowFact {
+                    sticky: Some(true),
+                    ..fact("win-b", "out-a", 100)
+                },
+            ],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        third.focus_request.is_none(),
+        "retained admission retires when its target turns sticky: {third:?}"
+    );
+    let fourth = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        fourth.focus_request.is_none(),
+        "retired row never reissues on restore: {fourth:?}"
+    );
+}
+
+#[test]
+fn retained_admission_retires_when_float_target_turns_maximized() {
+    // Retained revalidation: the ordinary float target gaining maximized
+    // retires the live admission row; shedding maximized reissues nothing.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![
+                fact("win-a", "out-a", 0),
+                WindowFact {
+                    transient: Some(true),
+                    ..fact("win-b", "out-a", 100)
+                },
+            ],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    let issued = second.focus_request.as_ref().expect("issued request");
+    assert_eq!(issued.target.0, "win-b");
+    assert_eq!(
+        issued.cause,
+        crate::world_report::FocusRequestCause::AutomaticAdmission
+    );
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![
+                fact("win-a", "out-a", 0),
+                WindowFact {
+                    transient: Some(true),
+                    maximized: Some(true),
+                    ..fact("win-b", "out-a", 100)
+                },
+            ],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        third.focus_request.is_none(),
+        "retained admission retires when its float target turns maximized: {third:?}"
+    );
+    let fourth = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![
+                fact("win-a", "out-a", 0),
+                WindowFact {
+                    transient: Some(true),
+                    ..fact("win-b", "out-a", 100)
+                },
+            ],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        fourth.focus_request.is_none(),
+        "retired row never reissues on restore: {fourth:?}"
+    );
 }

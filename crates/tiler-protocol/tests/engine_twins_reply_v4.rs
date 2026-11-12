@@ -2,7 +2,7 @@
 //! [`reply_estimate_v4`](tiler_core::world_sizing_v4::reply_estimate_v4),
 //! [`reply_exact_bytes_v4`](tiler_core::world_sizing_v4::reply_exact_bytes_v4),
 //! and [`reply_upper_bound_v4`](tiler_core::world_sizing_v4::reply_upper_bound_v4)
-//! over the `test-fixtures/world-wire/v4` WorldReply fixtures. Offline only:
+//! over the `test-fixtures/world-wire/v4-active` WorldReply fixtures. Offline only:
 //! no adapters, no live work, no engine.
 
 use tiler_core::world_report::{BorderPresentationV4, TransferKind, TransferTargetV4};
@@ -12,7 +12,12 @@ use tiler_core::world_sizing_v4::{
 };
 use tiler_protocol::world_protocol::{decode_reply_v4, decode_report_v4, encode_reply_v4};
 
-fn fixture_root() -> std::path::PathBuf {
+fn reply_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/world-wire/v4-active")
+}
+
+fn report_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/world-wire/v4")
 }
 
@@ -29,12 +34,23 @@ struct ManifestFixture {
     expectation: String,
 }
 
-fn fixture_text(file: &str) -> String {
-    std::fs::read_to_string(fixture_root().join(file)).expect("fixture reads")
+fn reply_text(file: &str) -> String {
+    let path = reply_root().join(file);
+    // Active reply witnesses live locally; the manifest never points them
+    // back at frozen history.
+    assert!(
+        !file.starts_with("../"),
+        "active reply witness is local: {file}"
+    );
+    std::fs::read_to_string(&path).expect("fixture reads")
+}
+
+fn report_text(file: &str) -> String {
+    std::fs::read_to_string(report_root().join(file)).expect("fixture reads")
 }
 
 fn reply_fixtures() -> Vec<ManifestFixture> {
-    let root = fixture_root();
+    let root = reply_root();
     let manifest: Manifest = serde_json::from_str(
         &std::fs::read_to_string(root.join("manifest.json")).expect("v4 manifest reads"),
     )
@@ -47,7 +63,7 @@ fn reply_fixtures() -> Vec<ManifestFixture> {
 }
 
 fn report_fixtures() -> Vec<ManifestFixture> {
-    let root = fixture_root();
+    let root = report_root();
     let manifest: Manifest = serde_json::from_str(
         &std::fs::read_to_string(root.join("manifest.json")).expect("v4 manifest reads"),
     )
@@ -70,7 +86,7 @@ fn v4_reply_exact_matches_canonical_encoding() {
     let fixtures = reply_fixtures();
     assert!(!fixtures.is_empty(), "reply fixtures present");
     for fixture in fixtures {
-        let decoded = decode_reply_v4(&fixture_text(&fixture.file)).expect("fixture decodes");
+        let decoded = decode_reply_v4(&reply_text(&fixture.file)).expect("fixture decodes");
         let wire = encode_reply_v4(&decoded).expect("fixture encodes");
         assert_eq!(
             reply_exact_bytes_v4(&decoded.reply),
@@ -95,7 +111,7 @@ fn v4_reply_exact_matches_canonical_encoding() {
 #[test]
 fn v4_reply_twins_cover_extreme_transfers_and_border() {
     let fixture = reply_fixtures().into_iter().next().expect("reply fixture");
-    let mut decoded = decode_reply_v4(&fixture_text(&fixture.file)).expect("fixture decodes");
+    let mut decoded = decode_reply_v4(&reply_text(&fixture.file)).expect("fixture decodes");
     let wide_id = "w".repeat(128);
     decoded.reply.transfers = vec![
         TransferTargetV4 {
@@ -170,7 +186,7 @@ fn v4_reply_upper_bound_covers_report_estimate_plus_reserves() {
     // label, underlay base, and the gesture terminal.
     let fixed: usize = 4096 + MAX_EFFECT_RESERVE_BYTES + 2048 + 512 + 704 + 29 + 1024 + 96;
     for fixture in fixtures {
-        let decoded = decode_report_v4(&fixture_text(&fixture.file)).expect("fixture decodes");
+        let decoded = decode_report_v4(&report_text(&fixture.file)).expect("fixture decodes");
         let report = &decoded.report;
         let base = reply_upper_bound_v4(report, 0, 0, 0, 0, 0);
         assert!(

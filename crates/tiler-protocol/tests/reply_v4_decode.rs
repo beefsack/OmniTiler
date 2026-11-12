@@ -1,7 +1,7 @@
 //! Staged v4 whole-reply decoder (5a): manifest-driven coverage for
 //! [`decode_reply_v4`](tiler_protocol::world_protocol::decode_reply_v4)
-//! over the `test-fixtures/world-wire/v4` WorldReply fixtures: 115
-//! valid-wire accepts stable under re-parse, 25 context-free reject-wire
+//! over the `test-fixtures/world-wire/v4-active` WorldReply fixtures: 113
+//! valid-wire accepts stable under re-parse, 22 context-free reject-wire
 //! refusals with exact kind/message from the untouched original (then an
 //! in-memory single-pointer repair as a positive counterfactual), 3
 //! handshake-context rows accepted context-free but refused by
@@ -18,7 +18,8 @@ use tiler_protocol::world_protocol::{
 };
 
 fn fixture_root() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/world-wire/v4")
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/world-wire/v4-active")
 }
 
 #[derive(serde::Deserialize)]
@@ -100,7 +101,7 @@ fn handshake_capabilities(file: &str) -> serde_json::Value {
 #[test]
 fn v4_reply_census_matches_contract() {
     let fixtures = world_fixtures();
-    assert_eq!(fixtures.len(), 143, "WorldReply fixture count");
+    assert_eq!(fixtures.len(), 138, "WorldReply fixture count");
     let valid: Vec<_> = fixtures
         .iter()
         .filter(|fixture| fixture.expectation == "valid-wire")
@@ -109,8 +110,8 @@ fn v4_reply_census_matches_contract() {
         .iter()
         .filter(|fixture| fixture.expectation == "reject-wire")
         .collect();
-    assert_eq!(valid.len(), 115, "valid-wire count");
-    assert_eq!(reject.len(), 28, "reject-wire count");
+    assert_eq!(valid.len(), 113, "valid-wire count");
+    assert_eq!(reject.len(), 25, "reject-wire count");
     assert!(
         valid.iter().all(|fixture| fixture.canonical),
         "every valid-wire reply is canonical"
@@ -123,7 +124,7 @@ fn v4_reply_census_matches_contract() {
         .iter()
         .filter(|fixture| !fixture.context.is_null())
         .count();
-    assert_eq!(context_free, 25, "context-free reject count");
+    assert_eq!(context_free, 22, "context-free reject count");
     assert_eq!(contextual, 3, "handshake-context reject count");
     for fixture in &reject {
         if fixture.context.is_null() {
@@ -151,7 +152,7 @@ fn v4_reply_valid_wire_accepts() {
         assert_eq!(first, second, "decode stable under re-parse {}", fixture.id);
         count += 1;
     }
-    assert_eq!(count, 115, "every valid-wire reply decodes");
+    assert_eq!(count, 113, "every valid-wire reply decodes");
 }
 
 #[test]
@@ -281,24 +282,6 @@ fn expected_reject(id: &str) -> (&'static str, &'static str, &'static str, &'sta
             "visibility-show-fallback",
             "messages/reply-observe.json",
             "/windows/0/visibility/fallback",
-        ),
-        "invalid-effect-explicit-null-seq" => (
-            "snapshot-invalid",
-            "effect-explicit-null-seq",
-            "messages/reply-effect-raise.json",
-            "/effects/0/cmdSeq",
-        ),
-        "invalid-effect-automatic-await-shown" => (
-            "snapshot-invalid",
-            "effect-automatic-await-shown",
-            "messages/reply-effect-raise.json",
-            "/effects/0/awaitShown",
-        ),
-        "invalid-effect-unknown-cause" => (
-            "unknown-value",
-            "request contains an unknown value",
-            "messages/reply-effect-raise.json",
-            "/effects/0/cause",
         ),
         "invalid-result-applied-wrapper" => (
             "unknown-value",
@@ -461,7 +444,7 @@ fn v4_reply_reject_wire_refuses_then_repairs() {
         decode_reply_v4(&repaired).expect("repaired decodes");
         count += 1;
     }
-    assert_eq!(count, 25, "every context-free reject refuses then repairs");
+    assert_eq!(count, 22, "every context-free reject refuses then repairs");
 }
 
 #[test]
@@ -521,10 +504,6 @@ fn v4_reply_capability_context_gates() {
     let error = decode_reply_v4_for_host(&above_false, &emulated_host())
         .expect_err("emulated host refuses above false");
     assert_eq!(error.message, "above-capability-false");
-    // One-shot raise/stack effects are unaffected by the above gate.
-    let stack = fixture_text("messages/reply-effect-stack.json");
-    decode_reply_v4_for_host(&stack, &emulated_host())
-        .expect("raise/stack effects pass without above");
 
     // Warp: non-null cursor target refuses without the warp capability.
     let warp_invalid = by_id("invalid-warp-unsupported");
@@ -668,7 +647,7 @@ fn v4_reply_decoder_rejects_strict_envelope_violations() {
 fn v4_reply_envelope_ids_match_report_validators() {
     use tiler_protocol::world_protocol::decode_report_v4;
     let reply = fixture_text("messages/reply-bootstrap.json");
-    let report = fixture_text("messages/report-empty.json");
+    let report = fixture_text("../v4/messages/report-empty.json");
     let long_adapter = "a".repeat(129);
     let long_gen = "g".repeat(65);
     let long_req = "r".repeat(129);
@@ -860,7 +839,24 @@ fn v4_reply_structural_regression() {
         "cause": "automatic-admission", "cmdSeq": "1", "awaitShown": false
     }]);
     let error = decode_value(&effect).expect_err("non-explicit seq refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "effect-non-explicit-seq");
+    let mut explicit_null = valid_reply_value();
+    explicit_null["effects"] = serde_json::json!([{
+        "id": "effect-a", "kind": "focus", "target": "win-a", "rev": "1",
+        "cause": "explicit-command", "cmdSeq": null, "awaitShown": false
+    }]);
+    let error = decode_value(&explicit_null).expect_err("explicit null seq refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "effect-explicit-null-seq");
+    let mut automatic_shown = valid_reply_value();
+    automatic_shown["effects"] = serde_json::json!([{
+        "id": "effect-a", "kind": "focus", "target": "win-a", "rev": "1",
+        "cause": "automatic-admission", "cmdSeq": null, "awaitShown": true
+    }]);
+    let error = decode_value(&automatic_shown).expect_err("automatic await-shown refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "effect-automatic-await-shown");
     let mut state = valid_reply_value();
     state["windows"][0]["state"] = serde_json::json!([
         {"property": "fullscreen", "value": false, "auth": "controlled", "reason": "", "cmdSeq": null},
@@ -961,7 +957,7 @@ fn v4_reply_writer_round_trips_all_valid_wire() {
         assert_eq!(back, decoded, "re-decode equals {}", fixture.id);
         count += 1;
     }
-    assert_eq!(count, 115, "every valid-wire reply round-trips");
+    assert_eq!(count, 113, "every valid-wire reply round-trips");
 }
 
 #[test]
@@ -1032,18 +1028,22 @@ fn writer_base() -> DecodedReplyV4 {
     decode_reply_v4(&fixture_text("messages/reply-observe.json")).expect("observe decodes")
 }
 
-fn writer_effect_raise() -> DecodedReplyV4 {
-    decode_reply_v4(&fixture_text("messages/reply-effect-raise.json")).expect("decodes")
-}
-
-fn writer_effect_automatic() -> DecodedReplyV4 {
-    // No valid-wire fixture carries a non-explicit effect row (focus left
-    // the effects lane with its causes): derive the automatic base from
-    // the raise row so the writer refusals below stay effect-lane checks.
-    let mut base =
-        decode_reply_v4(&fixture_text("messages/reply-effect-raise.json")).expect("decodes");
-    base.reply.effects[0].cause = tiler_core::world_report::EffectCause::AutomaticAdmission;
-    base.reply.effects[0].command_seq = None;
+fn writer_focus_effect() -> DecodedReplyV4 {
+    // Focus is the only effect kind and it never encodes: the writer
+    // refusal below stays an effect-lane check. The duplicate-effect case
+    // pins the pre-pass uniqueness gate; explicit/null-seq and
+    // automatic/await coupling(shape) violations are decode-side checks
+    // (see `decode_effect`) and have no encodable witness.
+    let mut base = writer_base();
+    base.reply.effects = vec![tiler_core::world_report::OneShotEffect {
+        id: "effect-a".to_owned(),
+        kind: tiler_core::world_report::EffectKind::Focus,
+        target: tiler_core::directional::WindowId("win-a".to_owned()),
+        issued_revision: 1,
+        cause: tiler_core::world_report::EffectCause::ExplicitCommand,
+        command_seq: Some(1),
+        await_shown: false,
+    }];
     base
 }
 
@@ -1057,7 +1057,7 @@ fn v4_reply_writer_refuses_unspellable() {
         .reply
         .windows
         .push(duplicate_window.reply.windows[0].clone());
-    let mut duplicate_effect = writer_effect_raise();
+    let mut duplicate_effect = writer_focus_effect();
     duplicate_effect
         .reply
         .effects
@@ -1067,12 +1067,6 @@ fn v4_reply_writer_refuses_unspellable() {
         .reply
         .scopes
         .push(duplicate_scope.reply.scopes[0].clone());
-    let mut explicit_null_seq = writer_effect_raise();
-    explicit_null_seq.reply.effects[0].command_seq = None;
-    let mut non_explicit_seq = writer_effect_automatic();
-    non_explicit_seq.reply.effects[0].command_seq = Some(1);
-    let mut automatic_await = writer_effect_automatic();
-    automatic_await.reply.effects[0].await_shown = true;
     let mut show_fallback = writer_base();
     show_fallback.reply.windows[0]
         .visibility
@@ -1154,7 +1148,7 @@ fn v4_reply_writer_refuses_unspellable() {
             command_seq: None,
         },
     ];
-    let cases: [(&str, &str, &str, DecodedReplyV4); 19] = [
+    let cases: [(&str, &str, &str, DecodedReplyV4); 16] = [
         ("over-cap", "snapshot-invalid", "section-over-cap", over_cap),
         (
             "duplicate-window",
@@ -1173,24 +1167,6 @@ fn v4_reply_writer_refuses_unspellable() {
             "snapshot-invalid",
             "duplicate-scope",
             duplicate_scope,
-        ),
-        (
-            "explicit-null-seq",
-            "snapshot-invalid",
-            "effect-explicit-null-seq",
-            explicit_null_seq,
-        ),
-        (
-            "non-explicit-seq",
-            "snapshot-invalid",
-            "effect-non-explicit-seq",
-            non_explicit_seq,
-        ),
-        (
-            "automatic-await",
-            "snapshot-invalid",
-            "effect-automatic-await-shown",
-            automatic_await,
         ),
         (
             "show-fallback",
@@ -1319,4 +1295,48 @@ fn v4_reply_workspace_row_identity_exact_pair_refuses() {
     let error = encode_reply_v4(&constructed).expect_err("repeated pair refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "duplicate-workspace");
+}
+
+#[test]
+fn v4_reply_historical_close_focus_rejects() {
+    // Frozen `test-fixtures/world-wire/v4` predates the retained
+    // `focusRequest` lane: every historical valid-wire WorldReply carries
+    // the retired `closeFocus` key and no `focusRequest`. The current
+    // strict shape refuses each one as `unknown-field` (the retired key),
+    // never as a silently accepted history.
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/world-wire/v4");
+    let manifest: Manifest = serde_json::from_str(
+        &std::fs::read_to_string(root.join("manifest.json")).expect("historical manifest reads"),
+    )
+    .expect("historical manifest parses");
+    let valid: Vec<_> = manifest
+        .fixtures
+        .into_iter()
+        .filter(|fixture| fixture.family == "WorldReply" && fixture.expectation == "valid-wire")
+        .collect();
+    assert_eq!(valid.len(), 115, "historical valid-wire WorldReply count");
+    for fixture in &valid {
+        let text =
+            std::fs::read_to_string(root.join(&fixture.file)).expect("historical fixture reads");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("historical parses");
+        let object = value.as_object().expect("historical object");
+        assert!(
+            object.contains_key("closeFocus"),
+            "{} carries the retired lane",
+            fixture.id
+        );
+        assert!(
+            !object.contains_key("focusRequest"),
+            "{} predates the retained lane",
+            fixture.id
+        );
+        let error = decode_reply_v4(&text).expect_err("historical reply refuses");
+        assert_eq!(error.kind, "unknown-field", "kind {}", fixture.id);
+        assert_eq!(
+            error.message, "request contains an unknown field",
+            "message {}",
+            fixture.id
+        );
+    }
 }

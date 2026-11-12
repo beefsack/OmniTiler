@@ -1322,13 +1322,13 @@ fn focus_effects_refuse_through_v4_writer() {
     // producer shapes at maximum widths (token and revision at u64::MAX,
     // distinct 128-byte subjects, longest explicit sequence) refuse on
     // the canonical v4 writer with the fixed removed-focus token. Only
-    // the retained `focusRequest` lane carries focus; raise/stack keep
-    // the reserved one-shot shape.
+    // the retained `focusRequest` lane carries focus; no other effect
+    // kind is admissible and the effects lane stays empty.
     use tiler_core::directional::WindowId;
     use tiler_core::world_report::{EffectCause, EffectKind, OneShotEffect};
     let report = decode_request(&one_window_request()).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let mut reply = match engine.handle_report(&report, &[]).0 {
+    let reply = match engine.handle_report(&report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -2476,7 +2476,7 @@ fn typed_scopes_match_v4_fixture_rows_and_reject_malformed_unions() {
     // and the canonical v4 writer spells them back with exact size
     // accounting plus a decoder roundtrip.
     let fixture_text = include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/reply-untouched-workspace-scope.json"
+        "../../../test-fixtures/world-wire/v4-active/messages/reply-untouched-workspace-scope.json"
     );
     let fixture: serde_json::Value = serde_json::from_str(fixture_text).expect("fixture json");
     let decoded = decode_reply_v4(fixture_text).expect("fixture reply decodes");
@@ -2529,7 +2529,7 @@ fn typed_scopes_match_v4_fixture_rows_and_reject_malformed_unions() {
 
     // Output scope: same fixture-first conformance over the observe reply.
     let output_text =
-        include_str!("../../../test-fixtures/world-wire/v4/messages/reply-observe.json");
+        include_str!("../../../test-fixtures/world-wire/v4-active/messages/reply-observe.json");
     let output_fixture: serde_json::Value =
         serde_json::from_str(output_text).expect("output scope fixture json");
     let output_decoded = decode_reply_v4(output_text).expect("observe reply decodes");
@@ -4197,7 +4197,7 @@ fn v4_window_vocab_rejects_unknown_enums_and_holds_retired() {
 
 fn fixture_text(name: &str) -> String {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../test-fixtures/world-wire/v4/messages")
+        .join("../../test-fixtures/world-wire/v4-active/messages")
         .join(format!("{name}.json"));
     std::fs::read_to_string(&path).expect("fixture bytes")
 }
@@ -4211,127 +4211,34 @@ fn fixture_effects_slice(wire: &str) -> &str {
     &wire[open..=close]
 }
 
-fn test_only_typed_effect(
-    row: &serde_json::Value,
-    name: &str,
-) -> tiler_core::world_report::OneShotEffect {
-    use tiler_core::directional::WindowId;
-    use tiler_core::world_report::{EffectCause, EffectKind};
-    let kind = match row.get("kind").and_then(serde_json::Value::as_str) {
-        Some("focus") => EffectKind::Focus,
-        Some("raise") => EffectKind::Raise,
-        Some("stack") => EffectKind::Stack,
-        other => panic!("{name} closed kind: {other:?}"),
-    };
-    let cause = match row.get("cause").and_then(serde_json::Value::as_str) {
-        Some("explicit-command") => EffectCause::ExplicitCommand,
-        Some("automatic-admission") => EffectCause::AutomaticAdmission,
-        Some("focus-follows-cursor") => EffectCause::FocusFollowsCursor,
-        other => panic!("{name} closed cause: {other:?}"),
-    };
-    let command_seq = match row.get("cmdSeq") {
-        None | Some(serde_json::Value::Null) => None,
-        Some(serde_json::Value::String(text)) => Some(
-            text.parse::<u64>()
-                .unwrap_or_else(|_| panic!("{name} cmdSeq parses")),
-        ),
-        other => panic!("{name} cmdSeq shape: {other:?}"),
-    };
-    // Closed-shape cross-checks (contract 818-821): explicit commands
-    // always correlate, other causes never do, and only an explicit
-    // selection may grant arrival-ready focus.
-    match cause {
-        EffectCause::ExplicitCommand => assert!(
-            command_seq.is_some(),
-            "{name} explicit cause carries its sequence"
-        ),
-        _ => assert!(
-            command_seq.is_none(),
-            "{name} non-explicit cause carries no sequence"
-        ),
-    }
-    tiler_core::world_report::OneShotEffect {
-        id: row
-            .get("id")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_else(|| panic!("{name} id"))
-            .to_owned(),
-        kind,
-        target: WindowId(
-            row.get("target")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_else(|| panic!("{name} target"))
-                .to_owned(),
-        ),
-        issued_revision: row
-            .get("rev")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_else(|| panic!("{name} rev"))
-            .parse::<u64>()
-            .unwrap_or_else(|_| panic!("{name} rev parses")),
-        cause,
-        command_seq,
-        await_shown: row
-            .get("awaitShown")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or_else(|| panic!("{name} awaitShown")),
-    }
-}
-
 #[test]
 fn immutable_effect_rows_match_fixture_bytes() {
     // Independent conformance: raw immutable fixture bytes on one side,
-    // actual code encoding on the other. For each manifest raise/stack
-    // effect row, map ONLY the effect fields into a typed row (test-only
-    // token mapping, never a production decoder), publish it through a
-    // bootstrap reply, and compare the encoded effects array against the
-    // raw bytes sliced from the fixture. Focus left the effects lane: the
+    // actual code decoding on the other. Focus left the effects lane: the
     // three retired focus witnesses now carry an empty effects array plus
     // a retained `focusRequest`, and any focus carrier refuses on both
-    // the decode and encode sides (asserted below).
-    for (name, expected) in [
-        (
-            "reply-effect-raise",
-            "{\"id\":\"effect-a\",\"kind\":\"raise\",\"target\":\"win-a\",\
-             \"rev\":\"1\",\"cause\":\"explicit-command\",\"cmdSeq\":\"1\",\
-             \"awaitShown\":false}",
-        ),
-        (
-            "reply-effect-stack",
-            "{\"id\":\"effect-a\",\"kind\":\"stack\",\"target\":\"win-a\",\
-             \"rev\":\"1\",\"cause\":\"explicit-command\",\"cmdSeq\":\"1\",\
-             \"awaitShown\":false}",
-        ),
-    ] {
-        let wire = fixture_text(name);
-        let fixture_slice = fixture_effects_slice(&wire).to_owned();
+    // the decode and encode sides (asserted below). The retired
+    // raise/stack shapes refuse as unknown values: each is derived
+    // deliberately from the current observe witness by injecting the
+    // retired kind, and the exact refusal is asserted.
+    for kind in ["raise", "stack"] {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&fixture_text("reply-observe")).expect("observe parses");
+        value["effects"] = serde_json::json!([{
+            "id": "effect-a",
+            "kind": kind,
+            "target": "win-a",
+            "rev": "1",
+            "cause": "explicit-command",
+            "cmdSeq": "1",
+            "awaitShown": false,
+        }]);
+        let error = tiler_protocol::world_protocol::decode_reply_v4(&value.to_string())
+            .expect_err("retired kind refuses");
+        assert_eq!(error.kind, "unknown-value", "{kind} refusal kind");
         assert_eq!(
-            fixture_slice,
-            format!("[{expected}]"),
-            "{name} fixture bytes stay immutable"
-        );
-        let value: serde_json::Value = serde_json::from_str(&wire).expect("fixture parses");
-        let row = value
-            .get("effects")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|effects| effects.first())
-            .unwrap_or_else(|| panic!("{name} carries one effect row"));
-        let report = decode_request(&one_window_request()).expect("decodes");
-        let mut engine = connected_engine("gen-1", HostCapabilities::default());
-        let mut reply = match engine.handle_report(&report, &[]).0 {
-            WorldOutcome::Accepted(reply) => reply,
-            other => panic!("expected accepted, got {other:?}"),
-        };
-        reply.effects = vec![test_only_typed_effect(row, name)];
-        let wire = reply_wire(&reply);
-        let encoded_slice = fixture_effects_slice(&wire).to_owned();
-        assert_eq!(
-            encoded_slice, fixture_slice,
-            "code encoding matches immutable {name} bytes"
-        );
-        assert!(
-            reply_estimate_v4(&reply) >= wire.len(),
-            "estimate covers {name}"
+            error.message, "request contains an unknown value",
+            "{kind} refusal message"
         );
     }
     // Retired focus witnesses carry no effect row: the effects array is

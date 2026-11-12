@@ -5,6 +5,7 @@
 //! stable revision-derived id until target equality satisfies it, and stays
 //! truthful to later observations.
 
+use crate::boundary::CoreCommand;
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
@@ -14,6 +15,7 @@ use crate::world_report::{
     VisibilityReason, VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand,
     WorldReportV4,
 };
+use crate::world_run_v4::V4RunOutcome;
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
@@ -1549,4 +1551,143 @@ fn hover_fullscreen_hit_mints_nothing() {
         reply.focus_request, None,
         "fullscreen hover mints nothing: {reply:?}"
     );
+}
+
+#[test]
+fn same_report_close_beats_hover_cursor_follows_winner() {
+    // Close/hover execution-cursor discriminator: closing focused win-b
+    // selects tiled MRU survivor win-c while the pointer genuinely enters
+    // hover target win-d in the same report. Q2 keeps the close winner C
+    // over hover D. The issuing reply is skipped adapter-side; a trailing
+    // implicit non-focus command must resolve its subject from the
+    // published winner C, never the hover loser D.
+    let mut engine = hover_engine();
+    let windows = vec![
+        fact("win-a", "out-a", 0),
+        fact("win-b", "out-a", 100),
+        fact("win-c", "out-a", 200),
+        fact("win-d", "out-a", 300),
+    ];
+    focus_sequence(
+        &mut engine,
+        1,
+        &windows,
+        &["win-a", "win-d", "win-c", "win-b"],
+    );
+    let survivors = vec![
+        fact("win-a", "out-a", 0),
+        fact("win-c", "out-a", 200),
+        fact("win-d", "out-a", 300),
+    ];
+    let mut close = report(
+        5,
+        survivors.clone(),
+        vec!["win-b"],
+        "win-a",
+        true,
+        None,
+        None,
+    );
+    close.cursor = Some((310, 10));
+    close.cursor_hit = Some(WindowId("win-d".to_owned()));
+    let closed = accepted(&mut engine, &close);
+    assert!(
+        closed.effects.is_empty(),
+        "focus never publishes as wire effects: {closed:?}"
+    );
+    let request = closed.focus_request.clone().expect("close winner retained");
+    assert_eq!(request.target.0, "win-c", "close survivor wins: {closed:?}");
+    assert_eq!(request.cause, FocusRequestCause::PositiveClose);
+    assert_eq!(request.id, "focus-5");
+    assert_eq!(
+        engine.execution_subject(),
+        Some(WindowId("win-c".to_owned())),
+        "cursor follows published winner C, not hover D"
+    );
+    // The issuing reply is skipped adapter-side: the next unchanged-baseline
+    // report carries no feedback. A trailing implicit non-focus command
+    // resolves its subject from the cursor (C), never the hover loser.
+    let mut follow = report(6, survivors, vec![], "win-a", true, None, None);
+    follow.cursor = Some((310, 10));
+    follow.cursor_hit = Some(WindowId("win-d".to_owned()));
+    let toggle = WorldCommand::Implicit(Box::new(WorldCommand::Operation(
+        CoreCommand::ToggleFloat {
+            window: String::new(),
+            float_rect: None,
+        },
+    )));
+    let (reply, settlements) = match engine.handle_report(&follow, &[(5, toggle)]) {
+        (V4RunOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("expected accepted batch, got {other:?}"),
+    };
+    assert_eq!(settlements.len(), 1);
+    assert!(
+        !matches!(
+            settlements[0].result,
+            Some(crate::world_report::CommandResult::Rejected { .. })
+        ),
+        "implicit non-focus must not reject; got {:?}",
+        settlements[0].result
+    );
+    let still = reply.focus_request.clone().expect("pending C survives");
+    assert_eq!(still.target.0, "win-c");
+    assert_eq!(still.id, request.id, "re-emission never changes the id");
+    assert_eq!(
+        engine.execution_subject(),
+        Some(WindowId("win-c".to_owned())),
+        "implicit subject stays on winner C, not hover D"
+    );
+    assert!(
+        reply
+            .intent_writes
+            .iter()
+            .any(|write| write.win.0 == "win-c"),
+        "implicit non-focus resolves to winner C: {:?}",
+        reply.intent_writes
+    );
+    assert!(
+        reply
+            .intent_writes
+            .iter()
+            .all(|write| write.win.0 != "win-d"),
+        "hover loser D takes no implicit subject: {:?}",
+        reply.intent_writes
+    );
+}
+
+#[test]
+fn ineligible_same_domain_sticky_fallback_mints_no_request() {
+    // Sticky lifetimes carry no members-map homing, so a same-report
+    // fallback onto one is never an eligible tiled survivor: the freeze
+    // mints nothing, and the shared retained validator never sees a
+    // close winner over a sticky foreground.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let admitted = vec![
+        fact("win-a", "out-a", 0),
+        WindowFact {
+            sticky: Some(true),
+            ..fact("win-s", "out-a", 100)
+        },
+        fact("win-c", "out-a", 200),
+    ];
+    focus_sequence(&mut engine, 1, &admitted, &["win-a", "win-c"]);
+    let closed = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![
+                fact("win-a", "out-a", 0),
+                WindowFact {
+                    sticky: Some(true),
+                    ..fact("win-s", "out-a", 100)
+                },
+            ],
+            vec!["win-c"],
+            "win-s",
+            true,
+            None,
+            None,
+        ),
+    );
+    assert_eq!(closed.focus_request, None);
 }

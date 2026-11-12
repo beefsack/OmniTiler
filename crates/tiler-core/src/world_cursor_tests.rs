@@ -473,7 +473,10 @@ fn warp_off_by_default_publishes_no_point() {
         reply.effects.is_empty(),
         "focus never publishes as wire effects: {reply:?}"
     );
-    let request = reply.focus_request.as_ref().expect("explicit focus request");
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
     assert_eq!(request.target.0, "win-b");
     assert_eq!(request.id, format!("focus-{}", reply.state_revision));
     assert_eq!(request.issued_revision, reply.state_revision);
@@ -512,7 +515,10 @@ fn warp_publishes_cross_output_centre() {
         reply.effects.is_empty(),
         "focus never publishes as wire effects: {reply:?}"
     );
-    let request = reply.focus_request.as_ref().expect("explicit focus request");
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
     assert_eq!(request.target.0, "win-b");
     assert_eq!(request.id, format!("focus-{}", reply.state_revision));
     assert_eq!(request.issued_revision, reply.state_revision);
@@ -567,7 +573,10 @@ fn warp_skips_same_output_focus() {
         reply.effects.is_empty(),
         "focus never publishes as wire effects: {reply:?}"
     );
-    let request = reply.focus_request.as_ref().expect("explicit focus request");
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
     assert_eq!(request.target.0, "win-b");
     assert_eq!(request.id, format!("focus-{}", reply.state_revision));
     assert_eq!(request.issued_revision, reply.state_revision);
@@ -999,10 +1008,7 @@ fn focus_follows_static_cursor_never_resteals() {
         commanded_request.id,
         format!("focus-{}", commanded.state_revision)
     );
-    assert_eq!(
-        commanded_request.issued_revision,
-        commanded.state_revision
-    );
+    assert_eq!(commanded_request.issued_revision, commanded.state_revision);
     assert_eq!(
         commanded_request.cause,
         crate::world_report::FocusRequestCause::ExplicitCommand
@@ -1099,7 +1105,10 @@ fn focus_follows_yields_to_explicit_command_focus() {
         reply.effects.is_empty(),
         "focus never publishes as wire effects: {reply:?}"
     );
-    let request = reply.focus_request.as_ref().expect("explicit focus request");
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
     assert_eq!(request.target.0, "win-b");
     assert_eq!(request.id, format!("focus-{}", reply.state_revision));
     assert_eq!(request.issued_revision, reply.state_revision);
@@ -1149,7 +1158,10 @@ fn warp_follows_single_explicit_grant_not_superseded_admission() {
         reply.effects.is_empty(),
         "focus never publishes as wire effects: {reply:?}"
     );
-    let request = reply.focus_request.as_ref().expect("explicit focus request");
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("explicit focus request");
     assert_eq!(request.target.0, "win-a");
     assert_eq!(request.id, format!("focus-{}", reply.state_revision));
     assert_eq!(request.issued_revision, reply.state_revision);
@@ -1159,4 +1171,235 @@ fn warp_follows_single_explicit_grant_not_superseded_admission() {
     );
     assert_eq!(request.cmd_seq, Some(11));
     assert_eq!(reply.cursor_warp, None);
+}
+
+#[test]
+fn focus_follows_withholds_over_different_focused_floating_or_sticky() {
+    // Qualifying hover over tiled win-b never steals while native
+    // foreground names a different floating (then sticky) window. The
+    // veto lifts to a tiled foreground with the pointer unmoved: no
+    // queued hover reissues.
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities {
+            native_sticky: true,
+            maximize: true,
+            ..Default::default()
+        },
+        vec![(
+            "focusFollowsCursor".to_owned(),
+            crate::connection::RawSettingValue::Bool(true),
+        )],
+    )
+    .expect("valid generation");
+    let windows = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            WindowFact {
+                transient: Some(true),
+                ..fact("win-f", "out-a", 300)
+            },
+            WindowFact {
+                sticky: Some(true),
+                ..fact("win-s", "out-a", 400)
+            },
+            fact("win-b", "out-a", 100),
+        ]
+    };
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            windows(),
+            "win-a",
+            Some((10, 10)),
+            None,
+            true,
+            false,
+            true,
+            false,
+        ),
+    );
+    // User focuses the float; the pointer moves onto tiled win-b.
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            windows(),
+            "win-f",
+            Some((110, 10)),
+            Some("win-b"),
+            true,
+            false,
+            true,
+            false,
+        ),
+    );
+    assert!(
+        second.focus_request.is_none(),
+        "hover never steals over a different focused floating window: {second:?}"
+    );
+    // The pointer moves (still over win-b) while a sticky window holds
+    // the foreground: movement alone never defeats the guard.
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            windows(),
+            "win-s",
+            Some((120, 10)),
+            Some("win-b"),
+            true,
+            false,
+            true,
+            false,
+        ),
+    );
+    assert!(
+        third.focus_request.is_none(),
+        "hover never steals over a different focused sticky window: {third:?}"
+    );
+    // Tiled foreground returns with the pointer unmoved: the withheld
+    // hover does not reissue from memory.
+    let fourth = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            windows(),
+            "win-a",
+            Some((120, 10)),
+            Some("win-b"),
+            true,
+            false,
+            true,
+            false,
+        ),
+    );
+    assert!(
+        fourth.focus_request.is_none(),
+        "withheld hover never reissues once the foreground clears: {fourth:?}"
+    );
+}
+
+#[test]
+fn retained_hover_retires_when_foreground_turns_floating() {
+    // Retained revalidation for hover: a live hover request retires at
+    // publication once the same foreground identity turns floating.
+    // Restoring the tile reissues nothing for a static pointer.
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities {
+            native_sticky: true,
+            maximize: true,
+            ..Default::default()
+        },
+        vec![(
+            "focusFollowsCursor".to_owned(),
+            crate::connection::RawSettingValue::Bool(true),
+        )],
+    )
+    .expect("valid generation");
+    let windows = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            WindowFact {
+                transient: Some(true),
+                ..fact("win-f", "out-a", 300)
+            },
+            fact("win-b", "out-a", 100),
+        ]
+    };
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            windows(),
+            "win-a",
+            Some((10, 10)),
+            None,
+            true,
+            false,
+            true,
+            false,
+        ),
+    );
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            windows(),
+            "win-a",
+            Some((110, 10)),
+            Some("win-b"),
+            true,
+            false,
+            true,
+            false,
+        ),
+    );
+    let issued = second.focus_request.as_ref().expect("hover issued");
+    assert_eq!(issued.target.0, "win-b");
+    assert_eq!(
+        issued.cause,
+        crate::world_report::FocusRequestCause::FocusFollowsCursor
+    );
+    let float_windows = || {
+        vec![
+            WindowFact {
+                transient: Some(true),
+                ..fact("win-a", "out-a", 0)
+            },
+            WindowFact {
+                transient: Some(true),
+                ..fact("win-f", "out-a", 300)
+            },
+            fact("win-b", "out-a", 100),
+        ]
+    };
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            float_windows(),
+            "win-a",
+            Some((110, 10)),
+            Some("win-b"),
+            true,
+            false,
+            true,
+            false,
+        ),
+    );
+    assert!(
+        third.focus_request.is_none(),
+        "retained hover retires when its foreground turns floating: {third:?}"
+    );
+    let fourth = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            windows(),
+            "win-a",
+            Some((110, 10)),
+            Some("win-b"),
+            true,
+            false,
+            true,
+            false,
+        ),
+    );
+    assert!(
+        fourth.focus_request.is_none(),
+        "retired hover never reissues for a static pointer: {fourth:?}"
+    );
 }

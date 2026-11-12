@@ -406,13 +406,8 @@ fn selection_grants_await_shown_with_show_and_hide_targets() {
             "never a fallback hide on this route"
         );
     }
-    // Ordinary ledger keeps no trace of the arrival-bound grant.
-    for grant in &engine.retained_focus {
-        assert!(
-            grant.effect.id != effect.id,
-            "awaitShown grant stays out of the ordinary ledger"
-        );
-    }
+    // Single settlement owner is the retained focus request; the
+    // arrival-bound grant lives only in the selection binding below.
     // Frozen snapshot frames come from the final published layout, and the
     // published rows fit the standing per-window target reserve.
     let binding = engine
@@ -1901,13 +1896,8 @@ fn selection_two_outputs_retain_independent_bindings() {
             .contains_key(&OutputId("out-b".to_owned())),
         "out-b binding retained"
     );
-    assert!(
-        engine
-            .retained_focus
-            .iter()
-            .all(|grant| !grant.effect.await_shown),
-        "ordinary ledger carries no arrival grants"
-    );
+    // Single settlement owner is the retained focus request; arrival
+    // grants live only in selection bindings.
     // Observation-only reports keep both bindings and both revisions.
     let steady = accepted(
         &mut engine,

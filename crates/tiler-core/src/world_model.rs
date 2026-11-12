@@ -1512,6 +1512,41 @@ impl WorldEngine {
             self.admission_focus_spent.insert(target.0.clone());
             return Vec::new();
         }
+        // Focused float/sticky ownership: never activate a newcomer over
+        // a different focused floating/sticky window; the intent spends
+        // without emitting and is never retried. An empty or unknown
+        // foreground imposes no shape, and focusing the already-focused
+        // window itself is unaffected.
+        if !self.staged.observation.focused_global.is_empty()
+            && self.staged.observation.focused_global != target.0
+        {
+            let focused = WindowId(self.staged.observation.focused_global.clone());
+            let shape = self.derived_for(&focused);
+            if shape.floating || shape.sticky {
+                self.admission_focus_spent.insert(target.0.clone());
+                return Vec::new();
+            }
+        }
+        // Normative automatic target restrictions: never a sticky target,
+        // and an ordinary float never carries fullscreen/maximized/sticky.
+        // Each withheld birth spends here so it never replays. A maximized
+        // tiled newcomer stays an ordinary automatic target: the maximized
+        // veto rides the float exception only, never a blanket veto.
+        {
+            let shape = self.derived_for(&target);
+            let raw = self.staged.facts.get(&target);
+            let sticky = shape.sticky || raw.is_some_and(|fact| fact.sticky == Some(true));
+            let float_overlay = shape.floating
+                && (shape.overlay_fullscreen
+                    || shape.overlay_maximized
+                    || raw.is_some_and(|fact| {
+                        fact.fullscreen == Some(true) || fact.maximized == Some(true)
+                    }));
+            if sticky || float_overlay {
+                self.admission_focus_spent.insert(target.0.clone());
+                return Vec::new();
+            }
+        }
         // The gesture barrier spends honestly: a newcomer arriving
         // mid-gesture drops its activation here and never replays it on
         // a later report (safety over liveness; the at-most-once

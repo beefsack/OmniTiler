@@ -7,7 +7,6 @@ use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
-use crate::world_focus::FocusVerdict;
 use crate::world_report::{
     FocusFeedback, PresentationRowV4, RowDiagnosticKind, VisibilityReason, VisibilitySetter,
     WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
@@ -230,13 +229,15 @@ fn admission_effect_id_stays_within_opaque_bound_at_max_subject() {
         "admission id passes the opaque bound: {:?}",
         request.id
     );
-    // Feeding the emitted tuple back as a typed row settles the retained
-    // grant as proven, with no new effects and no retry.
-    let emitted = engine.retained_focus[0].effect.clone();
+    // Feeding the emitted tuple back as a typed row satisfies the retained
+    // request, with no new effects and no retry.
+    let pending = engine.pending_focus.clone().expect("pending request");
+    let emitted_id = pending.id.clone();
+    let emitted_rev = pending.issued_revision;
     let live = feedback_row(
-        &emitted.id,
+        &emitted_id,
         &target,
-        emitted.issued_revision,
+        emitted_rev,
         VisibilitySetter::Accepted,
         VisibilityReason::Empty,
         Some("win-a"),
@@ -261,9 +262,10 @@ fn admission_effect_id_stays_within_opaque_bound_at_max_subject() {
         settled.effects.is_empty(),
         "feedback mints nothing: {settled:?}"
     );
-    assert_eq!(engine.retained_focus.len(), 1);
-    assert_eq!(engine.retained_focus[0].feedback, Some(live));
-    assert_eq!(engine.retained_focus[0].verdict, FocusVerdict::Proven);
+    assert!(
+        engine.pending_focus.is_none(),
+        "target equality satisfies the request"
+    );
 }
 
 #[test]
@@ -309,15 +311,17 @@ fn hover_effect_id_stays_within_opaque_bound_at_max_subject() {
         "hover id passes the opaque bound: {:?}",
         request.id
     );
-    // Feeding the emitted tuple back as a typed row settles the retained
-    // grant as proven, with no new effects and no retry. The cursor stays
+    // Feeding the emitted tuple back as a typed row satisfies the retained
+    // request, with no new effects and no retry. The cursor stays
     // static and the observed focus has caught up to the hover target, so
     // no re-mint occurs.
-    let emitted = engine.retained_focus[0].effect.clone();
+    let pending = engine.pending_focus.clone().expect("pending request");
+    let emitted_id = pending.id.clone();
+    let emitted_rev = pending.issued_revision;
     let live = feedback_row(
-        &emitted.id,
+        &emitted_id,
         &target,
-        emitted.issued_revision,
+        emitted_rev,
         VisibilitySetter::Accepted,
         VisibilityReason::Empty,
         Some("win-a"),
@@ -342,9 +346,10 @@ fn hover_effect_id_stays_within_opaque_bound_at_max_subject() {
         settled.effects.is_empty(),
         "feedback mints nothing: {settled:?}"
     );
-    assert_eq!(engine.retained_focus.len(), 1);
-    assert_eq!(engine.retained_focus[0].feedback, Some(live));
-    assert_eq!(engine.retained_focus[0].verdict, FocusVerdict::Proven);
+    assert!(
+        engine.pending_focus.is_none(),
+        "target equality satisfies the request"
+    );
 }
 
 #[test]
@@ -902,8 +907,9 @@ fn close_reuse_mints_fresh_token_and_stale_feedback_cannot_settle() {
     assert_eq!(first_request.target.0, "win-b");
     assert_eq!(first_request.id, format!("focus-{}", first.state_revision));
     assert!(is_opaque_id(&first_request.id));
-    let stale_id = engine.retained_focus[0].effect.id.clone();
-    let stale_rev = engine.retained_focus[0].effect.issued_revision;
+    let pending_first = engine.pending_focus.clone().expect("pending request");
+    let stale_id = pending_first.id.clone();
+    let stale_rev = pending_first.issued_revision;
     let mut closed = report(3, vec![fact("win-a", "out-a", 0)], "win-a", None, None);
     closed.closed = vec![WindowId("win-b".to_owned())];
     let closed_reply = accepted(&mut engine, &closed);
@@ -939,7 +945,7 @@ fn close_reuse_mints_fresh_token_and_stale_feedback_cannot_settle() {
     );
     assert_ne!(readmit_request.id, stale_id, "fresh token on reuse");
     assert!(is_opaque_id(&readmit_request.id));
-    assert_eq!(engine.retained_focus.len(), 1);
+    assert!(engine.pending_focus.is_some(), "fresh pending on reuse");
     // Stale feedback for the previous lifetime cannot settle the new
     // grant: full opaque tuple mismatch.
     let stale = feedback_row(
@@ -959,7 +965,7 @@ fn close_reuse_mints_fresh_token_and_stale_feedback_cannot_settle() {
             report(
                 5,
                 vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
-                "win-b",
+                "win-a",
                 None,
                 None,
             ),
@@ -967,11 +973,17 @@ fn close_reuse_mints_fresh_token_and_stale_feedback_cannot_settle() {
         ),
     );
     assert_eq!(
-        engine.retained_focus[0].feedback, None,
+        engine
+            .pending_focus
+            .as_ref()
+            .and_then(|slot| slot.feedback.clone()),
+        None,
         "stale tuple settles nothing"
     );
-    // Fresh feedback with the new tuple settles and correlates.
-    let fresh = engine.retained_focus[0].effect.clone();
+    // Fresh feedback with the new tuple correlates but only target
+    // equality satisfies: the observed focus is still elsewhere, so the
+    // pending slot retains the latched row.
+    let fresh = engine.pending_focus.clone().expect("pending request");
     let live = feedback_row(
         &fresh.id,
         "win-b",
@@ -989,21 +1001,34 @@ fn close_reuse_mints_fresh_token_and_stale_feedback_cannot_settle() {
             report(
                 6,
                 vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
-                "win-b",
+                "win-a",
                 None,
                 None,
             ),
             vec![live],
         ),
     );
-    assert!(engine.retained_focus[0].feedback.is_some());
+    let pending_after = engine.pending_focus.clone().expect("pending retains proof");
+    assert!(pending_after.feedback.is_some());
     assert_eq!(
-        engine.retained_focus[0]
-            .feedback
-            .as_ref()
-            .expect("feedback")
-            .id,
+        pending_after.feedback.as_ref().expect("feedback").id,
         fresh.id
+    );
+    // Target equality still satisfies: observing the target retires the
+    // correlated slot.
+    accepted(
+        &mut engine,
+        &report(
+            7,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "win-b",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        engine.pending_focus.is_none(),
+        "target equality satisfies the correlated request"
     );
 }
 

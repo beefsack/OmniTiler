@@ -385,18 +385,17 @@ fn note_effects_v4(sim: &mut SimV4, reply: &WorldReplyV4, at: &str) -> Result<()
                 "focus request cmdSeq must ride exactly explicit-command",
             ));
         }
-        if let Some(prev) = sim.prev_request.clone() {
-            if prev.id == request.id
-                && (prev.target != request.target
-                    || prev.issued_revision != request.issued_revision
-                    || prev.cause != request.cause
-                    || prev.cmd_seq != request.cmd_seq)
-            {
-                return Err(fail(
-                    at,
-                    "focus request re-emission changed the retained row",
-                ));
-            }
+        if let Some(prev) = sim.prev_request.clone()
+            && prev.id == request.id
+            && (prev.target != request.target
+                || prev.issued_revision != request.issued_revision
+                || prev.cause != request.cause
+                || prev.cmd_seq != request.cmd_seq)
+        {
+            return Err(fail(
+                at,
+                "focus request re-emission changed the retained row",
+            ));
         }
         sim.focus.clone_from(&request.target.0);
         sim.prev_request = Some(request);

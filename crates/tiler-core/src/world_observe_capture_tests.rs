@@ -16,7 +16,6 @@ use crate::world_engine::{
     EventIssue, ExcludedIntent, RetainedBornClear, RetainedTransfer, StagedDomain,
     StagedObservation, WorldEngine,
 };
-use crate::world_focus::{FocusVerdict, RetainedFocusGrant};
 use crate::world_gesture::GestureOutcome;
 use crate::world_members::MemberState;
 use crate::world_report::{
@@ -1394,11 +1393,6 @@ fn seed_lifetime_ledgers(engine: &mut WorldEngine, window: &str, output: &str) {
     };
     insert_state_binding(engine, window);
     engine.automatic_focus_tokens.insert(id.clone(), 7);
-    engine.retained_focus.push(RetainedFocusGrant {
-        effect: OneShotEffect::explicit_focus(3, id.clone(), 1),
-        feedback: None,
-        verdict: FocusVerdict::Pending,
-    });
     engine.composed_maximized.insert(id.clone());
     engine.selection_targets.insert(
         id.clone(),
@@ -1460,13 +1454,6 @@ fn assert_window_ledgers_hold(engine: &WorldEngine, window: &str) {
         "automatic-focus token survives"
     );
     assert!(
-        engine
-            .retained_focus
-            .iter()
-            .any(|grant| grant.effect.target == id),
-        "focus grant survives"
-    );
-    assert!(
         engine.composed_maximized.contains(&id),
         "composed maximize survives"
     );
@@ -1500,13 +1487,6 @@ fn assert_window_ledgers_dropped(engine: &WorldEngine, window: &str) {
     assert!(
         !engine.automatic_focus_tokens.contains_key(&id),
         "automatic-focus token prunes on departure"
-    );
-    assert!(
-        engine
-            .retained_focus
-            .iter()
-            .all(|grant| grant.effect.target != id),
-        "no stale focus grant survives departure"
     );
     assert!(
         !engine.composed_maximized.contains(&id),
@@ -2301,14 +2281,6 @@ fn settle_state_gates_latch_first_evidence_then_recovers() {
     );
 }
 
-fn focus_grant(engine: &mut WorldEngine) {
-    engine.retained_focus.push(RetainedFocusGrant {
-        effect: OneShotEffect::explicit_focus(3, WindowId("win-a".to_owned()), 1),
-        feedback: None,
-        verdict: FocusVerdict::Pending,
-    });
-}
-
 fn focus_row(id: &str, revision: u64) -> FocusFeedback {
     FocusFeedback {
         id: id.to_owned(),
@@ -2322,120 +2294,6 @@ fn focus_row(id: &str, revision: u64) -> FocusFeedback {
         arrival: Vec::new(),
         attempt_ms: 17,
     }
-}
-
-fn assert_grant(
-    engine: &WorldEngine,
-    verdict: FocusVerdict,
-    feedback: Option<FocusFeedback>,
-    what: &str,
-) {
-    let got = engine.retained_focus.first().expect("grant retained");
-    assert_eq!(
-        (got.verdict, got.feedback.clone()),
-        (verdict, feedback),
-        "{what}"
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn stage_focus(
-    engine: &mut WorldEngine,
-    seq: u64,
-    windows: Vec<WindowFact>,
-    feedback: Vec<FocusFeedback>,
-    complete: bool,
-    barrier: bool,
-    held: Vec<HeldWindowRow>,
-) {
-    let mut v4report = report_v4_simple(
-        seq,
-        vec![screen("out-a", 0)],
-        Vec::new(),
-        windows,
-        held,
-        Vec::new(),
-    );
-    v4report.inventory_complete = complete;
-    v4report.gesture_barrier = barrier;
-    v4report.focus_feedback = feedback;
-    stage_v4_ingested(engine, &v4report);
-}
-
-#[test]
-fn settle_focus_first_match_under_hold_beats_same_tuple() {
-    let mut engine = engine_settle();
-    focus_grant(&mut engine);
-    // Mismatched tuples precede the match and mint nothing.
-    stage_focus(
-        &mut engine,
-        1,
-        vec![fact("win-a", "out-a", 0)],
-        vec![focus_row("fx-9", 1), focus_row("fx-3", 2)],
-        true,
-        false,
-        Vec::new(),
-    );
-    engine.settle_focus_feedback();
-    assert_grant(&engine, FocusVerdict::Pending, None, "mismatch");
-    // The first exact match arrives under held/incomplete/barrier and
-    // still latches history: no readability gate.
-    let matched = focus_row("fx-3", 1);
-    stage_focus(
-        &mut engine,
-        2,
-        Vec::new(),
-        vec![matched.clone()],
-        false,
-        true,
-        vec![held_window_row("win-a", "out-a", 0)],
-    );
-    engine.settle_focus_feedback();
-    assert_grant(
-        &engine,
-        FocusVerdict::Proven,
-        Some(matched.clone()),
-        "hold latch",
-    );
-    // A contradictory SAME-tuple row (refused shape, same opaque
-    // identity) cannot overwrite the latched history.
-    let same_contra = FocusFeedback {
-        setter: VisibilitySetter::Refused,
-        pre: Some(WindowId("win-a".to_owned())),
-        post: Some(WindowId("win-a".to_owned())),
-        foreground_proven: false,
-        ..matched.clone()
-    };
-    stage_focus(
-        &mut engine,
-        3,
-        vec![fact("win-a", "out-a", 0)],
-        vec![same_contra],
-        true,
-        false,
-        Vec::new(),
-    );
-    engine.settle_focus_feedback();
-    assert_grant(
-        &engine,
-        FocusVerdict::Proven,
-        Some(matched.clone()),
-        "same tuple kept",
-    );
-    // Negative control: mismatches alone on a fresh grant mint nothing.
-    let mut fresh = engine_settle();
-    focus_grant(&mut fresh);
-    stage_focus(
-        &mut fresh,
-        1,
-        vec![fact("win-a", "out-a", 0)],
-        vec![focus_row("fx-9", 1)],
-        true,
-        false,
-        Vec::new(),
-    );
-    fresh.settle_focus_feedback();
-    assert_grant(&fresh, FocusVerdict::Pending, None, "control");
 }
 
 fn frame_attempt(

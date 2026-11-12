@@ -64,29 +64,18 @@ impl WorldEngine {
         }
     }
 
-    /// Shared accepted focus-effect publication recorder: one pass over the
-    /// final ordered effects for this reply, before native writes. Every
-    /// accepted Focus effect (explicit command, operation, send survivor,
-    /// admission newcomer, focus-follows) records through the same
-    /// fail-closed [`WorldEngine::record_canonical`] slot with the publish
-    /// held scopes, in effect order so the latest wins. Slot only, never
-    /// the Session leaf (no delta-only leaf sync): the sweep and Engine
-    /// own Session topology; this pass only backfills the canonical slot
-    /// for the routes that never record (tiled operation focus, no-focus/
-    /// move/send survivors, admission, hover). Best-effort: accepted
-    /// `false` preserves the existing effect unchanged. Direct
-    /// command-time [`WorldEngine::record_command_focus`] stays for
-    /// same-report memory before publication.
-    pub(crate) fn record_published_focus(
-        &mut self,
-        effects: &[OneShotEffect],
-        held_scopes: &BTreeSet<DomainKey>,
-    ) {
-        for effect in effects {
-            if effect.kind != crate::world_report::EffectKind::Focus {
-                continue;
-            }
-            let _ = self.record_canonical(&effect.target, held_scopes, false);
+    /// Shared accepted focus publication recorder: the retained
+    /// winner owns the execution-time cursor. When a pending request is
+    /// live, record only its frozen target (best-effort, slot only, never
+    /// the Session leaf); loser carriers pass through untouched for the
+    /// selection freeze below but never overwrite the cursor. With no
+    /// pending request there is no execution subject to record: effects
+    /// alone never invent one. Direct command-time
+    /// [`WorldEngine::record_command_focus`] stays for same-report memory
+    /// before publication.
+    pub(crate) fn record_published_focus(&mut self, held_scopes: &BTreeSet<DomainKey>) {
+        if let Some(pending) = self.pending_focus.clone() {
+            let _ = self.record_canonical(&pending.target, held_scopes, false);
         }
     }
 
@@ -156,7 +145,6 @@ impl WorldEngine {
                 return false;
             }
             self.last_active_window.insert(home, window.clone());
-            self.implicit_focus = Some(window.clone());
             self.logical_focus_cursor = Some(window.clone());
             return true;
         }
@@ -205,7 +193,6 @@ impl WorldEngine {
                 }
             }
             self.last_active_window.insert(effective, window.clone());
-            self.implicit_focus = Some(window.clone());
             self.logical_focus_cursor = Some(window.clone());
             return true;
         }
@@ -236,7 +223,6 @@ impl WorldEngine {
             }
         }
         self.last_active_window.insert(effective, window.clone());
-        self.implicit_focus = Some(window.clone());
         self.logical_focus_cursor = Some(window.clone());
         true
     }

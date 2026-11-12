@@ -1817,8 +1817,7 @@ pub const MAX_TARGET_LANES_PER_WINDOW: usize = 626;
 /// command focus over a maximum-length opaque window (`fx-<u64::MAX>` is
 /// 23 raw, 25 quoted; compact `af-<token>` tops out at the same 23 raw /
 /// 25 quoted and `ffc-<token>` at 24 raw / 26 quoted, with at most 20
-/// token digits). Kind tops out at 7 (`"focus"`/`"raise"`/`"stack"`
-/// quoted), target at 130 (128 opaque quoted), revision at 20
+/// token digits). Kind is always `"focus"` (7 quoted), target at 130 (128 opaque quoted), revision at 20
 /// (`u64::MAX` digits), cause at 18 quoted on the explicit-command row
 /// (`explicit-command`, 16 bytes), which carries a command sequence;
 /// `focus-follows-cursor` (20 bytes / 22 quoted) rides the compact hover
@@ -1844,9 +1843,8 @@ pub const MAX_EFFECT_ROW_BYTES: usize = 294;
 /// hover never mints when any focus effect is already present, so two
 /// hovers never coexist: the actual widest coexistence is the compact
 /// admission maximum (279) plus the explicit maximum (294) plus one comma
-/// (574), asserted as a witness below. No raise/stack producer exists in
-/// the engine; the closed kinds stay encodable without a reserve of their
-/// own.
+/// (574), asserted as a witness below. Focus is the only effect kind;
+/// no other kind exists to reserve for.
 pub const MAX_EFFECT_RESERVE_BYTES: usize = MAX_EFFECT_ROW_BYTES * 2 + 1;
 
 #[cfg(test)]
@@ -2761,7 +2759,7 @@ mod effect_vocabulary_sizing_tests {
     fn effect_estimate_is_exact_over_causal_widths() {
         // Marginal accounting: `null` vs quoted-`u64` command sequences
         // and both bools are exact through the shared estimator, over
-        // every cause and the closed kinds.
+        // every cause.
         let rows = vec![
             OneShotEffect {
                 id: "fx-11".to_owned(),
@@ -2792,7 +2790,7 @@ mod effect_vocabulary_sizing_tests {
             },
             OneShotEffect {
                 id: "effect-a".to_owned(),
-                kind: EffectKind::Raise,
+                kind: EffectKind::Focus,
                 target: WindowId("win-a".to_owned()),
                 issued_revision: 1,
                 cause: EffectCause::ExplicitCommand,
@@ -2800,8 +2798,8 @@ mod effect_vocabulary_sizing_tests {
                 await_shown: true,
             },
             OneShotEffect {
-                id: "effect-a".to_owned(),
-                kind: EffectKind::Stack,
+                id: "effect-b".to_owned(),
+                kind: EffectKind::Focus,
                 target: WindowId("win-a".to_owned()),
                 issued_revision: 1,
                 cause: EffectCause::ExplicitCommand,
@@ -3138,8 +3136,7 @@ mod effect_vocabulary_sizing_tests {
         assert!(
             reply.focus_request.as_ref().is_some_and(|request| {
                 request.target.0 == "win-a"
-                    && request.cause
-                        == crate::world_report::FocusRequestCause::ExplicitCommand
+                    && request.cause == crate::world_report::FocusRequestCause::ExplicitCommand
                     && request.cmd_seq == Some(2)
             }),
             "retry emits the explicit focus: {:?}",

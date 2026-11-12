@@ -290,7 +290,7 @@ fn assert_ready_settlement(settlement: &BatchSettlement) {
 }
 
 #[test]
-fn rapid_input_implicit_maximize_resolves_from_retained_focus() {
+fn rapid_input_implicit_maximize_resolves_from_logical_cursor() {
     // After Focus win-b executes, retained core focus is win-b while staged
     // native focus is still win-a. The execution-time subject resolves from
     // the retained focus and bypasses the settled-native gate.
@@ -1187,7 +1187,7 @@ fn bookkeeping_command_resolves_implicit_subject_once() {
     // unresolvable implicit falls back to the placeholder (no save arm
     // matches it, preserving mismatch/empty semantics).
     let mut engine = engine();
-    engine.implicit_focus = Some(WindowId("win-a".to_owned()));
+    engine.logical_focus_cursor = Some(WindowId("win-a".to_owned()));
     assert_eq!(
         engine.bookkeeping_command(&implicit_toggle_float()),
         explicit_toggle_float("win-a")
@@ -1196,7 +1196,7 @@ fn bookkeeping_command_resolves_implicit_subject_once() {
         engine.bookkeeping_command(&explicit_toggle_float("win-b")),
         explicit_toggle_float("win-b")
     );
-    engine.implicit_focus = None;
+    engine.logical_focus_cursor = None;
     assert_eq!(
         engine.bookkeeping_command(&implicit_toggle_float()),
         implicit_toggle_float()
@@ -1525,7 +1525,7 @@ fn rapid_input_implicit_send_freezes_pre_observation_retained_home() {
         .handle_report_v4_for_test(&seed)
         .expect("admission observes");
     assert_eq!(
-        engine.implicit_focus,
+        engine.logical_focus_cursor,
         Some(WindowId("win-a".to_owned())),
         "precondition: retained subject is win-a"
     );
@@ -1575,7 +1575,7 @@ fn rapid_input_implicit_send_later_command_uses_post_prior_home() {
         .handle_report_v4_for_test(&seed)
         .expect("admission observes");
     assert_eq!(
-        engine.implicit_focus,
+        engine.logical_focus_cursor,
         Some(WindowId("win-a".to_owned())),
         "precondition: batch opens on win-a"
     );
@@ -1593,7 +1593,7 @@ fn rapid_input_implicit_send_later_command_uses_post_prior_home() {
     assert_eq!(first_settlements.len(), 1);
     assert_ready_settlement(&first_settlements[0]);
     assert_eq!(
-        engine.implicit_focus,
+        engine.logical_focus_cursor,
         Some(WindowId("win-b".to_owned())),
         "post-prior core subject is win-b while staged legs stay out-a"
     );
@@ -2003,7 +2003,7 @@ fn rapid_input_capture_boundary_stale_native_keeps_implicit_subject() {
     let (caught, _) = run_batched(&mut engine, &observe(3, windows(), "win-b"), &[]);
     assert_accepted(&caught, "native fact catches up to the pre-batch focus");
     assert_eq!(
-        engine.implicit_focus,
+        engine.logical_focus_cursor,
         Some(WindowId("win-b".to_owned())),
         "precondition: slot, leaf and staged native all open on left win-b"
     );
@@ -2032,7 +2032,7 @@ fn rapid_input_capture_boundary_stale_native_keeps_implicit_subject() {
         reversal.effects
     );
     assert_eq!(
-        engine.implicit_focus,
+        engine.logical_focus_cursor,
         Some(WindowId("win-a".to_owned())),
         "reversal leaves the unlanded core choice on win-a while staged native lags win-b"
     );
@@ -2066,7 +2066,7 @@ fn rapid_input_capture_boundary_stale_native_keeps_implicit_subject() {
         "stale-leg result rides the final publication"
     );
     assert_eq!(
-        engine.implicit_focus,
+        engine.logical_focus_cursor,
         Some(WindowId("win-a".to_owned())),
         "unchanged re-report preserves the unlanded core choice win-a"
     );

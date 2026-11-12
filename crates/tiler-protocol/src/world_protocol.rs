@@ -5333,8 +5333,6 @@ fn decode_effect(value: &serde_json::Value) -> Result<OneShotEffect> {
     )?;
     let kind = match req_str(map, "kind")? {
         "focus" => EffectKind::Focus,
-        "raise" => EffectKind::Raise,
-        "stack" => EffectKind::Stack,
         _ => return Err(unknown_value()),
     };
     let cause = match req_str(map, "cause")? {
@@ -6839,50 +6837,6 @@ fn encode_focus_request_v4(request: &FocusRequest, out: &mut String) -> Result<(
     Ok(())
 }
 
-fn encode_effect_v4(row: &OneShotEffect, out: &mut String) -> Result<()> {
-    check_reply_id(&row.id)?;
-    check_reply_id(&row.target.0)?;
-    // Focus never encodes on the wire: the retained `focusRequest` lane
-    // carries every cause. The core strips focus carriers before publish;
-    // a focus row reaching the writer refuses instead of emitting.
-    if row.kind == EffectKind::Focus {
-        return Err(reply_snapshot("effect-focus-removed"));
-    }
-    let explicit = row.cause == tiler_core::world_report::EffectCause::ExplicitCommand;
-    if explicit && row.command_seq.is_none() {
-        return Err(reply_snapshot("effect-explicit-null-seq"));
-    }
-    if !explicit && row.command_seq.is_some() {
-        return Err(reply_snapshot("effect-non-explicit-seq"));
-    }
-    if !explicit && row.await_shown {
-        return Err(reply_snapshot("effect-automatic-await-shown"));
-    }
-    out.push_str("{\"id\":");
-    push_json_string(out, &row.id);
-    out.push_str(",\"kind\":");
-    push_json_string(out, row.kind.as_str());
-    out.push_str(",\"target\":");
-    push_json_string(out, &row.target.0);
-    out.push_str(",\"rev\":\"");
-    out.push_str(&row.issued_revision.to_string());
-    out.push_str("\",\"cause\":");
-    push_json_string(out, row.cause.as_str());
-    out.push_str(",\"cmdSeq\":");
-    match row.command_seq {
-        None => out.push_str("null"),
-        Some(seq) => {
-            out.push('"');
-            out.push_str(&seq.to_string());
-            out.push('"');
-        }
-    }
-    out.push_str(",\"awaitShown\":");
-    out.push_str(if row.await_shown { "true" } else { "false" });
-    out.push('}');
-    Ok(())
-}
-
 fn valid_operation_cause(text: &str) -> bool {
     if CommandRejectKind::parse(text).is_some() {
         return true;
@@ -7445,14 +7399,17 @@ pub fn encode_reply_v4(decoded: &DecodedReplyV4) -> Result<String> {
         }
         encode_transfer_v4(transfer, &mut out)?;
     }
-    out.push_str("],\"effects\":[");
-    for (i, effect) in reply.effects.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        encode_effect_v4(effect, &mut out)?;
+    out.push_str("],\"effects\":[]");
+    // Focus left the effects lane: the retained `focusRequest` lane carries
+    // every cause, so any effect row refuses. Only the first row is
+    // validated here; the cap/duplicate prepass above already ran, and a
+    // single refusal covers the lane.
+    if let Some(first) = reply.effects.first() {
+        check_reply_id(&first.id)?;
+        check_reply_id(&first.target.0)?;
+        return Err(reply_snapshot("effect-focus-removed"));
     }
-    out.push_str("],\"focusRequest\":");
+    out.push_str(",\"focusRequest\":");
     match &reply.focus_request {
         None => out.push_str("null"),
         Some(request) => encode_focus_request_v4(request, &mut out)?,

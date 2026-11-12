@@ -1086,7 +1086,7 @@
     },
     {
       "id": "reply-bootstrap",
-      "file": "../v4/messages/reply-bootstrap.json",
+      "file": "messages/reply-bootstrap.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1098,7 +1098,7 @@
     },
     {
       "id": "reply-observe",
-      "file": "../v4/messages/reply-observe.json",
+      "file": "messages/reply-observe.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1107,7 +1107,7 @@
     },
     {
       "id": "reply-untouched-workspace-scope",
-      "file": "../v4/messages/reply-untouched-workspace-scope.json",
+      "file": "messages/reply-untouched-workspace-scope.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1116,7 +1116,7 @@
     },
     {
       "id": "reply-hold-unreadable",
-      "file": "../v4/messages/reply-hold-unreadable.json",
+      "file": "messages/reply-hold-unreadable.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1125,7 +1125,7 @@
     },
     {
       "id": "reply-hold-incomplete-inventory",
-      "file": "../v4/messages/reply-hold-incomplete-inventory.json",
+      "file": "messages/reply-hold-incomplete-inventory.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1134,7 +1134,7 @@
     },
     {
       "id": "reply-hold-gesture-barrier",
-      "file": "../v4/messages/reply-hold-gesture-barrier.json",
+      "file": "messages/reply-hold-gesture-barrier.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1143,7 +1143,7 @@
     },
     {
       "id": "reply-hold-refused-target",
-      "file": "../v4/messages/reply-hold-refused-target.json",
+      "file": "messages/reply-hold-refused-target.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1152,7 +1152,7 @@
     },
     {
       "id": "reply-hold-ambiguous-creation",
-      "file": "../v4/messages/reply-hold-ambiguous-creation.json",
+      "file": "messages/reply-hold-ambiguous-creation.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1161,7 +1161,7 @@
     },
     {
       "id": "reply-hold-occupied-removal",
-      "file": "../v4/messages/reply-hold-occupied-removal.json",
+      "file": "messages/reply-hold-occupied-removal.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1170,7 +1170,7 @@
     },
     {
       "id": "reply-hold-constraint-clamp",
-      "file": "../v4/messages/reply-hold-constraint-clamp.json",
+      "file": "messages/reply-hold-constraint-clamp.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1179,7 +1179,7 @@
     },
     {
       "id": "reply-hold-minimized",
-      "file": "../v4/messages/reply-hold-minimized.json",
+      "file": "messages/reply-hold-minimized.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1188,7 +1188,7 @@
     },
     {
       "id": "reply-workspace-floating",
-      "file": "../v4/messages/reply-workspace-floating.json",
+      "file": "messages/reply-workspace-floating.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1197,7 +1197,7 @@
     },
     {
       "id": "reply-capacity-float",
-      "file": "../v4/messages/reply-capacity-float.json",
+      "file": "messages/reply-capacity-float.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1206,7 +1206,7 @@
     },
     {
       "id": "reply-native-create-retire",
-      "file": "../v4/messages/reply-native-create-retire.json",
+      "file": "messages/reply-native-create-retire.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1219,7 +1219,7 @@
     },
     {
       "id": "reply-transfer-window",
-      "file": "../v4/messages/reply-transfer-window.json",
+      "file": "messages/reply-transfer-window.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1228,7 +1228,7 @@
     },
     {
       "id": "reply-transfer-view",
-      "file": "../v4/messages/reply-transfer-view.json",
+      "file": "messages/reply-transfer-view.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1237,7 +1237,7 @@
     },
     {
       "id": "reply-transfer-migration",
-      "file": "../v4/messages/reply-transfer-migration.json",
+      "file": "messages/reply-transfer-migration.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1246,7 +1246,7 @@
     },
     {
       "id": "reply-transfer-commandless-held",
-      "file": "../v4/messages/reply-transfer-commandless-held.json",
+      "file": "messages/reply-transfer-commandless-held.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1255,25 +1255,7 @@
     },
     {
       "id": "reply-effect-focus",
-      "file": "../v4/messages/reply-effect-focus.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-effect-raise",
-      "file": "../v4/messages/reply-effect-raise.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-effect-stack",
-      "file": "../v4/messages/reply-effect-stack.json",
+      "file": "messages/reply-effect-focus.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1282,7 +1264,7 @@
     },
     {
       "id": "reply-effect-automatic-admission",
-      "file": "../v4/messages/reply-effect-automatic-admission.json",
+      "file": "messages/reply-effect-automatic-admission.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1291,7 +1273,7 @@
     },
     {
       "id": "reply-effect-focus-follows-cursor",
-      "file": "../v4/messages/reply-effect-focus-follows-cursor.json",
+      "file": "messages/reply-effect-focus-follows-cursor.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1300,7 +1282,7 @@
     },
     {
       "id": "reply-state-authority",
-      "file": "../v4/messages/reply-state-authority.json",
+      "file": "messages/reply-state-authority.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1309,7 +1291,7 @@
     },
     {
       "id": "reply-command-clear",
-      "file": "../v4/messages/reply-command-clear.json",
+      "file": "messages/reply-command-clear.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1318,7 +1300,7 @@
     },
     {
       "id": "reply-birth-clear",
-      "file": "../v4/messages/reply-birth-clear.json",
+      "file": "messages/reply-birth-clear.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1327,7 +1309,7 @@
     },
     {
       "id": "reply-visibility-hide-staged",
-      "file": "../v4/messages/reply-visibility-hide-staged.json",
+      "file": "messages/reply-visibility-hide-staged.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1337,7 +1319,7 @@
     },
     {
       "id": "reply-visibility-hide-fallback",
-      "file": "../v4/messages/reply-visibility-hide-fallback.json",
+      "file": "messages/reply-visibility-hide-fallback.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1347,7 +1329,7 @@
     },
     {
       "id": "reply-visibility-independent",
-      "file": "../v4/messages/reply-visibility-independent.json",
+      "file": "messages/reply-visibility-independent.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1356,7 +1338,7 @@
     },
     {
       "id": "reply-intent-save-clear",
-      "file": "../v4/messages/reply-intent-save-clear.json",
+      "file": "messages/reply-intent-save-clear.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1365,7 +1347,7 @@
     },
     {
       "id": "reply-result-drag-left",
-      "file": "../v4/messages/reply-result-drag-left.json",
+      "file": "messages/reply-result-drag-left.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1374,7 +1356,7 @@
     },
     {
       "id": "reply-result-drag-right",
-      "file": "../v4/messages/reply-result-drag-right.json",
+      "file": "messages/reply-result-drag-right.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1383,7 +1365,7 @@
     },
     {
       "id": "reply-result-drag-top",
-      "file": "../v4/messages/reply-result-drag-top.json",
+      "file": "messages/reply-result-drag-top.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1392,7 +1374,7 @@
     },
     {
       "id": "reply-result-drag-bottom",
-      "file": "../v4/messages/reply-result-drag-bottom.json",
+      "file": "messages/reply-result-drag-bottom.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1401,7 +1383,7 @@
     },
     {
       "id": "reply-result-drag-no-prior",
-      "file": "../v4/messages/reply-result-drag-no-prior.json",
+      "file": "messages/reply-result-drag-no-prior.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1410,7 +1392,7 @@
     },
     {
       "id": "reply-result-drag-no-hover",
-      "file": "../v4/messages/reply-result-drag-no-hover.json",
+      "file": "messages/reply-result-drag-no-hover.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1419,7 +1401,7 @@
     },
     {
       "id": "reply-result-float-placed",
-      "file": "../v4/messages/reply-result-float-placed.json",
+      "file": "messages/reply-result-float-placed.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1428,7 +1410,7 @@
     },
     {
       "id": "reply-result-float-no-space",
-      "file": "../v4/messages/reply-result-float-no-space.json",
+      "file": "messages/reply-result-float-no-space.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1437,7 +1419,7 @@
     },
     {
       "id": "reply-result-migration",
-      "file": "../v4/messages/reply-result-migration.json",
+      "file": "messages/reply-result-migration.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1446,7 +1428,7 @@
     },
     {
       "id": "reply-result-maximize",
-      "file": "../v4/messages/reply-result-maximize.json",
+      "file": "messages/reply-result-maximize.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1455,7 +1437,7 @@
     },
     {
       "id": "reply-directional-focus-refused-floating",
-      "file": "../v4/messages/reply-directional-focus-refused-floating.json",
+      "file": "messages/reply-directional-focus-refused-floating.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1464,7 +1446,7 @@
     },
     {
       "id": "reply-directional-move-refused-floating",
-      "file": "../v4/messages/reply-directional-move-refused-floating.json",
+      "file": "messages/reply-directional-move-refused-floating.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1473,7 +1455,7 @@
     },
     {
       "id": "reply-directional-focus-refused-workspace-floating",
-      "file": "../v4/messages/reply-directional-focus-refused-workspace-floating.json",
+      "file": "messages/reply-directional-focus-refused-workspace-floating.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1482,7 +1464,7 @@
     },
     {
       "id": "reply-directional-move-refused-workspace-floating",
-      "file": "../v4/messages/reply-directional-move-refused-workspace-floating.json",
+      "file": "messages/reply-directional-move-refused-workspace-floating.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1491,7 +1473,7 @@
     },
     {
       "id": "reply-directional-move-refused-fullscreen",
-      "file": "../v4/messages/reply-directional-move-refused-fullscreen.json",
+      "file": "messages/reply-directional-move-refused-fullscreen.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1500,7 +1482,7 @@
     },
     {
       "id": "reply-directional-focus-refused-maximize",
-      "file": "../v4/messages/reply-directional-focus-refused-maximize.json",
+      "file": "messages/reply-directional-focus-refused-maximize.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1509,7 +1491,7 @@
     },
     {
       "id": "reply-directional-focus-float-retained",
-      "file": "../v4/messages/reply-directional-focus-float-retained.json",
+      "file": "messages/reply-directional-focus-float-retained.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1518,7 +1500,7 @@
     },
     {
       "id": "reply-directional-focus-float-refused-stale",
-      "file": "../v4/messages/reply-directional-focus-float-refused-stale.json",
+      "file": "messages/reply-directional-focus-float-refused-stale.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1527,7 +1509,7 @@
     },
     {
       "id": "reply-directional-focus-unfocused-retained",
-      "file": "../v4/messages/reply-directional-focus-unfocused-retained.json",
+      "file": "messages/reply-directional-focus-unfocused-retained.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1536,7 +1518,7 @@
     },
     {
       "id": "reply-directional-move-float-refused-stale",
-      "file": "../v4/messages/reply-directional-move-float-refused-stale.json",
+      "file": "messages/reply-directional-move-float-refused-stale.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1545,7 +1527,7 @@
     },
     {
       "id": "reply-directional-move-float-refused-invalid-geometry",
-      "file": "../v4/messages/reply-directional-move-float-refused-invalid-geometry.json",
+      "file": "messages/reply-directional-move-float-refused-invalid-geometry.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1554,7 +1536,7 @@
     },
     {
       "id": "reply-directional-move-float-refused-constraints",
-      "file": "../v4/messages/reply-directional-move-float-refused-constraints.json",
+      "file": "messages/reply-directional-move-float-refused-constraints.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1563,7 +1545,7 @@
     },
     {
       "id": "reply-directional-move-float-unknown-output",
-      "file": "../v4/messages/reply-directional-move-float-unknown-output.json",
+      "file": "messages/reply-directional-move-float-unknown-output.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1572,7 +1554,7 @@
     },
     {
       "id": "reply-directional-focus-float-applied",
-      "file": "../v4/messages/reply-directional-focus-float-applied.json",
+      "file": "messages/reply-directional-focus-float-applied.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1581,7 +1563,7 @@
     },
     {
       "id": "reply-directional-move-float-applied",
-      "file": "../v4/messages/reply-directional-move-float-applied.json",
+      "file": "messages/reply-directional-move-float-applied.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1590,7 +1572,7 @@
     },
     {
       "id": "reply-directional-move-maximize-clear",
-      "file": "../v4/messages/reply-directional-move-maximize-clear.json",
+      "file": "messages/reply-directional-move-maximize-clear.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1599,7 +1581,7 @@
     },
     {
       "id": "reply-directional-cause-no-target",
-      "file": "../v4/messages/reply-directional-cause-no-target.json",
+      "file": "messages/reply-directional-cause-no-target.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1608,7 +1590,7 @@
     },
     {
       "id": "reply-directional-cause-unknown-window",
-      "file": "../v4/messages/reply-directional-cause-unknown-window.json",
+      "file": "messages/reply-directional-cause-unknown-window.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1617,7 +1599,7 @@
     },
     {
       "id": "reply-directional-cause-focus-present",
-      "file": "../v4/messages/reply-directional-cause-focus-present.json",
+      "file": "messages/reply-directional-cause-focus-present.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1626,7 +1608,7 @@
     },
     {
       "id": "reply-directional-cause-no-source",
-      "file": "../v4/messages/reply-directional-cause-no-source.json",
+      "file": "messages/reply-directional-cause-no-source.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1635,7 +1617,7 @@
     },
     {
       "id": "reply-directional-cause-no-adjacent-output",
-      "file": "../v4/messages/reply-directional-cause-no-adjacent-output.json",
+      "file": "messages/reply-directional-cause-no-adjacent-output.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1644,7 +1626,7 @@
     },
     {
       "id": "reply-rejected-focus-unknown",
-      "file": "../v4/messages/reply-rejected-focus-unknown.json",
+      "file": "messages/reply-rejected-focus-unknown.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1654,7 +1636,7 @@
     },
     {
       "id": "reply-rejected-send-target-unknown",
-      "file": "../v4/messages/reply-rejected-send-target-unknown.json",
+      "file": "messages/reply-rejected-send-target-unknown.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1664,7 +1646,7 @@
     },
     {
       "id": "reply-rejected-send-window-unknown",
-      "file": "../v4/messages/reply-rejected-send-window-unknown.json",
+      "file": "messages/reply-rejected-send-window-unknown.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1674,7 +1656,7 @@
     },
     {
       "id": "reply-rejected-send-refused",
-      "file": "../v4/messages/reply-rejected-send-refused.json",
+      "file": "messages/reply-rejected-send-refused.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1684,7 +1666,7 @@
     },
     {
       "id": "reply-rejected-view-output-unknown",
-      "file": "../v4/messages/reply-rejected-view-output-unknown.json",
+      "file": "messages/reply-rejected-view-output-unknown.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1694,7 +1676,7 @@
     },
     {
       "id": "reply-rejected-view-target-unknown",
-      "file": "../v4/messages/reply-rejected-view-target-unknown.json",
+      "file": "messages/reply-rejected-view-target-unknown.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1704,7 +1686,7 @@
     },
     {
       "id": "reply-rejected-transfer-in-flight",
-      "file": "../v4/messages/reply-rejected-transfer-in-flight.json",
+      "file": "messages/reply-rejected-transfer-in-flight.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1714,7 +1696,7 @@
     },
     {
       "id": "reply-rejected-direction-invalid",
-      "file": "../v4/messages/reply-rejected-direction-invalid.json",
+      "file": "messages/reply-rejected-direction-invalid.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1724,7 +1706,7 @@
     },
     {
       "id": "reply-rejected-scope-held",
-      "file": "../v4/messages/reply-rejected-scope-held.json",
+      "file": "messages/reply-rejected-scope-held.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1734,7 +1716,7 @@
     },
     {
       "id": "reply-rejected-selection-unknown",
-      "file": "../v4/messages/reply-rejected-selection-unknown.json",
+      "file": "messages/reply-rejected-selection-unknown.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1744,7 +1726,7 @@
     },
     {
       "id": "reply-rejected-migration-refused",
-      "file": "../v4/messages/reply-rejected-migration-refused.json",
+      "file": "messages/reply-rejected-migration-refused.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1754,7 +1736,7 @@
     },
     {
       "id": "reply-rejected-operation-refused",
-      "file": "../v4/messages/reply-rejected-operation-refused.json",
+      "file": "messages/reply-rejected-operation-refused.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1764,7 +1746,7 @@
     },
     {
       "id": "reply-rejected-tiling-target-unknown",
-      "file": "../v4/messages/reply-rejected-tiling-target-unknown.json",
+      "file": "messages/reply-rejected-tiling-target-unknown.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1774,7 +1756,7 @@
     },
     {
       "id": "reply-rejected-state-unsupported",
-      "file": "../v4/messages/reply-rejected-state-unsupported.json",
+      "file": "messages/reply-rejected-state-unsupported.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1784,7 +1766,7 @@
     },
     {
       "id": "reply-rejected-state-unknown",
-      "file": "../v4/messages/reply-rejected-state-unknown.json",
+      "file": "messages/reply-rejected-state-unknown.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1794,7 +1776,7 @@
     },
     {
       "id": "reply-rejected-fullscreen-not-exitable",
-      "file": "../v4/messages/reply-rejected-fullscreen-not-exitable.json",
+      "file": "messages/reply-rejected-fullscreen-not-exitable.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1804,7 +1786,7 @@
     },
     {
       "id": "reply-rejected-stale-render-target",
-      "file": "../v4/messages/reply-rejected-stale-render-target.json",
+      "file": "messages/reply-rejected-stale-render-target.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1814,7 +1796,7 @@
     },
     {
       "id": "reply-operation-continued-tiled",
-      "file": "../v4/messages/reply-operation-continued-tiled.json",
+      "file": "messages/reply-operation-continued-tiled.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1823,7 +1805,7 @@
     },
     {
       "id": "reply-operation-continued-float",
-      "file": "../v4/messages/reply-operation-continued-float.json",
+      "file": "messages/reply-operation-continued-float.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1832,7 +1814,7 @@
     },
     {
       "id": "reply-operation-refused-proven",
-      "file": "../v4/messages/reply-operation-refused-proven.json",
+      "file": "messages/reply-operation-refused-proven.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1841,7 +1823,7 @@
     },
     {
       "id": "reply-operation-abandoned-external-clear",
-      "file": "../v4/messages/reply-operation-abandoned-external-clear.json",
+      "file": "messages/reply-operation-abandoned-external-clear.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1850,7 +1832,7 @@
     },
     {
       "id": "reply-operation-abandoned-focus-changed",
-      "file": "../v4/messages/reply-operation-abandoned-focus-changed.json",
+      "file": "messages/reply-operation-abandoned-focus-changed.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1859,7 +1841,7 @@
     },
     {
       "id": "reply-operation-abandoned-view-changed",
-      "file": "../v4/messages/reply-operation-abandoned-view-changed.json",
+      "file": "messages/reply-operation-abandoned-view-changed.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1868,7 +1850,7 @@
     },
     {
       "id": "reply-operation-abandoned-homing-changed",
-      "file": "../v4/messages/reply-operation-abandoned-homing-changed.json",
+      "file": "messages/reply-operation-abandoned-homing-changed.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1877,7 +1859,7 @@
     },
     {
       "id": "reply-operation-abandoned-closed",
-      "file": "../v4/messages/reply-operation-abandoned-closed.json",
+      "file": "messages/reply-operation-abandoned-closed.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1886,7 +1868,7 @@
     },
     {
       "id": "reply-operation-abandoned-fullscreen",
-      "file": "../v4/messages/reply-operation-abandoned-fullscreen.json",
+      "file": "messages/reply-operation-abandoned-fullscreen.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1895,7 +1877,7 @@
     },
     {
       "id": "reply-operation-superseded",
-      "file": "../v4/messages/reply-operation-superseded.json",
+      "file": "messages/reply-operation-superseded.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1904,7 +1886,7 @@
     },
     {
       "id": "reply-operation-continuation-refused",
-      "file": "../v4/messages/reply-operation-continuation-refused.json",
+      "file": "messages/reply-operation-continuation-refused.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1913,7 +1895,7 @@
     },
     {
       "id": "reply-operation-float-frame-proven",
-      "file": "../v4/messages/reply-operation-float-frame-proven.json",
+      "file": "messages/reply-operation-float-frame-proven.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1922,7 +1904,7 @@
     },
     {
       "id": "reply-operation-float-refused-proven",
-      "file": "../v4/messages/reply-operation-float-refused-proven.json",
+      "file": "messages/reply-operation-float-refused-proven.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1931,7 +1913,7 @@
     },
     {
       "id": "reply-operation-float-abandoned",
-      "file": "../v4/messages/reply-operation-float-abandoned.json",
+      "file": "messages/reply-operation-float-abandoned.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1940,7 +1922,7 @@
     },
     {
       "id": "reply-operation-causes",
-      "file": "../v4/messages/reply-operation-causes.json",
+      "file": "messages/reply-operation-causes.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1950,7 +1932,7 @@
     },
     {
       "id": "reply-gesture-committed",
-      "file": "../v4/messages/reply-gesture-committed.json",
+      "file": "messages/reply-gesture-committed.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1959,7 +1941,7 @@
     },
     {
       "id": "reply-gesture-cancelled",
-      "file": "../v4/messages/reply-gesture-cancelled.json",
+      "file": "messages/reply-gesture-cancelled.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1968,7 +1950,7 @@
     },
     {
       "id": "reply-switch-proven",
-      "file": "../v4/messages/reply-switch-proven.json",
+      "file": "messages/reply-switch-proven.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1977,7 +1959,7 @@
     },
     {
       "id": "reply-switch-refused",
-      "file": "../v4/messages/reply-switch-refused.json",
+      "file": "messages/reply-switch-refused.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1986,7 +1968,7 @@
     },
     {
       "id": "reply-switch-unproven",
-      "file": "../v4/messages/reply-switch-unproven.json",
+      "file": "messages/reply-switch-unproven.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -1995,7 +1977,7 @@
     },
     {
       "id": "reply-row-diagnostics",
-      "file": "../v4/messages/reply-row-diagnostics.json",
+      "file": "messages/reply-row-diagnostics.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -2004,7 +1986,7 @@
     },
     {
       "id": "reply-presentation-hidden-disabled",
-      "file": "../v4/messages/reply-presentation-hidden-disabled.json",
+      "file": "messages/reply-presentation-hidden-disabled.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -2014,7 +1996,7 @@
     },
     {
       "id": "reply-presentation-hidden-minimized",
-      "file": "../v4/messages/reply-presentation-hidden-minimized.json",
+      "file": "messages/reply-presentation-hidden-minimized.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -2024,7 +2006,7 @@
     },
     {
       "id": "reply-presentation-hidden-maximized",
-      "file": "../v4/messages/reply-presentation-hidden-maximized.json",
+      "file": "messages/reply-presentation-hidden-maximized.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -2034,7 +2016,7 @@
     },
     {
       "id": "reply-presentation-hidden-fullscreen",
-      "file": "../v4/messages/reply-presentation-hidden-fullscreen.json",
+      "file": "messages/reply-presentation-hidden-fullscreen.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -2044,7 +2026,7 @@
     },
     {
       "id": "reply-presentation-hidden-floating",
-      "file": "../v4/messages/reply-presentation-hidden-floating.json",
+      "file": "messages/reply-presentation-hidden-floating.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -2054,7 +2036,7 @@
     },
     {
       "id": "reply-presentation-hidden-pending",
-      "file": "../v4/messages/reply-presentation-hidden-pending.json",
+      "file": "messages/reply-presentation-hidden-pending.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -2064,7 +2046,7 @@
     },
     {
       "id": "reply-presentation-hidden-diverged",
-      "file": "../v4/messages/reply-presentation-hidden-diverged.json",
+      "file": "messages/reply-presentation-hidden-diverged.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -2074,7 +2056,7 @@
     },
     {
       "id": "reply-presentation-hidden-root-leaf",
-      "file": "../v4/messages/reply-presentation-hidden-root-leaf.json",
+      "file": "messages/reply-presentation-hidden-root-leaf.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -2084,7 +2066,7 @@
     },
     {
       "id": "reply-presentation-hidden-focus-changed",
-      "file": "../v4/messages/reply-presentation-hidden-focus-changed.json",
+      "file": "messages/reply-presentation-hidden-focus-changed.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -2094,7 +2076,7 @@
     },
     {
       "id": "reply-presentation-hidden-no-group",
-      "file": "../v4/messages/reply-presentation-hidden-no-group.json",
+      "file": "messages/reply-presentation-hidden-no-group.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -2104,7 +2086,7 @@
     },
     {
       "id": "reply-presentation-hidden-idle",
-      "file": "../v4/messages/reply-presentation-hidden-idle.json",
+      "file": "messages/reply-presentation-hidden-idle.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -2114,7 +2096,7 @@
     },
     {
       "id": "reply-presentation-hidden-suspended",
-      "file": "../v4/messages/reply-presentation-hidden-suspended.json",
+      "file": "messages/reply-presentation-hidden-suspended.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -2124,7 +2106,7 @@
     },
     {
       "id": "reply-presentation-underlay-found",
-      "file": "../v4/messages/reply-presentation-underlay-found.json",
+      "file": "messages/reply-presentation-underlay-found.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -4398,7 +4380,7 @@
     },
     {
       "id": "invalid-scope-window-arm",
-      "file": "../v4/messages/invalid-scope-window-arm.json",
+      "file": "messages/invalid-scope-window-arm.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -4413,7 +4395,7 @@
     },
     {
       "id": "invalid-scope-output-extra-ws",
-      "file": "../v4/messages/invalid-scope-output-extra-ws.json",
+      "file": "messages/invalid-scope-output-extra-ws.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -4428,7 +4410,7 @@
     },
     {
       "id": "invalid-workspace-trailing-false",
-      "file": "../v4/messages/invalid-workspace-trailing-false.json",
+      "file": "messages/invalid-workspace-trailing-false.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -4443,7 +4425,7 @@
     },
     {
       "id": "invalid-workspace-null-bind",
-      "file": "../v4/messages/invalid-workspace-null-bind.json",
+      "file": "messages/invalid-workspace-null-bind.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -4458,7 +4440,7 @@
     },
     {
       "id": "invalid-output-null-view",
-      "file": "../v4/messages/invalid-output-null-view.json",
+      "file": "messages/invalid-output-null-view.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -4473,7 +4455,7 @@
     },
     {
       "id": "invalid-hold-null-reason",
-      "file": "../v4/messages/invalid-hold-null-reason.json",
+      "file": "messages/invalid-hold-null-reason.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -4488,7 +4470,7 @@
     },
     {
       "id": "invalid-hold-unknown-reason",
-      "file": "../v4/messages/invalid-hold-unknown-reason.json",
+      "file": "messages/invalid-hold-unknown-reason.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -4503,7 +4485,7 @@
     },
     {
       "id": "invalid-nonhold-reason",
-      "file": "../v4/messages/invalid-nonhold-reason.json",
+      "file": "messages/invalid-nonhold-reason.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -4518,7 +4500,7 @@
     },
     {
       "id": "invalid-desire-null-frame-op",
-      "file": "../v4/messages/invalid-desire-null-frame-op.json",
+      "file": "messages/invalid-desire-null-frame-op.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -4533,7 +4515,7 @@
     },
     {
       "id": "invalid-show-with-hide-fallback",
-      "file": "../v4/messages/invalid-show-with-hide-fallback.json",
+      "file": "messages/invalid-show-with-hide-fallback.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -4547,53 +4529,8 @@
       }
     },
     {
-      "id": "invalid-effect-explicit-null-seq",
-      "file": "../v4/messages/invalid-effect-explicit-null-seq.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "reject-wire",
-      "json": true,
-      "canonical": true,
-      "note": "Invalid value at /effects/0/cmdSeq.",
-      "invalid": {
-        "pointer": "/effects/0/cmdSeq",
-        "rule": "effect-explicit-null-seq",
-        "source": "reply-effect-focus"
-      }
-    },
-    {
-      "id": "invalid-effect-automatic-await-shown",
-      "file": "../v4/messages/invalid-effect-automatic-await-shown.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "reject-wire",
-      "json": true,
-      "canonical": true,
-      "note": "Invalid value at /effects/0/awaitShown.",
-      "invalid": {
-        "pointer": "/effects/0/awaitShown",
-        "rule": "effect-automatic-await-shown",
-        "source": "reply-effect-automatic-admission"
-      }
-    },
-    {
-      "id": "invalid-effect-unknown-cause",
-      "file": "../v4/messages/invalid-effect-unknown-cause.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "reject-wire",
-      "json": true,
-      "canonical": true,
-      "note": "Invalid value at /effects/0/cause.",
-      "invalid": {
-        "pointer": "/effects/0/cause",
-        "rule": "effect-unknown-cause",
-        "source": "reply-effect-focus"
-      }
-    },
-    {
       "id": "invalid-result-applied-wrapper",
-      "file": "../v4/messages/invalid-result-applied-wrapper.json",
+      "file": "messages/invalid-result-applied-wrapper.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -4608,7 +4545,7 @@
     },
     {
       "id": "invalid-result-noop-wrapper",
-      "file": "../v4/messages/invalid-result-noop-wrapper.json",
+      "file": "messages/invalid-result-noop-wrapper.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -4623,7 +4560,7 @@
     },
     {
       "id": "invalid-result-float-false-marker",
-      "file": "../v4/messages/invalid-result-float-false-marker.json",
+      "file": "messages/invalid-result-float-false-marker.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -4638,7 +4575,7 @@
     },
     {
       "id": "invalid-directional-cause-string-empty",
-      "file": "../v4/messages/invalid-directional-cause-string-empty.json",
+      "file": "messages/invalid-directional-cause-string-empty.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -4653,7 +4590,7 @@
     },
     {
       "id": "invalid-operation-cause-null",
-      "file": "../v4/messages/invalid-operation-cause-null.json",
+      "file": "messages/invalid-operation-cause-null.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -4668,7 +4605,7 @@
     },
     {
       "id": "invalid-operation-outcome-visibility",
-      "file": "../v4/messages/invalid-operation-outcome-visibility.json",
+      "file": "messages/invalid-operation-outcome-visibility.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -4683,7 +4620,7 @@
     },
     {
       "id": "invalid-border-old-absolute",
-      "file": "../v4/messages/invalid-border-old-absolute.json",
+      "file": "messages/invalid-border-old-absolute.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -4698,7 +4635,7 @@
     },
     {
       "id": "invalid-border-cloaked",
-      "file": "../v4/messages/invalid-border-cloaked.json",
+      "file": "messages/invalid-border-cloaked.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -4713,7 +4650,7 @@
     },
     {
       "id": "invalid-underlay-missing-leaf",
-      "file": "../v4/messages/invalid-underlay-missing-leaf.json",
+      "file": "messages/invalid-underlay-missing-leaf.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -5759,7 +5696,7 @@
     },
     {
       "id": "reply-above-true",
-      "file": "../v4/messages/reply-above-true.json",
+      "file": "messages/reply-above-true.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -5781,7 +5718,7 @@
     },
     {
       "id": "reply-above-false",
-      "file": "../v4/messages/reply-above-false.json",
+      "file": "messages/reply-above-false.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
@@ -5803,7 +5740,7 @@
     },
     {
       "id": "invalid-above-unsupported",
-      "file": "../v4/messages/invalid-above-unsupported.json",
+      "file": "messages/invalid-above-unsupported.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -5821,7 +5758,7 @@
     },
     {
       "id": "invalid-warp-unsupported",
-      "file": "../v4/messages/invalid-warp-unsupported.json",
+      "file": "messages/invalid-warp-unsupported.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -5838,7 +5775,7 @@
     },
     {
       "id": "invalid-state-target-count",
-      "file": "../v4/messages/invalid-state-target-count.json",
+      "file": "messages/invalid-state-target-count.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -6613,7 +6550,7 @@
     },
     {
       "id": "invalid-sticky-native-free-target",
-      "file": "../v4/messages/invalid-sticky-native-free-target.json",
+      "file": "messages/invalid-sticky-native-free-target.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
@@ -6823,44 +6760,44 @@
     },
     {
       "id": "reply-close-focus-pending",
-      "file": "../v4/messages/reply-close-focus-pending.json",
+      "file": "messages/reply-close-focus-pending.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "valid-wire",
       "json": true,
       "canonical": true,
-      "note": "Retained close-focus lane carries a pending positive-close request.",
+      "note": "Retained focus-request lane carries a pending positive-close request.",
       "context": {
         "ready": "waiting-for-settings-and-complete-facts"
       }
     },
     {
       "id": "invalid-close-focus-unknown-cause",
-      "file": "../v4/messages/invalid-close-focus-unknown-cause.json",
+      "file": "messages/invalid-close-focus-unknown-cause.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
       "json": true,
       "canonical": true,
-      "note": "Invalid value at /closeFocus/cause.",
+      "note": "Invalid value at /focusRequest/cause.",
       "invalid": {
-        "pointer": "/closeFocus/cause",
-        "rule": "close-focus-unknown-cause",
+        "pointer": "/focusRequest/cause",
+        "rule": "focus-request-unknown-cause",
         "source": "reply-close-focus-pending"
       }
     },
     {
       "id": "invalid-close-focus-missing-lane",
-      "file": "../v4/messages/invalid-close-focus-missing-lane.json",
+      "file": "messages/invalid-close-focus-missing-lane.json",
       "family": "WorldReply",
       "direction": "core-to-adapter",
       "expectation": "reject-wire",
       "json": true,
       "canonical": true,
-      "note": "Missing required key at /closeFocus.",
+      "note": "Missing required key at /focusRequest.",
       "invalid": {
-        "pointer": "/closeFocus",
-        "rule": "close-focus-missing-lane",
+        "pointer": "/focusRequest",
+        "rule": "focus-request-missing-lane",
         "source": "reply-bootstrap"
       }
     },
@@ -8283,14 +8220,6 @@
       "OneShotEffect": [
         {
           "fixture": "reply-effect-focus",
-          "pointer": "/effects/0"
-        },
-        {
-          "fixture": "reply-effect-raise",
-          "pointer": "/effects/0"
-        },
-        {
-          "fixture": "reply-effect-stack",
           "pointer": "/effects/0"
         }
       ],
@@ -10153,36 +10082,12 @@
             "pointer": "/effects/0/kind",
             "value": "focus"
           }
-        ],
-        "raise": [
-          {
-            "fixture": "reply-effect-raise",
-            "pointer": "/effects/0/kind",
-            "value": "raise"
-          }
-        ],
-        "stack": [
-          {
-            "fixture": "reply-effect-stack",
-            "pointer": "/effects/0/kind",
-            "value": "stack"
-          }
         ]
       },
       "EffectCause": {
         "explicit-command": [
           {
             "fixture": "reply-effect-focus",
-            "pointer": "/effects/0/cause",
-            "value": "explicit-command"
-          },
-          {
-            "fixture": "reply-effect-raise",
-            "pointer": "/effects/0/cause",
-            "value": "explicit-command"
-          },
-          {
-            "fixture": "reply-effect-stack",
             "pointer": "/effects/0/cause",
             "value": "explicit-command"
           }

@@ -225,6 +225,14 @@ impl StackingStorageDriver {
 /// panic. The native watermark advances only through ordered fixture
 /// events, never through reply execution.
 ///
+/// Retained-focus accounting is bounded: at most one current record (the
+/// exact latest immutable request tuple plus its spend bit); older tuples
+/// retire into the monotonic issuing-revision fence. No unbounded spent-id
+/// set is kept. A repeated identical tuple under a fresh valid pairing is
+/// inert (no second call, no feedback); a same-id tuple mismatch fails
+/// closed; an older retired revision can never authorize again; a null
+/// publication retires the current record into the fence.
+///
 /// Modeled state: native `obs` watermark (monotonic, advanced only by
 /// outside-change/release-callback), foreground lifetime, per-window native
 /// facts (visible, suppression ownership, output, frame; the model only
@@ -232,22 +240,27 @@ impl StackingStorageDriver {
 /// matched lifetimes and available preimages), held focus callbacks,
 /// pending refusal gates, retained visibility authorizations
 /// `(shown, rev, fallback)`, at-most-once `(win, rev, shown)` spend,
-/// seen effect ids, held `(id, target, issuing rev)` focus effects and
-/// pending hides.
+/// the bounded current focus record plus its retired-revision fence,
+/// held `(id, target, issuing rev)` focus requests and pending hides.
+///
+/// Arrival brackets use the output arm only (`kind: output`, `out` and
+/// `frame` from native affinity, no `home`) because the fixtures declare
+/// `hostOwned: false`; every bracket carries genuine before/after
+/// [`VisibilitySample`]-shaped snapshots read from the modeled native
+/// state, bounded by the modeled watermark. Selection-backed requests
+/// (non-null `afterShown`) bracket the frozen member dependencies, never
+/// later reply rows; bare requests expand the current shown controlled
+/// members on the request output. Desired output/frame equality is checked
+/// against the reply row before dispatch, and frozen member output/frame
+/// equality against the frozen dependency; mismatch panics.
+/// Synchronous accepted focus updates the modeled foreground first and
+/// the equality read decides the proof bit, never setter success alone.
 ///
 /// Initial native facts are validated at parse: only unminimized,
 /// unhidden, non-fullscreen, non-game windows with matched lifetimes,
 /// available preimages and nonempty tags are representable; anything else
 /// panics. At dispatch, a repeat spend or a refused setter is a no-call
-/// `show-blocked` block. Arrival brackets use the output arm only
-/// (`kind: output`, `out` and `frame` from native affinity, no `home`)
-/// because the fixtures declare `hostOwned: false`; every bracket carries
-/// genuine before/after [`VisibilitySample`]-shaped snapshots read from the
-/// modeled native state, bounded by the modeled watermark. Desired
-/// output/frame equality is checked against the reply row before dispatch;
-/// mismatch panics. Synchronous accepted focus updates the modeled
-/// foreground first and the equality read decides the proof bit, never
-/// setter success alone.
+/// `show-blocked` block.
 ///
 /// Externally observed visibility only clears host-side suppression
 /// ownership when observed visible (unsuppressed elsewhere).
@@ -266,11 +279,12 @@ impl StackingStorageDriver {
 /// exposed verbatim alongside the snapshots.
 ///
 /// Fail-closed rules (no skipping): unknown event/input/native keys,
-/// unknown action/refusal/callback/effect kinds, non-controlled visibility
+/// unknown action/refusal/callback kinds, non-controlled visibility
 /// authority other than untouched, controlled rows without a target,
 /// untouched rows with a target, fallback on a shown target, disagreeing
 /// facts rewriting the same revision, strictly stale visibility revisions
-/// (rejected before any action), duplicate effect ids, unprepared/reused/
+/// (rejected before any action), same-id focus tuple mismatches, stale
+/// retired focus revisions, unprepared/reused/
 /// mismatched/stale request pairings, and stale generation/adapter binding
 /// all panic.
 struct VisibilityHostDriver {
@@ -285,14 +299,38 @@ struct VisibilityHostDriver {
     considered: std::collections::BTreeSet<(String, u64, bool)>,
     prepared: std::collections::BTreeMap<String, u64>,
     seen_requests: std::collections::BTreeSet<String>,
-    seen_effects: std::collections::BTreeSet<String>,
+    focus_current: Option<FocusRecord>,
+    focus_retired_rev: u64,
     held: std::collections::BTreeMap<String, HeldFocus>,
     pending_hides: Vec<(String, u64, bool)>,
 }
 
-/// One retained held focus: the original effect tuple plus the foreground
+/// One bounded retained-focus record: the exact latest immutable request
+/// tuple plus its spend bit. At most one lives in the driver; older tuples
+/// retire into the monotonic issuing-revision fence. The reply
+/// adapter/generation binding (asserted per reply) pins the session, so no
+/// unbounded spent-id set is kept.
+#[derive(Clone)]
+struct FocusRecord {
+    request: tiler_core::world_report::FocusRequest,
+    spent: bool,
+}
+
+/// Freshness verdict for one observed retained-focus envelope. `Fresh`
+/// names the now-current unspent record (the caller spends before
+/// dispatch); `DuplicateSpent` silences an exact re-emission of a spent
+/// record. Anything else fails closed at observe time.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FocusSlot {
+    Fresh,
+    DuplicateSpent,
+}
+
+/// One retained held focus: the original focus request tuple plus the foreground
 /// image and the frozen output-member arrival set sampled after shows at
-/// hold time. Release replays all three instead of rebuilding them.
+/// hold time (frozen `afterShown` dependencies when the request carries
+/// them, otherwise the shown controlled members on the request output).
+/// Release replays all three instead of rebuilding them.
 #[derive(Clone)]
 struct HeldFocus {
     target: String,
@@ -483,7 +521,8 @@ impl VisibilityHostDriver {
             considered: std::collections::BTreeSet::new(),
             prepared: std::collections::BTreeMap::new(),
             seen_requests: std::collections::BTreeSet::new(),
-            seen_effects: std::collections::BTreeSet::new(),
+            focus_current: None,
+            focus_retired_rev: 0,
             held: std::collections::BTreeMap::new(),
             pending_hides: Vec::new(),
         }
@@ -561,22 +600,22 @@ impl VisibilityHostDriver {
     }
 
     /// One modeled focus feedback row in the raw adapter shape: the original
-    /// effect tuple (`id`, `target`, issuing `rev`), the outcome
+    /// request tuple (`id`, `target`, issuing `rev`), the outcome
     /// (`setter`, `reason`), the foreground transition around the decision,
     /// the equality-read proof bit, output-arm arrival brackets and a modeled
     /// attempt counter. `arrival` stays empty unless the caller supplies
     /// proven brackets; no native proof is claimed.
     fn focus_feedback(
-        effect: (&str, &str, u64),
+        request: (&str, &str, u64),
         outcome: (&str, &str),
         transition: (&str, &str),
         foreground_proven: bool,
         arrival: Vec<serde_json::Value>,
     ) -> serde_json::Value {
         serde_json::json!({
-            "id": effect.0,
-            "target": effect.1,
-            "rev": effect.2.to_string(),
+            "id": request.0,
+            "target": request.1,
+            "rev": request.2.to_string(),
             "setter": outcome.0,
             "reason": outcome.1,
             "pre": transition.0,
@@ -857,7 +896,7 @@ impl VisibilityHostDriver {
             .collect();
         assert!(
             !matches.is_empty(),
-            "{sid} release without held effect for {win}"
+            "{sid} release without held focus for {win}"
         );
         assert!(matches.len() == 1, "{sid} ambiguous held target for {win}");
         let held = self.held.remove(&matches[0]).expect("held tuple present");
@@ -1033,12 +1072,80 @@ impl VisibilityHostDriver {
         })
     }
 
+    /// Observe one retained focus envelope against the bounded slot.
+    /// `None` retires the current record into the fence (no focus intent:
+    /// never actuate, and old cached replays later refuse as stale). An
+    /// exact `(id, target, issuing revision, cause, command correlation,
+    /// scope, frozen dependencies)` match returns `Fresh` (unspent) or
+    /// `DuplicateSpent` (spent). A same-id tuple mismatch fails closed as
+    /// a duplicate: core ids are issuing-revision-derived, so a newer
+    /// revision reusing an old id is corruption, never adoption. Any other
+    /// tuple adopts only when strictly newer than both the current record
+    /// and the fence; same-revision mismatches and older revisions refuse
+    /// as stale. `None` (no focus intent) returns `None`.
+    fn observe_focus_request(
+        &mut self,
+        sid: &str,
+        request: Option<&tiler_core::world_report::FocusRequest>,
+    ) -> Option<FocusSlot> {
+        let request = request?;
+        if let Some(current) = self.focus_current.as_ref() {
+            if current.request == *request {
+                return Some(if current.spent {
+                    FocusSlot::DuplicateSpent
+                } else {
+                    FocusSlot::Fresh
+                });
+            }
+            if request.id == current.request.id {
+                panic!("{sid} duplicate focus request {}", request.id);
+            }
+            if request.issued_revision <= self.focus_retired_rev {
+                panic!("{sid} stale focus request {}", request.id);
+            }
+            if request.issued_revision <= current.request.issued_revision {
+                panic!("{sid} stale focus request {}", request.id);
+            }
+            let old = self
+                .focus_current
+                .replace(FocusRecord {
+                    request: request.clone(),
+                    spent: false,
+                })
+                .expect("current checked above");
+            if old.request.issued_revision > self.focus_retired_rev {
+                self.focus_retired_rev = old.request.issued_revision;
+            }
+            return Some(FocusSlot::Fresh);
+        }
+        if request.issued_revision <= self.focus_retired_rev {
+            panic!("{sid} stale focus request {}", request.id);
+        }
+        self.focus_current = Some(FocusRecord {
+            request: request.clone(),
+            spent: false,
+        });
+        Some(FocusSlot::Fresh)
+    }
+
+    /// Spend the current focus record before dispatch, raising the fence
+    /// to the record revision. Terminal safety no-calls spend the same
+    /// way: re-emission can never actuate again.
+    fn spend_focus_current(&mut self) {
+        if let Some(current) = self.focus_current.as_mut() {
+            current.spent = true;
+            if current.request.issued_revision > self.focus_retired_rev {
+                self.focus_retired_rev = current.request.issued_revision;
+            }
+        }
+    }
+
     fn execute_reply(
         &mut self,
         sid: &str,
         reply: &tiler_core::world_report::WorldReplyV4,
     ) -> serde_json::Value {
-        use tiler_core::world_report::{EffectCause, EffectKind, ScopeAuthority};
+        use tiler_core::world_report::{FocusRequestCause, ScopeAuthority};
         self.check_native_safety(sid);
         assert_eq!(
             reply.adapter_incarnation, self.adapter,
@@ -1095,19 +1202,18 @@ impl VisibilityHostDriver {
                 }
             }
         }
-        for effect in &reply.effects {
+        assert!(
+            reply.effects.is_empty(),
+            "{sid} focus rides the focusRequest lane, never effects"
+        );
+        if let Some(request) = reply.focus_request.as_ref() {
             assert_eq!(
-                effect.kind,
-                EffectKind::Focus,
-                "{sid} unsupported effect kind"
-            );
-            assert_eq!(
-                effect.cause,
-                EffectCause::ExplicitCommand,
-                "{sid} unsupported effect cause"
+                request.cause,
+                FocusRequestCause::ExplicitCommand,
+                "{sid} unsupported focus request cause"
             );
             assert!(
-                effect.command_seq.is_some(),
+                request.cmd_seq.is_some(),
                 "{sid} explicit focus without command sequence"
             );
         }
@@ -1183,18 +1289,19 @@ impl VisibilityHostDriver {
                 }
             }
         }
-        // Spend every effect id before dispatch: completed focus counts too,
-        // so a repeated grant under any later reply panics as a duplicate.
-        for effect in &reply.effects {
-            assert!(
-                !self.seen_effects.contains(&effect.id),
-                "{sid} duplicate effect {}",
-                effect.id
-            );
+        // Bounded retained-focus accounting: the reply adapter/generation
+        // binding above already pins the session, so the slot keys on the
+        // exact immutable request tuple with a monotonic retired-revision
+        // fence (no unbounded spent-id set). A repeated identical tuple is
+        // inert below (no second call, no feedback); a same-id mismatch
+        // fails closed; an older retired revision can never authorize
+        // again. A null publication retires the current record into the
+        // fence.
+        let focus_slot = self.observe_focus_request(sid, reply.focus_request.as_ref());
+        if focus_slot == Some(FocusSlot::Fresh) {
+            self.spend_focus_current();
         }
-        for effect in &reply.effects {
-            self.seen_effects.insert(effect.id.clone());
-        }
+        let focus_live = focus_slot == Some(FocusSlot::Fresh);
         let mut actions: Vec<serde_json::Value> = Vec::new();
         let mut feedback: Vec<serde_json::Value> = Vec::new();
         let mut last_writes: Vec<serde_json::Value> = Vec::new();
@@ -1279,14 +1386,21 @@ impl VisibilityHostDriver {
             })
             .collect();
         let mut focus_proven = false;
+        // A spent re-emission is inert: no second call, no feedback. The
+        // visibility and hide accounting above and below still runs.
+        let live_focus = if focus_live {
+            reply.focus_request.as_ref()
+        } else {
+            None
+        };
         if show_failed {
-            for effect in &reply.effects {
+            if let Some(request) = live_focus {
                 let foreground = self.foreground.clone();
                 feedback.push(Self::focus_feedback(
                     (
-                        effect.id.as_str(),
-                        effect.target.0.as_str(),
-                        effect.issued_revision,
+                        request.id.as_str(),
+                        request.target.0.as_str(),
+                        request.issued_revision,
                     ),
                     ("not-called", "show-blocked"),
                     (foreground.as_str(), foreground.as_str()),
@@ -1294,24 +1408,56 @@ impl VisibilityHostDriver {
                     Vec::new(),
                 ));
             }
-        } else {
-            for effect in &reply.effects {
-                let target_win = effect.target.0.clone();
-                assert!(
-                    self.windows.contains_key(&target_win),
-                    "{sid} unknown focus target {target_win}"
-                );
-                // One output-arm bracket per controlled shown member on the
-                // effect output, frozen here before this focus attempt from
-                // modeled native facts only. Held callbacks retain the set;
-                // the accepted path dispatches on it below.
-                let effect_out = self
-                    .windows
-                    .get(&target_win)
-                    .expect("known focus")
-                    .out
-                    .clone();
-                let mut arrival = Vec::new();
+        } else if let Some(request) = live_focus {
+            let target_win = request.target.0.clone();
+            assert!(
+                self.windows.contains_key(&target_win),
+                "{sid} unknown focus target {target_win}"
+            );
+            // Selection-backed requests bracket the frozen `afterShown`
+            // member dependencies, never later reply rows. Bare requests
+            // expand the current shown controlled members on the request
+            // output. Both paths bracket from modeled native facts only,
+            // frozen here before this focus attempt. Held callbacks retain
+            // the set; the accepted path dispatches on it below. A fixed
+            // late newcomer admitted while the request is pending never
+            // enlarges the frozen set.
+            let request_out = self
+                .windows
+                .get(&target_win)
+                .expect("known focus")
+                .out
+                .clone();
+            let mut arrival = Vec::new();
+            if let Some(after) = request.after_shown.as_ref() {
+                for member in &after.members {
+                    if member.out.0 != request_out {
+                        continue;
+                    }
+                    let member_native = self
+                        .windows
+                        .get(&member.win.0)
+                        .unwrap_or_else(|| panic!("{sid} unknown frozen member {}", member.win.0));
+                    assert_eq!(
+                        member_native.out, member.out.0,
+                        "{sid} mismatched frozen member output for {}",
+                        member.win.0
+                    );
+                    if let Some(frame) = &member.frame {
+                        assert_eq!(
+                            member_native.frame,
+                            [frame.x, frame.y, frame.w, frame.h],
+                            "{sid} mismatched frozen member frame for {}",
+                            member.win.0
+                        );
+                    }
+                    let before = post_show
+                        .get(&member.win.0)
+                        .expect("post-show snapshot")
+                        .clone();
+                    arrival.push(self.output_bracket(sid, &member.win.0, &before));
+                }
+            } else {
                 for window in &reply.windows {
                     if window.visibility_authority != ScopeAuthority::Controlled {
                         continue;
@@ -1325,7 +1471,7 @@ impl VisibilityHostDriver {
                         .windows
                         .get(&member_win)
                         .unwrap_or_else(|| panic!("{sid} unknown member {member_win}"));
-                    if member_native.out != effect_out {
+                    if member_native.out != request_out {
                         continue;
                     }
                     let before = post_show
@@ -1334,43 +1480,44 @@ impl VisibilityHostDriver {
                         .clone();
                     arrival.push(self.output_bracket(sid, &member_win, &before));
                 }
-                let pre_foreground = self.foreground.clone();
-                if self.callbacks.contains_key(&target_win) {
-                    // Held focus actuates now and completes on release: the
-                    // full tuple plus the pre foreground and the frozen
-                    // arrival set are retained for exact release replay.
-                    actions.push(serde_json::json!({"kind": "focus", "win": target_win}));
-                    self.held.insert(
-                        effect.id.clone(),
-                        HeldFocus {
-                            target: target_win,
-                            rev: effect.issued_revision,
-                            pre_foreground,
-                            arrival,
-                        },
-                    );
-                    continue;
-                }
-                if self
-                    .refusals
-                    .iter()
-                    .any(|(kind, w)| kind == "focus" && w == &target_win)
-                {
-                    actions.push(serde_json::json!({"kind": "focus", "win": target_win}));
-                    let foreground = self.foreground.clone();
-                    feedback.push(Self::focus_feedback(
-                        (
-                            effect.id.as_str(),
-                            target_win.as_str(),
-                            effect.issued_revision,
-                        ),
-                        ("refused", "native-refused"),
-                        (foreground.as_str(), foreground.as_str()),
-                        false,
-                        Vec::new(),
-                    ));
-                    continue;
-                }
+            }
+            let pre_foreground = self.foreground.clone();
+            if self.callbacks.contains_key(&target_win) {
+                // Held focus actuates now and completes on release: the
+                // full tuple plus the pre foreground and the frozen
+                // arrival set are retained for exact release replay.
+                // Nothing else dispatches now; release replays the tuple.
+                actions.push(serde_json::json!({"kind": "focus", "win": target_win}));
+                self.held.insert(
+                    request.id.clone(),
+                    HeldFocus {
+                        target: target_win,
+                        rev: request.issued_revision,
+                        pre_foreground,
+                        arrival,
+                    },
+                );
+            } else if self
+                .refusals
+                .iter()
+                .any(|(kind, w)| kind == "focus" && w == &target_win)
+            {
+                // A refused setter actuates the attempt but never the
+                // foreground: the accepted path below must not run.
+                actions.push(serde_json::json!({"kind": "focus", "win": target_win}));
+                let foreground = self.foreground.clone();
+                feedback.push(Self::focus_feedback(
+                    (
+                        request.id.as_str(),
+                        target_win.as_str(),
+                        request.issued_revision,
+                    ),
+                    ("refused", "native-refused"),
+                    (foreground.as_str(), foreground.as_str()),
+                    false,
+                    Vec::new(),
+                ));
+            } else {
                 let native = self.windows.get(&target_win).expect("known focus");
                 assert!(
                     native.lifetime_matched,
@@ -1384,9 +1531,9 @@ impl VisibilityHostDriver {
                 focus_proven = self.foreground == target_win;
                 feedback.push(Self::focus_feedback(
                     (
-                        effect.id.as_str(),
+                        request.id.as_str(),
                         target_win.as_str(),
-                        effect.issued_revision,
+                        request.issued_revision,
                     ),
                     ("accepted", ""),
                     (pre_foreground.as_str(), target_win.as_str()),
@@ -1420,7 +1567,7 @@ impl VisibilityHostDriver {
                     .push((win, target.revision, target.fallback));
             }
         } else if !show_failed && self.held.is_empty() {
-            let has_focus = !reply.effects.is_empty();
+            let has_focus = reply.focus_request.is_some();
             for window in &reply.windows {
                 if window.visibility_authority != ScopeAuthority::Controlled {
                     continue;
@@ -2527,7 +2674,7 @@ fn visibility_driver_rejects_stale_visibility_rev() {
 
 #[test]
 #[should_panic(expected = "duplicate")]
-fn visibility_driver_rejects_duplicate_effect_tuple() {
+fn visibility_driver_rejects_duplicate_focus_request() {
     let mut driver = visibility_test_host("visibility-cross-output-supersession");
     let prepare1 = visibility_step_event(
         "visibility-cross-output-supersession",
@@ -2550,10 +2697,112 @@ fn visibility_driver_rejects_duplicate_effect_tuple() {
         "visibility-cross-output-supersession",
         "new-other-output-focus",
     );
-    second["effects"][0]["id"] = serde_json::json!("fx-1");
+    // Reusing the already-spent request id with a mismatched immutable
+    // tuple under a fresh pairing is the duplicate the driver must
+    // refuse, not a wire-shape error: core ids are issuing-revision
+    // derived, so a newer revision reusing an old id is corruption,
+    // never adoption.
+    second["focusRequest"]["id"] = first["focusRequest"]["id"].clone();
     let wire2 = serde_json::to_string(&second).expect("message serializes");
     let decoded2 = decode_reply_v4(&wire2).expect("reply decodes");
     driver.execute_reply("probe", &decoded2.reply);
+}
+
+#[test]
+fn visibility_driver_identical_retained_repeat_is_inert() {
+    // Discriminator: re-emitting the exact immutable request tuple under
+    // a fresh valid req/obs pairing is valid but authorizes nothing new:
+    // no second focus call, no feedback row, unchanged foreground. The
+    // same-revision visibility rows stay skipped alongside.
+    let mut driver = visibility_test_host("visibility-order-failure");
+    let prepare = visibility_step_event("visibility-order-failure", "arrive-focus-depart-request");
+    driver.prepare_request("probe", &prepare);
+    let message = visibility_step_message("visibility-order-failure", "arrive-focus-depart");
+    let wire = serde_json::to_string(&message).expect("message serializes");
+    let decoded = decode_reply_v4(&wire).expect("reply decodes");
+    let first = driver.execute_reply("probe", &decoded.reply);
+    assert_eq!(
+        first["focusFeedback"]
+            .as_array()
+            .expect("feedback array")
+            .len(),
+        1,
+        "first grant records one feedback row"
+    );
+    assert!(
+        first["actions"]
+            .as_array()
+            .expect("actions array")
+            .iter()
+            .any(|action| action == &serde_json::json!({"kind": "focus", "win": "win-a"})),
+        "first grant actuates one focus call"
+    );
+    let mut prepare2 = prepare.clone();
+    prepare2["message"]["req"] = serde_json::json!("apply-1-repeat");
+    driver.prepare_request("probe", &prepare2);
+    let mut repeat = message.clone();
+    repeat["req"] = serde_json::json!("apply-1-repeat");
+    let wire2 = serde_json::to_string(&repeat).expect("message serializes");
+    let decoded2 = decode_reply_v4(&wire2).expect("repeat decodes");
+    let second = driver.execute_reply("probe", &decoded2.reply);
+    assert_eq!(
+        second["actions"],
+        serde_json::json!([]),
+        "identical re-emission issues no second call"
+    );
+    assert_eq!(
+        second["focusFeedback"],
+        serde_json::json!([]),
+        "identical re-emission stages no retry feedback"
+    );
+    assert_eq!(
+        second["native"]["foreground"],
+        serde_json::json!("win-a"),
+        "foreground unchanged by the inert repeat"
+    );
+}
+
+#[test]
+#[should_panic(expected = "stale focus request")]
+fn visibility_driver_rejects_retired_focus_request() {
+    // An older retired request cannot authorize again: after the newer
+    // publication adopts, replaying the exact older tuple under a fresh
+    // pairing refuses as stale. Visibility rows stay at the newer
+    // revision so only the focus fence decides.
+    let mut driver = visibility_test_host("visibility-cross-output-supersession");
+    let prepare1 = visibility_step_event(
+        "visibility-cross-output-supersession",
+        "old-focus-issued-held-request",
+    );
+    driver.prepare_request("probe", &prepare1);
+    let first = visibility_step_message(
+        "visibility-cross-output-supersession",
+        "old-focus-issued-held",
+    );
+    let wire1 = serde_json::to_string(&first).expect("message serializes");
+    let decoded1 = decode_reply_v4(&wire1).expect("reply decodes");
+    driver.execute_reply("probe", &decoded1.reply);
+    let prepare2 = visibility_step_event(
+        "visibility-cross-output-supersession",
+        "new-other-output-focus-request",
+    );
+    driver.prepare_request("probe", &prepare2);
+    let second = visibility_step_message(
+        "visibility-cross-output-supersession",
+        "new-other-output-focus",
+    );
+    let wire2 = serde_json::to_string(&second).expect("message serializes");
+    let decoded2 = decode_reply_v4(&wire2).expect("reply decodes");
+    driver.execute_reply("probe", &decoded2.reply);
+    let mut prepare3 = prepare2.clone();
+    prepare3["message"]["req"] = serde_json::json!("apply-2-retired");
+    driver.prepare_request("probe", &prepare3);
+    let mut replay = second.clone();
+    replay["req"] = serde_json::json!("apply-2-retired");
+    replay["focusRequest"] = first["focusRequest"].clone();
+    let wire3 = serde_json::to_string(&replay).expect("message serializes");
+    let decoded3 = decode_reply_v4(&wire3).expect("replay decodes");
+    driver.execute_reply("probe", &decoded3.reply);
 }
 
 #[test]
@@ -2638,8 +2887,12 @@ fn visibility_driver_arrival_before_after_visible_after_show() {
 #[test]
 fn visibility_driver_held_snapshot_preserved_across_revision() {
     // Regression: a held focus retains its issuing tuple, original pre
-    // foreground and frozen multi-member arrival set across a later
-    // revision and event; release replays them instead of rebuilding.
+    // foreground and frozen arrival set across a later revision and event;
+    // release replays them instead of rebuilding. The selection-backed
+    // request carries one frozen `afterShown` member, so the arrival set
+    // names exactly that member even though the mutated reply rows show a
+    // second member on the same output: frozen dependencies, never later
+    // rows.
     let mut driver = visibility_test_host("visibility-cross-output-supersession");
     let prepare1 = visibility_step_event(
         "visibility-cross-output-supersession",
@@ -2650,8 +2903,17 @@ fn visibility_driver_held_snapshot_preserved_across_revision() {
         "visibility-cross-output-supersession",
         "old-focus-issued-held",
     );
-    first["windows"][1]["visibility"] =
-        serde_json::json!({"shown": true, "rev": "1", "fallback": false});
+    // Show the hidden member at its genuine issuing revision: the show
+    // still dispatches from the reply rows, but the frozen hold-time
+    // arrival set stays exactly the one `afterShown` member.
+    let win_old = first["windows"]
+        .as_array()
+        .expect("reply windows")
+        .iter()
+        .position(|window| window.get("win").and_then(serde_json::Value::as_str) == Some("win-old"))
+        .expect("win-old row present");
+    first["windows"][win_old]["visibility"] =
+        serde_json::json!({"shown": true, "rev": "3", "fallback": false});
     let wire1 = serde_json::to_string(&first).expect("message serializes");
     let decoded1 = decode_reply_v4(&wire1).expect("reply decodes");
     let held_out = driver.execute_reply("probe", &decoded1.reply);
@@ -2678,13 +2940,17 @@ fn visibility_driver_held_snapshot_preserved_across_revision() {
     );
     let output = driver.apply_release_callback("probe", &release);
     let feedback = output["focusFeedback"][0].clone();
-    assert_eq!(feedback["id"], serde_json::json!("fx-1"), "original tuple");
+    assert_eq!(
+        feedback["id"],
+        serde_json::json!("focus-3"),
+        "original tuple"
+    );
     assert_eq!(
         feedback["target"],
         serde_json::json!("win-a"),
         "original tuple"
     );
-    assert_eq!(feedback["rev"], serde_json::json!("1"), "original tuple");
+    assert_eq!(feedback["rev"], serde_json::json!("3"), "original tuple");
     assert_eq!(
         feedback["pre"],
         serde_json::json!("win-old"),
@@ -2694,7 +2960,12 @@ fn visibility_driver_held_snapshot_preserved_across_revision() {
         .as_array()
         .expect("arrival array")
         .clone();
-    assert_eq!(arrival.len(), 2, "frozen multi-member arrival set");
+    assert_eq!(arrival.len(), 1, "frozen arrival set names one member");
+    assert_eq!(
+        arrival[0]["win"],
+        serde_json::json!("win-a"),
+        "frozen member, not the later shown row"
+    );
     for bracket in &arrival {
         assert_eq!(
             bracket["before"]["visibility"]["visible"],
@@ -2735,8 +3006,8 @@ fn visibility_driver_arrival_feedback_uses_raw_shape() {
     }
     assert_eq!(
         feedback["rev"],
-        serde_json::json!("1"),
-        "feedback effect rev"
+        serde_json::json!("5"),
+        "feedback request rev"
     );
     assert_eq!(
         feedback["pre"],
@@ -2776,5 +3047,63 @@ fn visibility_driver_late_evidence_exposes_raw_write() {
     assert_eq!(
         output["write"], event["write"],
         "late output exposes raw write"
+    );
+}
+
+#[test]
+fn visibility_driver_fallback_true_consumer_edge() {
+    // Valid-wire consumer edge: the genuine no-focus hide reply round-trips
+    // the strict codec with a consumer-set `fallback: true` row, pinning the
+    // fallback hide path without touching scenario bytes.
+    let mut driver = visibility_test_host("visibility-order-failure");
+    driver.apply_outside_change(
+        "probe",
+        &serde_json::json!({"kind": "outside-change", "obs": "3"}),
+    );
+    let prepare =
+        visibility_step_event("visibility-order-failure", "explicit-hide-fallback-request");
+    driver.prepare_request("probe", &prepare);
+    let message = visibility_step_message("visibility-order-failure", "explicit-hide-fallback");
+    let wire = serde_json::to_string(&message).expect("message serializes");
+    let decoded = decode_reply_v4(&wire).expect("reply decodes");
+    let mut typed = decoded.reply;
+    let row = typed
+        .windows
+        .iter_mut()
+        .find(|window| window.lifetime.0.as_str() == "win-old")
+        .expect("win-old row present");
+    row.visibility
+        .as_mut()
+        .expect("win-old visibility target")
+        .fallback = true;
+    let suspended = typed.presentation.suspended_output.is_some();
+    let text = encode_reply_v4(&DecodedReplyV4 {
+        reply: typed,
+        wire: ReplyWireOptionals {
+            suspended_output_present: suspended,
+        },
+    })
+    .expect("fallback reply encodes");
+    let round = decode_reply_v4(&text).expect("fallback reply decodes");
+    let output = driver.execute_reply("probe", &round.reply);
+    assert!(
+        output["actions"]
+            .as_array()
+            .expect("actions array")
+            .iter()
+            .any(|action| action == &serde_json::json!({"kind": "hide", "win": "win-old"})),
+        "fallback hide actuates"
+    );
+    assert!(
+        output["lastWrites"]
+            .as_array()
+            .expect("writes array")
+            .iter()
+            .any(
+                |write| write.get("win").and_then(serde_json::Value::as_str) == Some("win-old")
+                    && write["write"]["path"] == serde_json::json!("fallback")
+                    && write["write"]["target"] == serde_json::json!(false)
+            ),
+        "fallback path pinned on the hidden row"
     );
 }

@@ -3223,9 +3223,12 @@ fn last_active_admission_newcomer_supersedes_stale_sticky() {
     assert_eq!(focus_targets(&reply), vec![WindowId("win-s".to_owned())]);
     let mut arrived = windows();
     arrived.push(fact("win-n", "out-a", 300));
+    // Native foreground still names the tiled win-a: the explicit sticky
+    // choice is unapplied, so the sticky memory stays stale while the
+    // foreground imposes no float/sticky guard on the newcomer.
     let reply = accepted(
         &mut engine,
-        &report(3, two_screens(), arrived.clone(), "win-s", None, None),
+        &report(3, two_screens(), arrived.clone(), "win-a", None, None),
     );
     let targets = focus_targets(&reply);
     assert_eq!(

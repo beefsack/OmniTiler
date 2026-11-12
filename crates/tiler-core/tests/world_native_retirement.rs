@@ -4237,7 +4237,7 @@ fn kde_shared_disconnect_two_native_occupied_alias_journey() {
             )
         })
         .collect();
-    let fourth = accepted(&mut engine, &settled);
+    let _fourth = accepted(&mut engine, &settled);
     let fifth = accepted(
         &mut engine,
         &report(

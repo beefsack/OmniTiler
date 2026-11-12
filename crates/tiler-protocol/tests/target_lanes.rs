@@ -21,7 +21,7 @@ use tiler_protocol::world_protocol::{
 
 fn fixture_text(name: &str) -> String {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../test-fixtures/world-wire/v4/messages")
+        .join("../../test-fixtures/world-wire/v4-active/messages")
         .join(format!("{name}.json"));
     std::fs::read_to_string(&path).expect("fixture bytes")
 }

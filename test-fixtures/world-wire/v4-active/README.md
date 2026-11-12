@@ -36,3 +36,38 @@ conformance target.
 - Historical frozen v4 handshakes (no `sharedNativeRoster`) explicitly reject
   under the new strict shape; see the frozen-rejection test in
   `crates/tiler-protocol/src/connection_protocol/tests.rs`.
+- Reply witnesses (138 WorldReply: 113 valid-wire, 25 reject-wire) are
+  current-shape vectors recorded through the genuine strict reply codec
+  (`decode_reply_v4` then `encode_reply_v4`, never string-patched):
+  - The 113 valid-wire witnesses plus the 3 handshake-contextual rejects
+    decode context-free; each was re-encoded from its typed value with
+    byte-identical output, re-decode stability and exact writer
+    round-trip.
+  - The 22 context-free rejects are deliberate mutations of the freshly
+    encoded valid witnesses at the manifest `invalid.pointer`, preserving
+    the manifest exact kind/message and the counterfactual-repair oracle
+    (copying the source witness value at that pointer back decodes): all
+    are single-pointer mutations.
+    `invalid-above-unsupported` shares wire bytes with `reply-above-true`
+    (contextual only); the warp and sticky rejects decode context-free
+    and refuse only under their declared handshake capabilities.
+  - Frozen `../v4` reply bytes are untouched history. The retired
+    `raise`/`stack` effect shapes refuse as unknown values; their former
+    valid-wire witnesses and effect-lane reject derivatives are retired
+    from the active census (negative coverage for the retired kinds is
+    pinned by the codec unit test).
+- Visibility adapter replies (the four `visibility-order-failure` adapter
+  steps and the six `visibility-cross-output-supersession` adapter steps)
+  are genuine engine products, not hand-authored: each was produced from a
+  typed report through the genuine report handler and serialized once via
+  the strict reply encoder (`decode_reply_v4` round-trip stable), never
+  string-patched. The recording chains use commandless and selection dummy
+  requests plus view flip-flops to advance genuine visibility revisions;
+  only the final reply per adapter step is kept. Selection-backed focuses
+  carry a real `afterShown` dependency; focuses minted on the
+  already-selected view are genuinely bare (`afterShown` null) and stay
+  gated on the explicit-cause plus command-sequence coupling, output-arm
+  arrival brackets and foreground equality. The `fallback: true` hide path
+  is pinned by the `visibility_driver_fallback_true_consumer_edge` unit
+  test (genuine codec round-trip of the no-focus hide reply) rather than
+  by scenario bytes.

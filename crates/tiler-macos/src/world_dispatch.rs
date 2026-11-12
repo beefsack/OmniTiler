@@ -1508,7 +1508,7 @@ fn consume_world_reply(
     focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
     focus_capacity: usize,
     reply: &WorldReplyV4,
-    effects: &[OneShotEffect],
+    _effects: &[OneShotEffect],
     _ticket_command: Option<&WorldCommand>,
     _ticket_command_seq: Option<u64>,
     op: &'static str,
@@ -1724,7 +1724,6 @@ fn consume_world_reply(
         generation,
         seq,
     );
-    dispatch_focus_effects(shared, effects, pid, generation, seq);
     settle_select_transfers(session, shared, reply, pid, generation, seq);
     dispatch_close_focus(
         session,
@@ -3009,45 +3008,6 @@ pub(crate) fn drop_selection_focus_for_operation(
         return true;
     }
     false
-}
-
-/// One-shot effect settlement: Raise/Stack effects spend without a native
-/// route (counted evidence, never faked as focus). Focus effects are spent
-/// by the sequencer before this call and never actuate here: the unified
-/// retained focus request is the sole focus authority (latest/null epoch
-/// authorizes, admission actuates), and selection-backed explicit requests
-/// bind their deferred intent from frozen `afterShown` on the request lane
-/// — never from tickets or effects.
-fn dispatch_focus_effects(
-    shared: &Arc<Mutex<Shared>>,
-    effects: &[OneShotEffect],
-    pid: u32,
-    generation: u64,
-    seq: u64,
-) {
-    use tiler_core::world_report::EffectKind;
-    let mut unhandled_effects = 0u64;
-    for effect in effects {
-        match effect.kind {
-            EffectKind::Focus => {}
-            EffectKind::Raise | EffectKind::Stack => {
-                // No macOS native route: spent (never reapplied), counted
-                // evidence only.
-                unhandled_effects += 1;
-            }
-        }
-    }
-    if unhandled_effects > 0 {
-        emit(
-            shared,
-            pid,
-            generation,
-            seq,
-            "effect",
-            "unhandled-without-route",
-            unhandled_effects,
-        );
-    }
 }
 
 /// Retained-focus dispatch on the coherent LATEST reply lane for every

@@ -599,7 +599,7 @@ impl WorldEngine {
             let pending_clean = self.retained_creations.iter().any(|retained| {
                 retained.target_output.0 == *output
                     && !retained.ambiguous
-                    && !self.creation_hold_for(&output, &retained.logical_workspace)
+                    && !self.creation_hold_for(output, &retained.logical_workspace)
                     && self.is_pure_spare_needing_backing(output, &retained.logical_workspace)
             });
             if pending_clean {
@@ -690,15 +690,12 @@ impl WorldEngine {
                 if !self.retirement_guards(output, &logical) {
                     continue 'native;
                 }
-                let Some(entry) = self
+                let entry = self
                     .staged
                     .observation
                     .native
                     .iter()
-                    .find(|entry| entry.output.0 == *output)
-                else {
-                    return None;
-                };
+                    .find(|entry| entry.output.0 == *output)?;
                 if entry.occupancy.len() != entry.native_order.len() {
                     return None;
                 }
@@ -737,8 +734,7 @@ impl WorldEngine {
                     .iter()
                     .filter(|native| {
                         self.native_map
-                            .get(&(output.clone(), (*native).clone()))
-                            .is_some()
+                            .contains_key(&(output.clone(), (*native).clone()))
                     })
                     .count();
                 if removed > bound_len.saturating_sub(MIN_WORKSPACES)

@@ -1022,15 +1022,10 @@ fn window_json_rect(id: &str, rect: [i64; 4]) -> String {
 }
 
 fn issued_focus_target(reply: &serde_json::Value) -> Option<String> {
-    // Core-issued focus authority: capture replies encode one-shot effects;
-    // presentation.foreground echoes staged native ingress instead.
-    let effects = reply["effects"].as_array()?;
-    effects
-        .iter()
-        .filter(|effect| effect["kind"] == "focus")
-        .filter_map(|effect| effect["target"].as_str())
-        .map(str::to_owned)
-        .next_back()
+    // Core-issued focus authority: capture replies carry the retained
+    // focusRequest; presentation.foreground echoes staged native ingress
+    // instead.
+    reply["focusRequest"]["target"].as_str().map(str::to_owned)
 }
 
 fn observe_from_reply(

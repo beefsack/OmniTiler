@@ -19,8 +19,22 @@ fn fixture_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/world-wire/v4")
 }
 
+fn reply_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/world-wire/v4-active")
+}
+
 fn fixture_text(file: &str) -> String {
     std::fs::read_to_string(fixture_root().join(file)).expect("fixture reads")
+}
+
+fn reply_text(file: &str) -> String {
+    let path = reply_root().join(file);
+    assert!(
+        !file.starts_with("../"),
+        "active reply witness is local: {file}"
+    );
+    std::fs::read_to_string(&path).expect("fixture reads")
 }
 
 #[test]
@@ -66,7 +80,7 @@ fn report_foreground_unknown_with_focus_refuses_both_directions() {
 
 #[test]
 fn reply_focus_request_null_round_trips() {
-    let text = fixture_text("messages/reply-bootstrap.json");
+    let text = reply_text("messages/reply-bootstrap.json");
     assert!(
         text.contains("\"focusRequest\":null"),
         "bootstrap carries null lane"
@@ -81,7 +95,7 @@ fn reply_focus_request_null_round_trips() {
 
 #[test]
 fn reply_focus_request_pending_object_round_trips() {
-    let text = fixture_text("messages/reply-close-focus-pending.json");
+    let text = reply_text("messages/reply-close-focus-pending.json");
     let decoded = decode_reply_v4(&text).expect("pending object decodes");
     let request = decoded.reply.focus_request.as_ref().expect("lane present");
     assert_eq!(
@@ -108,7 +122,7 @@ fn reply_focus_request_all_causes_round_trip_with_correlation() {
     // explicit-command carries a sequence, and only it may carry frozen
     // dependencies.
     let base =
-        decode_reply_v4(&fixture_text("messages/reply-bootstrap.json")).expect("bootstrap decodes");
+        decode_reply_v4(&reply_text("messages/reply-bootstrap.json")).expect("bootstrap decodes");
     let cases: Vec<(FocusRequestCause, Option<u64>, Option<AfterShown>)> = vec![
         (FocusRequestCause::ExplicitCommand, Some(7), None),
         (FocusRequestCause::AutomaticAdmission, None, None),
@@ -141,7 +155,7 @@ fn reply_focus_request_all_causes_round_trip_with_correlation() {
         );
     }
     // The selection-backed explicit witness carries a non-null projection.
-    let explicit = decode_reply_v4(&fixture_text("messages/reply-effect-focus.json"))
+    let explicit = decode_reply_v4(&reply_text("messages/reply-effect-focus.json"))
         .expect("explicit witness decodes");
     let request = explicit.reply.focus_request.as_ref().expect("lane present");
     assert_eq!(request.cause, FocusRequestCause::ExplicitCommand);
@@ -159,18 +173,18 @@ fn reply_focus_request_all_causes_round_trip_with_correlation() {
     let wire = encode_reply_v4(&explicit).expect("explicit witness encodes");
     assert_eq!(
         wire,
-        fixture_text("messages/reply-effect-focus.json"),
+        reply_text("messages/reply-effect-focus.json"),
         "explicit witness is canonical"
     );
 }
 
 #[test]
 fn reply_focus_request_unknown_cause_and_missing_key_refuse() {
-    let text = fixture_text("messages/invalid-close-focus-unknown-cause.json");
+    let text = reply_text("messages/invalid-close-focus-unknown-cause.json");
     let error = decode_reply_v4(&text).expect_err("unknown cause refuses");
     assert_eq!(error.kind, "unknown-value");
     assert_eq!(error.message, "request contains an unknown value");
-    let text = fixture_text("messages/invalid-close-focus-missing-lane.json");
+    let text = reply_text("messages/invalid-close-focus-missing-lane.json");
     let error = decode_reply_v4(&text).expect_err("missing lane refuses");
     assert_eq!(error.kind, "malformed");
     assert_eq!(error.message, "request is malformed");
@@ -180,21 +194,21 @@ fn reply_focus_request_unknown_cause_and_missing_key_refuse() {
 fn reply_mixed_old_lane_and_focus_effect_refuse() {
     // The old `closeFocus` key is unknown on the new wire: mixed old/new
     // focus authority refuses without mutating.
-    let mixed = fixture_text("messages/reply-bootstrap.json").replacen(
+    let mixed = reply_text("messages/reply-bootstrap.json").replacen(
         "\"focusRequest\":null",
         "\"focusRequest\":null,\"closeFocus\":null",
         1,
     );
     assert_ne!(
         mixed,
-        fixture_text("messages/reply-bootstrap.json"),
+        reply_text("messages/reply-bootstrap.json"),
         "stages the old lane"
     );
     let error = decode_reply_v4(&mixed).expect_err("old lane refuses");
     assert_eq!(error.kind, "unknown-field");
     // A renamed old pending object also refuses as an unknown field, never
     // as a cross-field mismatch.
-    let pending = fixture_text("messages/reply-close-focus-pending.json").replacen(
+    let pending = reply_text("messages/reply-close-focus-pending.json").replacen(
         "\"focusRequest\":",
         "\"closeFocus\":",
         1,
@@ -204,7 +218,7 @@ fn reply_mixed_old_lane_and_focus_effect_refuse() {
     // Focus left the effects lane: a focus row refuses on decode even when
     // the retained lane is null.
     let mut effect_text: serde_json::Value =
-        serde_json::from_str(&fixture_text("messages/reply-bootstrap.json")).expect("valid");
+        serde_json::from_str(&reply_text("messages/reply-bootstrap.json")).expect("valid");
     effect_text["effects"] = serde_json::json!([{
         "id": "effect-a", "kind": "focus", "target": "win-a", "rev": "1",
         "cause": "explicit-command", "cmdSeq": "1", "awaitShown": false,
@@ -215,7 +229,7 @@ fn reply_mixed_old_lane_and_focus_effect_refuse() {
     // The writer refuses a focus carrier the same way instead of emitting
     // it: the core strips focus before publish.
     let mut decoded =
-        decode_reply_v4(&fixture_text("messages/reply-bootstrap.json")).expect("decodes");
+        decode_reply_v4(&reply_text("messages/reply-bootstrap.json")).expect("decodes");
     decoded.reply.effects = vec![OneShotEffect {
         id: "effect-a".to_owned(),
         kind: EffectKind::Focus,
@@ -259,7 +273,7 @@ fn focus_request_cmdseq_and_aftershown_correlation_refuse_both_directions() {
         }
     }
     let base =
-        decode_reply_v4(&fixture_text("messages/reply-bootstrap.json")).expect("bootstrap decodes");
+        decode_reply_v4(&reply_text("messages/reply-bootstrap.json")).expect("bootstrap decodes");
     // Explicit without a sequence, or any other cause with one, refuses.
     for (cause, cmd_seq, message) in [
         (
@@ -290,7 +304,7 @@ fn focus_request_cmdseq_and_aftershown_correlation_refuse_both_directions() {
         assert_eq!(error.message, "focus-request-cmdseq-mismatch");
         // Same rule on decode: patch the wire of a valid sibling.
         let mut value: serde_json::Value =
-            serde_json::from_str(&fixture_text("messages/reply-bootstrap.json")).expect("valid");
+            serde_json::from_str(&reply_text("messages/reply-bootstrap.json")).expect("valid");
         let (cause_token, seq) = match cause {
             FocusRequestCause::ExplicitCommand => ("explicit-command", serde_json::Value::Null),
             FocusRequestCause::AutomaticAdmission => {
@@ -321,7 +335,7 @@ fn focus_request_cmdseq_and_aftershown_correlation_refuse_both_directions() {
         assert_eq!(error.kind, "snapshot-invalid");
         assert_eq!(error.message, "focus-request-aftershown-non-explicit");
         let mut value: serde_json::Value =
-            serde_json::from_str(&fixture_text("messages/reply-bootstrap.json")).expect("valid");
+            serde_json::from_str(&reply_text("messages/reply-bootstrap.json")).expect("valid");
         value["focusRequest"] = serde_json::json!({
             "id": "focus-1", "target": "B", "rev": "3", "cause": cause.as_str(),
             "out": "L", "ws": "W1", "cmdSeq": null,
@@ -344,7 +358,7 @@ fn focus_request_cmdseq_and_aftershown_correlation_refuse_both_directions() {
 #[test]
 fn focus_request_aftershown_shape_uniqueness_and_bounds() {
     fn valid_value() -> serde_json::Value {
-        serde_json::from_str(&fixture_text("messages/reply-effect-focus.json")).expect("valid")
+        serde_json::from_str(&reply_text("messages/reply-effect-focus.json")).expect("valid")
     }
     // Required keys: every object key participates; only `afterShown`
     // itself and member `frame` may be null.
@@ -473,7 +487,7 @@ fn focus_request_aftershown_shape_uniqueness_and_bounds() {
     assert_eq!(decode_reply_v4(&wire).expect("re-decode"), decoded);
     // Duplicate JSON keys refuse as malformed even with otherwise valid
     // content.
-    let text = fixture_text("messages/reply-effect-focus.json").replacen(
+    let text = reply_text("messages/reply-effect-focus.json").replacen(
         "\"cmdSeq\":\"1\"",
         "\"cmdSeq\":\"1\",\"cmdSeq\":\"1\"",
         1,
@@ -501,7 +515,7 @@ fn focus_request_aftershown_shape_uniqueness_and_bounds() {
         assert_eq!(error.message, token);
     }
     let mut decoded =
-        decode_reply_v4(&fixture_text("messages/reply-effect-focus.json")).expect("decodes");
+        decode_reply_v4(&reply_text("messages/reply-effect-focus.json")).expect("decodes");
     let shown = decoded
         .reply
         .focus_request
@@ -546,7 +560,7 @@ fn core_digest_and_sizing_cover_new_lanes() {
     // pending lane with longest valid opaque fields at max revision; the
     // structural estimate covers both.
     let null_reply =
-        decode_reply_v4(&fixture_text("messages/reply-bootstrap.json")).expect("reply decodes");
+        decode_reply_v4(&reply_text("messages/reply-bootstrap.json")).expect("reply decodes");
     let null_wire = encode_reply_v4(&null_reply).expect("null encodes");
     assert_eq!(
         reply_exact_bytes_v4(&null_reply.reply),
@@ -647,7 +661,7 @@ fn focus_request_aftershown_member_cap_refuses_both_directions() {
     // Members mirror the scope lanes: 10_000 admits, 10_001 refuses on
     // decode and on encode with the same fixed token.
     fn valid_value() -> serde_json::Value {
-        serde_json::from_str(&fixture_text("messages/reply-effect-focus.json")).expect("valid")
+        serde_json::from_str(&reply_text("messages/reply-effect-focus.json")).expect("valid")
     }
     let mut value = valid_value();
     let rows: Vec<serde_json::Value> = (0..10_001)
@@ -658,7 +672,7 @@ fn focus_request_aftershown_member_cap_refuses_both_directions() {
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "focus-members-over-cap");
     let mut decoded =
-        decode_reply_v4(&fixture_text("messages/reply-effect-focus.json")).expect("decodes");
+        decode_reply_v4(&reply_text("messages/reply-effect-focus.json")).expect("decodes");
     let shown = decoded
         .reply
         .focus_request
@@ -685,7 +699,7 @@ fn focus_request_aftershown_at_cap_exact_and_oversize_contrast() {
     // At-cap scope lanes stay valid with the exact/estimate/upper contrast;
     // a within-cap max-width member projection exceeds the 4 MiB transport
     // budget and refuses on encode even though every section cap passes.
-    let base = decode_reply_v4(&fixture_text("messages/reply-bootstrap.json")).expect("decodes");
+    let base = decode_reply_v4(&reply_text("messages/reply-bootstrap.json")).expect("decodes");
     let report = decode_report_v4(&fixture_text("messages/report-foreground-known-bound.json"))
         .expect("report decodes")
         .report;

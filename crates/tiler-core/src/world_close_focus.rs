@@ -86,20 +86,53 @@ fn focus_feedback_retires(pending: &PendingFocus, row: &FocusFeedback) -> bool {
 }
 
 impl WorldEngine {
-    /// Execution-time subject for the next implicit command: the
-    /// logical cursor first, falling back to the canonical slot while
-    /// older state predates the cursor. Never fabricates foreground:
-    /// `None` means genuinely no subject.
+    /// Execution-time subject for the next implicit command: the single
+    /// logical cursor when a logical focus decision owns it. When the
+    /// cursor is empty and no retained focus request owns the subject, a
+    /// no-target command acts on the host-reported foreground, provided
+    /// it is a live bound window of the current generation that core
+    /// knows: present as a staged fact, homed this capture, neither
+    /// closed nor excluded. The fallback never overrides or outlives a
+    /// logical focus decision or a pending retained request, changes
+    /// neither canonical focus memory nor session eligibility, mints no
+    /// focus request, and never weakens the automatic guards (downstream
+    /// dispatch still refuses hidden/held/in-flight subjects on its own
+    /// terms). An unknown, unhomed, or stale foreground still resolves
+    /// to no subject, so execution refuses it as focus-unknown exactly
+    /// as before. Read-only: no state is written here.
     pub(crate) fn execution_subject(&self) -> Option<WindowId> {
-        self.logical_focus_cursor
-            .clone()
-            .or_else(|| self.implicit_focus.clone())
+        if let Some(cursor) = self.logical_focus_cursor.clone() {
+            return Some(cursor);
+        }
+        // A live retained request owns the subject even while the cursor
+        // slot reads empty: falling back to observed foreground would
+        // override (or outlive) the logical focus decision it carries.
+        if self.pending_focus.is_some() {
+            return None;
+        }
+        let observed = self.staged.observation.focused_global.clone();
+        if observed.is_empty() {
+            return None;
+        }
+        let window = WindowId(observed);
+        // Live bound window of the current generation that core knows:
+        // the staged capture (already admission-bound to this adapter,
+        // generation, and owner) carries the fact, assigns it logical
+        // homing, and has not closed or excluded it. Stale, unknown,
+        // unbound, held, or excluded foreground stays unresolved.
+        if self.staged.closes.contains(&window)
+            || self.staged.excluded.contains(&window)
+            || !self.staged.facts.contains_key(&window)
+            || !self.staged.homing.contains_key(&window)
+        {
+            return None;
+        }
+        Some(window)
     }
 
-    /// Reset the execution-time cursor (and the canonical slot it
-    /// shadows) to the currently eligible observed focus after the
-    /// pending authority retires, never to the abandoned target.
-    /// Eligibility here is liveness only: homed, not closed, not
+    /// Reset the execution-time cursor to the currently eligible observed
+    /// focus after the pending authority retires, never to the abandoned
+    /// target. Eligibility here is liveness only: homed, not closed, not
     /// excluded. Per-workspace history is untouched.
     pub(crate) fn reset_cursor_to_observed(&mut self, observed: &str) {
         let eligible = !observed.is_empty() && {
@@ -110,11 +143,9 @@ impl WorldEngine {
         };
         if eligible {
             let window = WindowId(observed.to_owned());
-            self.logical_focus_cursor = Some(window.clone());
-            self.implicit_focus = Some(window);
+            self.logical_focus_cursor = Some(window);
         } else {
             self.logical_focus_cursor = None;
-            self.implicit_focus = None;
         }
     }
 
@@ -131,11 +162,9 @@ impl WorldEngine {
             && !report.closed.contains(&window)
             && !self.staged.excluded.contains(&window);
         if eligible {
-            self.logical_focus_cursor = Some(window.clone());
-            self.implicit_focus = Some(window);
+            self.logical_focus_cursor = Some(window);
         } else {
             self.logical_focus_cursor = None;
-            self.implicit_focus = None;
         }
     }
 
@@ -155,8 +184,7 @@ impl WorldEngine {
         {
             return;
         }
-        self.logical_focus_cursor = Some(pending.target.clone());
-        self.implicit_focus = Some(pending.target);
+        self.logical_focus_cursor = Some(pending.target);
     }
     /// Freeze the positive-close survivor before `converge_logical_pre`
     /// rewrites history: retire the existing row on terminal ingress facts,
@@ -170,12 +198,7 @@ impl WorldEngine {
     /// same-report explicit/admission winner supersedes it there. Non-focus
     /// and refused commands produce no focus candidate, so the minted
     /// close survives them unchanged.
-    pub(crate) fn freeze_close_focus(
-        &mut self,
-        report: &WorldReportV4,
-        issuing_revision: u64,
-        _consumed: bool,
-    ) {
+    pub(crate) fn freeze_close_focus(&mut self, report: &WorldReportV4, issuing_revision: u64) {
         self.retire_pending_focus(report);
         // Incomplete inventory, bare absence, or duplicate silence never
         // qualifies: positive close evidence only.
@@ -276,8 +299,7 @@ impl WorldEngine {
         });
         // The accepted close choice advances the execution-time cursor
         // immediately, like every other accepted focus choice.
-        self.logical_focus_cursor = Some(survivor.clone());
-        self.implicit_focus = Some(survivor);
+        self.logical_focus_cursor = Some(survivor);
     }
 
     /// Whether the same-report non-target fallback is an eligible
@@ -330,8 +352,7 @@ impl WorldEngine {
         };
         if report.focused_global == pending.target.0 {
             self.pending_focus = None;
-            self.logical_focus_cursor = Some(pending.target.clone());
-            self.implicit_focus = Some(pending.target);
+            self.logical_focus_cursor = Some(pending.target);
             return;
         }
         // Latch the first exact-tuple correlated row once, within and
@@ -648,6 +669,36 @@ impl WorldEngine {
             self.reset_cursor_to_observed(&observed);
             return;
         }
+        // Normative automatic target restrictions: never a sticky target,
+        // and an ordinary float never carries maximized (fullscreen is
+        // already fenced above). The maximized veto rides the float
+        // exception only: a maximized tiled target stays eligible, and
+        // explicit decisions keep their exemption above.
+        if self.derived_for(&pending.target).sticky
+            || self
+                .staged
+                .facts
+                .get(&pending.target)
+                .is_some_and(|fact| fact.sticky == Some(true))
+        {
+            self.pending_focus = None;
+            let observed = self.staged.observation.focused_global.clone();
+            self.reset_cursor_to_observed(&observed);
+            return;
+        }
+        if self.derived_for(&pending.target).floating
+            && (self.derived_for(&pending.target).overlay_maximized
+                || self
+                    .staged
+                    .facts
+                    .get(&pending.target)
+                    .is_some_and(|fact| fact.maximized == Some(true)))
+        {
+            self.pending_focus = None;
+            let observed = self.staged.observation.focused_global.clone();
+            self.reset_cursor_to_observed(&observed);
+            return;
+        }
         // Existing automatic-focus vetoes, never broader candidate search:
         // classified hide/hold/exclusion, the unexplained fit-excluded
         // game/overlay shape (ordinary floats stay eligible), floating
@@ -689,6 +740,24 @@ impl WorldEngine {
             let observed = self.staged.observation.focused_global.clone();
             self.reset_cursor_to_observed(&observed);
             return;
+        }
+        // Focused float/sticky ownership: no automatic winner activates
+        // over a different focused floating/sticky window. Explicit
+        // decisions keep their exemption above; positive-close winners
+        // can only reach here past the same-report fallback fence and
+        // hover winners past the producer gate, so this retained
+        // revalidation never authorizes a second mechanism.
+        if !self.staged.observation.focused_global.is_empty()
+            && self.staged.observation.focused_global != pending.target.0
+        {
+            let focused = WindowId(self.staged.observation.focused_global.clone());
+            let shape = self.derived_for(&focused);
+            if shape.floating || shape.sticky {
+                self.pending_focus = None;
+                let observed = self.staged.observation.focused_global.clone();
+                self.reset_cursor_to_observed(&observed);
+                return;
+            }
         }
         if crate::world_cursor::cursor_game_paused(self) {
             self.pending_focus = None;

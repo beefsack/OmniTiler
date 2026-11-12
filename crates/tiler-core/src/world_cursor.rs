@@ -196,6 +196,20 @@ impl WorldEngine {
             self.ffc_last_hover = None;
             return None;
         };
+        // Focused float/sticky ownership: never steal toward the hover
+        // target while native foreground names a different floating or
+        // sticky window. Hover presence memory still advances, so a static
+        // cursor never re-steals once the foreground clears.
+        if !self.staged.observation.focused_global.is_empty()
+            && self.staged.observation.focused_global != hovered.0
+        {
+            let focused = WindowId(self.staged.observation.focused_global.clone());
+            let shape = self.derived_for(&focused);
+            if shape.floating || shape.sticky {
+                self.ffc_last_hover = Some(hovered);
+                return None;
+            }
+        }
         let previous = self.ffc_last_hover.clone();
         self.ffc_last_hover = Some(hovered.clone());
         if hovered.0 == self.staged.observation.focused_global {

@@ -274,13 +274,11 @@ impl FloatOrigin {
     }
 }
 
-/// One-shot effect kinds. Closed: focus/raise/stacking only. Transfer/view
+/// One-shot effect kind. Closed: focus only. Transfer/view
 /// targets are persistent ([`TransferTarget`]), never effects (D3=A).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EffectKind {
     Focus,
-    Raise,
-    Stack,
 }
 
 impl EffectKind {
@@ -288,8 +286,6 @@ impl EffectKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Focus => "focus",
-            Self::Raise => "raise",
-            Self::Stack => "stack",
         }
     }
 }
@@ -537,8 +533,8 @@ pub struct VisibilityTarget {
 }
 
 /// Independent native property for [`StateTarget`]: one target per
-/// property. `above` is the persistent project stacking ownership; the
-/// one-shot stack effect stays a distinct action.
+/// property. `above` is the persistent project stacking ownership; it is
+/// independent of the one-shot focus effect lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum StateProperty {
     Fullscreen,

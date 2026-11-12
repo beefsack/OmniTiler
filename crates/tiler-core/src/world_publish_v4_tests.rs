@@ -954,66 +954,31 @@ fn focus_effects_filter_held_output() {
         .staged_homing(&WindowId("win-c".to_owned()))
         .expect("win-c home");
     let before_a = engine.canonical_memory(&home_a);
-    let raise = |id: &str, target: &str| crate::world_report::OneShotEffect {
-        id: id.to_owned(),
-        kind: crate::world_report::EffectKind::Raise,
-        target: WindowId(target.to_owned()),
-        issued_revision: 7,
-        cause: crate::world_report::EffectCause::AutomaticAdmission,
-        command_seq: None,
-        await_shown: false,
-    };
-    let stack = |id: &str, target: &str| crate::world_report::OneShotEffect {
-        id: id.to_owned(),
-        kind: crate::world_report::EffectKind::Stack,
-        target: WindowId(target.to_owned()),
-        issued_revision: 7,
-        cause: crate::world_report::EffectCause::AutomaticAdmission,
-        command_seq: None,
-        await_shown: false,
-    };
+    // Focus is the only effect kind and it never publishes as a wire
+    // effect; the carriers below exercise the held-output publication
+    // path and must all strip.
     let effects = vec![
         crate::world_report::OneShotEffect::explicit_focus(7, WindowId("win-a".to_owned()), 7),
         crate::world_report::OneShotEffect::explicit_focus(8, WindowId("win-c".to_owned()), 7),
-        raise("fx-r-held", "win-a"),
-        raise("fx-r-clean", "win-c"),
-        stack("fx-s-held", "win-a"),
-        stack("fx-s-clean", "win-c"),
     ];
+    // Pending-authority recording: publication records the retained
+    // winner, never the synthetic carrier effects. Seat the clean win-c
+    // request so the canonical slot follows it.
+    engine.note_focus_decision(
+        &WindowId("win-c".to_owned()),
+        crate::world_report::FocusRequestCause::AutomaticAdmission,
+        None,
+        7,
+        "win-a",
+    );
     let reply = engine.publish_v4(envelope(7), None, effects, None, &BTreeSet::new());
     assert!(
-        !reply
-            .effects
-            .iter()
-            .any(|effect| effect.kind == crate::world_report::EffectKind::Focus),
+        reply.effects.is_empty(),
         "focus never publishes as wire effects: {:?}",
         reply.effects
     );
-    // Raise/Stack are native effects: held targets suppress, clean pass.
-    assert!(
-        !reply.effects.iter().any(|effect| effect.target.0 == "win-a"
-            && effect.kind == crate::world_report::EffectKind::Raise),
-        "held raise filtered: {:?}",
-        reply.effects
-    );
-    assert!(
-        reply.effects.iter().any(|effect| effect.target.0 == "win-c"
-            && effect.kind == crate::world_report::EffectKind::Raise),
-        "clean raise kept: {:?}",
-        reply.effects
-    );
-    assert!(
-        !reply.effects.iter().any(|effect| effect.target.0 == "win-a"
-            && effect.kind == crate::world_report::EffectKind::Stack),
-        "held stack filtered: {:?}",
-        reply.effects
-    );
-    assert!(
-        reply.effects.iter().any(|effect| effect.target.0 == "win-c"
-            && effect.kind == crate::world_report::EffectKind::Stack),
-        "clean stack kept: {:?}",
-        reply.effects
-    );
+    // No native effect kind remains: every carrier strips, so the held
+    // output keeps nothing and the clean output carries nothing either.
     assert_eq!(
         engine.canonical_memory(&home_c),
         Some(WindowId("win-c".to_owned()))

@@ -1397,17 +1397,9 @@ pub struct WorldEngine {
     /// at-most-once spent fence stays authoritative). Explicit `fx-`
     /// identities are disjoint. Entries are retained through
     /// holds/exclusions/incomplete gaps and engine/member-known absence, and
-    /// pruned only on explicit close or proven lifetime departure like
-    /// [`Self::retained_focus`]. Never a row, slot, or wire value.
-    pub(crate) automatic_focus_tokens: BTreeMap<WindowId, u64>,
-    /// Retained ordinary focus settlement for the latest emitted focus
-    /// batch (see [`crate::world_focus`]): at most two grants (admission
-    /// plus explicit command), each with its emitted effect, first
-    /// exact-tuple correlated feedback row, and historical verdict. Pruned
-    /// on explicit close and proven complete departure like the other
-    /// lifetime ledgers; reset on handshake by fresh construction.
+    /// pruned only on explicit close or proven lifetime departure.
     /// Never a row, slot, or wire value.
-    pub(crate) retained_focus: Vec<crate::world_focus::RetainedFocusGrant>,
+    pub(crate) automatic_focus_tokens: BTreeMap<WindowId, u64>,
     /// One retained core-owned focus request (see
     /// [`crate::world_close_focus`]): the frozen winning target plus its
     /// frozen activation scope, re-emitted until satisfied, superseded,
@@ -1621,13 +1613,8 @@ pub struct WorldEngine {
     /// the tiled MRU fallback. Pruned to the live inventory on finish.
     /// Equal precedence for tile/float/sticky: most recent wins.
     pub(crate) last_active_window: BTreeMap<DomainKey, WindowId>,
-    /// Latest retained canonical focus across all domains (execution-time
-    /// `win:{"currentFocus":true}` resolution): the most recent window successfully recorded
-    /// by [`WorldEngine::record_canonical`], regardless of domain. Empty
-    /// when no canonical focus has ever been recorded.
-    pub(crate) implicit_focus: Option<WindowId>,
-    /// Execution-time logical focus cursor (retained-focus Q1): the
-    /// accepted-focus subject for the next implicit command, separate
+    /// Execution-time logical focus cursor (retained-focus Q1): the single
+    /// execution subject for the next implicit command, separate
     /// from native observed foreground (`staged.observation`) and from
     /// per-workspace history (`last_active_window`). Every accepted
     /// focus choice (explicit command, admission, hover, close)
@@ -1925,7 +1912,6 @@ impl WorldEngine {
             placement_bootstrapped: false,
             admission_focus_spent: BTreeSet::new(),
             automatic_focus_tokens: BTreeMap::new(),
-            retained_focus: Vec::new(),
             pending_focus: None,
             pending_selection: None,
             pending_policy_selections: Vec::new(),
@@ -1963,7 +1949,6 @@ impl WorldEngine {
             #[cfg(test)]
             ingest_trials: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             last_active_window: BTreeMap::new(),
-            implicit_focus: None,
             logical_focus_cursor: None,
             batch_base_focus: BTreeMap::new(),
             batch_command_focus: BTreeSet::new(),
@@ -3376,7 +3361,6 @@ impl WorldEngine {
             self.excluded_intent.retain(|id, _| !closed.contains(id));
         }
         self.prune_state_bindings();
-        self.prune_focus_grants();
         self.prune_selection_grants();
         self.prune_selection_scopes();
         self.prune_selection_targets();

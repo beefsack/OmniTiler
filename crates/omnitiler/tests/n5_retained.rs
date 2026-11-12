@@ -488,8 +488,12 @@ fn n5_directional_nav_skips_hidden_and_minimized() {
     let drain = dispatch(&service, &generation, 2, &inner);
     assert_eq!(drain["ready"], true);
     let effects = drain["effects"].as_array().expect("effects");
-    assert_eq!(effects.len(), 1, "one focus effect");
-    assert_eq!(effects[0]["target"], json!("win-b"), "nav lands on win-b");
+    assert!(
+        effects.is_empty(),
+        "focus never publishes as wire effects: {effects:?}"
+    );
+    let request = &drain["focusRequest"];
+    assert_eq!(request["target"], json!("win-b"), "nav lands on win-b");
     let take = parse(
         &service
             .take_result(SENDER, &take_req(&generation, "1"))

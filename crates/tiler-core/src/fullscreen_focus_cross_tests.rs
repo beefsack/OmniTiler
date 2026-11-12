@@ -30,8 +30,8 @@ use crate::settings_state::EffectiveSetting;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    PresentationIngressV4, PresentationRowV4, ScreenReport, WORLD_CONTRACT_VERSION_V4,
-    WindowFact, WorldCommand, WorldReportV4,
+    PresentationIngressV4, PresentationRowV4, ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact,
+    WorldCommand, WorldReportV4,
 };
 use std::collections::BTreeMap;
 

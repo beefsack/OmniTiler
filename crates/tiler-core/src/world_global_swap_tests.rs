@@ -1248,7 +1248,10 @@ fn global_unique_swap_occupied_current_emits_destination_remembered_focus() {
         "focus never publishes as wire effects: {:?}",
         swapped.effects
     );
-    let request = swapped.focus_request.as_ref().expect("retained focus request");
+    let request = swapped
+        .focus_request
+        .as_ref()
+        .expect("retained focus request");
     assert_eq!(request.target.0, "win-b1");
     assert_eq!(request.id, format!("focus-{}", swapped.state_revision));
     assert_eq!(request.issued_revision, swapped.state_revision);
@@ -1313,7 +1316,10 @@ fn global_unique_swap_empty_current_emits_destination_remembered_focus() {
         "focus never publishes as wire effects: {:?}",
         swapped.effects
     );
-    let request = swapped.focus_request.as_ref().expect("retained focus request");
+    let request = swapped
+        .focus_request
+        .as_ref()
+        .expect("retained focus request");
     assert_eq!(request.target.0, "win-b1");
     assert_eq!(request.id, format!("focus-{}", swapped.state_revision));
     assert_eq!(request.issued_revision, swapped.state_revision);
