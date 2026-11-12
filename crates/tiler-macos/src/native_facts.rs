@@ -511,7 +511,10 @@ pub fn read_app_window_facts_with_cg_retaining(
         // advisory) from transient failures (fail the window, hence the
         // read, preserving retained state); classification gates
         // completeness for the rest via `classify_all`.
-        let joined_cg = cg_list.iter().find(|w| w.wid == wid && w.pid == pid);
+        let joined_cg = cg_entries
+            .binary_search_by_key(&wid, |e| e.wid)
+            .ok()
+            .map(|i| &cg_entries[i]);
         let min_size = match ax_min_size(&window) {
             Ok(bound) => bound,
             Err(code) => {
