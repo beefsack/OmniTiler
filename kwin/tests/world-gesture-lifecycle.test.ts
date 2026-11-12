@@ -148,7 +148,7 @@ describe("native gesture lifecycle transport", () => {
                         windows: [], transfers: [], effects: [], result: null,
                         gestureSettled: (globalThis as Record<string, unknown>)["__gestureSettled"] ?? null,
                         gestureAssoc: assoc,
-                        closeFocus: null,
+                        focusRequest: null,
                         operationSettled: [], nativeCreations: [], warpCursor: null,
                         intentWrites: [], switchSettled: [], diagnostics: [],
                         source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
@@ -327,7 +327,7 @@ describe("native gesture broker cutover", () => {
             const text = JSON.stringify({
                 v: 4, adapter: "test-adapter", gen: "gen-1", req: body.source, obs: String(describeRev), rev: String(describeRev),
                 ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
-                windows: [], transfers: [], effects: [], closeFocus: null, result: null,
+                windows: [], transfers: [], effects: [], focusRequest: null, result: null,
                 gestureSettled: settled, gestureAssoc: assoc, operationSettled: [], nativeCreations: [], warpCursor: null,
                 intentWrites: [], switchSettled: [], diagnostics: [],
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
@@ -1231,7 +1231,7 @@ describe("native gesture broker cutover", () => {
             const text = JSON.stringify({
                 v: 4, adapter: "test-adapter", gen: body.gen, req: body.source, obs: String(obs), rev: String(rev),
                 ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
-                windows: [], transfers: [], effects: [], closeFocus: null, result: null,
+                windows: [], transfers: [], effects: [], focusRequest: null, result: null,
                 gestureSettled: settled, gestureAssoc: assoc, operationSettled: [], nativeCreations: [], warpCursor: null,
                 intentWrites: [], switchSettled: [], diagnostics: [],
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",

@@ -100,15 +100,15 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             assert.equal(batchReply["result"], null, "actuator lane never carries terminal results");
             // Final-only publication: core collapses the superseded head
             // focus unissued, so only the return to origin publishes.
-            const batchEffects = batchReply["effects"] as Array<Record<string, unknown>>;
-            assert.ok(
-                !batchEffects.some((fx) => fx["kind"] === "focus" && fx["target"] === "win-b"),
-                `superseded head focus never publishes, got ${JSON.stringify(batchEffects)}`,
-            );
-            assert.ok(
-                batchEffects.some((fx) => fx["kind"] === "focus" && fx["target"] === "win-c"),
-                `final publication returns focus to the origin, got ${JSON.stringify(batchEffects)}`,
-            );
+            // Focus left the effects lane: the grant rides the retained
+            // latest-only focusRequest (v4), never a focus effect row.
+            assert.deepEqual(batchReply["effects"], [], "no focus effect is published on the v4 wire");
+            const batchFocus = batchReply["focusRequest"] as Record<string, unknown> | null;
+            assert.ok(batchFocus !== null, `final publication carries the collapsed focus grant, got ${JSON.stringify(batchReply["focusRequest"])}`);
+            assert.equal(batchFocus["target"], "win-c", "final publication returns focus to the origin");
+            assert.equal(batchFocus["cause"], "explicit-command", "collapsed grant is command-owned");
+            assert.equal(batchFocus["cmdSeq"], "3", "collapsed grant rides the latest sequence 3");
+            assert.equal(batchFocus["afterShown"], null, "directional focus carries no arrival dependencies");
             assert.ok(!h.focused.includes("win-b"), "intermediate neighbor never actuates natively");
             assert.equal((h.activeRef as FakeWindow).internalId, "win-c");
             appliedMatchesReply(h, batchReply);
@@ -173,15 +173,15 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             assert.deepEqual(h.focused, ["win-c"], "no intermediate native focus before the batch lands");
             const batchReply = JSON.parse(h.replies.get(await h.flushAt(batchIndex)) as string) as Record<string, unknown>;
             assert.notEqual(batchReply["outcome"], "rejected", "real Engine drains the debounced batch");
-            const batchEffects = batchReply["effects"] as Array<Record<string, unknown>>;
-            assert.ok(
-                !batchEffects.some((fx) => fx["kind"] === "focus" && fx["target"] === "win-b"),
-                `superseded head focus never publishes, got ${JSON.stringify(batchEffects)}`,
-            );
-            assert.ok(
-                batchEffects.some((fx) => fx["kind"] === "focus" && fx["target"] === "win-c"),
-                `final publication returns focus to the origin, got ${JSON.stringify(batchEffects)}`,
-            );
+            // Focus left the effects lane: the grant rides the retained
+            // latest-only focusRequest (v4), never a focus effect row.
+            assert.deepEqual(batchReply["effects"], [], "no focus effect is published on the v4 wire");
+            const batchFocus = batchReply["focusRequest"] as Record<string, unknown> | null;
+            assert.ok(batchFocus !== null, `debounced pair carries the collapsed focus grant, got ${JSON.stringify(batchReply["focusRequest"])}`);
+            assert.equal(batchFocus["target"], "win-c", "debounced pair returns focus to the origin");
+            assert.equal(batchFocus["cause"], "explicit-command", "collapsed grant is command-owned");
+            assert.equal(batchFocus["cmdSeq"], "3", "collapsed grant rides the latest sequence 3");
+            assert.equal(batchFocus["afterShown"], null, "directional focus carries no arrival dependencies");
             assert.ok(!h.focused.includes("win-b"), "intermediate neighbor never actuates natively");
             assert.equal((h.activeRef as FakeWindow).internalId, "win-c");
             appliedMatchesReply(h, batchReply);
@@ -265,10 +265,19 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             // Follow-focus on the mover is genuine production behavior for
             // tiled moves (tiler-core world_directional.rs
             // `tiled_move_keeps_focus_on_mover_through_one_effect`): the
-            // out-and-back batch re-affirms focus on the mover exactly once
-            // through the collapsed follow-focus effect, never touching the
-            // neighbor.
-            assert.deepEqual(h.focused, ["win-a"], "move batch re-affirms focus on the mover once");
+            // out-and-back batch re-affirms focus on the mover through the
+            // retained latest-only focusRequest, never touching the
+            // neighbor. Focus left the effects lane (v4), so the grant
+            // rides focusRequest; the mover is already focused, so the
+            // already-target native fallback satisfies with zero setters.
+            assert.deepEqual(batchReply["effects"], [], "no focus effect is published on the v4 wire");
+            const moveFocus = batchReply["focusRequest"] as Record<string, unknown> | null;
+            assert.ok(moveFocus !== null, `move batch carries the mover follow-focus grant, got ${JSON.stringify(batchReply["focusRequest"])}`);
+            assert.equal(moveFocus["target"], "win-a", "move batch re-affirms focus on the mover");
+            assert.equal(moveFocus["cause"], "explicit-command", "follow-focus grant is command-owned");
+            assert.equal(moveFocus["cmdSeq"], "2", "follow-focus grant rides the latest sequence 2");
+            assert.equal(moveFocus["afterShown"], null, "directional follow-focus carries no arrival dependencies");
+            assert.deepEqual(h.focused, [], "mover already focused: no redundant native focus write");
             assert.equal((h.activeRef as FakeWindow).internalId, "win-a", "mover stays focused");
             // Late duplicate input replays nothing.
             h.fire("windowActivated");
@@ -332,11 +341,15 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             // From stale win-a (right edge) right would be a boundary noop
             // while from settled win-b it swaps: the applied swap proves
             // same-batch resolution to the settled focus.
-            const batchEffects = batchReply["effects"] as Array<Record<string, unknown>>;
-            assert.ok(
-                batchEffects.some((fx) => fx["kind"] === "focus" && fx["target"] === "win-b"),
-                `batch focuses the settled win-b, got ${JSON.stringify(batchEffects)}`,
-            );
+            // Focus left the effects lane: the grant rides the retained
+            // latest-only focusRequest (v4), never a focus effect row.
+            assert.deepEqual(batchReply["effects"], [], "no focus effect is published on the v4 wire");
+            const mixedFocus = batchReply["focusRequest"] as Record<string, unknown> | null;
+            assert.ok(mixedFocus !== null, `batch carries the settled focus grant, got ${JSON.stringify(batchReply["focusRequest"])}`);
+            assert.equal(mixedFocus["target"], "win-b", "batch focuses the settled win-b");
+            assert.equal(mixedFocus["cause"], "explicit-command", "settled grant is command-owned");
+            assert.equal(mixedFocus["cmdSeq"], "2", "settled grant rides the latest sequence 2");
+            assert.equal(mixedFocus["afterShown"], null, "directional focus carries no arrival dependencies");
             appliedMatchesReply(h, batchReply);
             assert.deepEqual(h.focused, ["win-b"], "mixed batch lands exactly one native focus on win-b");
             assert.equal((h.activeRef as FakeWindow).internalId, "win-b", "mover stays focused");

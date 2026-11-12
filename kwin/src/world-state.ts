@@ -12,10 +12,13 @@ import {
     encodeV4StateAttempt,
     isWorldRejection,
     type FrameSetter,
+    type WorldAfterShown,
     type WorldClearAttempt,
     type WorldCommand,
     type WorldCreationAttempt,
+    type WorldFocusCause,
     type WorldFocusFeedback,
+    type WorldFocusRequest,
     type WorldFrameAttempt,
     type WorldMemberAttempt,
     type WorldMemberRef,
@@ -26,27 +29,31 @@ import {
     type WorldViewRef,
 } from "./world-report";
 
-// One bounded retained close-focus record: the exact latest envelope
-// tuple plus its spend bit. At most one lives here; older tuples retire
-// into the monotonic `closeRetiredRev` fence (canonical u64, never an
-// unbounded spent-id set). A fresh handshake resets both; transport loss
-// keeping context retains them.
-export interface CloseFocusRecord {
+// One bounded retained focus-request record: the exact latest envelope
+// tuple plus frozen dependencies and its spend bit. At most one lives
+// here; older tuples retire into the monotonic `focusRetiredRev` fence
+// (canonical u64, never an unbounded spent-id set). A fresh handshake
+// resets both; transport loss keeping context retains them.
+export interface FocusRequestRecord {
     id: string;
     target: string;
     rev: string;
+    cause: WorldFocusCause;
     out: string;
     ws: string;
+    cmdSeq: string | null;
+    afterShown: WorldAfterShown | null;
     gen: string;
     spent: boolean;
 }
 
-// Freshness verdict for one observed close-focus envelope. `fresh` names
+// Freshness verdict for one observed focus-request envelope. `fresh` names
 // the now-current unspent record (the caller spends before dispatch);
-// `stale` refuses an old, foreign-generation or same-revision-mismatched
-// replay; `duplicate-spent` silences a re-observed spent record; `absent`
-// retires the current record on a null envelope (no close intent).
-export type CloseEnvelope = "absent" | "stale" | "duplicate-spent" | "fresh";
+// `stale` refuses an old, foreign-generation, same-id-mismatched or
+// same-revision-mismatched replay; `duplicate-spent` silences a
+// re-observed spent record; `absent` retires the current record on a null
+// envelope (no focus intent).
+export type FocusEnvelope = "absent" | "stale" | "duplicate-spent" | "fresh";
 
 // Executed-but-unproven native creation: the native call ran (op spent)
 // but the same-turn post-call readback was unavailable, so no causal id
@@ -181,15 +188,14 @@ export class WorldAdapterState {
     // except on generation rotation: a stale core repeat holds silently
     // rather than fighting the user with a second native write.
     dispatchedOps = new Set<string>();
-    spentEffects = new Set<string>();
-    // Bounded retained close-focus accounting (at most one current record
+    // Bounded retained focus-request accounting (at most one current record
     // plus a monotonic retired-revision fence, both canonical): the latest
     // publication adopts, older tuples retire into the fence, and a null
     // envelope retires the current record. Spend-once per bound id covers
     // native attempts and safety no-calls alike. Reset only on a fresh
     // handshake; transport loss keeping context retains both.
-    closeCurrent: CloseFocusRecord | null = null;
-    closeRetiredRev = "0";
+    focusCurrent: FocusRequestRecord | null = null;
+    focusRetiredRev = "0";
     // Explicit retained float placements spent per stable core property
     // operation id (`frame_op`): the row token places exactly once, never
     // again for the same operation across duplicate or unrelated later
@@ -236,8 +242,8 @@ export class WorldAdapterState {
     // reads. No native spending happens here: this unit retains evidence
     // only, for the later state-spending lane to record through.
     stateAttempts = new Map<string, WorldStateAttempt>();
-    // Correlated one-shot focus evidence (latest-wins per spent effect
-    // id) drained into every report until a bound ready reply consumes
+    // Correlated one-shot focus evidence (latest-wins per spent focus
+    // request id) drained into every report until a bound ready reply consumes
     // the delivered snapshot. Redelivery reuses the original write
     // stamps; the core consumes each idempotently. Effects spend
     // at-most-once per generation, so one id retries never.
@@ -307,93 +313,97 @@ export class WorldAdapterState {
         this.dirty = true;
     }
 
-    markEffectSpent(id: string): boolean {
-        if (this.spentEffects.has(id)) {
-            return false;
-        }
-        this.spentEffects.add(id);
-        return true;
-    }
-
-    // Observe one coherent latest close-focus envelope. `null` retires the
-    // current record into the fence (no close intent: never actuate, and
-    // old cached replays later refuse as stale). An exact
-    // `(id,target,rev,out,ws)` match on the bound generation returns
-    // `fresh` (unspent) or `duplicate-spent` (spent). A foreign-generation
-    // envelope refuses as `stale` (a new handshake reusing the same id/rev
-    // never adopts over the old session, and an old cached replay never
-    // adopts on the new binding). Any other same-generation tuple adopts
-    // only when strictly newer than both the current record and the fence
-    // (stable requests may first arrive on a later envelope); same-revision
-    // mismatches and older revisions refuse as `stale`. No cause-specific
-    // logic: the caller applies the latest publication only.
-    observeCloseEnvelope(req: { id: string; target: string; rev: string; out: string; ws: string } | null, gen: string): CloseEnvelope {
+    // Observe one coherent latest focus-request envelope. `null` retires
+    // the current record into the fence (no focus intent: never actuate,
+    // and old cached replays later refuse as stale). An exact full-tuple
+    // plus frozen-dependency match on the bound generation returns `fresh`
+    // (unspent) or `duplicate-spent` (spent). A foreign-generation envelope
+    // refuses as `stale` (a new handshake reusing the same id/rev never
+    // adopts over the old session, and an old cached replay never adopts
+    // on the new binding). A same-id envelope with any tuple/dependency
+    // mismatch refuses as `stale` (re-emission never changes id, target,
+    // issuing revision, cause, command correlation or frozen dependencies).
+    // Any other same-generation tuple adopts only when strictly newer than
+    // both the current record and the fence (stable requests may first
+    // arrive on a later envelope); same-revision mismatches and older
+    // revisions refuse as `stale`. No cause-specific, precedence or
+    // hover-dedupe logic: the caller applies the latest publication only.
+    observeFocusEnvelope(req: WorldFocusRequest | null, gen: string): FocusEnvelope {
         if (req === null) {
-            if (this.closeCurrent !== null) {
-                if (compareU64(this.closeCurrent.rev, this.closeRetiredRev) > 0) {
-                    this.closeRetiredRev = this.closeCurrent.rev;
+            if (this.focusCurrent !== null) {
+                if (compareU64(this.focusCurrent.rev, this.focusRetiredRev) > 0) {
+                    this.focusRetiredRev = this.focusCurrent.rev;
                 }
-                this.closeCurrent = null;
+                this.focusCurrent = null;
             }
             return "absent";
         }
         if (this.boundGen === null || gen !== this.boundGen) {
             return "stale";
         }
-        const current = this.closeCurrent;
-        if (
-            current !== null && current.id === req.id && current.target === req.target &&
-            current.rev === req.rev && current.out === req.out && current.ws === req.ws &&
-            current.gen === gen
-        ) {
+        const frozen = JSON.stringify(req.afterShown ?? null);
+        const current = this.focusCurrent;
+        if (current !== null && current.id === req.id && current.gen === gen) {
+            const same = current.target === req.target && current.rev === req.rev &&
+                current.cause === req.cause && current.out === req.out && current.ws === req.ws &&
+                current.cmdSeq === (req.cmdSeq ?? null) &&
+                JSON.stringify(current.afterShown ?? null) === frozen;
+            if (!same) {
+                return "stale";
+            }
             return current.spent ? "duplicate-spent" : "fresh";
         }
-        if (compareU64(req.rev, this.closeRetiredRev) <= 0) {
+        if (compareU64(req.rev, this.focusRetiredRev) <= 0) {
             return "stale";
         }
         if (current !== null) {
             if (compareU64(req.rev, current.rev) <= 0) {
                 return "stale";
             }
-            if (compareU64(current.rev, this.closeRetiredRev) > 0) {
-                this.closeRetiredRev = current.rev;
+            if (compareU64(current.rev, this.focusRetiredRev) > 0) {
+                this.focusRetiredRev = current.rev;
             }
         }
-        this.closeCurrent = {
+        this.focusCurrent = {
             id: req.id, target: req.target, rev: req.rev,
-            out: req.out, ws: req.ws, gen, spent: false,
+            cause: req.cause, out: req.out, ws: req.ws,
+            cmdSeq: req.cmdSeq ?? null, afterShown: req.afterShown ?? null,
+            gen, spent: false,
         };
         return "fresh";
     }
 
-    // Spend the current close-focus record by exact id. Marks spent and
+    // Spend the current focus-request record by exact id. Marks spent and
     // raises the fence to the record revision; false on no current record,
     // id mismatch, or an already-spent record (duplicate spend blocked).
     // Same-generation reconnects preserve the spent bit (only a fresh
     // handshake or a null/newer envelope retires it).
-    spendClose(id: string): boolean {
-        const current = this.closeCurrent;
+    spendFocus(id: string): boolean {
+        const current = this.focusCurrent;
         if (current === null || current.id !== id || current.spent) {
             return false;
         }
         current.spent = true;
-        if (compareU64(current.rev, this.closeRetiredRev) > 0) {
-            this.closeRetiredRev = current.rev;
+        if (compareU64(current.rev, this.focusRetiredRev) > 0) {
+            this.focusRetiredRev = current.rev;
         }
         return true;
     }
 
-    // Whether the given close identity is still the current record: exact
-    // `(id,target,rev,out,ws)` match on the bound generation against the
-    // live record. A null envelope, a newer publication, or a generation
-    // move retires it, so a delayed owner result naming anything else is
-    // stale and must never stage. Spend state is ignored: the dispatched
-    // request spends at dispatch, before its result arrives.
-    isCurrentCloseRequest(id: string, target: string, rev: string, out: string, ws: string, gen: string): boolean {
-        const current = this.closeCurrent;
+    // Whether the given focus identity is still the current record: exact
+    // full-tuple plus frozen-dependency match on the bound generation
+    // against the live record. A null envelope, a newer publication, or a
+    // generation move retires it, so a delayed owner result naming anything
+    // else is stale and must never stage. Spend state is ignored: the
+    // dispatched request spends at dispatch, before its result arrives.
+    isCurrentFocusRequest(req: WorldFocusRequest, gen: string): boolean {
+        const current = this.focusCurrent;
         return current !== null &&
-            current.id === id && current.target === target && current.rev === rev &&
-            current.out === out && current.ws === ws && current.gen === gen;
+            current.id === req.id && current.target === req.target && current.rev === req.rev &&
+            current.cause === req.cause && current.out === req.out && current.ws === req.ws &&
+            current.cmdSeq === (req.cmdSeq ?? null) &&
+            JSON.stringify(current.afterShown ?? null) === JSON.stringify(req.afterShown ?? null) &&
+            current.gen === gen;
     }
 
     // Spend one explicit retained float placement before its possible
@@ -710,7 +720,7 @@ export class WorldAdapterState {
     }
 
     // Record one correlated one-shot focus evidence row. Latest-wins per
-    // spent effect id. Validation reuses the canonical wire writer
+    // spent focus-request id. Validation reuses the canonical wire writer
     // (encodeV4FocusFeedback fails malformed rows closed: bad
     // id/target/rev, setter, reason, pre/post shapes, non-boolean proof,
     // bad brackets, or stamp); invalid rows refuse, never stored.
@@ -894,9 +904,9 @@ export class WorldAdapterState {
                 retired += 1;
             }
         }
-        // Focus rows retire by exact full-row equality (effect correlation
+        // Focus rows retire by exact full-row equality (request correlation
         // plus disposition plus brackets plus stamp): a newer row for the
-        // same effect id never exists (spent at-most-once), so equality
+        // same request id never exists (spent at-most-once), so equality
         // against the delivered snapshot is sufficient.
         for (const sent of this.inFlight.delivered.focus) {
             const live = this.focusFeedbacks.get(sent.id);
@@ -1066,9 +1076,8 @@ export class WorldAdapterState {
         this.lastAcceptedRev = "0";
         this.nextClientCmd = "1";
         this.dispatchedOps.clear();
-        this.spentEffects.clear();
-        this.closeCurrent = null;
-        this.closeRetiredRev = "0";
+        this.focusCurrent = null;
+        this.focusRetiredRev = "0";
         this.floatSpent.clear();
         this.clearSpent.clear();
         this.appliedWindowTarget.clear();

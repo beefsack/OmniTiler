@@ -1,15 +1,15 @@
 // Automatic fixed-size float stacking on the shipped world route:
-// admission keeps project-owned keepAbove above tiles with zero geometry
-// or focus writes, preexisting below/above means zero stacking writes,
-// later app/user below wins without writes, closed/replaced refs never
-// take cleanup writes, explicit unfloat releases once, focused fullscreen
-// games are never covered and take no writes, and a focused automatic
-// float keeps native focus across automatic (af-*) reconciles with
-// correlated diagnostics. Explicit command-issued (fx-*) focus always
-// actuates, even under a floating focus. Fakes use the exact KWin
-// property names (keepAbove/keepBelow/fullScreen/maximizeMode/
-// onAllDesktops/internalId) and mirror native above/below exclusivity;
-// no legacy plan-adapter coverage here (that path is not production).
+// admission takes no stacking writes with zero geometry or focus writes,
+// preexisting below/above means zero stacking writes, later app/user below
+// wins without writes, closed/replaced refs never take cleanup writes,
+// explicit unfloat releases once, focused fullscreen games are never
+// covered and take no writes. Focus rides the retained focusRequest lane
+// only (the retired effects lane refuses at the reader): explicit
+// command-issued focus always actuates, even under a floating focus.
+// Fakes use the exact KWin property names (keepAbove/keepBelow/fullScreen/
+// maximizeMode/onAllDesktops/internalId) and mirror native above/below
+// exclusivity; no legacy plan-adapter coverage here (that path is not
+// production).
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -35,9 +35,9 @@ const qmlLike = (items: ReadonlyArray<unknown>): object => {
 };
 
 // ---------------------------------------------------------------------------
-// World apply focus preservation: a focused automatic float survives an
-// automatic reconcile carrying tiled-survivor focus; nothing activates over
-// it, with correlated attempt/result diagnostics on the actuated path.
+// World apply focus under a floating focus: explicit command-issued focus
+// always actuates, even under a floating focus; a tiled focus target
+// actuates with correlated attempt/result diagnostics.
 // ---------------------------------------------------------------------------
 
 function applyObservation(focused: string, focusIsFloat: boolean) {
@@ -45,7 +45,7 @@ function applyObservation(focused: string, focusIsFloat: boolean) {
     const tileRef = { id: "win-a" };
     const win = (id: string, floating: boolean, fixedAuto: boolean) => ({
         win: id, ref: id === "win-b" ? floatRef : tileRef,
-        out: "out", ws: "ws",
+        out: "out", ws: "native-ws",
         rect: { x: 0, y: 0, w: 100, h: 100 },
         floating, fitExcluded: floating,
         fullscreen: false, maximized: false, sticky: false,
@@ -56,10 +56,10 @@ function applyObservation(focused: string, focusIsFloat: boolean) {
     return {
         observation: {
             mode: "per-output-local",
-            topology: [{ out: "out", order: ["ws"], current: "ws", complete: true, rect: { x: 0, y: 0, w: 800, h: 600 }, primary: true }],
+            topology: [{ out: "out", order: ["native-ws"], current: "native-ws", complete: true, rect: { x: 0, y: 0, w: 800, h: 600 }, primary: true }],
             bindings: [],
             domains: [{
-                id: "out", ws: "ws",
+                id: "out", ws: "native-ws",
                 bounds: { x: 0, y: 0, w: 800, h: 600 },
                 gap: 8, outer: 4, focused: focused, readable: true, hold: "",
                 closed: [], complete: true,
@@ -84,12 +84,13 @@ function applyObservation(focused: string, focusIsFloat: boolean) {
     };
 }
 
-function applyBoundReply(target: string, id: string, effect: { cause: "automatic-admission" | "explicit-command"; cmdSeq: string | null }): { state: WorldAdapterState; flightWatermark: string; reply: never } {
+function applyBoundReply(target: string, id: string, request: { cause: "automatic-admission" | "explicit-command"; cmdSeq: string | null }): { state: WorldAdapterState; flightWatermark: string; reply: never } {
     // STRICT V4 SYNTHETIC accept (hand-authored inline, never real-core
     // output): the producer adapter lifetime, the serving generation, the
     // capture source correlation and the local native watermark. Broker
     // obs/rev advance together here; the terminal result stays null
-    // (requester-only on the take lane).
+    // (requester-only on the take lane). Focus rides the retained
+    // focusRequest lane; the retired effects lane stays empty.
     const state = new WorldAdapterState("test-adapter", "owner-a");
     assert.equal(state.onDiscovery("gen-1", "test-adapter"), true);
     state.invalidate();
@@ -103,15 +104,20 @@ function applyBoundReply(target: string, id: string, effect: { cause: "automatic
         nativeInvalid: flight.watermark,
         clock: "1",
         gestureSettled: null, gestureAssoc: null,
-        closeFocus: null,
+        focusRequest: {
+            id, target, rev: "1", cause: request.cause,
+            out: "out", ws: "ws",
+            cmdSeq: request.cmdSeq, afterShown: null,
+        },
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
         intentWrites: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws" }, auth: "controlled", reason: "" }],
-        workspaces: [], outputs: [],
+        workspaces: [{ id: "ws", out: "out", bind: "native-ws", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" }],
+        outputs: [],
         windows: [], transfers: [],
-        effects: [{ id, kind: "focus", target, rev: "1", cause: effect.cause, cmdSeq: effect.cmdSeq, awaitShown: false }],
+        effects: [],
         result: null,
     });
     const parsed = parseWorldReply(text);
@@ -123,50 +129,12 @@ function applyBoundReply(target: string, id: string, effect: { cause: "automatic
     return { state, flightWatermark: flight.watermark, reply: parsed as never };
 }
 
-describe("world apply automatic-float focus preservation", () => {
-    it("a focused automatic float keeps native focus across an automatic af-* reconcile", () => {
-        const { observation } = applyObservation("win-b", true);
-        // Producer-accurate automatic admission intent (world_engine.rs
-        // mints af-<window>); explicit fx-<seq> must never take this path.
-        const { state, flightWatermark, reply } = applyBoundReply("win-a", "af-win-a", { cause: "automatic-admission", cmdSeq: null });
-        const logs: string[] = [];
-        const focusWrites: unknown[] = [];
-        const result = applyWorldReply({ dispatchWatermark: flightWatermark, takeResult: null,
-            state,
-            observation,
-            reply,
-            log: (m) => { logs.push(m); },
-            isStillListed: () => true,
-            readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
-            readLiveMembership: () => ({ out: "out", ws: "ws" }),
-            readLiveSafety: () => ({ minimized: false, fullscreen: false, maximized: false, sticky: false }),
-            setGeometry: () => true,
-            setMembership: () => true,
-            sendToOutput: () => true,
-            resolveOutput: (out: string) => ({ name: out }),
-            resolveDesktop: (ws: string) => ({ id: ws }),
-            switchView: () => true,
-            createDesktop: () => undefined,
-            removeDesktop: () => false,
-            focusWindow: (ref) => { focusWrites.push(ref); return true; },
-            desktopOccupants: () => ({ total: 0, readable: true }),
-            desktopVisible: () => false,
-            readLiveView: () => null,
-            desktopById: (id: string) => ({ id }),
-            minDesktops: 2,
-        });
-        assert.deepEqual(focusWrites, [], "zero activation writes to any window");
-        assert.equal(result.effects, 0, "no focus effect counted");
-        assert.ok(logs.some((l) => l.includes("focus-skipped") && l.includes("reason=automatic-active") && l.includes("target=win-a")), "automatic-active skip logged");
-        assert.ok(!logs.some((l) => l.includes("automatic-focus-attempt")), "protected skip attempts no setter");
-    });
-
-    it("an explicit fx-* follow focus actuates under a floating focus", () => {
-        // Producer-accurate explicit command outcome (world_report.rs
-        // mints fx-<seq> for executed focus commands, e.g. send-follow):
-        // user intent must never be swallowed by float preservation.
+describe("world apply focus under a floating focus", () => {
+    it("an explicit follow focus actuates under a floating focus", () => {
+        // Producer-accurate explicit command outcome: user intent must
+        // never be swallowed by float stacking.
         const { observation, refs } = applyObservation("win-b", true);
-        const { state, flightWatermark, reply } = applyBoundReply("win-a", "fx-3", { cause: "explicit-command", cmdSeq: "1" });
+        const { state, flightWatermark, reply } = applyBoundReply("win-a", "focus-3", { cause: "explicit-command", cmdSeq: "1" });
         const logs: string[] = [];
         const focusWrites: unknown[] = [];
         // Truthful fake foreground: the native foreground starts on the
@@ -181,7 +149,7 @@ describe("world apply automatic-float focus preservation", () => {
             readActiveWindowId: () => fg,
             readWindowId: (ref) => ref === refs.tileRef ? "win-a" : ref === refs.floatRef ? "win-b" : null,
             readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
-            readLiveMembership: () => ({ out: "out", ws: "ws" }),
+            readLiveMembership: () => ({ out: "out", ws: "native-ws" }),
             readLiveSafety: () => ({ minimized: false, fullscreen: false, maximized: false, sticky: false }),
             setGeometry: () => true,
             setMembership: () => true,
@@ -194,7 +162,7 @@ describe("world apply automatic-float focus preservation", () => {
             focusWindow: (ref) => { focusWrites.push(ref); if (ref === refs.tileRef) { fg = "win-a"; } return true; },
             desktopOccupants: () => ({ total: 0, readable: true }),
             desktopVisible: () => false,
-            readLiveView: () => "ws",
+            readLiveView: () => "native-ws",
             desktopById: (id: string) => ({ id }),
             minDesktops: 2,
         });
@@ -205,7 +173,7 @@ describe("world apply automatic-float focus preservation", () => {
 
     it("a tiled focus target still actuates with correlated attempt/result diagnostics", () => {
         const { observation, refs } = applyObservation("win-a", false);
-        const { state, flightWatermark, reply } = applyBoundReply("win-b", "fx-7", { cause: "explicit-command", cmdSeq: "1" });
+        const { state, flightWatermark, reply } = applyBoundReply("win-b", "focus-7", { cause: "explicit-command", cmdSeq: "1" });
         const logs: string[] = [];
         const focusWrites: unknown[] = [];
         // Truthful fake foreground: starts on win-a, the fake setter moves
@@ -220,7 +188,7 @@ describe("world apply automatic-float focus preservation", () => {
             readActiveWindowId: () => fg,
             readWindowId: (ref) => ref === refs.tileRef ? "win-a" : ref === refs.floatRef ? "win-b" : null,
             readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
-            readLiveMembership: () => ({ out: "out", ws: "ws" }),
+            readLiveMembership: () => ({ out: "out", ws: "native-ws" }),
             readLiveSafety: () => ({ minimized: false, fullscreen: false, maximized: false, sticky: false }),
             setGeometry: () => true,
             setMembership: () => true,
@@ -233,19 +201,19 @@ describe("world apply automatic-float focus preservation", () => {
             focusWindow: (ref) => { focusWrites.push(ref); if (ref === refs.floatRef) { fg = "win-b"; } return true; },
             desktopOccupants: () => ({ total: 0, readable: true }),
             desktopVisible: () => false,
-            readLiveView: () => "ws",
+            readLiveView: () => "native-ws",
             desktopById: (id: string) => ({ id }),
             minDesktops: 2,
         });
         assert.deepEqual(focusWrites, [refs.floatRef], "actuates the planned target");
         assert.equal(result.effects, 1);
-        assert.ok(logs.some((l) => l.includes("automatic-focus-attempt") && l.includes("target=win-b")), "attempt logged");
-        assert.ok(logs.some((l) => l.includes("automatic-focus-result") && l.includes("target=win-b") && l.includes("outcome=setter-accepted proven=true")), "acceptance logged");
+        assert.ok(logs.some((l) => l.includes("omnitiler:world:focus-request-attempt") && l.includes("target=win-b")), "attempt logged");
+        assert.ok(logs.some((l) => l.includes("omnitiler:world:focus-request-result") && l.includes("target=win-b") && l.includes("outcome=setter-accepted proven=true")), "acceptance logged");
     });
 
     it("an accepted setter without native activation reports proven=false, not refused", () => {
         const { observation, refs } = applyObservation("win-a", false);
-        const { state, flightWatermark, reply } = applyBoundReply("win-b", "fx-7", { cause: "explicit-command", cmdSeq: "1" });
+        const { state, flightWatermark, reply } = applyBoundReply("win-b", "focus-7", { cause: "explicit-command", cmdSeq: "1" });
         const logs: string[] = [];
         const focusWrites: unknown[] = [];
         // Truthful fake foreground: the setter accepts but the native
@@ -263,7 +231,7 @@ describe("world apply automatic-float focus preservation", () => {
             readActiveWindowId: () => fg,
             readWindowId: (ref) => ref === refs.tileRef ? "win-a" : ref === refs.floatRef ? "win-b" : null,
             readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
-            readLiveMembership: () => ({ out: "out", ws: "ws" }),
+            readLiveMembership: () => ({ out: "out", ws: "native-ws" }),
             readLiveSafety: () => ({ minimized: false, fullscreen: false, maximized: false, sticky: false }),
             setGeometry: () => true,
             setMembership: () => true,
@@ -276,13 +244,13 @@ describe("world apply automatic-float focus preservation", () => {
             focusWindow: (ref) => { focusWrites.push(ref); return true; },
             desktopOccupants: () => ({ total: 0, readable: true }),
             desktopVisible: () => false,
-            readLiveView: () => "ws",
+            readLiveView: () => "native-ws",
             desktopById: (id: string) => ({ id }),
             minDesktops: 2,
         });
         assert.deepEqual(focusWrites, [refs.floatRef], "setter ran once");
         assert.equal(result.effects, 0, "unproven activation counts nothing");
-        assert.ok(logs.some((l) => l.includes("automatic-focus-result") && l.includes("outcome=setter-accepted proven=false")), "accepted without activation");
+        assert.ok(logs.some((l) => l.includes("omnitiler:world:focus-request-result") && l.includes("outcome=setter-accepted proven=false")), "accepted without activation");
         assert.ok(!logs.some((l) => l.includes("outcome=setter-refused")), "never misreported as refused");
     });
 });
@@ -568,7 +536,7 @@ function entryAcceptedReply(gen: string, source: string, nativeInvalid: string, 
         ready: true, consumed: false,
         source, nativeInvalid, clock: "1",
         gestureSettled: null, gestureAssoc: null,
-        closeFocus: null,
+        focusRequest: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
         intentWrites: [], switchSettled: [], diagnostics: [],
@@ -639,25 +607,15 @@ describe("world entry automatic-float stacking", () => {
         assert.ok(!h.logs.some((l) => l.includes("automatic-keep-above")), "no automatic stacking actuation");
     });
 
-    it("a focused automatic float survives a survivor-focus reconcile with no activation", () => {
-        const h = makeEntryHarness();
-        entryDiscover(h);
-        h.world.activeWindow = h.wins.find((w) => w.internalId === "win-b") ?? null;
-        entryRound(h, {
-            effects: [{ id: "af-win-a", kind: "focus", target: "win-a", rev: "9", cause: "automatic-admission", cmdSeq: null, awaitShown: false }],
-        });
-        assert.deepEqual(h.world.focused, [], "no activation over the focused float");
-        assert.ok(h.logs.some((l) => l.includes("focus-skipped") && l.includes("reason=automatic-active")), "automatic-active skip");
-    });
-
     it("an explicit follow focus actuates under a focused automatic float", () => {
         const h = makeEntryHarness();
         entryDiscover(h);
         h.world.activeWindow = h.wins.find((w) => w.internalId === "win-b") ?? null;
         entryRound(h, {
-            effects: [{ id: "fx-3", kind: "focus", target: "win-a", rev: "9", cause: "explicit-command", cmdSeq: "1", awaitShown: false }],
+            workspaces: [{ id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" }],
+            focusRequest: { id: "focus-3", target: "win-a", rev: "9", cause: "explicit-command", out: "out", ws: "wl-1", cmdSeq: "1", afterShown: null },
         });
-        assert.deepEqual(h.world.focused, ["win-a"], "explicit fx-* follow actuates");
+        assert.deepEqual(h.world.focused, ["win-a"], "explicit follow actuates");
         assert.ok(!h.logs.some((l) => l.includes("focus-skipped")), "no preservation skip for explicit focus");
     });
 

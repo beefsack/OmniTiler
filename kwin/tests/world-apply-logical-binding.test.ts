@@ -135,7 +135,7 @@ function coreReply(workspaces: Array<Record<string, unknown>>, transfers: Array<
         }],
         transfers: transfers.map((t) => ({ ...t, cmdSeq: null })),
         effects: [],
-        closeFocus: null,
+        focusRequest: null,
         result: null,
         intentWrites: [], switchSettled: [], diagnostics: [],
     };

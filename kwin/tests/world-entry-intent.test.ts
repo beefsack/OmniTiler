@@ -255,7 +255,7 @@ function buildAccept(
         ],
         outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
         windows: [winRow("win-a", "ws1"), winRow("win-b", "ws2")],
-        transfers: [], effects: [], closeFocus: null, result: null,
+        transfers: [], effects: [], focusRequest: null, result: null,
         gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         intentWrites,
         presentation: DISABLED_PRESENTATION,

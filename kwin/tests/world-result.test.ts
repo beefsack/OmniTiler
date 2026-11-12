@@ -28,7 +28,7 @@ function baseCapture(result: string): string {
         `"obs":"1","rev":"1","ready":true,"consumed":false,` +
         `"scopes":[{"scope":{"kind":"output","out":"out-1"},"auth":"controlled","reason":""}],` +
         `"workspaces":[],"outputs":[],"windows":[],` +
-        `"transfers":[],"effects":[],"closeFocus":null,${result},` +
+        `"transfers":[],"effects":[],"focusRequest":null,${result},` +
         `"gestureSettled":null,"operationSettled":[],"nativeCreations":[],"warpCursor":null,` +
         `"presentation":{"foreground":"","rev":"0","border":{"visible":false,"reason":"disabled",` +
         `"subject":null,"outsets":null,"width":null,"radius":null,"witness":null},` +

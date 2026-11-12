@@ -13,7 +13,7 @@
 // projections `gen`-only normalized (`req` is scripted deterministic).
 // The active family carries the required `sharedNativeRoster` handshake
 // capability, the `foregroundKnown` report bit, and the nullable
-// `closeFocus` reply lane; frozen `test-fixtures/stage5-v4` (hidden-border
+// `focusRequest` reply lane; frozen `test-fixtures/stage5-v4` (hidden-border
 // lineage without those keys) and `test-fixtures/stage5-v2` stay untouched
 // history. Genesis-1 is never byte-compared: its frame/member/view/clear/creation
 // attempt stamps are adopted from the preceding broker reply clock
@@ -83,7 +83,7 @@ function v4Fixture(chain: ChainName, name: string): string {
 // v2 producer lineage (adapter-local FrameWitness): genuine recordings via
 // the same actual entry/real-broker path, now carrying the local witness,
 // the visible anchored border, and the required `sharedNativeRoster` /
-// `foregroundKnown` / `closeFocus` keys. Producer re-record comparisons use
+// `foregroundKnown` / `focusRequest` keys. Producer re-record comparisons use
 // the active family byte-exact (gen/source only normalized); legacy
 // hidden-fixture subscriber tests below stay on frozen stage5-v4, and frozen
 // stage5-v2 stays untouched history.
@@ -1071,12 +1071,12 @@ describe("stage5 active boundary (new keys required, frozen history rejects)", (
         assert.ok(!frozen.includes("foregroundKnown"), "frozen stage5-v4 envelope predates the bit");
     });
 
-    it("active reply requires closeFocus, stripping it refuses the whole reply", () => {
+    it("active reply requires focusRequest, stripping it refuses the whole reply", () => {
         const intact = activeFixture("full", "reply-p5-0.json");
         assert.ok(parseWorldReply(intact) !== null, "genuine active reply parses");
         const stripped = JSON.parse(intact) as Record<string, unknown>;
-        assert.ok("closeFocus" in stripped, "genuine active reply carries the lane");
-        delete stripped["closeFocus"];
-        assert.equal(parseWorldReply(JSON.stringify(stripped)), null, "reply without closeFocus refuses");
+        assert.ok("focusRequest" in stripped, "genuine active reply carries the lane");
+        delete stripped["focusRequest"];
+        assert.equal(parseWorldReply(JSON.stringify(stripped)), null, "reply without focusRequest refuses");
     });
 });

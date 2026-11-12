@@ -170,7 +170,7 @@ function acceptCapture(gen: string, envelope: Record<string, unknown>, rev: stri
             visibility: null, visibility_auth: "untouched", visibility_hold: "",
             state: [],
         }],
-        transfers: [], effects: [], closeFocus: null, result: null,
+        transfers: [], effects: [], focusRequest: null, result: null,
         gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         intentWrites: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
@@ -443,7 +443,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         // default): success omits the no-space marker on the wire and fills
         // false, so actuator-side null-stripping is broker behavior only.
         // Exact vectors are immutable: every mutation works on a clone.
-        const dir = join("..", "test-fixtures", "world-wire", "v4", "messages");
+        const dir = join("..", "test-fixtures", "world-wire", "v4-active", "messages");
         const floatBody = JSON.parse(readFileSync(join(dir, "reply-result-float-placed.json"), "utf8")) as Record<string, unknown>;
         assert.ok(!("noSpace" in (floatBody["result"] as Record<string, unknown>)), "success omits noSpace on the wire");
         const boundFloat = JSON.stringify({ ...floatBody, source: "src-a", nativeInvalid: "1", clock: "2", gestureAssoc: null });
@@ -768,7 +768,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
     it("core replies refuse the retired v3 workspace field and shape drift", () => {
         // Normative v4 vector plus bound transport: retired keys and dropped
         // required lanes refuse, the canonical bytes parse.
-        const dir = join("..", "test-fixtures", "world-wire", "v4", "messages");
+        const dir = join("..", "test-fixtures", "world-wire", "v4-active", "messages");
         const vector = JSON.parse(readFileSync(join(dir, "reply-observe.json"), "utf8")) as Record<string, unknown>;
         const bound = (): Record<string, unknown> => ({
             ...JSON.parse(JSON.stringify(vector)) as Record<string, unknown>,
@@ -803,7 +803,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
     });
 
     it("trailing marker parses absent-false, true, and refuses present-false or non-boolean", () => {
-        const dir = join("..", "test-fixtures", "world-wire", "v4", "messages");
+        const dir = join("..", "test-fixtures", "world-wire", "v4-active", "messages");
         const vector = JSON.parse(readFileSync(join(dir, "reply-observe.json"), "utf8")) as Record<string, unknown>;
         const clone = (): Record<string, unknown> => ({
             ...JSON.parse(JSON.stringify(vector)) as Record<string, unknown>,

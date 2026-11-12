@@ -181,7 +181,7 @@ function makeHarness() {
             nativeInvalid,
             clock: "0",
             gestureSettled: null, gestureAssoc: null,
-            closeFocus: null,
+            focusRequest: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
             intentWrites: [], switchSettled: [], diagnostics: [],

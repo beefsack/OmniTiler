@@ -922,8 +922,11 @@ describe("world fixed-client explicit tile after workspace enable (real Engine)"
             h.runTimers();
             const fixedRound = await h.flushOne();
             await h.flushAll();
-            const fixedEffects = (fixedRound.parsed["effects"] as Array<Record<string, unknown>>) ?? [];
-            assert.ok(!fixedEffects.some((fx) => fx["target"] === WIN_AF_NEW && String(fx["id"]).startsWith("af-")), `automatic fixed newcomer takes no admission intent, got ${JSON.stringify(fixedEffects)}`);
+            // Focus left the effects lane: admission intent rides the
+            // retained latest-only focusRequest (v4), never a focus effect.
+            assert.deepEqual(fixedRound.parsed["effects"] ?? [], [], "no focus effect is published on the v4 wire");
+            const fixedFocus = fixedRound.parsed["focusRequest"] as Record<string, unknown> | null;
+            assert.ok(fixedFocus === null || fixedFocus["target"] !== WIN_AF_NEW, `automatic fixed newcomer takes no admission intent, got ${JSON.stringify(fixedFocus)}`);
             assert.equal(h.focused.length, focusedBefore, "automatic fixed admission writes no focus");
             const fixedWins = (fixedRound.parsed["windows"] as Array<Record<string, unknown>>) ?? [];
             const fixedRow = fixedWins.find((w) => w["win"] === WIN_AF_NEW);
@@ -937,13 +940,22 @@ describe("world fixed-client explicit tile after workspace enable (real Engine)"
             const ordRound = await h.flushOne();
             await h.flushAll();
             const ordEffects = (ordRound.parsed["effects"] as Array<Record<string, unknown>>) ?? [];
-            assert.ok(ordEffects.some((fx) => fx["kind"] === "focus" && fx["target"] === WIN_ORD_NEW && fx["cause"] === "automatic-admission" && fx["cmdSeq"] === null && fx["awaitShown"] === false), `ordinary newcomer takes admission intent, got ${JSON.stringify(ordEffects)}`);
+            assert.deepEqual(ordEffects, [], "no focus effect is published on the v4 wire");
+            const ordFocus = ordRound.parsed["focusRequest"] as Record<string, unknown> | null;
+            assert.ok(ordFocus !== null && ordFocus["target"] === WIN_ORD_NEW && ordFocus["cause"] === "automatic-admission" && ordFocus["cmdSeq"] === null && ordFocus["afterShown"] === null, `ordinary newcomer takes admission intent, got ${JSON.stringify(ordFocus)}`);
             assert.ok(h.focused.includes(`{${WIN_ORD_NEW}}`), `ordinary admission activates natively, got ${JSON.stringify(h.focused)}`);
 
-            // Focused-float fence: with native focus on the automatic
-            // float, a further ordinary newcomer still mints af- in the
-            // core but the adapter holds it with the automatic-active
-            // diagnostic and zero activation writes.
+            // Focused-float/sticky fence (core-owned CONFORMANCE guard,
+            // world_model.rs:1515-1529; pinned core-side by
+            // admission_withheld_over_different_focused_floating and
+            // admission_withheld_over_different_focused_sticky in
+            // world_admission_close_stay_tests.rs): with native focus on the
+            // automatic float, a further ordinary newcomer spends its
+            // admission intent core-side without emitting, never retried.
+            // The reply carries no focusRequest and the adapter performs
+            // zero native focus writes (no adapter fence log remains: the
+            // old focus-skipped emitter was deleted with the effects lane).
+            const focusedAfterOrdinary = h.focused.length;
             h.setActive(`{${WIN_F}}`);
             h.live.set(`{${WIN_ORD_FENCED}}`, termSpec(WIN_ORD_FENCED, { x: 500, y: 0, width: 400, height: 600 }));
             h.fire("windowAdded");
@@ -951,9 +963,11 @@ describe("world fixed-client explicit tile after workspace enable (real Engine)"
             const fencedRound = await h.flushOne();
             await h.flushAll();
             const fencedEffects = (fencedRound.parsed["effects"] as Array<Record<string, unknown>>) ?? [];
-            assert.ok(fencedEffects.some((fx) => fx["kind"] === "focus" && fx["target"] === WIN_ORD_FENCED && fx["cause"] === "automatic-admission" && fx["cmdSeq"] === null && fx["awaitShown"] === false), `fenced newcomer still mints admission intent, got ${JSON.stringify(fencedEffects)}`);
+            assert.deepEqual(fencedEffects, [], "no focus effect is published on the v4 wire");
+            const fencedFocus = fencedRound.parsed["focusRequest"] as Record<string, unknown> | null;
+            assert.equal(fencedFocus, null, `fenced newcomer spends core-side with no admission intent, got ${JSON.stringify(fencedFocus)}`);
+            assert.equal(h.focused.length, focusedAfterOrdinary, `focused float fence writes no native focus, got ${JSON.stringify(h.focused)}`);
             assert.ok(!h.focused.includes(`{${WIN_ORD_FENCED}}`), `focused float holds the newcomer activation, got ${JSON.stringify(h.focused)}`);
-            assert.ok(h.logs.some((l) => l.includes("focus-skipped") && l.includes("reason=automatic-active") && l.includes(`target=${WIN_ORD_FENCED}`)), "focused automatic float fence logged");
             emitTrace(t, h, "admission-focus leg complete");
         } catch (error) {
             emitTrace(t, h, "admission-focus leg failed");

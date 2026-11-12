@@ -11,7 +11,7 @@ order, plus the capture replies, read projections, and production-subscriber
 dispatch renders.
 
 Boundary: frozen `../stage5-v4` (hidden-border lineage, no
-`sharedNativeRoster`/`foregroundKnown`/`closeFocus`) and frozen `../stage5`
+`sharedNativeRoster`/`foregroundKnown`/`focusRequest`) and frozen `../stage5`
 (facts inputs) are read-only history. This family is the current conformance
 target. The legacy v3 `../stage5` tree also supplies the facts inputs the
 recorder answers with; those inputs are unchanged.
@@ -21,7 +21,7 @@ New keys versus frozen `../stage5-v4` (all producer-genuine, never patched):
 - Handshake request carries the required `sharedNativeRoster` capability
   (`true` for this shared-native KDE route).
 - Every capture report carries the required `foregroundKnown` bit.
-- Every capture reply carries the required nullable `closeFocus` lane
+- Every capture reply carries the required nullable `focusRequest` lane
   (`null` here: no close intent rides these chains).
 
 The projections carry the genuine visible anchored border (7 keys, `win-a`

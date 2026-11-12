@@ -997,13 +997,17 @@ describe("world split-edge selection through the production entry (real Engine)"
             assert.ok(localCapture !== undefined, "the core drained the local move");
             const localReply = JSON.parse(h.replies.get(localCapture as number) as string) as Record<string, unknown>;
             assert.equal((localReply["transfers"] as Array<unknown>).length, 0, "local R1-R3 move retains no transfer");
-            // v4: the executed local move carries an explicit focus effect
-            // for the mover (already focused): it actuates with no redundant
-            // native write, so focus is unchanged.
-            const localEffects = localReply["effects"] as Array<Record<string, unknown>>;
-            assert.equal(localEffects.length, 1, "local move carries exactly the mover focus effect");
-            assert.equal(localEffects[0]?.["kind"], "focus", "mover focus effect");
-            assert.equal(localEffects[0]?.["target"], "w-move", "focus stays on the mover");
+            // v4: the executed local move carries an explicit follow-focus
+            // grant for the mover (already focused) on the retained
+            // latest-only focusRequest: it actuates with no redundant
+            // native write, so focus is unchanged. Focus left the effects
+            // lane, so no focus effect row rides.
+            assert.deepEqual(localReply["effects"], [], "no focus effect is published on the v4 wire");
+            const localFocus = localReply["focusRequest"] as Record<string, unknown> | null;
+            assert.ok(localFocus !== null, `local move carries the mover follow-focus grant, got ${JSON.stringify(localReply["focusRequest"])}`);
+            assert.equal(localFocus["target"], "w-move", "focus stays on the mover");
+            assert.equal(localFocus["cause"], "explicit-command", "mover follow-focus grant is command-owned");
+            assert.equal(localFocus["afterShown"], null, "directional follow-focus carries no arrival dependencies");
             assert.equal(h.outputWrites.length, 0, "local move writes no output transfer");
             assert.equal(h.membershipWrites.length, 0, "local move writes no membership");
             assert.equal(h.commandPayloads("move-directional").length, 1, "no move replay after settlement");

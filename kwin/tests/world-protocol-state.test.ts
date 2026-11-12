@@ -64,7 +64,7 @@ const ACCEPTED = (
     effects: [],
     result: null,
     gestureSettled: null, gestureAssoc: null,
-    closeFocus: null,
+    focusRequest: null,
     operationSettled: [], nativeCreations: [],
     warpCursor: null,
     presentation: DISABLED_PRESENTATION,
@@ -312,10 +312,15 @@ describe("world adapter lifetime state", () => {
         assert.equal(state.markCreationSpent("op-native-1"), true, "spent resets with the generation");
     });
 
-    it("spends one-shot effects and frame/clear tokens once with dispatch records", () => {
+    it("spends retained focus requests once with float/clear tokens and dispatch records", () => {
         const state = bound();
-        assert.equal(state.markEffectSpent("fx-1"), true);
-        assert.equal(state.markEffectSpent("fx-1"), false);
+        assert.equal(state.observeFocusEnvelope({
+            id: "focus-1", target: "win-a", rev: "1", cause: "positive-close",
+            out: "out", ws: "ws1", cmdSeq: null, afterShown: null,
+        }, "gen-1"), "fresh");
+        assert.equal(state.spendFocus("focus-1"), true);
+        assert.equal(state.spendFocus("focus-1"), false);
+        assert.equal(state.spendFocus("unknown"), false);
         assert.equal(state.markFloatSpent("op-3"), true);
         assert.equal(state.markFloatSpent("op-3"), false);
         assert.equal(state.markClearSpent("op-4"), true);

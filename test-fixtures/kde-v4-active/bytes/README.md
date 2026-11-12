@@ -10,7 +10,7 @@ Boundary vs the preserved historical `test-fixtures/kde-v4/bytes` family:
   (`kwin/src/world-connection.ts`, `tiler-protocol` connection family).
 - Every `report-*.json` carries the `foregroundKnown` provenance bit
   (`kwin/src/world-observe.ts`).
-- `reply-observe.json` carries the required nullable `closeFocus` lane
+- `reply-observe.json` carries the required nullable `focusRequest` lane
   (`kwin/src/world-report.ts`).
 
 Regenerate only via the test's generator mode; normal runs assert

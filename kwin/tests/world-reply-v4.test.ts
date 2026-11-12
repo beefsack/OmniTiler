@@ -8,8 +8,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isCoreWorldReply, parseDiscoveryReply, parseWorldReply } from "../src/world-report";
 
-const DIR = join("..", "test-fixtures", "world-wire", "v4", "messages");
+const DIR = join("..", "test-fixtures", "world-wire", "v4-active", "messages");
+const FROZEN_DIR = join("..", "test-fixtures", "world-wire", "v4", "messages");
 const raw = (name: string): string => readFileSync(join(DIR, name), "utf8");
+const frozenRaw = (name: string): string => readFileSync(join(FROZEN_DIR, name), "utf8");
 const doc = (name: string): Record<string, unknown> => JSON.parse(raw(name));
 // Broker bind_response semantics: quoted-decimal watermark/clock plus a
 // null gestureAssoc default on the bound capture lane.
@@ -68,15 +70,12 @@ describe("world-reply-v4", () => {
         assert.equal(dg.diagnostics[4]?.id, null);
     });
 
-    it("effect cause coupling and transfer command correlation", () => {
-        const fx = parseWorldReply(boundText(doc("reply-effect-focus.json")));
-        assert.ok(isCoreWorldReply(fx));
-        assert.deepEqual(fx.effects, [
-            {
-                id: "effect-a", kind: "focus", target: "win-a", rev: "1",
-                cause: "explicit-command", cmdSeq: "1", awaitShown: true,
-            },
-        ]);
+    it("retired effects lane refuses; transfer command correlation", () => {
+        // The retired one-shot effect wire refuses now: the effects lane
+        // is required empty, and the retired closeFocus key refuses.
+        // Frozen old-shape replies stay pinned as strict rejects.
+        assert.equal(parseWorldReply(boundText(JSON.parse(frozenRaw("reply-effect-focus.json")))), null);
+        assert.equal(parseWorldReply(boundText(JSON.parse(frozenRaw("reply-observe.json")))), null);
         const tr = parseWorldReply(boundText(doc("reply-transfer-window.json")));
         assert.ok(isCoreWorldReply(tr));
         assert.deepEqual(tr.transfers, [
@@ -160,12 +159,9 @@ describe("world-reply-v4", () => {
         // Presentation rev is required: drop it too for the pre-migration shape.
         delete (oldBorder["presentation"] as Record<string, unknown>)["rev"];
         assert.equal(parseWorldReply(bind(oldBorder)), null);
-        // Unknown effect cause.
+        // Unknown effect kind refuses through the empty-lane rule.
         const badCause = clone("reply-effect-focus.json");
-        const fxRows = badCause["effects"] as Array<Record<string, unknown>>;
-        const fxRow = fxRows[0];
-        assert.ok(fxRow);
-        fxRow["cause"] = "fx-spell";
+        badCause["effects"] = [{ id: "fx-1", kind: "focus", target: "win-a" }];
         assert.equal(parseWorldReply(bind(badCause)), null);
         // Show never carries hide-fallback permission.
         const badVis = clone("reply-observe.json");
@@ -205,39 +201,58 @@ describe("world-reply-v4", () => {
         const oversizeBound = boundText(doc("reply-observe.json")) + " ".repeat(4 * 1024 * 1024);
         assert.equal(parseWorldReply(oversizeBound), null);
         assert.equal(parseDiscoveryReply(raw("reply-bootstrap.json") + " ".repeat(4 * 1024 * 1024)), null);
-        // Missing required nullable closeFocus refuses (historical
-        // old-shape rejection: pre-amendment replies carry no such key).
-        const noClose = clone("reply-observe.json");
-        delete noClose["closeFocus"];
-        assert.equal(parseWorldReply(bind(noClose)), null);
-        const noCloseBoot = JSON.parse(raw("reply-bootstrap.json")) as Record<string, unknown>;
-        delete noCloseBoot["closeFocus"];
-        assert.equal(parseDiscoveryReply(JSON.stringify(noCloseBoot)), null);
-        // Malformed closeFocus rows refuse: wrong cause, bad rev, extra key.
-        const badCloseCause = clone("reply-close-focus-pending.json");
-        (badCloseCause["closeFocus"] as Record<string, unknown>)["cause"] = "explicit-command";
-        assert.equal(parseWorldReply(bind(badCloseCause)), null);
-        const badCloseRev = clone("reply-close-focus-pending.json");
-        (badCloseRev["closeFocus"] as Record<string, unknown>)["rev"] = "07";
-        assert.equal(parseWorldReply(bind(badCloseRev)), null);
-        const badCloseKeys = clone("reply-close-focus-pending.json");
-        (badCloseKeys["closeFocus"] as Record<string, unknown>)["extra"] = 1;
-        assert.equal(parseWorldReply(bind(badCloseKeys)), null);
+        // Missing required nullable focusRequest refuses; the retired
+        // closeFocus shape stays pinned above as a strict reject.
+        const noFocus = clone("reply-observe.json");
+        delete noFocus["focusRequest"];
+        assert.equal(parseWorldReply(bind(noFocus)), null);
+        const noFocusBoot = JSON.parse(raw("reply-bootstrap.json")) as Record<string, unknown>;
+        delete noFocusBoot["focusRequest"];
+        assert.equal(parseDiscoveryReply(JSON.stringify(noFocusBoot)), null);
+        // Amended active violation fixtures refuse exactly.
+        assert.equal(parseWorldReply(boundText(doc("invalid-close-focus-unknown-cause.json"))), null);
+        assert.equal(parseWorldReply(boundText(doc("invalid-close-focus-missing-lane.json"))), null);
+        // Malformed focusRequest rows refuse: unknown cause, bad rev,
+        // extra key, and cross-field cmdSeq/afterShown violations, on the
+        // amended positive-close pending reply.
+        const mutatedPending = (): Record<string, unknown> => clone("reply-close-focus-pending.json");
+        const badFocusCause = mutatedPending();
+        (badFocusCause["focusRequest"] as Record<string, unknown>)["cause"] = "explicit-command";
+        assert.equal(parseWorldReply(bind(badFocusCause)), null);
+        const badFocusRev = mutatedPending();
+        (badFocusRev["focusRequest"] as Record<string, unknown>)["rev"] = "07";
+        assert.equal(parseWorldReply(bind(badFocusRev)), null);
+        const badFocusKeys = mutatedPending();
+        (badFocusKeys["focusRequest"] as Record<string, unknown>)["extra"] = 1;
+        assert.equal(parseWorldReply(bind(badFocusKeys)), null);
+        const badFocusSeq = mutatedPending();
+        (badFocusSeq["focusRequest"] as Record<string, unknown>)["cmdSeq"] = "5";
+        assert.equal(parseWorldReply(bind(badFocusSeq)), null);
     });
 
-    it("decodes the required nullable closeFocus lane", () => {
+    it("decodes the required nullable focusRequest lane", () => {
+        // Amended active replies carry the current wire: the pending
+        // positive-close reply plus the focused explicit selection reply.
         const pending = parseWorldReply(boundText(doc("reply-close-focus-pending.json")));
         assert.ok(isCoreWorldReply(pending));
-        assert.deepEqual(pending.closeFocus, {
+        assert.deepEqual(pending.focusRequest, {
             id: "close-focus-42", target: "C", rev: "42",
             cause: "positive-close", out: "L", ws: "W1",
+            cmdSeq: null, afterShown: null,
         });
+        const explicit = parseWorldReply(boundText(doc("reply-effect-focus.json")));
+        assert.ok(isCoreWorldReply(explicit));
+        assert.equal(explicit.focusRequest?.cause, "explicit-command");
+        assert.ok(explicit.focusRequest?.afterShown !== null, "explicit selection carries frozen afterShown");
+        assert.deepEqual(explicit.focusRequest?.afterShown?.members, [
+            { win: "win-a", out: "out-a", ws: "ws-a", frame: [8, 8, 800, 600] },
+        ]);
         const idle = parseWorldReply(boundText(doc("reply-observe.json")));
         assert.ok(isCoreWorldReply(idle));
-        assert.equal(idle.closeFocus, null);
+        assert.equal(idle.focusRequest, null);
         const boot = parseDiscoveryReply(raw("reply-bootstrap.json"));
         assert.ok(isCoreWorldReply(boot));
-        assert.equal(boot.closeFocus, null);
+        assert.equal(boot.focusRequest, null);
     });
 
     it("broker correlation: strip_result and gestureAssoc", () => {

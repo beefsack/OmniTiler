@@ -57,7 +57,7 @@ function loadReply(): WorldReply {
                 visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             },
         ],
-        transfers: [], effects: [], closeFocus: null, result: null,
+        transfers: [], effects: [], focusRequest: null, result: null,
         gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         presentation: {
             foreground: "win-a", rev: "1",

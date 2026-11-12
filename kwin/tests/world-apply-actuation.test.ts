@@ -5,8 +5,9 @@
 // `view-<win>` token; possibly-executed attempts never repeat without fresh
 // unambiguous proof; Applied settles only on read-back proof; throws and
 // partial writes stay ambiguous; proven external input supersedes; creation
-// recovers by enumeration against the pre-attempt baseline; raise/stack
-// never focus. Native creation follows the Stage 1b contract: only explicit
+// recovers by enumeration against the pre-attempt baseline; the retired
+// effects lane (raise/stack/focus rows) refuses at the reader and never
+// actuates, so focus rides the retained focusRequest lane only. Native creation follows the Stage 1b contract: only explicit
 // core desires execute (at most once per stable op), the same-turn
 // before/after delta proves the created id, and receipts persist until the
 // core incorporates them. Unbound rows never authorize.
@@ -486,7 +487,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         ready: true, consumed: false,
         source, nativeInvalid, clock: "1",
         gestureSettled: null, gestureAssoc: null,
-        closeFocus: null,
+        focusRequest: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
         intentWrites: [], switchSettled: [], diagnostics: [],
@@ -1291,35 +1292,47 @@ describe("world actuation identity and proof", () => {
         assert.ok(!h.world.removed.includes("ws2"), "window-referenced workspace retained");
     });
 
-    it("never focuses for raise/stack but applies focus with proof", () => {
+    it("refuses retired raise/stack/focus effects at the reader; a retained request actuates once", () => {
+        // The effects lane is retired: any non-empty effects row refuses
+        // at the reader, so raise/stack can never steer focus through it.
+        // Focus rides the retained focusRequest lane and applies once with
+        // proof, never repeating without fresh intent.
+        const refused = JSON.stringify({
+            v: 4, adapter: "test-adapter", gen: "gen-1", req: "req-1",
+            obs: "1", rev: "1", ready: true, consumed: false,
+            source: "req-1", nativeInvalid: "1", clock: "1",
+            gestureSettled: null, gestureAssoc: null,
+            focusRequest: null,
+            operationSettled: [], nativeCreations: [],
+            warpCursor: null,
+            intentWrites: [], switchSettled: [], diagnostics: [],
+            presentation: DISABLED_PRESENTATION,
+            scopes: [], workspaces: [], outputs: [],
+            windows: [],
+            transfers: [],
+            effects: [
+                { id: "fx-9", kind: "raise", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: false },
+                { id: "fx-10", kind: "stack", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: false },
+            ],
+            result: null,
+        });
+        assert.equal(parseWorldReply(refused), null, "non-empty effects refuses at the reader");
         const h = makeHarness();
         discover(h);
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);
         dispatchAndReply(h, rev, {
-            effects: [
-                { id: "fx-9", kind: "raise", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: false },
-                { id: "fx-10", kind: "stack", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: false },
-            ],
+            focusRequest: { id: "focus-11", target: "win-b", rev: "2", cause: "explicit-command", out: "out", ws: "ws2", cmdSeq: "1", afterShown: null },
         });
-        assert.equal(h.world.focused.length, 0, "raise/stack never steer focus");
+        assert.deepEqual(h.world.focused, ["win-b"], "retained request actuates once with proof");
         h.runTimers();
-        // Raise/stack never steer focus (zero focused above) and never
-        // spend as attempts; verdict transport is deleted.
+        // Focus applies once with proof (focused above); no invented queue
+        // ops ride the lane.
         noInventedQueueOps(h);
-        // The second press queues behind the in-flight feedback-carrier
-        // report without invalidating it, so that flight stays fresh and
-        // the focus effect applies on its own round trip; the queued press
-        // then drains after the acceptance.
-        h.handle?.requestWorkspaceRelative(-1);
-        dispatchAndReply(h, rev, {
-            effects: [{ id: "fx-11", kind: "focus", target: "win-b", rev: "2", cause: "explicit-command", cmdSeq: "1", awaitShown: false }],
-        });
-        assert.deepEqual(h.world.focused, ["win-b"], "focus applies once with proof");
-        h.runTimers();
-        // Focus applies once with proof (focused above); verdict transport
-        // is deleted.
-        noInventedQueueOps(h);
+        // A repeated identical publication never re-actuates.
+        const callsBefore = h.world.focused.length;
+        drain(h, rev);
+        assert.equal(h.world.focused.length, callsBefore, "duplicate publication never repeats the setter");
     });
 });
 
@@ -1365,7 +1378,7 @@ describe("world apply safety reads", () => {
             nativeInvalid: dispatchObs,
             clock: "1",
             gestureSettled: null, gestureAssoc: null,
-            closeFocus: null,
+            focusRequest: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
             intentWrites: [], switchSettled: [], diagnostics: [],
@@ -1595,9 +1608,11 @@ describe("world hotplug displacement production", () => {
 });
 
 describe("world admission focus on settled floats", () => {
-    // D4 newcomer intent (`af-<win>`): a still-plain ordinary float takes
-    // the one-shot activation with proof; game/unsafe overlays refuse;
-    // command-issued focus keeps the exact legacy float exclusion.
+    // D4 newcomer intent (automatic-admission): a still-plain ordinary float
+    // takes the one-shot activation with proof; observed overlay flags
+    // alone never withhold (the retired barrier is deleted, so the overlay
+    // and sibling legs are deleted, not weakened); explicit-command intent
+    // actuates through the same mechanical gates.
     interface AdmissionSetup {
         state: WorldAdapterState;
         observation: ApplyEnv["observation"];
@@ -1607,11 +1622,11 @@ describe("world admission focus on settled floats", () => {
     }
 
     function admissionSetup(
-        effectId: string,
+        requestId: string,
         observed: { floating: boolean; fullscreen: boolean; maximized: boolean; sticky: boolean; fitExcluded?: boolean },
         floatOrigin: string,
+        cause: "automatic-admission" | "explicit-command",
         opts?: {
-            siblings?: Array<{ win: string; floating: boolean; fullscreen: boolean; maximized: boolean; sticky: boolean }>;
             replyFloating?: boolean;
             observedFixedAuto?: boolean;
             observedFixedSuppress?: boolean;
@@ -1631,13 +1646,19 @@ describe("world admission focus on settled floats", () => {
             nativeInvalid: dispatchObs,
             clock: "1",
             gestureSettled: null, gestureAssoc: null,
-            closeFocus: null,
+            focusRequest: {
+                id: requestId, target: "win-b", rev: "1", cause,
+                out: "out", ws: "ws1",
+                cmdSeq: cause === "explicit-command" ? "1" : null,
+                afterShown: null,
+            },
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
             intentWrites: [], switchSettled: [], diagnostics: [],
             presentation: DISABLED_PRESENTATION,
             scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
-            workspaces: [], outputs: [],
+            workspaces: [{ id: "ws1", out: "out", bind: "native-1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" }],
+            outputs: [],
             windows: [{
                 win: "win-b", out: "out", ws: "ws1",
                 alloc: null, frame: null,
@@ -1651,9 +1672,7 @@ describe("world admission focus on settled floats", () => {
                 state: [],
             }],
             transfers: [],
-            effects: [effectId.startsWith("af-")
-                ? { id: effectId, kind: "focus", target: "win-b", rev: "1", cause: "automatic-admission", cmdSeq: null, awaitShown: false }
-                : { id: effectId, kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: false }], result: null,
+            effects: [], result: null,
         });
         const parsed = parseWorldReply(text);
         assert.ok(parsed !== null && isCoreWorldReply(parsed));
@@ -1665,31 +1684,21 @@ describe("world admission focus on settled floats", () => {
         const ref = {};
         const observation: ApplyEnv["observation"] = {
             mode: "per-output-local",
-            topology: [{ out: "out", order: ["ws1"], current: "ws1", complete: true, rect: { x: 0, y: 0, w: 800, h: 600 }, primary: true }],
+            topology: [{ out: "out", order: ["native-1"], current: "native-1", complete: true, rect: { x: 0, y: 0, w: 800, h: 600 }, primary: true }],
             bindings: [],
             domains: [{
-                id: "out", ws: "ws1", bounds: { x: 0, y: 0, w: 800, h: 600 },
+                id: "out", ws: "native-1", bounds: { x: 0, y: 0, w: 800, h: 600 },
                 gap: 8, outer: 0, focused: "win-b", readable: true, hold: "",
                 complete: true,
                 windows: [{
-                    win: "win-b", ref, out: "out", ws: "ws1",
+                    win: "win-b", ref, out: "out", ws: "native-1",
                     rect: { x: 0, y: 0, w: 100, h: 100 },
                     floating: observed.floating, fitExcluded: observed.fitExcluded ?? true,
                     fullscreen: observed.fullscreen, maximized: observed.maximized,
                     sticky: observed.sticky, fixedAuto: opts?.observedFixedAuto === true, fixedSuppress: opts?.observedFixedSuppress === true, nativeWs: null,
                     hints: { minW: null, minH: null, maxW: null, maxH: null },
                     minimized: false,
-                },
-                ...(opts?.siblings ?? []).map((sib) => ({
-                    win: sib.win, ref: {}, out: "out", ws: "ws1",
-                    rect: { x: 0, y: 0, w: 100, h: 100 },
-                    floating: sib.floating,
-                    fitExcluded: sib.floating || sib.fullscreen || sib.maximized || sib.sticky,
-                    fullscreen: sib.fullscreen, maximized: sib.maximized,
-                    sticky: sib.sticky, fixedAuto: false, fixedSuppress: false, nativeWs: null,
-                    hints: { minW: null, minH: null, maxW: null, maxH: null },
-                    minimized: false,
-                }))],
+                }],
                 closed: [],
             }],
             minimized: [],
@@ -1722,7 +1731,7 @@ describe("world admission focus on settled floats", () => {
             readActiveWindowId: () => (setup.focused.includes("win-b") ? "win-b" : null),
             readWindowId: (ref) => (ref === target ? "win-b" : null),
             readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
-            readLiveMembership: () => ({ out: "out", ws: "ws1" }),
+            readLiveMembership: () => ({ out: "out", ws: "native-1" }),
             readLiveSafety: () => ({ minimized: false, fullscreen: false, maximized: false, sticky: false }),
             setGeometry: () => { throw new Error("float takes no frame write"); },
             setMembership: () => { throw new Error("no membership here"); },
@@ -1748,45 +1757,22 @@ describe("world admission focus on settled floats", () => {
     }
 
     it("focuses a plain ordinary float once with proof and never repeats", () => {
-        const setup = admissionSetup("af-win-b", { floating: true, fullscreen: false, maximized: false, sticky: false }, "");
+        const setup = admissionSetup("af-win-b", { floating: true, fullscreen: false, maximized: false, sticky: false }, "", "automatic-admission");
         const result = applyWorldReply(admissionEnv(setup));
         assert.deepEqual(setup.focused, ["win-b"], "admission intent activates the floated newcomer");
         assert.equal(result.effects, 1);
         assert.equal(setup.state.isDispatched("af-win-b"), false, "effects never dispatch-record; at-most-once comes from the spent set");
-        // A repeated diff never reapplies: the effect stays spent.
+        // A repeated publication never reapplies: the request stays spent.
         const again = applyWorldReply(admissionEnv(setup));
         assert.deepEqual(setup.focused, ["win-b"], "no second activation");
         assert.equal(again.effects, 0);
     });
 
     it("focuses a capacity float exactly like an ordinary float", () => {
-        const setup = admissionSetup("af-win-b", { floating: true, fullscreen: false, maximized: false, sticky: false }, "capacity");
+        const setup = admissionSetup("af-win-b", { floating: true, fullscreen: false, maximized: false, sticky: false }, "capacity", "automatic-admission");
         const result = applyWorldReply(admissionEnv(setup));
         assert.deepEqual(setup.focused, ["win-b"], "diagnostic origin changes nothing");
         assert.equal(result.effects, 1);
-    });
-
-    for (const overlay of ["fullscreen", "maximized", "sticky"] as const) {
-        it(`refuses admission focus on a ${overlay} overlay with no write`, () => {
-            const setup = admissionSetup("af-win-b", {
-                floating: true,
-                fullscreen: overlay === "fullscreen",
-                maximized: overlay === "maximized",
-                sticky: overlay === "sticky",
-            }, "");
-            const result = applyWorldReply(admissionEnv(setup));
-            assert.deepEqual(setup.focused, [], "overlays never take automatic focus writes");
-            assert.equal(result.effects, 0);
-            assert.equal(setup.state.isDispatched("af-win-b"), false, "effects never dispatch-record; at-most-once comes from the spent set");
-                    });
-    }
-
-    it("keeps the legacy float exclusion for command-issued focus", () => {
-        const setup = admissionSetup("fx-7", { floating: true, fullscreen: false, maximized: false, sticky: false }, "");
-        const result = applyWorldReply(admissionEnv(setup));
-        assert.deepEqual(setup.focused, [], "command focus never steers to a float");
-        assert.equal(result.effects, 0);
-        assert.equal(setup.state.isDispatched("fx-7"), false, "effects never dispatch-record; at-most-once comes from the spent set");
     });
 
     it("focuses a plain tiled newcomer once with no setter writes", () => {
@@ -1794,6 +1780,7 @@ describe("world admission focus on settled floats", () => {
             "af-win-b",
             { floating: false, fullscreen: false, maximized: false, sticky: false, fitExcluded: false },
             "",
+            "automatic-admission",
             { replyFloating: false },
         );
         const env = admissionEnv(setup);
@@ -1814,42 +1801,6 @@ describe("world admission focus on settled floats", () => {
         assert.equal(again.effects, 0, "no second activation");
     });
 
-    for (const overlay of ["fullscreen", "maximized"] as const) {
-        it(`refuses admission focus behind a ${overlay} sibling with no write`, () => {
-            const setup = admissionSetup(
-                "af-win-b",
-                { floating: true, fullscreen: false, maximized: false, sticky: false },
-                "",
-                {
-                    siblings: [{
-                        win: "win-a",
-                        floating: false,
-                        fullscreen: overlay === "fullscreen",
-                        maximized: overlay === "maximized",
-                        sticky: false,
-                    }],
-                },
-            );
-            const result = applyWorldReply(admissionEnv(setup));
-            assert.deepEqual(setup.focused, [], "never force activation away from a protected overlay");
-            assert.equal(result.effects, 0);
-            assert.equal(setup.state.isDispatched("af-win-b"), false, "effects never dispatch-record; at-most-once comes from the spent set");
-                    });
-    }
-
-    it("refuses a game float the core never classified as an ordinary float", () => {
-        const setup = admissionSetup(
-            "af-win-b",
-            { floating: true, fullscreen: false, maximized: false, sticky: false },
-            "",
-            { replyFloating: false },
-        );
-        const result = applyWorldReply(admissionEnv(setup));
-        assert.deepEqual(setup.focused, [], "observed floating alone never earns activation");
-        assert.equal(result.effects, 0);
-        assert.equal(setup.state.isDispatched("af-win-b"), false, "effects never dispatch-record; at-most-once comes from the spent set");
-            });
-
     it("stays mechanical on a fabricated automatic fixed-size float admission", () => {
         // The core withholds and spends automatic fixed-size admission, so
         // a fabricated af- with fixedAuto is unreachable in production.
@@ -1860,6 +1811,7 @@ describe("world admission focus on settled floats", () => {
             "af-win-b",
             { floating: true, fullscreen: false, maximized: false, sticky: false },
             "",
+            "automatic-admission",
             { observedFixedAuto: true, observedFixedSuppress: false },
         );
         const env = admissionEnv(setup);
@@ -1876,7 +1828,7 @@ describe("world admission focus on settled floats", () => {
         assert.equal(result.effects, 1);
         assert.equal(setters, 0, "admission focus writes no geometry/membership/view");
         assert.equal(setup.state.isDispatched("af-win-b"), false, "effects never dispatch-record; at-most-once comes from the spent set");
-                assert.ok(setup.logs.some((l) => l.includes("automatic-focus-attempt")), "mechanical admission attempts the setter");
+                assert.ok(setup.logs.some((l) => l.includes("omnitiler:world:focus-request-attempt")), "mechanical admission attempts the setter");
     });
 
     it("keeps suppressed-tile admission focus with no geometry writes", () => {
@@ -1886,6 +1838,7 @@ describe("world admission focus on settled floats", () => {
             "af-win-b",
             { floating: false, fullscreen: false, maximized: false, sticky: false, fitExcluded: false },
             "",
+            "automatic-admission",
             { replyFloating: false, observedFixedAuto: true, observedFixedSuppress: true },
         );
         const env = admissionEnv(setup);
@@ -1905,7 +1858,7 @@ describe("world admission focus on settled floats", () => {
     });
 
     it("reports native denial with proof and zero setter writes", () => {
-        const setup = admissionSetup("af-win-b", { floating: true, fullscreen: false, maximized: false, sticky: false }, "");
+        const setup = admissionSetup("af-win-b", { floating: true, fullscreen: false, maximized: false, sticky: false }, "", "automatic-admission");
         const env = admissionEnv(setup);
         let setters = 0;
         const denying: typeof env = {

@@ -237,7 +237,7 @@ function setup(wins: FakeWindow[], currents: Map<string, string>, floatIntent = 
             ready: true, consumed: false,
             source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "1",
             gestureSettled: null, gestureAssoc: null,
-            closeFocus: null,
+            focusRequest: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
             intentWrites: [], switchSettled: [], diagnostics: [],
@@ -315,7 +315,7 @@ function discover(h: Harness): void {
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws" }, auth: "controlled", reason: "" }],
         workspaces: [], outputs: [], windows: [],
-        transfers: [], effects: [], closeFocus: null, result: null,
+        transfers: [], effects: [], focusRequest: null, result: null,
     });
     const autoParsed = parseWorldReply(autoText);
     assert.ok(autoParsed !== null && isCoreWorldReply(autoParsed), "authored accept binds strict v4");
@@ -584,7 +584,7 @@ describe("world command result entry", () => {
                 ready: true, consumed: false,
                 source: repBody["source"], nativeInvalid: repBody["nativeInvalid"], clock: "1",
                 gestureSettled: null, gestureAssoc: null,
-                closeFocus: null,
+                focusRequest: null,
                 operationSettled: [], nativeCreations: [],
                 warpCursor: null,
                 intentWrites: [], switchSettled: [], diagnostics: [],
@@ -692,7 +692,7 @@ describe("world command result entry", () => {
             ready: true, consumed: false,
             source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "1",
             gestureSettled: null, gestureAssoc: null,
-            closeFocus: null,
+            focusRequest: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
             intentWrites: [{ win: "win-a", data: "{\"v\":1,\"float\":false,\"stickyPrior\":null}" }],

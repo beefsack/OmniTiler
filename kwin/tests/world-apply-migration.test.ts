@@ -45,11 +45,11 @@ assert.deepEqual(
 
 function loadReply(): WorldReply {
     // The recorded drain capture predates the required nullable
-    // `closeFocus` lane (no close intent in this migration scenario):
+    // `focusRequest` lane (no close intent in this migration scenario):
     // inject the truthful null without touching the frozen bytes.
     const raw = JSON.parse(fs.readFileSync(FIXTURE, "utf8")) as Record<string, unknown>;
-    if (!("closeFocus" in raw)) {
-        raw["closeFocus"] = null;
+    if (!("focusRequest" in raw)) {
+        raw["focusRequest"] = null;
     }
     const parsed = parseWorldReply(JSON.stringify(raw));
     assert.ok(parsed !== null && !isWorldRejection(parsed));

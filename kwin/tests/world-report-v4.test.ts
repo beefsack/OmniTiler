@@ -369,7 +369,7 @@ describe("v4 inner report shape", () => {
             "complete", "gesture", "cursor", "actionForeground",
             "actionCached", "actionOutputs", "presentation",
             "intentRecords", "stateAttempts", "focusFeedback",
-            "rendererInput", "nativeGesture", "cursorWindow",
+            "rendererInput", "nativeGesture", "cursorWindow", "cursorHit",
             "nativeInvalidWitness",
         ]);
         assert.equal(value["v"], 4);
@@ -379,10 +379,12 @@ describe("v4 inner report shape", () => {
         for (const retired of ["owner", "mode", "views", "hostOwned", "equalCount", "birthClear", "predicate",
             "refill", "defaultTiled", "switchTarget", "freshPlacement", "focusFollowsCursor", "cursorWarp",
             "anchorFallback", "noSpaceResult", "bornMaximized", "floatIntent", "tileIntent",
-            "primary", "cursorHit", "monotonicMs", "gestureIngress",
+            "primary", "monotonicMs", "gestureIngress",
             "frameAttempts", "memberAttempts", "viewAttempts", "clearAttempts", "creationAttempts"]) {
             assert.ok(!(retired in value), `retired/optional ${retired} must be absent`);
         }
+        assert.equal(value["cursorWindow"], "win-a", "raw windowAt fact rides");
+        assert.equal(value["cursorHit"], "win-a", "normative hit mirrors the captured windowAt fact");
     });
 
     it("emits the exact window row order with nativeWs and honest nulls", () => {

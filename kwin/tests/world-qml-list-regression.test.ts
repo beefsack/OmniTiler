@@ -47,7 +47,7 @@ const REPLY_TEXT = JSON.stringify({
     nativeInvalid: "1",
     clock: "0",
     gestureSettled: null, gestureAssoc: null,
-    closeFocus: null,
+    focusRequest: null,
     operationSettled: [], nativeCreations: [],
     warpCursor: null,
     intentWrites: [], switchSettled: [], diagnostics: [],

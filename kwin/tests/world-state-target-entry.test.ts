@@ -188,7 +188,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         warpCursor: null, intentWrites: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
-        workspaces: [], outputs: [], windows: [], transfers: [], effects: [], closeFocus: null, result: null,
+        workspaces: [], outputs: [], windows: [], transfers: [], effects: [], focusRequest: null, result: null,
         ...extra,
     });
     const parsed = parseWorldReply(text);

@@ -336,6 +336,16 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
         },
         } : {}),
         sendClientToScreen: (_mover: unknown, _out: unknown) => undefined,
+        windowAt: (pos: unknown) => {
+            const p = pos as { x?: unknown; y?: unknown };
+            if (typeof p?.x !== "number" || typeof p?.y !== "number") {
+                return [];
+            }
+            return world.wins.filter((w) => {
+                const f = w.frameGeometry;
+                return p.x as number >= f.x && (p.x as number) < f.x + f.width && (p.y as number) >= f.y && (p.y as number) < f.y + f.height;
+            });
+        },
         createDesktop: (...args: ReadonlyArray<unknown>) => {
             if (args.length !== 2 || typeof args[0] !== "number" || typeof args[1] !== "string") {
                 throw new Error("Insufficient arguments");
@@ -581,7 +591,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         ready: true, consumed: false,
         source, nativeInvalid, clock: "1",
         gestureSettled: null, gestureAssoc: null,
-        closeFocus: null,
+        focusRequest: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
         intentWrites: [], switchSettled: [], diagnostics: [],
@@ -921,26 +931,6 @@ describe("world entry discovery and observation", () => {
         assert.equal(h.world.membershipWrites.length, 0);
     });
 
-    it("spends a focus effect once and never repeats it", () => {
-        const h = makeHarness();
-        discover(h);
-        h.handle?.requestFocus("left");
-        h.runTimers();
-        const req = requestOf(h);
-        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
-            effects: [{ id: "fx-1", kind: "focus", target: "win-b", rev: "1", cause: "automatic-admission", cmdSeq: null, awaitShown: false }],
-        }));
-        assert.equal(h.world.focused.length, 1);
-        // A repeated identical effect id on a later reply never reapplies.
-        h.handle?.requestWorkspaceRelative(1);
-        h.runTimers();
-        const req2 = requestOf(h);
-        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req2["source"] as string, req2["nativeInvalid"] as string, "2", {
-            effects: [{ id: "fx-1", kind: "focus", target: "win-b", rev: "1", cause: "automatic-admission", cmdSeq: null, awaitShown: false }],
-        }));
-        assert.equal(h.world.focused.length, 1);
-    });
-
     it("defers truthful view+focus own echoes to one authorized focus dispatch", () => {
         const h = makeHarness();
         discover(h);
@@ -957,18 +947,18 @@ describe("world entry discovery and observation", () => {
             const req = requestOf(h);
             h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
                 workspaces: [
-                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
-                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-1", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
-                effects: [{ id: "fx-view-1", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+                transfers: [{ op: "op-view-1", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null }],
+                focusRequest: { id: "focus-view-1", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-1", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }, { win: "win-c", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.currentDesktop.id, "ws2", "view switch actuates");
             assert.deepEqual(h.world.focused, ["win-b"], "exactly one core-target focus setter");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "fx-view-1");
+            const row = wire.find((r) => r["id"] === "focus-view-1");
             assert.ok(row !== undefined, "focus row rides the next report");
             assert.equal(row["setter"], "accepted");
             assert.equal(row["foregroundProven"], true);
@@ -990,17 +980,17 @@ describe("world entry discovery and observation", () => {
             const req = requestOf(h);
             h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
                 workspaces: [
-                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
-                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-2", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
-                effects: [{ id: "fx-view-2", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+                transfers: [{ op: "op-view-2", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null }],
+                focusRequest: { id: "focus-view-2", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-2", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.focused.length, 0, "mismatched view echo stops the focus setter");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "fx-view-2");
+            const row = wire.find((r) => r["id"] === "focus-view-2");
             assert.ok(row !== undefined, "superseded row rides");
             assert.equal(row["setter"], "not-called");
             assert.equal(row["reason"], "superseded");
@@ -1019,12 +1009,13 @@ describe("world entry discovery and observation", () => {
             h.runTimers();
             const req = requestOf(h);
             h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
-                effects: [{ id: "fx-mismatch-1", kind: "focus", target: "win-b", rev: "1", cause: "automatic-admission", cmdSeq: null, awaitShown: false }],
+                workspaces: [{ id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" }],
+                focusRequest: { id: "focus-mismatch-1", target: "win-b", rev: "1", cause: "automatic-admission", out: "out", ws: "wl-2", cmdSeq: null, afterShown: null },
             }));
             assert.equal(h.world.focused.length, 1, "setter still runs once");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "fx-mismatch-1");
+            const row = wire.find((r) => r["id"] === "focus-mismatch-1");
             assert.ok(row !== undefined);
             assert.equal(row["setter"], "accepted", "setter ran");
             assert.equal(row["foregroundProven"], false, "mismatched live never proves");
@@ -1044,17 +1035,17 @@ describe("world entry discovery and observation", () => {
             const req = requestOf(h);
             h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
                 workspaces: [
-                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
-                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-3", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
-                effects: [{ id: "fx-view-3", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+                transfers: [{ op: "op-view-3", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null }],
+                focusRequest: { id: "focus-view-3", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-3", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.focused.length, 0, "unlisted activation stops focus");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "fx-view-3");
+            const row = wire.find((r) => r["id"] === "focus-view-3");
             assert.ok(row !== undefined);
             assert.equal(row["setter"], "not-called");
             assert.equal(row["reason"], "superseded");
@@ -1067,6 +1058,14 @@ describe("world entry discovery and observation", () => {
     it("defers truthful 6.6 single-arg view echoes", () => {
         const h = makeHarness();
         discover(h);
+        // The native focus chain picks its own eligible member on the new
+        // view (win-c), distinct from the granted core focus target
+        // (win-b); the core focus setter corrects afterwards. Without the
+        // distinct member the chain would pre-activate the exact target and
+        // the core would satisfy it with zero setters (already-target
+        // native fallback), never exercising the single-arg dispatch.
+        const ws2 = h.world.desktops[1] as FakeDesktop;
+        h.world.wins.push(win("win-c", "out", ws2, 0));
         (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = "truthful-1arg";
         (h.world as unknown as Record<string, unknown>)["__syncFocusEcho"] = "truthful";
         try {
@@ -1075,18 +1074,18 @@ describe("world entry discovery and observation", () => {
             const req = requestOf(h);
             h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
                 workspaces: [
-                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
-                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-6", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
-                effects: [{ id: "fx-view-6", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+                transfers: [{ op: "op-view-6", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null }],
+                focusRequest: { id: "focus-view-6", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-6", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.currentDesktop.id, "ws2", "view switch actuates");
             assert.deepEqual(h.world.focused, ["win-b"], "exactly one core-target focus setter");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "fx-view-6");
+            const row = wire.find((r) => r["id"] === "focus-view-6");
             assert.ok(row !== undefined, "focus row rides the next report");
             assert.equal(row["setter"], "accepted");
             assert.equal(row["foregroundProven"], true);
@@ -1107,17 +1106,17 @@ describe("world entry discovery and observation", () => {
             const req = requestOf(h);
             h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
                 workspaces: [
-                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
-                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-7", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
-                effects: [{ id: "fx-view-7", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+                transfers: [{ op: "op-view-7", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null }],
+                focusRequest: { id: "focus-view-7", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-7", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.focused.length, 0, "rejected view echo stops the focus setter");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "fx-view-7");
+            const row = wire.find((r) => r["id"] === "focus-view-7");
             assert.ok(row !== undefined, "superseded row rides");
             assert.equal(row["setter"], "not-called");
             assert.equal(row["reason"], "superseded");
@@ -1137,17 +1136,17 @@ describe("world entry discovery and observation", () => {
             const req = requestOf(h);
             h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
                 workspaces: [
-                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
-                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-8", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
-                effects: [{ id: "fx-view-8", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+                transfers: [{ op: "op-view-8", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null }],
+                focusRequest: { id: "focus-view-8", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-8", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.focused.length, 0, "wrong-output echo stops the focus setter");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "fx-view-8");
+            const row = wire.find((r) => r["id"] === "focus-view-8");
             assert.ok(row !== undefined, "superseded row rides");
             assert.equal(row["setter"], "not-called");
             assert.equal(row["reason"], "superseded");
@@ -1167,17 +1166,17 @@ describe("world entry discovery and observation", () => {
             const req = requestOf(h);
             h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
                 workspaces: [
-                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
-                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-9", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
-                effects: [{ id: "fx-view-9", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+                transfers: [{ op: "op-view-9", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null }],
+                focusRequest: { id: "focus-view-9", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-9", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.focused.length, 0, "foreign activation stops the focus setter");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "fx-view-9");
+            const row = wire.find((r) => r["id"] === "focus-view-9");
             assert.ok(row !== undefined, "superseded row rides");
             assert.equal(row["setter"], "not-called");
             assert.equal(row["reason"], "superseded");
@@ -1197,17 +1196,17 @@ describe("world entry discovery and observation", () => {
             const req = requestOf(h);
             h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
                 workspaces: [
-                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
-                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-10", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
-                effects: [{ id: "fx-view-10", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+                transfers: [{ op: "op-view-10", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null }],
+                focusRequest: { id: "focus-view-10", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-10", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.focused.length, 0, "activation naming a non-foreground member stops the focus setter");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "fx-view-10");
+            const row = wire.find((r) => r["id"] === "focus-view-10");
             assert.ok(row !== undefined, "superseded row rides");
             assert.equal(row["setter"], "not-called");
             assert.equal(row["reason"], "superseded");
@@ -1227,17 +1226,17 @@ describe("world entry discovery and observation", () => {
             const req = requestOf(h);
             h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
                 workspaces: [
-                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
-                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-11", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
-                effects: [{ id: "fx-view-11", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+                transfers: [{ op: "op-view-11", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null }],
+                focusRequest: { id: "focus-view-11", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-11", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.focused.length, 0, "stale-lifetime activation stops the focus setter");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "fx-view-11");
+            const row = wire.find((r) => r["id"] === "focus-view-11");
             assert.ok(row !== undefined, "superseded row rides");
             assert.equal(row["setter"], "not-called");
             assert.equal(row["reason"], "superseded");
@@ -1257,17 +1256,17 @@ describe("world entry discovery and observation", () => {
             const req = requestOf(h);
             h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
                 workspaces: [
-                    { id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
-                    { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-12", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null }],
-                effects: [{ id: "fx-view-12", kind: "focus", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: true }],
+                transfers: [{ op: "op-view-12", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null }],
+                focusRequest: { id: "focus-view-12", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-12", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.focused.length, 0, "post-echo home drift stops the focus setter");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "fx-view-12");
+            const row = wire.find((r) => r["id"] === "focus-view-12");
             assert.ok(row !== undefined, "superseded row rides");
             assert.equal(row["setter"], "not-called");
             assert.equal(row["reason"], "superseded");
@@ -1286,11 +1285,12 @@ describe("world entry discovery and observation", () => {
             h.runTimers();
             const req = requestOf(h);
             h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
-                effects: [{ id: "fx-throw-1", kind: "focus", target: "win-b", rev: "1", cause: "automatic-admission", cmdSeq: null, awaitShown: false }],
+                workspaces: [{ id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" }],
+                focusRequest: { id: "focus-throw-1", target: "win-b", rev: "1", cause: "automatic-admission", out: "out", ws: "wl-2", cmdSeq: null, afterShown: null },
             }));
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "fx-throw-1");
+            const row = wire.find((r) => r["id"] === "focus-throw-1");
             assert.ok(row !== undefined, "throw row rides the next report");
             assert.equal(row["setter"], "threw");
             assert.equal(row["foregroundProven"], false);
@@ -4339,7 +4339,7 @@ describe("world entry trace probe", () => {
 // (witness null with healthy setter+foreground) fails it exactly once
 // with no upgrade on retry. No hand-built replies on asserted paths.
 describe("world entry focus feedback production regression", () => {
-    async function driveSelect(witnessPresent: boolean, syncViewSignals = false): Promise<{
+    async function driveSelect(witnessPresent: boolean, syncViewSignals = false, awayFirst = false): Promise<{
         selectReply: Record<string, unknown>;
         feedbackWire: Array<Record<string, unknown>>;
         feedbackId: unknown;
@@ -4347,7 +4347,10 @@ describe("world entry focus feedback production regression", () => {
         switchEvents: Array<Record<string, unknown>>;
         laterSwitchEvents: Array<Record<string, unknown>>;
         laterFeedbackWire: Array<Record<string, unknown>>;
-        restoredSwitch: Array<Record<string, unknown>>;
+        deferProof: { republishedId: unknown } | null;
+        supersededId: unknown;
+        deadIds: Array<unknown>;
+        retiredNull: boolean;
         focusSets: number;
         selectPayload: string;
         feedbackPayload: string;
@@ -4480,8 +4483,12 @@ describe("world entry focus feedback production regression", () => {
         // view setter (VDM currentChanged old/new/output plus Workspace
         // windowActivated ref) and restores the view's focused client
         // natively; the scoped guard defers those exact own echoes so the
-        // authorized core-target focus setter still runs once.
-        const expectedFocusSets = 1;
+        // authorized core-target focus setter still runs once. Under the
+        // retained latest-only lane the echo already restored the
+        // foreground, so the grant satisfies through the already-target
+        // zero-setter fallback (world-apply.ts already-target branch):
+        // one row, proven, zero redundant writes.
+        const expectedFocusSets = syncViewSignals || (awayFirst && !witnessPresent) ? 0 : 1;
         const surface: Record<string, unknown> = {
             windowList: () => [w1, w2],
             screens,
@@ -4682,18 +4689,123 @@ describe("world entry focus feedback production regression", () => {
             const select = await flushNextDescribe();
             const selectPayload = calls[flushed - 1]!.payload;
             // The focus grant actuates synchronously on accept: the native
-            // foreground must name the selected home.
-            const fxRows = (select.reply["effects"] as Array<Record<string, unknown>>).filter((e) => e["kind"] === "focus");
-            assert.ok(fxRows.length >= 1, `select grants focus: ${select.rawReply.slice(0, 500)}`);
-            assert.equal(fxRows[0]!["awaitShown"], true, `populated select grants awaitShown focus: ${select.rawReply.slice(0, 500)}`);
-            const target = fxRows[0]!["target"] as string;
-            assert.equal((active as unknown as Record<string, unknown>)["internalId"], target, syncViewSignals ? "native view switch restores the foreground without the focus setter" : "production setter moves the native foreground");
-            assert.equal(focusSets, expectedFocusSets, "select grant uses only the expected native focus calls");
-            // Explicit duplicate redelivery of the accepted select reply
-            // through the real transport callback: the settled guard must
-            // neither re-actuate nor mint a second row.
-            calls[flushed - 1]!.callback(select.rawReply);
-            assert.equal(focusSets, expectedFocusSets, "duplicate select redelivery fires no second setter call");
+            // foreground must name the selected home. Focus left the
+            // effects lane: the grant rides the retained latest-only
+            // focusRequest (v4), never a focus effect row.
+            assert.deepEqual(select.reply["effects"], [], "no focus effect is published on the v4 wire");
+            const focusReq = select.reply["focusRequest"] as Record<string, unknown> | null;
+            assert.ok(focusReq !== null, `select grants focus: ${select.rawReply.slice(0, 500)}`);
+            assert.equal(focusReq["cause"], "explicit-command", `select grant is command-owned: ${select.rawReply.slice(0, 500)}`);
+            assert.equal(focusReq["cmdSeq"], "1", `select grant rides sequence 1: ${select.rawReply.slice(0, 500)}`);
+            assert.ok(focusReq["afterShown"] !== null, `populated select grants awaitShown focus: ${select.rawReply.slice(0, 500)}`);
+            const target = focusReq["target"] as string;
+            let deferProof: { republishedId: unknown } | null = null;
+            let supersededId: unknown = null;
+            const deadIds: Array<unknown> = [];
+            if (!witnessPresent) {
+                // Frozen afterShown readiness: with no windowAt reader the
+                // shown witness is unreadable, so the grant proves nothing
+                // and defers. The envelope stays unspent: the native
+                // foreground still names the old home and no setter runs.
+                assert.equal((active as unknown as Record<string, unknown>)["internalId"], "win-a", "missing witness defers: native foreground untouched");
+                assert.equal(focusSets, 0, "missing witness defers: no focus setter call");
+                // Explicit duplicate redelivery of the accepted select reply
+                // through the real transport callback: the unspent grant
+                // re-defer, never actuates.
+                calls[flushed - 1]!.callback(select.rawReply);
+                assert.equal(focusSets, 0, "duplicate select redelivery while deferred fires no setter call");
+                // The next dispatched capture is the defer proof: it carries
+                // zero feedback rows (nothing recorded, still unspent),
+                // settles nothing, and the core re-publishes the identical
+                // retained id.
+                fireAll();
+                runTimers();
+                const deferred = await flushNextDescribe();
+                const deferredInner = (deferred.req["report"] ?? deferred.req) as Record<string, unknown>;
+                const deferredWire = (deferredInner["focusFeedback"] ?? []) as Array<Record<string, unknown>>;
+                assert.equal(deferredWire.length, 0, "deferred capture carries no feedback row");
+                assert.equal(((deferred.reply["switchSettled"] ?? []) as Array<unknown>).length, 0, "deferred capture settles no switch event");
+                const republished = deferred.reply["focusRequest"] as Record<string, unknown> | null;
+                assert.ok(republished !== null, "core retains the unspent grant across captures");
+                assert.equal(republished!["id"], focusReq["id"], "core re-publishes the identical retained id while deferred");
+                deferProof = { republishedId: republished!["id"] };
+                if (awayFirst) {
+                    // Genuine newer focus decision while the first grant is
+                    // still unstarted: selecting away files a new command
+                    // (new cmdSeq, different target) and the core mints a
+                    // strictly newer request id. The adapter adopts it; the
+                    // unstarted first id is cancelled and must never actuate
+                    // or row. A same-target reselect would keep the id by
+                    // design (same pending event observed again), so the
+                    // journey moves away instead.
+                    supersededId = focusReq["id"];
+                    deadIds.push(supersededId);
+                    handle!.requestWorkspaceSelect(1);
+                    runTimers();
+                    fireAll();
+                    runTimers();
+                    const supersede = await flushNextDescribe();
+                    const supersedeInner = (supersede.req["report"] ?? supersede.req) as Record<string, unknown>;
+                    assert.equal(((supersedeInner["focusFeedback"] ?? []) as Array<unknown>).length, 0, "superseding capture carries no feedback row while the witness is still missing");
+                    const supersedeReq = supersede.reply["focusRequest"] as Record<string, unknown> | null;
+                    assert.ok(supersedeReq !== null, "select away publishes a focus grant");
+                    assert.notEqual(supersedeReq!["id"], deadIds[0], "newer focus decision mints a new id over the unstarted grant");
+                    assert.equal(focusSets, 0, "superseding grant defers while the witness is still missing");
+                    // Null-retirement leg: the core already retired the
+                    // superseding grant (its target names the undisturbed
+                    // foreground), so the next reply after the witness
+                    // restore carries a null envelope. The adapter retires
+                    // its unstarted record with no row and no setter call.
+                    surface["windowAt"] = () => [w1, w2];
+                    fireAll();
+                    runTimers();
+                    const retired = await flushNextDescribe();
+                    const retiredInner = (retired.req["report"] ?? retired.req) as Record<string, unknown>;
+                    assert.equal(((retiredInner["focusFeedback"] ?? []) as Array<unknown>).length, 0, "retired capture carries no feedback row");
+                    assert.equal(retired.reply["focusRequest"], null, "core retires the satisfied grant with a null envelope");
+                    assert.equal(focusSets, 0, "null retirement actuates nothing");
+                    return {
+                        selectReply: select.reply,
+                        feedbackWire: [],
+                        feedbackId: null,
+                        feedbackAttemptMs: null,
+                        switchEvents: [],
+                        laterSwitchEvents: [],
+                        laterFeedbackWire: [],
+                        deferProof,
+                        supersededId,
+                        deadIds,
+                        retiredNull: true,
+                        focusSets,
+                        selectPayload,
+                        feedbackPayload: "",
+                    };
+                }
+                // Real witness restored: the next latest snapshot reevaluates
+                // the retained id and resumes it exactly once. This apply
+                // flush actuates and records the genuine row; the shared
+                // tail below then loss-tests, retries, and settles it.
+                surface["windowAt"] = () => [w1, w2];
+                fireAll();
+                runTimers();
+                const resumed = await flushNextDescribe();
+                // The resumed report itself predates the apply, so the row
+                // rides the next capture (asserted by the shared tail and at
+                // test level); here the apply side-effects prove the single
+                // actuation of the retained grant.
+                assert.equal((active as unknown as Record<string, unknown>)["internalId"], target, "resumed grant moves the native foreground");
+                assert.equal(focusSets, 1, "resumed grant actuates exactly once");
+                calls[flushed - 1]!.callback(resumed.rawReply);
+                assert.equal(focusSets, 1, "duplicate resumed redelivery fires no second setter call");
+            } else {
+                assert.equal((active as unknown as Record<string, unknown>)["internalId"], target, syncViewSignals ? "native view switch restores the foreground without the focus setter" : "production setter moves the native foreground");
+                assert.equal(focusSets, expectedFocusSets, "select grant uses only the expected native focus calls");
+                // Explicit duplicate redelivery of the accepted select reply
+                // through the real transport callback: the settled guard must
+                // neither re-actuate nor mint a second row.
+                calls[flushed - 1]!.callback(select.rawReply);
+                assert.equal(focusSets, expectedFocusSets, "duplicate select redelivery fires no second setter call");
+            }
             // Real transport failure before the feedback accept: the next
             // dispatched capture carries the genuine row, but its reply
             // bytes are lost (non-string callback). Recovery must
@@ -4768,28 +4880,6 @@ describe("world entry focus feedback production regression", () => {
                 assert.equal(row["attemptMs"], attemptMs, "re-carried row retains the original stamp");
             }
             assert.equal(focusSets, expectedFocusSets, "no focus reissue after settlement");
-            let restoredSwitch: Array<Record<string, unknown>> = [];
-            if (!witnessPresent) {
-                // Healthy witness restored before the next accepted
-                // observation: the failed terminal must not upgrade and
-                // focus must not reissue.
-                surface["windowAt"] = () => [w1, w2];
-                fireAll();
-                runTimers();
-                const restored = await flushNextDescribe();
-                restoredSwitch = (restored.reply["switchSettled"] ?? []) as Array<Record<string, unknown>>;
-                for (const ev of restoredSwitch) {
-                    assert.equal(ev["outcome"], "completed-with-failures", `failed terminal never upgrades: ${JSON.stringify(ev).slice(0, 300)}`);
-                    assert.equal(ev["focus"], "unproven", `failed focus never proves late: ${JSON.stringify(ev).slice(0, 300)}`);
-                }
-                const restoredInner = (restored.req["report"] ?? restored.req) as Record<string, unknown>;
-                const restoredWire = (restoredInner["focusFeedback"] ?? []) as Array<Record<string, unknown>>;
-                assert.ok(
-                    !restoredWire.some((row) => row["id"] !== feedbackId),
-                    `no new focus rows on witness restore: ${JSON.stringify(restoredWire).slice(0, 500)}`,
-                );
-                assert.equal(focusSets, expectedFocusSets, "witness restore reissues no focus call");
-            }
             return {
                 selectReply: select.reply,
                 feedbackWire,
@@ -4798,7 +4888,10 @@ describe("world entry focus feedback production regression", () => {
                 switchEvents,
                 laterSwitchEvents,
                 laterFeedbackWire,
-                restoredSwitch,
+                deferProof,
+                supersededId,
+                deadIds,
+                retiredNull: false,
                 focusSets,
                 selectPayload,
                 feedbackPayload,
@@ -4829,40 +4922,56 @@ describe("world entry focus feedback production regression", () => {
         assert.equal(driven.focusSets, 1, "exactly one focus setter call end to end");
     });
 
-    it("missing shown witness settles completed-with-failures/unproven once with no upgrade", { timeout: 120000 }, async () => {
+    it("missing shown witness defers unspent until a real witness resumes one actuation and complete/proven", { timeout: 120000 }, async () => {
         const driven = await driveSelect(false);
+        // Defer proof (driven inside the helper): the missing witness left
+        // the grant unspent with no row, and the core retained its id until
+        // the restored witness resumed exactly one actuation under it.
+        assert.ok(driven.deferProof !== null, "deferred journey records its defer proof");
+        const grantId = (driven.selectReply["focusRequest"] as Record<string, unknown>)["id"];
+        assert.equal(driven.deferProof!.republishedId, grantId, "core retains the identical unspent id while deferred");
+        assert.deepEqual(driven.deadIds, [], "nothing supersedes the resumed grant");
+        assert.equal(driven.feedbackWire[0]!["id"], grantId, "the resumed row carries the retained grant id");
         assert.equal(driven.switchEvents.length, 1, `one terminal switch event: ${JSON.stringify(driven.switchEvents).slice(0, 800)}`);
-        assert.equal(driven.switchEvents[0]!["outcome"], "completed-with-failures", `null witness fails outcome: ${JSON.stringify(driven.switchEvents[0]).slice(0, 500)}`);
-        assert.equal(driven.switchEvents[0]!["focus"], "unproven", `null witness leaves focus unproven: ${JSON.stringify(driven.switchEvents[0]).slice(0, 500)}`);
-        // Healthy setter+foreground still ride the genuine row: only the
-        // arrival proof is missing, so the failure isolates to witness.
-        assert.equal(driven.feedbackWire[0]!["setter"], "accepted", "setter stays accepted without windowAt");
-        assert.equal(driven.feedbackWire[0]!["foregroundProven"], true, "foreground stays proven without windowAt");
-        assert.ok(
-            driven.feedbackWire[0]!["arrival"] !== undefined,
-            "arrival lane rides even when the witness is null",
-        );
-        // Deterministic no-upgrade proof (driven inside the helper): a
-        // real post-settlement capture carried no further switch event,
-        // and the witness restore afterwards upgraded nothing and
-        // reissued no focus call.
+        assert.equal(driven.switchEvents[0]!["outcome"], "complete", `resumed witness completes: ${JSON.stringify(driven.switchEvents[0]).slice(0, 500)}`);
+        assert.equal(driven.switchEvents[0]!["focus"], "proven", `resumed foreground proves focus: ${JSON.stringify(driven.switchEvents[0]).slice(0, 500)}`);
+        assert.deepEqual((driven.switchEvents[0]!["failed"] as Array<unknown>), [], "complete carries no failures");
+        assert.equal(driven.feedbackWire[0]!["setter"], "accepted", "resumed production setter accepted");
+        assert.equal(driven.feedbackWire[0]!["foregroundProven"], true, "genuine foreground proof rides on resume");
+        assert.ok(Array.isArray(driven.feedbackWire[0]!["arrival"]) && (driven.feedbackWire[0]!["arrival"] as Array<unknown>).length >= 1, "resumed grant carries arrival brackets");
+        // Deterministic no-replay proof (driven inside the helper, never
+        // vacuous): a real post-settlement capture carried no further
+        // switch event, no new feedback row, and no second setter call.
         assert.equal(driven.laterSwitchEvents.length, 0, "no switch event after the terminal one");
-        for (const ev of driven.restoredSwitch) {
-            assert.equal(ev["outcome"], "completed-with-failures", "restored witness never upgrades the terminal");
-            assert.equal(ev["focus"], "unproven", "restored witness never proves focus late");
-        }
         assert.equal(driven.focusSets, 1, "exactly one focus setter call end to end");
     });
 
-    it("sync view-switch own echoes defer to one authorized focus dispatch and complete/proven", { timeout: 120000 }, async () => {
+    it("superseded unstarted grant never actuates or rows: null envelope retires it", { timeout: 120000 }, async () => {
+        const driven = await driveSelect(false, false, true);
+        // New-id plus null cancellation proof (driven inside the helper):
+        // the away select minted a strictly newer id over the unstarted
+        // first grant, neither grant ever actuated or rowed, and the
+        // core's null envelope retired the unstarted record silently.
+        assert.ok(driven.deferProof !== null, "deferred journey records its defer proof");
+        const grantId = (driven.selectReply["focusRequest"] as Record<string, unknown>)["id"];
+        assert.equal(driven.deferProof!.republishedId, grantId, "core retains the identical unspent id while deferred");
+        assert.equal(driven.supersededId, grantId, "supersession cancels the unstarted first grant");
+        assert.deepEqual(driven.deadIds, [grantId], "only the first grant is superseded");
+        assert.equal(driven.retiredNull, true, "null envelope retired the unstarted record");
+        assert.equal(driven.focusSets, 0, "zero focus setter calls end to end");
+        assert.equal(driven.switchEvents.length, 0, "no switch event without a resumed grant");
+    });
+
+    it("sync view-switch own echoes satisfy zero-setter with arrival and complete/proven", { timeout: 120000 }, async () => {
         const driven = await driveSelect(true, true);
         assert.equal(driven.feedbackWire.length, 1, "one focus row, no missing feedback");
-        assert.equal(driven.feedbackWire[0]!["setter"], "accepted", "own-echo focus setter accepted");
-        const fxTarget = ((driven.selectReply["effects"] as Array<Record<string, unknown>>).find((e) => e["kind"] === "focus")!)["target"];
+        assert.equal(driven.feedbackWire[0]!["setter"], "not-called", "own echoes already restored the foreground: zero redundant setters");
+        assert.equal(driven.feedbackWire[0]!["reason"], "", "already-target satisfaction carries the empty ordinary reason");
+        const fxTarget = ((driven.selectReply["focusRequest"] as Record<string, unknown>)!)["target"];
         assert.equal(driven.feedbackWire[0]!["target"], fxTarget, "row names the granted target");
         assert.equal(driven.feedbackWire[0]!["post"], fxTarget, "post names the granted foreground");
         assert.equal(driven.feedbackWire[0]!["foregroundProven"], true, "own-echo foreground proves");
-        assert.ok(Array.isArray(driven.feedbackWire[0]!["arrival"]) && (driven.feedbackWire[0]!["arrival"] as Array<unknown>).length >= 1, "populated grant carries arrival brackets");
+        assert.ok(Array.isArray(driven.feedbackWire[0]!["arrival"]) && (driven.feedbackWire[0]!["arrival"] as Array<unknown>).length >= 1, "already-target row carries the sampled arrival brackets");
         assert.equal(driven.switchEvents.length, 1, "one terminal switch event");
         assert.equal(driven.switchEvents[0]!["outcome"], "complete", "healthy own echoes complete");
         assert.equal(driven.switchEvents[0]!["focus"], "proven", "healthy own echoes prove focus");
@@ -4871,7 +4980,7 @@ describe("world entry focus feedback production regression", () => {
         for (const row of driven.laterFeedbackWire) {
             assert.equal(row["attemptMs"], driven.feedbackAttemptMs, "re-carried row retains the original stamp");
         }
-        assert.equal(driven.focusSets, 1, "exactly one core-target setter end to end");
+        assert.equal(driven.focusSets, 0, "already-target foreground: zero setters end to end");
     });
 
 });
@@ -5197,8 +5306,9 @@ describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
         // single latest-pending slot applies exactly once: superseded
         // unissued targets/raise/stack never issue, and an intermediate
         // superseded publication drives no covering persist of its own.
-        // One accepted reply carrying two focus effects is NOT
-        // supersession (both effects of one publication apply in order).
+        // The retained focusRequest lane carries one request per
+        // publication; overlapping publications share the single latest
+        // slot while writes fly.
         const h = makeHarness("per-output-local", false, true, undefined, undefined, true, startWorldAdapterEntry, false, true);
         discover(h);
         // Extra lifetimes: win-c takes the superseded focus, win-d dies NEW.
@@ -5222,11 +5332,9 @@ describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
         // First publication: intent change plus superseded focus, held
         // behind the genuinely in-flight persist.
         h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", flight1["source"] as string, flight1["nativeInvalid"] as string, "1", {
+            workspaces: [{ id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" }],
             intentWrites: [{ win: "win-a", data: "{\"t\":1}" }],
-            effects: [
-                { id: "fx-old", kind: "focus", target: "win-c", rev: "1", cause: "automatic-admission", cmdSeq: null, awaitShown: false },
-                { id: "rx-old", kind: "raise", target: "win-c", rev: "1", cause: "automatic-admission", cmdSeq: null, awaitShown: false },
-            ],
+            focusRequest: { id: "focus-old", target: "win-c", rev: "1", cause: "automatic-admission", out: "out", ws: "wl-1", cmdSeq: null, afterShown: null },
         }));
         assert.equal(h.intentWriteFlights.length, 1, "first persist genuinely in flight");
         assert.deepEqual(h.world.focused, [], "held publication issues nothing");
@@ -5243,10 +5351,9 @@ describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
         assert.equal(queueCalls(h).length, 2, "second batch files its park");
         assert.ok((reportOf(h)["closed"] as Array<string>).includes("win-d"), "undelivered close retained across the skipped publication");
         h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", (requestOf(h)["source"] as string), (requestOf(h)["nativeInvalid"] as string), "2", {
+            workspaces: [{ id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" }],
             intentWrites: [{ win: "win-a", data: "{\"t\":2}" }],
-            effects: [
-                { id: "fx-mid", kind: "focus", target: "win-c", rev: "2", cause: "automatic-admission", cmdSeq: null, awaitShown: false },
-            ],
+            focusRequest: { id: "focus-mid", target: "win-c", rev: "2", cause: "automatic-admission", out: "out", ws: "wl-1", cmdSeq: null, afterShown: null },
         }));
         assert.equal(h.intentWriteFlights.length, 1, "second publication queues behind the in-flight write");
         assert.deepEqual(h.world.focused, [], "still nothing issued");
@@ -5255,14 +5362,15 @@ describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
         h.runTimers();
         assert.equal(queueCalls(h).length, 3, "third batch files its park");
         h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", (requestOf(h)["source"] as string), (requestOf(h)["nativeInvalid"] as string), "3", {
+            workspaces: [{ id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" }],
             intentWrites: [{ win: "win-a", data: "{\"t\":3}" }],
-            effects: [
-                { id: "fx-new", kind: "focus", target: "win-a", rev: "3", cause: "automatic-admission", cmdSeq: null, awaitShown: false },
-                { id: "sx-new", kind: "stack", target: "win-a", rev: "3", cause: "automatic-admission", cmdSeq: null, awaitShown: false },
-            ],
+            focusRequest: { id: "focus-new", target: "win-a", rev: "3", cause: "automatic-admission", out: "out", ws: "wl-1", cmdSeq: null, afterShown: null },
         }));
         assert.equal(h.intentWriteFlights.length, 1, "third publication queues behind the same in-flight write");
         assert.deepEqual(h.world.focused, [], "nothing issued before the barrier lifts");
+        // Latest target (win-a) differs from the pre-barrier foreground
+        // (win-c) so the covering apply can issue it once the barrier lifts.
+        h.world.activeWindow = h.world.wins.find((w) => w.internalId === "win-c") ?? null;
         // The in-flight write lands: the first superseded publication drops
         // without issuing and the next waiter persists covering.
         h.intentWriteFlights[0]!.callback(storedIntentReply(h.intentWriteFlights[0]!.payload));
@@ -5284,9 +5392,8 @@ describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
         assert.ok(!(reportOf(h)["closed"] as Array<string>).includes("win-b"), "acked closes never replay");
         assert.ok(!(reportOf(h)["closed"] as Array<string>).includes("win-d"), "acked closes never replay");
         h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", (requestOf(h)["source"] as string), (requestOf(h)["nativeInvalid"] as string), "4", {
-            effects: [
-                { id: "fx-new", kind: "focus", target: "win-a", rev: "3", cause: "automatic-admission", cmdSeq: null, awaitShown: false },
-            ],
+            workspaces: [{ id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" }],
+            focusRequest: { id: "focus-new", target: "win-a", rev: "3", cause: "automatic-admission", out: "out", ws: "wl-1", cmdSeq: null, afterShown: null },
         }));
         assert.deepEqual(h.world.focused, ["win-a"], "issued writes stay spent");
     });

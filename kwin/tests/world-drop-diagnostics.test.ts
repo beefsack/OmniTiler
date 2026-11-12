@@ -254,7 +254,7 @@ function setup(): Harness {
                 ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
                 windows: describeWindows, transfers: [], effects: [], result: null,
                 gestureSettled: settled.settled, gestureAssoc: assoc,
-                closeFocus: null,
+                focusRequest: null,
                 operationSettled: [], nativeCreations: [], warpCursor: null,
                 intentWrites: [], switchSettled: [], diagnostics: [],
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",

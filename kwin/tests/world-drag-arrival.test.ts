@@ -20,7 +20,7 @@ function arrivalReply(): WorldReply {
         nativeInvalid: "1",
         clock: "0",
         gestureSettled: null, gestureAssoc: null,
-        closeFocus: null,
+        focusRequest: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
         presentation: { foreground: "", rev: "9", suspendedOutput: null, border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },

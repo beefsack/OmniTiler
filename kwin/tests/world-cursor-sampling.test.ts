@@ -61,7 +61,7 @@ function acceptedReply(source: string, nativeInvalid: string, rev: string, extra
         transfers: [],
         effects: [],
         result: null,
-        closeFocus: null,
+        focusRequest: null,
         ...extra,
     });
     const parsed = parseWorldReply(text);

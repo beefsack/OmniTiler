@@ -159,7 +159,7 @@ export interface WorldReplyTransfer {
 // Correlated per-command outcome coexisting with the snapshot (mirrors
 // tiler-core world_report::CommandResult exactly; unknown ops refuse).
 // Move/resize/tiled-admit/focus/send results ride the snapshot,
-// transfers, and effects with `result: null`: the snapshot IS the result.
+// transfers, and the retained focus request with `result: null`: the snapshot IS the result.
 // The actuator lane strips the terminal result service-side (the reply the
 // script receives carries null); the take lane serves it requester-only.
 export interface WorldDragHover {
@@ -204,34 +204,48 @@ export type WorldReplyResult =
         sourceOut: string; sourceWs: string; targetOut: string; targetWs: string;
         members: string[]; floats: number;
     };
-export interface WorldReplyEffect {
-    id: string;
-    kind: "focus" | "raise" | "stack";
-    target: string;
-    rev: string;
-    // Typed correlation cause: explicit-command carries the dispatching
-    // command in cmdSeq; the other causes carry null and must never
-    // actuate focus on adapters keeping observed-focus authority.
-    cause: "explicit-command" | "automatic-admission" | "focus-follows-cursor";
-    // Originating command sequence for explicit-command effects, null
-    // otherwise. Quoted decimal on the wire, null when absent.
-    cmdSeq: string | null;
-    // Arrival-ready grant. Only an explicit selection may grant this.
-    awaitShown: boolean;
-}
-// Retained positive-close focus request (world-contract.md "Retained
-// positive-close focus"): opaque request identity, frozen target lifetime,
-// immutable issuing revision, distinct `positive-close` cause, frozen source
-// domain. Null when no close intent rides this reply. The adapter applies
-// only the latest publication, spends once per bound id (including safety
-// no-calls), and correlates raw focusFeedback by exact (id,target,rev).
-export interface WorldCloseFocus {
-    id: string;
-    target: string;
-    rev: string;
-    cause: "positive-close";
+export type WorldFocusCause =
+    | "explicit-command" | "automatic-admission" | "focus-follows-cursor" | "positive-close";
+// One frozen afterShown member row: the required window lifetime, its
+// frozen logical home, and the required nullable final desire frame.
+export interface WorldAfterShownMember {
+    win: string;
     out: string;
     ws: string;
+    frame: [number, number, number, number] | null;
+}
+// One frozen afterShown scope row: the frozen logical home.
+export interface WorldAfterShownScope {
+    out: string;
+    ws: string;
+}
+// Frozen selection dependencies for a selection-backed explicit focus
+// request: the existing parent operation id, the quoted issuing
+// observation counter, the required members, native-view targets and the
+// affected selected/departing scopes. Null replaces awaitShown:false;
+// non-null replaces awaitShown:true.
+export interface WorldAfterShown {
+    op: string;
+    obs: string;
+    members: WorldAfterShownMember[];
+    views: WorldAfterShownScope[];
+    selected: WorldAfterShownScope[];
+    departing: WorldAfterShownScope[];
+}
+// One retained focus request (outbound only): the frozen target of the
+// winning focus decision plus its frozen activation scope, cause, command
+// correlation and frozen selection dependencies. Null carries no focus
+// intent. Only explicit-command carries non-null cmdSeq and may carry
+// non-null afterShown.
+export interface WorldFocusRequest {
+    id: string;
+    target: string;
+    rev: string;
+    cause: WorldFocusCause;
+    out: string;
+    ws: string;
+    cmdSeq: string | null;
+    afterShown: WorldAfterShown | null;
 }
 // Terminal retained-operation verdicts incorporated by this report, at most
 // one entry per retired operation (directional maximize-clear verdicts and
@@ -540,10 +554,11 @@ export interface WorldReply {
     outputs: WorldReplyOutput[];
     windows: WorldReplyWindow[];
     transfers: WorldReplyTransfer[];
-    effects: WorldReplyEffect[];
-    // Required nullable retained positive-close request (bootstrap and
-    // not-ready replies carry null). Missing or malformed refuses.
-    closeFocus: WorldCloseFocus | null;
+    // Required empty effects lane (no admissible entries): any row refuses.
+    effects: never[];
+    // Required nullable retained focus request (bootstrap and not-ready
+    // replies carry null). Missing or malformed refuses.
+    focusRequest: WorldFocusRequest | null;
     result: WorldReplyResult | null;
     gestureSettled: { id: string; committed: boolean } | null;
     // Broker-only bound actuator association for the actual normalized
@@ -696,7 +711,6 @@ const MAX_REPLY_WORKSPACES = 1024;
 const MAX_REPLY_OUTPUTS = 16;
 const MAX_REPLY_WINDOWS = 10000;
 const MAX_REPLY_TRANSFERS = 1024;
-const MAX_REPLY_EFFECTS = 1024;
 const MAX_REPLY_OPERATIONS = 1024;
 const MAX_REPLY_NATIVE_CREATIONS = 256;
 const MAX_REPLY_SWITCH_EVENTS = 1024;
@@ -768,8 +782,13 @@ function reqOpaqueId(value: unknown): string {
     return value as string;
 }
 
-const EFFECT_KINDS = new Set(["focus", "raise", "stack"]);
-const EFFECT_CAUSES = new Set(["explicit-command", "automatic-admission", "focus-follows-cursor"]);
+const FOCUS_CAUSES = new Set([
+    "explicit-command", "automatic-admission", "focus-follows-cursor", "positive-close",
+]);
+const MAX_FOCUS_MEMBERS = 10000;
+const MAX_FOCUS_VIEWS = 16;
+const MAX_FOCUS_SELECTED = 16;
+const MAX_FOCUS_DEPARTING = 16;
 const OPERATION_OUTCOMES = new Set([
     "continued-tiled", "continued-float", "refused-proven",
     "abandoned-external-clear", "abandoned-focus-changed", "abandoned-view-changed",
@@ -1446,42 +1465,149 @@ function parseTransferRow(e: unknown): WorldReplyTransfer {
     };
 }
 
-function parseEffectRow(e: unknown): WorldReplyEffect {
-    if (typeof e !== "object" || e === null || Array.isArray(e)) {
-        throw new Error("effect-keys");
+function parseAfterShownScope(value: unknown): WorldAfterShownScope {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new Error("aftershown-scope");
     }
-    const o = e as Record<string, unknown>;
-    if (!hasExactKeys(o, ["id", "kind", "target", "rev", "cause", "cmdSeq", "awaitShown"])) {
-        throw new Error("effect-keys");
+    const o = value as Record<string, unknown>;
+    if (!hasExactKeys(o, ["out", "ws"])) {
+        throw new Error("aftershown-scope-keys");
+    }
+    if (!isOpaqueId(o["out"]) || !isOpaqueId(o["ws"])) {
+        throw new Error("aftershown-scope-shape");
+    }
+    return { out: o["out"] as string, ws: o["ws"] as string };
+}
+
+function parseAfterShown(value: unknown): WorldAfterShown | null {
+    if (value === null) {
+        return null;
+    }
+    if (typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("aftershown");
+    }
+    const o = value as Record<string, unknown>;
+    if (!hasExactKeys(o, ["op", "obs", "members", "views", "selected", "departing"])) {
+        throw new Error("aftershown-keys");
     }
     if (
-        !isOpaqueId(o["id"]) ||
-        typeof o["kind"] !== "string" || !EFFECT_KINDS.has(o["kind"] as string) ||
-        !isOpaqueId(o["target"]) ||
-        typeof o["rev"] !== "string" || !isCanonicalU64(o["rev"] as string) ||
-        typeof o["cause"] !== "string" || !EFFECT_CAUSES.has(o["cause"] as string) ||
-        typeof o["awaitShown"] !== "boolean"
+        !isOpaqueId(o["op"]) ||
+        typeof o["obs"] !== "string" || !isCanonicalU64(o["obs"] as string)
     ) {
-        throw new Error("fx");
+        throw new Error("aftershown-shape");
+    }
+    const membersRaw = o["members"];
+    if (!Array.isArray(membersRaw) || membersRaw.length > MAX_FOCUS_MEMBERS) {
+        throw new Error("focus-members-over-cap");
+    }
+    const seenMembers = new Set<string>();
+    const members: WorldAfterShownMember[] = (membersRaw as ReadonlyArray<unknown>).map((item) => {
+        if (typeof item !== "object" || item === null || Array.isArray(item)) {
+            throw new Error("focus-member");
+        }
+        const m = item as Record<string, unknown>;
+        if (!hasExactKeys(m, ["win", "out", "ws", "frame"])) {
+            throw new Error("focus-member-keys");
+        }
+        if (!isOpaqueId(m["win"]) || !isOpaqueId(m["out"]) || !isOpaqueId(m["ws"])) {
+            throw new Error("focus-member-shape");
+        }
+        const frame = m["frame"];
+        if (frame !== null && !isCarriedRect(frame)) {
+            throw new Error("focus-member-frame");
+        }
+        const win = m["win"] as string;
+        if (seenMembers.has(win)) {
+            throw new Error("focus-duplicate-member");
+        }
+        seenMembers.add(win);
+        return {
+            win, out: m["out"] as string, ws: m["ws"] as string,
+            frame: (frame ?? null) as [number, number, number, number] | null,
+        };
+    });
+    const parseScopeList = (
+        key: string, cap: number, overCap: string,
+    ): WorldAfterShownScope[] => {
+        const raw = o[key];
+        if (!Array.isArray(raw) || raw.length > cap) {
+            throw new Error(overCap);
+        }
+        const seen = new Set<string>();
+        const out: WorldAfterShownScope[] = [];
+        for (const item of raw as ReadonlyArray<unknown>) {
+            const scope = parseAfterShownScope(item);
+            const pair = `${scope.out}\u0000${scope.ws}`;
+            if (seen.has(pair)) {
+                throw new Error(key === "views" ? "focus-duplicate-view-output" : "focus-duplicate-scope");
+            }
+            seen.add(pair);
+            out.push(scope);
+        }
+        return out;
+    };
+    const views = parseScopeList("views", MAX_FOCUS_VIEWS, "focus-views-over-cap");
+    // View outputs must be unique (covered by the pair check plus an
+    // output-level check mirroring the protocol decoder).
+    const seenViewOut = new Set<string>();
+    for (const v of views) {
+        if (seenViewOut.has(v.out)) {
+            throw new Error("focus-duplicate-view-output");
+        }
+        seenViewOut.add(v.out);
+    }
+    const selected = parseScopeList("selected", MAX_FOCUS_SELECTED, "focus-selected-over-cap");
+    const departing = parseScopeList("departing", MAX_FOCUS_DEPARTING, "focus-departing-over-cap");
+    const selectedPairs = new Set(selected.map((s) => `${s.out}\u0000${s.ws}`));
+    for (const v of views) {
+        if (!selectedPairs.has(`${v.out}\u0000${v.ws}`)) {
+            throw new Error("focus-view-not-selected");
+        }
+    }
+    return {
+        op: o["op"] as string, obs: o["obs"] as string,
+        members, views, selected, departing,
+    };
+}
+
+// Retained focus request row: exactly
+// {id,target,rev,cause,out,ws,cmdSeq,afterShown} with opaque
+// identity/target/domain, a canonical issuing revision, the closed
+// four-cause vocabulary and cross-field cmdSeq/afterShown rules. Null
+// carries no focus intent. Anything else refuses the whole reply.
+function parseFocusRequestRow(value: unknown): WorldFocusRequest | null {
+    if (value === null) {
+        return null;
+    }
+    if (typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("focus-request");
+    }
+    const o = value as Record<string, unknown>;
+    if (!hasExactKeys(o, ["id", "target", "rev", "cause", "out", "ws", "cmdSeq", "afterShown"])) {
+        throw new Error("focus-request-keys");
+    }
+    if (
+        !isOpaqueId(o["id"]) || !isOpaqueId(o["target"]) ||
+        typeof o["rev"] !== "string" || !isCanonicalU64(o["rev"] as string) ||
+        typeof o["cause"] !== "string" || !FOCUS_CAUSES.has(o["cause"] as string) ||
+        !isOpaqueId(o["out"]) || !isOpaqueId(o["ws"])
+    ) {
+        throw new Error("focus-request-shape");
     }
     const explicit = (o["cause"] as string) === "explicit-command";
     const cmdSeq = optU64orNull(o["cmdSeq"]);
-    // Explicit-command effects carry the dispatching command; the other
-    // causes carry null and never grant arrival-ready focus.
-    if (explicit && cmdSeq === null) {
-        throw new Error("effect-explicit-null-seq");
+    if (explicit !== (cmdSeq !== null)) {
+        throw new Error("focus-request-cmdseq-mismatch");
     }
-    if (!explicit && cmdSeq !== null) {
-        throw new Error("effect-non-explicit-seq");
-    }
-    if (!explicit && (o["awaitShown"] as boolean)) {
-        throw new Error("effect-automatic-await-shown");
+    const afterShown = parseAfterShown(o["afterShown"]);
+    if (afterShown !== null && !explicit) {
+        throw new Error("focus-request-aftershown-non-explicit");
     }
     return {
-        id: o["id"] as string, kind: o["kind"] as WorldReplyEffect["kind"],
-        target: o["target"] as string, rev: o["rev"] as string,
-        cause: o["cause"] as WorldReplyEffect["cause"],
-        cmdSeq, awaitShown: o["awaitShown"] as boolean,
+        id: o["id"] as string, target: o["target"] as string, rev: o["rev"] as string,
+        cause: o["cause"] as WorldFocusRequest["cause"],
+        out: o["out"] as string, ws: o["ws"] as string,
+        cmdSeq, afterShown,
     };
 }
 
@@ -1561,36 +1687,6 @@ function parseDiagnosticRow(e: unknown): WorldReplyDiagnostic {
     };
 }
 
-// Retained positive-close request row: exactly
-// {id,target,rev,cause,out,ws} with opaque identity/target/domain, a
-// canonical issuing revision and the closed `positive-close` cause. Null
-// carries no close intent (sole-close empty workspaces, bootstrap and
-// not-ready replies). Anything else refuses the whole reply.
-function parseCloseFocusRow(value: unknown): WorldCloseFocus | null {
-    if (value === null) {
-        return null;
-    }
-    if (typeof value !== "object" || Array.isArray(value)) {
-        throw new Error("close-focus");
-    }
-    const o = value as Record<string, unknown>;
-    if (!hasExactKeys(o, ["id", "target", "rev", "cause", "out", "ws"])) {
-        throw new Error("close-focus-keys");
-    }
-    if (
-        !isOpaqueId(o["id"]) || !isOpaqueId(o["target"]) ||
-        typeof o["rev"] !== "string" || !isCanonicalU64(o["rev"] as string) ||
-        o["cause"] !== "positive-close" ||
-        !isOpaqueId(o["out"]) || !isOpaqueId(o["ws"])
-    ) {
-        throw new Error("close-focus-shape");
-    }
-    return {
-        id: o["id"] as string, target: o["target"] as string, rev: o["rev"] as string,
-        cause: "positive-close", out: o["out"] as string, ws: o["ws"] as string,
-    };
-}
-
 // Explicit native creation desire row: exactly {op,ws,out}, all non-empty
 // strings. Unknown keys refuse like every other core row.
 function parseNativeCreationRow(e: unknown): WorldNativeCreation {
@@ -1665,7 +1761,7 @@ export function parseIntentWrites(value: unknown): WorldIntentWrite[] | null {
 // bootstrap lane (no capture flown yet) carries exactly the 24 core keys;
 // the bindings default without validation.
 const CORE_REPLY_KEYS = ["v", "adapter", "gen", "req", "obs", "rev", "ready", "consumed",
-    "scopes", "workspaces", "outputs", "windows", "transfers", "effects", "closeFocus", "result",
+    "scopes", "workspaces", "outputs", "windows", "transfers", "effects", "focusRequest", "result",
     "gestureSettled", "operationSettled", "nativeCreations", "warpCursor", "presentation",
     "intentWrites", "switchSettled", "diagnostics"] as const;
 const BOUND_REPLY_KEYS = [...CORE_REPLY_KEYS, "source", "nativeInvalid", "clock", "gestureAssoc"] as const;
@@ -1722,7 +1818,7 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
     if (
         scopesRaw.length > MAX_REPLY_SCOPES || wsRaw.length > MAX_REPLY_WORKSPACES ||
         outRaw.length > MAX_REPLY_OUTPUTS || winRaw.length > MAX_REPLY_WINDOWS ||
-        trRaw.length > MAX_REPLY_TRANSFERS || fxRaw.length > MAX_REPLY_EFFECTS ||
+        trRaw.length > MAX_REPLY_TRANSFERS || fxRaw.length > 0 ||
         opSettledRaw.length > MAX_REPLY_OPERATIONS || creationsRaw.length > MAX_REPLY_NATIVE_CREATIONS ||
         switchRaw.length > MAX_REPLY_SWITCH_EVENTS || diagRaw.length > MAX_REPLY_DIAGNOSTICS
     ) {
@@ -1749,8 +1845,8 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
         unique(windows, (w) => w.win, "duplicate-window");
         const transfers: WorldReplyTransfer[] = trRaw.map(parseTransferRow);
         unique(transfers, (t) => t.op, "duplicate-transfer");
-        const effects: WorldReplyEffect[] = fxRaw.map(parseEffectRow);
-        unique(effects, (e) => e.id, "duplicate-effect");
+        // Effects lane is required empty: any row refuses the whole reply.
+        const effects: never[] = [];
         const operationSettled: WorldReplyOperationSettlement[] = opSettledRaw.map(parseOperationSettledRow);
         unique(operationSettled, (o) => o.op, "duplicate-operation");
         const nativeCreations: WorldNativeCreation[] = creationsRaw.map(parseNativeCreationRow);
@@ -1759,11 +1855,12 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
         unique(switchSettled, (s) => s.op, "duplicate-switch");
         // Diagnostics are independent evidence rows: no dedup.
         const diagnostics: WorldReplyDiagnostic[] = diagRaw.map(parseDiagnosticRow);
-        // Required nullable retained positive-close request: null carries
-        // no close intent; a row carries the opaque identity, frozen target
-        // and domain, immutable issuing revision and the distinct
-        // positive-close cause. Missing or malformed refuses.
-        const closeFocus = parseCloseFocusRow(r["closeFocus"]);
+        // Required nullable retained focus request: null carries
+        // no focus intent; a row carries the opaque identity, frozen target
+        // and domain, immutable issuing revision, closed cause, originating
+        // command correlation and frozen selection dependencies. Missing or
+        // malformed refuses.
+        const focusRequest = parseFocusRequestRow(r["focusRequest"]);
         // The parser decodes the correlated result truthfully (null or the
         // exact op shape). Actuator-side null-stripping is broker behavior
         // (strip_result), never a parser default.
@@ -1836,7 +1933,7 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
         return {
             adapter, gen, req, obs, rev,
             ready: r["ready"] as boolean, consumed: r["consumed"] as boolean,
-            scopes, workspaces, outputs, windows, transfers, effects, closeFocus, result,
+            scopes, workspaces, outputs, windows, transfers, effects, focusRequest, result,
             gestureSettled, gestureAssoc, operationSettled, nativeCreations, warpCursor, intentWrites, presentation,
             switchSettled, diagnostics,
             source, nativeInvalid, clock,
@@ -2451,9 +2548,14 @@ export function buildReadRequest(req: string): string {
 // shapes below are the v4 native facts; retired keys such as floating,
 // fitExcluded, fixedAuto, observedWs, mode, views, hostOwned, predicate,
 // floatIntent, or birthClear refuse or hold server-side and are never
-// emitted). Optional lanes the producer does not populate (cursorHit,
-// frame/member/view/clear/creation attempts, gestureIngress, primary) are
+// emitted). Optional lanes the producer does not populate (frame/
+// member/view/clear/creation attempts, gestureIngress, primary) are
 // omitted, never nulled: omission backfills the observation-only default.
+// The normative `cursorHit` observed fact rides from the already captured
+// exact `cursorWindow` windowAt fact via the strict nullable-id writer,
+// alongside the raw `cursorWindow` capture lane the broker validates and
+// strips. No target selection or geometric guess in the adapter: the value
+// is the captured identity verbatim, null when unknown.
 // Capture-only raw lanes (nativeGesture, cursorWindow,
 // nativeInvalidWitness) ride for the broker to validate and strip before
 // the strict decode; absent keys pass through.
@@ -3011,6 +3113,12 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
     // the strict decode. The script never mints gesture ingress: the
     // gesture lane always rides null and the broker folds the raw native
     // snapshot plus the same-capture windowAt fact into core ingress.
+    // The normative cursorHit fact mirrors the captured cursorWindow
+    // identity verbatim (strict nullable-id spelling) and passes through
+    // to the core; the raw cursorWindow lane still rides for the broker
+    // to validate and strip. Unknown stays omitted (absent normalizes to
+    // None exactly like null, so omission keeps byte-exact gates stable);
+    // only a proven hit identity is emitted.
     const nativeGesture = (observation.nativeGesture ?? null) === null
         ? "null"
         : rawNativeGestureJson(observation.nativeGesture as NativeGestureSnapshot);
@@ -3020,6 +3128,9 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
     if (cursorWindow === null) {
         return null;
     }
+    // Omit the normative lane when the capture proves no hit; a proven
+    // identity rides verbatim beside the raw lane.
+    const cursorHitLane = cursorWindow === "null" ? "" : `,"cursorHit":${cursorWindow}`;
     const witness = (observation.nativeInvalidWitness ?? null) === null
         ? "null"
         : `{"instance":${esc((observation.nativeInvalidWitness as { instance: string }).instance)},` +
@@ -3069,7 +3180,7 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
         `"intentRecords":[${intentRecords.join(",")}],` +
         `${stateLane},${focusLane},` +
         `"rendererInput":null,` +
-        `"nativeGesture":${nativeGesture},"cursorWindow":${cursorWindow},` +
+        `"nativeGesture":${nativeGesture},"cursorWindow":${cursorWindow}${cursorHitLane},` +
         `"nativeInvalidWitness":${witness}}`;
 }
 

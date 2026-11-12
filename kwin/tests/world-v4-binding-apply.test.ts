@@ -13,7 +13,7 @@ import { WorldAdapterState } from "../src/world-state";
 import { isCoreWorldReply, parseWorldReply, type WorldReply } from "../src/world-report";
 import type { WorldObservation } from "../src/world-observe";
 
-const DIR = join("..", "test-fixtures", "world-wire", "v4", "messages");
+const DIR = join("..", "test-fixtures", "world-wire", "v4-active", "messages");
 const ADAPTER = "adapter-a";
 const GEN = "generation-a";
 

@@ -242,7 +242,7 @@ function setup(onLog?: (message: string) => void): Harness {
             ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
             windows: [], transfers: [], effects: [], result: null,
             gestureSettled: settled, gestureAssoc: assoc,
-            closeFocus: null,
+            focusRequest: null,
             operationSettled: [], nativeCreations: [], warpCursor: null,
             intentWrites: [], presentation: DISABLED_PRESENTATION,
             switchSettled: [], diagnostics: [],

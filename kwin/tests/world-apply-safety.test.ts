@@ -1,9 +1,9 @@
 // World overlay safety: native KWin predicates (`fullscreen`,
 // `maximized`, `sticky`, `minimized` plus the hidden-into-minimized alias)
-// classify overlays exactly like the legacy plan sources; a
-// fullscreen/minimized/hidden flip between observation and actuation fails
-// closed; automatic focus/raise/stack never touches game/excluded/overlay
-// rows.
+// fail geometry/membership closed on a flip between observation and
+// actuation; observed flags alone never steer focus (the retired automatic
+// overlay barrier is deleted); only declared mechanical last-moment gates
+// can withhold a retained focus request.
 //
 // STRICT V4 SYNTHETIC replies (hand-authored inline for mechanical apply
 // only and validated below through the real parseWorldReply; these bytes
@@ -175,7 +175,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         ready: true, consumed: false,
         source, nativeInvalid, clock: "1",
         gestureSettled: null, gestureAssoc: null,
-        closeFocus: null,
+        focusRequest: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
         intentWrites: [], switchSettled: [], diagnostics: [],
@@ -208,10 +208,12 @@ function winRow(winId: string, ws: string, rect: [number, number, number, number
     };
 }
 
-// Automatic focus effect (exact 7-key shape; explicit-command would demand
-// a correlated command that these legs never file).
-function focusFx(id: string, target: string): Record<string, unknown> {
-    return { id, kind: "focus", target, rev: "1", cause: "automatic-admission", cmdSeq: null, awaitShown: false };
+// Retained automatic focus request (v4 exact 8-key shape): the retired
+// effects-lane focus rows refuse at the reader, so every leg below files
+// the request on the retained lane. Admission keeps no
+// unknown-foreground verdict, so these legs run under benign live safety.
+function focusReqRow(id: string, target: string): Record<string, unknown> {
+    return { id, target, rev: "1", cause: "automatic-admission", out: "out-1", ws: "ws-1", cmdSeq: null, afterShown: null };
 }
 
 // Stable core window-transfer identity the membership legs ride under (v4
@@ -348,7 +350,7 @@ describe("world overlay safety", () => {
             obs: "1", rev: "1", ready: true, consumed: false,
             source: "req-1", nativeInvalid: flight.watermark, clock: "1",
             gestureSettled: null, gestureAssoc: null,
-            closeFocus: null,
+            focusRequest: null,
             operationSettled: [], nativeCreations: [], warpCursor: null,
             intentWrites: [], switchSettled: [], diagnostics: [],
             presentation: DISABLED_PRESENTATION,
@@ -413,7 +415,7 @@ describe("world overlay safety", () => {
             obs: "1", rev: "1", ready: true, consumed: false,
             source: "req-1", nativeInvalid: flight.watermark, clock: "1",
             gestureSettled: null, gestureAssoc: null,
-            closeFocus: null,
+            focusRequest: null,
             operationSettled: [], nativeCreations: [], warpCursor: null,
             intentWrites: [], switchSettled: [], diagnostics: [],
             presentation: DISABLED_PRESENTATION,
@@ -481,7 +483,7 @@ describe("world overlay safety", () => {
             obs: "1", rev: "1", ready: true, consumed: false,
             source: "req-1", nativeInvalid: flight.watermark, clock: "1",
             gestureSettled: null, gestureAssoc: null,
-            closeFocus: null,
+            focusRequest: null,
             operationSettled: [], nativeCreations: [], warpCursor: null,
             intentWrites: [], switchSettled: [], diagnostics: [],
             presentation: DISABLED_PRESENTATION,
@@ -517,7 +519,7 @@ describe("world overlay safety", () => {
         assert.equal(result.geometryWrites, 0);
     });
 
-    it("refuses focus when hidden flips before the focus effect", () => {
+    it("refuses focus when hidden flips before the retained request", () => {
         const { surface, world } = makeSurface();
         const stale = captureWorldObservation({
             workspace: surface as never,
@@ -529,13 +531,18 @@ describe("world overlay safety", () => {
             logicalBindingOf: () => null,
         });
         assert.ok(stale !== null);
+        // Native input moves activation elsewhere after the capture, so
+        // the fresh pre differs from the target and the hidden flip on the
+        // target must hold the mechanical focus gate (never the already-
+        // target fallback).
+        world.activeWindow = world.wins[1] as unknown;
         const before = world.activeWindow;
         (world.wins[0] as { hidden: boolean }).hidden = true;
         const readProp = (v: object, p: string): unknown => Reflect.get(v as object, p);
         const host = createWorldApplyHost(surface as object, readProp as never);
         // Same genuine bind as above: the refusal below must come from the
-        // hidden flip at the focus gate, never from a stale or malformed
-        // reply.
+        // hidden flip at the mechanical focus gate, never from a stale or
+        // malformed reply.
         const state = new WorldAdapterState("test-adapter", "owner-a");
         assert.equal(state.onDiscovery("gen-1", "test-adapter", "disc-1", "disc-1"), true);
         const flight = state.beginCapture("req-1", null);
@@ -545,13 +552,13 @@ describe("world overlay safety", () => {
             obs: "1", rev: "1", ready: true, consumed: false,
             source: "req-1", nativeInvalid: flight.watermark, clock: "1",
             gestureSettled: null, gestureAssoc: null,
-            closeFocus: null,
+            focusRequest: focusReqRow("focus-9", "win-tiled"),
             operationSettled: [], nativeCreations: [], warpCursor: null,
             intentWrites: [], switchSettled: [], diagnostics: [],
             presentation: DISABLED_PRESENTATION,
             scopes: [], workspaces: [], outputs: [],
             windows: [],
-            transfers: [], effects: [focusFx("fx-9", "win-tiled")], result: null,
+            transfers: [], effects: [], result: null,
         });
         const parsed = parseWorldReply(text);
         assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
@@ -578,21 +585,8 @@ describe("world overlay safety", () => {
             desktopById: (id: string) => ({ id }),
             minDesktops: 2,
         });
-        assert.deepEqual(focusWrites, [], "hidden flip holds the focus effect");
+        assert.deepEqual(focusWrites, [], "hidden flip holds the retained request");
         assert.equal(world.activeWindow, before);
-    });
-
-    it("never steers automatic focus onto a game/excluded row", () => {
-        const { surface, world } = makeSurface();
-        const { handle, calls, auto } = start(surface);
-        const body = JSON.parse(auto.payload) as Record<string, unknown>;
-        const before = world.activeWindow;
-        auto.callback(acceptedReply("gen-1", body["source"] as string, body["nativeInvalid"] as string, "1", {
-            effects: [focusFx("fx-1", "win-game")],
-        }));
-        answerTake(calls);
-        assert.equal(world.activeWindow, before, "overlay focus effect held, never stolen");
-        handle.stop();
     });
 
     it("still applies automatic focus onto a tiled row", () => {
@@ -601,13 +595,13 @@ describe("world overlay safety", () => {
         const { handle, calls, auto } = start(surface);
         const body = JSON.parse(auto.payload) as Record<string, unknown>;
         auto.callback(acceptedReply("gen-1", body["source"] as string, body["nativeInvalid"] as string, "1", {
-            effects: [focusFx("fx-2", "win-tiled")],
+            focusRequest: focusReqRow("focus-2", "win-tiled"),
         }));
         answerTake(calls);
         assert.equal(
             ((world.activeWindow as unknown as { internalId: string }).internalId),
             "win-tiled",
-            "tiled focus effect applies",
+            "tiled focus request applies",
         );
         handle.stop();
     });

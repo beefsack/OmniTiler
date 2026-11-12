@@ -933,17 +933,18 @@ describe("world genuine-producer workspace selection journeys", () => {
             const drainIndex = await h.flush();
             const drain = JSON.parse(h.replies.get(drainIndex) as string) as Record<string, unknown>;
             // A populated grant resolves an eligible focus target: one
-            // `awaitShown` focus grant on the draining capture (each
-            // populated grant carries its own command sequence and
-            // `awaitShown:true` per the native selection evidence). The
-            // grant target must home to the selected cell.
-            const effects = drain["effects"] as Array<Record<string, unknown>>;
-            assert.equal(effects.length, 1, "populated grant mints one focus grant");
-            assert.equal(effects[0]?.["kind"], "focus", "grant is a focus effect");
-            assert.equal(effects[0]?.["awaitShown"], true, "grant waits for arrival showing");
-            assert.equal(effects[0]?.["cmdSeq"], "1", "grant rides sequence 1");
-            assert.equal(effects[0]?.["cause"], "explicit-command", "grant is command-owned");
-            const grantTarget = effects[0]?.["target"] as string;
+            // retained latest-only `focusRequest` on the draining capture
+            // (each populated grant carries its own command sequence and
+            // non-null `afterShown` per the native selection evidence;
+            // focus left the effects lane, so no focus effect row rides).
+            // The grant target must home to the selected cell.
+            assert.deepEqual(drain["effects"], [], "no focus effect is published on the v4 wire");
+            const focusReq = drain["focusRequest"] as Record<string, unknown> | null;
+            assert.ok(focusReq !== null, "populated grant carries the retained focus request");
+            assert.equal(focusReq["cause"], "explicit-command", "grant is command-owned");
+            assert.equal(focusReq["cmdSeq"], "1", "grant rides sequence 1");
+            assert.ok(focusReq["afterShown"] !== null, "grant waits for arrival showing");
+            const grantTarget = focusReq["target"] as string;
             const drainRows = drain["windows"] as Array<Record<string, unknown>>;
             const grantRow = drainRows.find((w) => w["win"] === grantTarget);
             assert.ok(grantRow !== undefined, "grant names a published member");
