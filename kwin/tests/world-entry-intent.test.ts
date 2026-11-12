@@ -1,7 +1,10 @@
-// Opaque intent persistence through the production entry (offline only, no
-// D-Bus, no KWin): the bounded seed hydrates before the first admissible
-// report, the live join carries exact bytes, and only accepted core
-// `intentWrites` update persistence. Disabled harnesses bypass with an
+// Retained intent desire through the production entry (offline only, no
+// D-Bus, no KWin): the bounded seed hydrates durable storage before the
+// first admissible report, the live join carries exact bytes, and accepted
+// core `intentDesired` projections update the latest desired target. The
+// single reconciler persists the converged snapshot only on
+// desired-versus-durable difference and applies the current fresh whole
+// reply only after durable equality. Disabled harnesses bypass with an
 // empty map.
 
 import { describe, it } from "node:test";
@@ -194,6 +197,9 @@ function startFlow(bus?: {
         return found as Call;
     };
     const hasCall = (method: string): boolean => calls.some((c) => c.method === method);
+    const writeCount = (): number => calls.filter((c) => c.method === "WriteFloatIntent").length;
+    const readCount = (): number => calls.filter((c) => c.method === "ReadFloatIntent").length;
+    const appliedCount = (): number => logs.filter((l) => l.includes("omnitiler:world:applied")).length;
     const setGap = (v: number): void => {
         gap = v;
     };
@@ -201,7 +207,7 @@ function startFlow(bus?: {
         assert.ok(configHandler !== null, "expected configChanged signal wiring");
         (configHandler as () => void)();
     };
-    return { handle: handle as NonNullable<typeof handle>, calls, timers, logs, pump, lastCall, hasCall, geometryOf, setGap, fireConfigChanged };
+    return { handle: handle as NonNullable<typeof handle>, calls, timers, logs, pump, lastCall, hasCall, writeCount, readCount, appliedCount, geometryOf, setGap, fireConfigChanged };
 }
 
 type Flow = ReturnType<typeof startFlow>;
@@ -242,7 +248,7 @@ function winRow(win: string, ws: string): Record<string, unknown> {
 function buildAccept(
     gen: string,
     envelope: Record<string, unknown>,
-    intentWrites: ReadonlyArray<Record<string, unknown>>,
+    intentDesired: ReadonlyArray<Record<string, unknown>>,
     rev = "1",
 ): string {
     return JSON.stringify({
@@ -257,7 +263,7 @@ function buildAccept(
         windows: [winRow("win-a", "ws1"), winRow("win-b", "ws2")],
         transfers: [], effects: [], focusRequest: null, result: null,
         gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
-        intentWrites,
+        intentDesired,
         presentation: DISABLED_PRESENTATION,
         switchSettled: [], diagnostics: [],
         source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "7",
@@ -270,10 +276,10 @@ function buildAccept(
 function acceptCapture(
     gen: string,
     envelope: Record<string, unknown>,
-    intentWrites: ReadonlyArray<Record<string, unknown>>,
+    intentDesired: ReadonlyArray<Record<string, unknown>>,
     rev = "1",
 ): string {
-    const text = buildAccept(gen, envelope, intentWrites, rev);
+    const text = buildAccept(gen, envelope, intentDesired, rev);
     const parsed = parseWorldReply(text);
     assert.ok(isCoreWorldReply(parsed), "authored capture accept binds strict v4");
     return text;
@@ -291,6 +297,22 @@ function answerQueue(flow: Flow, gen: string): void {
         v: 4, outcome: "queued", gen,
         client: body["client"], clientCmd: body["clientCmd"], globalCmd: "1",
     }));
+}
+
+// Drain every outstanding take request with pending: sequential collection
+// sends one request per undecided identity, so a single answer only
+// releases the next one. Already-answered callbacks are never re-fired.
+function answerAllTakesPending(flow: Flow, gen: string): void {
+    const answered = new Set<Call>();
+    for (let i = 0; i < 8; i += 1) {
+        const takes = flow.calls.filter((c) => c.method === "TakeCommandResult") as Call[];
+        const fresh = [...takes].reverse().find((c) => !answered.has(c));
+        if (fresh === undefined) {
+            return;
+        }
+        answered.add(fresh);
+        fresh.callback(JSON.stringify({ v: 4, outcome: "pending", gen }));
+    }
 }
 
 function writeCorrelation(flow: Flow): string {
@@ -321,7 +343,18 @@ function innerIntentRecords(flow: Flow): unknown {
     return (body["report"] as Record<string, unknown>)["intentRecords"];
 }
 
-describe("world entry opaque intent persistence", () => {
+// Drive a second accepted capture through a real queued command: the serial
+// snapshot path files, dispatches, and accepts capture #2.
+function driveSecondCapture(flow: Flow, gen: string): Record<string, unknown> {
+    flow.handle.requestFocus("left");
+    flow.pump(120);
+    answerQueue(flow, gen);
+    flow.pump(120);
+    assert.ok(flow.calls.filter((c) => c.method === "DescribeWorld").length >= 2, "expected second capture");
+    return JSON.parse(flow.lastCall("DescribeWorld").payload) as Record<string, unknown>;
+}
+
+describe("world entry retained intent desire", () => {
     it("gates the first capture on hydration; degraded reads still dispatch", () => {
         const flow = startFlow();
         answerHandshake(flow);
@@ -352,7 +385,7 @@ describe("world entry opaque intent persistence", () => {
         flow.handle.stop();
     });
 
-    it("accepted core intentWrites replace and delete, then persist the full snapshot", () => {
+    it("accepted desired replaces the target and persists the converged snapshot", () => {
         const flow = startFlow();
         answerHandshake(flow);
         answerSettings(flow);
@@ -363,6 +396,7 @@ describe("world entry opaque intent persistence", () => {
             { win: "ghost", data: DATA_GHOST },
         ]);
         flow.pump(120);
+        const appliedBefore = flow.appliedCount();
         const envelope = firstCapture(flow);
         flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", envelope, [
             { win: "win-a", data: DATA_B },
@@ -371,45 +405,53 @@ describe("world entry opaque intent persistence", () => {
         const write = flow.lastCall("WriteFloatIntent");
         const body = JSON.parse(write.payload) as Record<string, unknown>;
         assert.equal(body["v"], 2);
+        // Converged: win-a replaced, win-b cleared, ghost retained.
         assert.deepEqual(body["records"], [
-            { win: "win-a", data: DATA_B },
             { win: "ghost", data: DATA_GHOST },
+            { win: "win-a", data: DATA_B },
         ]);
         write.callback(storedWriteReply(flow, 2));
+        assert.equal(flow.appliedCount(), appliedBefore + 1);
         for (const line of flow.logs) {
             assert.ok(!line.includes(DATA_A) && !line.includes(DATA_B), `bytes leaked: ${line}`);
         }
         flow.handle.stop();
     });
 
-    it("accepted replies without writes persist nothing and keep the map", () => {
+    it("equal desired means zero disk writes and immediate apply", () => {
         const flow = startFlow();
         answerHandshake(flow);
         answerSettings(flow);
         flow.pump(120);
         answerRead(flow, [{ win: "win-a", data: DATA_A }]);
         flow.pump(120);
+        const appliedBefore = flow.appliedCount();
         const envelope = firstCapture(flow);
-        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", envelope, []));
+        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", envelope, [
+            { win: "win-a", data: DATA_A },
+        ]));
         assert.equal(flow.hasCall("WriteFloatIntent"), false);
+        assert.equal(flow.appliedCount(), appliedBefore + 1);
         flow.handle.stop();
     });
 
-    it("malformed intentWrites refuse the reply without touching persistence", () => {
+    it("malformed intentDesired refuses the reply without touching persistence", () => {
         const flow = startFlow();
         answerHandshake(flow);
         answerSettings(flow);
         flow.pump(120);
         answerRead(flow, [{ win: "win-a", data: DATA_A }]);
         flow.pump(120);
+        const appliedBefore = flow.appliedCount();
         const envelope = firstCapture(flow);
         const malformed = buildAccept("gen-1", envelope, [
             { win: "win-a", data: DATA_A },
             { win: "win-a", data: DATA_B },
         ]);
-        assert.equal(parseWorldReply(malformed), null, "duplicate intent subject refuses at the parser");
+        assert.equal(parseWorldReply(malformed), null, "duplicate desired subject refuses at the parser");
         flow.lastCall("DescribeWorld").callback(malformed);
         assert.equal(flow.hasCall("WriteFloatIntent"), false);
+        assert.equal(flow.appliedCount(), appliedBefore);
         assert.ok(flow.logs.some((l) => l.includes("reply-malformed")), flow.logs.join("\n"));
         flow.handle.stop();
     });
@@ -442,31 +484,20 @@ describe("world entry opaque intent persistence", () => {
         answerHandshake(flow);
         answerSettings(flow);
         flow.pump(120);
-        answerRead(flow, [{ win: "win-a", data: DATA_A }]);
-        flow.pump(120);
-        const appliedBefore = flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length;
+        const appliedBefore = flow.appliedCount();
         const envelope = firstCapture(flow);
         flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", envelope, [
             { win: "win-a", data: DATA_B },
         ]));
         assert.equal(flow.hasCall("WriteFloatIntent"), true);
         // The persist is still owed: no dependent apply ran yet.
-        assert.deepEqual(
-            flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length,
-            appliedBefore,
-        );
+        assert.equal(flow.appliedCount(), appliedBefore);
         // A foreign correlation never settles the owed write.
         answerWrite(flow, JSON.stringify({ v: 2, correlation_id: "intent-write-999", outcome: "stored", stored: 1 }));
-        assert.deepEqual(
-            flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length,
-            appliedBefore,
-        );
+        assert.equal(flow.appliedCount(), appliedBefore);
         // The correlated success releases the dependent apply.
         answerWrite(flow, storedWriteReply(flow, 1));
-        assert.equal(
-            flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length,
-            appliedBefore + 1,
-        );
+        assert.equal(flow.appliedCount(), appliedBefore + 1);
         flow.handle.stop();
     });
 
@@ -475,9 +506,7 @@ describe("world entry opaque intent persistence", () => {
         answerHandshake(flow);
         answerSettings(flow);
         flow.pump(120);
-        answerRead(flow, [{ win: "win-a", data: DATA_A }]);
-        flow.pump(120);
-        const appliedBefore = flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length;
+        const appliedBefore = flow.appliedCount();
         const envelope = firstCapture(flow);
         flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", envelope, [
             { win: "win-a", data: DATA_B },
@@ -485,64 +514,44 @@ describe("world entry opaque intent persistence", () => {
         answerWrite(flow, JSON.stringify({
             v: 2, correlation_id: writeCorrelation(flow), outcome: "rejected", reason: "unauthorized",
         }));
-        assert.deepEqual(
-            flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length,
-            appliedBefore,
-        );
+        assert.equal(flow.appliedCount(), appliedBefore);
         assert.ok(flow.logs.some((l) => l.includes("intent-write-failed")), flow.logs.join("\n"));
         // No dependent follow-up dispatch runs from the failed accept.
         assert.equal(flow.calls.filter((c) => c.method === "DescribeWorld").length, 1);
         flow.handle.stop();
     });
 
-    it("failed persist keeps owed status: unchanged next accept withholds apply until covering stored success", () => {
+    it("failed persist recovers on the later accepted unchanged projection", () => {
         const flow = startFlow({ stored: [], degradeReads: false, holdWrites: true });
         answerHandshake(flow);
         answerSettings(flow);
         flow.pump(120);
-        answerRead(flow, [{ win: "win-a", data: DATA_A }]);
-        flow.pump(120);
-        const appliedBefore = flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length;
+        const appliedBefore = flow.appliedCount();
         const geometryBefore = JSON.stringify(flow.geometryOf("win-a"));
         const envelope = firstCapture(flow);
         flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", envelope, [
             { win: "win-a", data: DATA_B },
         ], "1"));
-        assert.equal(flow.hasCall("WriteFloatIntent"), true);
-        assert.equal(flow.calls.filter((c) => c.method === "WriteFloatIntent").length, 1);
+        assert.equal(flow.writeCount(), 1);
         answerWrite(flow, JSON.stringify({
             v: 2, correlation_id: writeCorrelation(flow), outcome: "rejected", reason: "unauthorized",
         }));
-        assert.deepEqual(
-            flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length,
-            appliedBefore,
-        );
+        assert.equal(flow.appliedCount(), appliedBefore);
         assert.equal(JSON.stringify(flow.geometryOf("win-a")), geometryBefore);
-        // Drive the next acceptance through a real queued command: the
-        // serial snapshot path files, dispatches, and accepts capture #2.
-        flow.handle.requestFocus("left");
-        flow.pump(120);
-        answerQueue(flow, "gen-1");
-        flow.pump(120);
-        const describes = flow.calls.filter((c) => c.method === "DescribeWorld");
-        assert.ok(describes.length >= 2, `expected second capture, got ${describes.length}`);
-        const second = JSON.parse(flow.lastCall("DescribeWorld").payload) as Record<string, unknown>;
-        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", second, [], "2"));
-        flow.lastCall("TakeCommandResult").callback(JSON.stringify({ v: 4, outcome: "pending", gen: "gen-1" }));
-        // Owed map: the unchanged accept upgrades to a covering write and
-        // withholds native effects (no apply, geometry untouched).
-        assert.equal(flow.calls.filter((c) => c.method === "WriteFloatIntent").length, 2);
-        assert.deepEqual(
-            flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length,
-            appliedBefore,
-        );
+        // The next accepted reply carries the unchanged full projection
+        // (core retains the target): it drives the covering write and
+        // withholds native effects until the stored success.
+        const second = driveSecondCapture(flow, "gen-1");
+        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", second, [
+            { win: "win-a", data: DATA_B },
+        ], "2"));
+        answerAllTakesPending(flow, "gen-1");
+        assert.equal(flow.writeCount(), 2);
+        assert.equal(flow.appliedCount(), appliedBefore);
         assert.equal(JSON.stringify(flow.geometryOf("win-a")), geometryBefore);
         // The covering stored success releases the dependent apply exactly once.
         answerWrite(flow, storedWriteReply(flow, 1));
-        assert.equal(
-            flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length,
-            appliedBefore + 1,
-        );
+        assert.equal(flow.appliedCount(), appliedBefore + 1);
         flow.handle.stop();
     });
 
@@ -551,77 +560,208 @@ describe("world entry opaque intent persistence", () => {
         answerHandshake(flow);
         answerSettings(flow);
         flow.pump(120);
-        answerRead(flow, [{ win: "win-a", data: DATA_A }]);
-        flow.pump(120);
-        const appliedBefore = flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length;
+        const appliedBefore = flow.appliedCount();
         const geometryBefore = JSON.stringify(flow.geometryOf("win-a"));
         const envelope = firstCapture(flow);
         flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", envelope, [
             { win: "win-a", data: DATA_B },
         ], "1"));
-        assert.equal(flow.calls.filter((c) => c.method === "WriteFloatIntent").length, 1);
+        assert.equal(flow.writeCount(), 1);
         // Newer accepted reply lands while the first persist is still owed.
-        flow.handle.requestFocus("left");
-        flow.pump(120);
-        answerQueue(flow, "gen-1");
-        flow.pump(120);
-        assert.ok(flow.calls.filter((c) => c.method === "DescribeWorld").length >= 2);
-        const second = JSON.parse(flow.lastCall("DescribeWorld").payload) as Record<string, unknown>;
+        const second = driveSecondCapture(flow, "gen-1");
         flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", second, [
             { win: "win-a", data: DATA_A },
         ], "2"));
-        flow.lastCall("TakeCommandResult").callback(JSON.stringify({ v: 4, outcome: "pending", gen: "gen-1" }));
+        answerAllTakesPending(flow, "gen-1");
         // Succeeding the older covering write must not apply: rev 1 is
-        // superseded by accepted rev 2 even on the same generation.
+        // superseded by accepted rev 2, and the completion converges the
+        // latest target instead of resuming the old reply.
         const firstWrite = flow.calls.filter((c) => c.method === "WriteFloatIntent")[0] as { payload: string };
         const firstCorr = (JSON.parse(firstWrite.payload) as Record<string, unknown>)["correlation_id"] as string;
         flow.lastCall("WriteFloatIntent").callback(JSON.stringify({ v: 2, correlation_id: firstCorr, outcome: "stored", stored: 1 }));
-        assert.deepEqual(
-            flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length,
-            appliedBefore,
-        );
+        assert.equal(flow.appliedCount(), appliedBefore);
         assert.equal(JSON.stringify(flow.geometryOf("win-a")), geometryBefore);
-        // The newer covering write still applies on its own stored success.
+        // The converged covering write still applies on its own stored success.
+        assert.equal(flow.writeCount(), 2);
         answerWrite(flow, storedWriteReply(flow, 1));
-        assert.equal(
-            flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length,
-            appliedBefore + 1,
-        );
+        assert.equal(flow.appliedCount(), appliedBefore + 1);
         flow.handle.stop();
     });
-    it("stop during an owed persist settles nothing further", () => {
+
+    it("new target racing a successful old storage converges without resuming the old reply", () => {
         const flow = startFlow({ stored: [], degradeReads: false, holdWrites: true });
+        answerHandshake(flow);
+        answerSettings(flow);
+        flow.pump(120);
+        const appliedBefore = flow.appliedCount();
+        const envelope = firstCapture(flow);
+        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", envelope, [
+            { win: "win-a", data: DATA_B },
+        ], "1"));
+        assert.equal(flow.writeCount(), 1);
+        // Newer desired lands mid-flight, then the old storage call succeeds.
+        const second = driveSecondCapture(flow, "gen-1");
+        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", second, [
+            { win: "win-a", data: DATA_A },
+            { win: "win-c", data: DATA_B },
+        ], "2"));
+        answerAllTakesPending(flow, "gen-1");
+        answerWrite(flow, storedWriteReply(flow, 1));
+        // Old reply never resumes: the completion serialized then converged
+        // the latest target with a second covering write.
+        assert.equal(flow.appliedCount(), appliedBefore);
+        assert.equal(flow.writeCount(), 2);
+        const converged = JSON.parse(flow.lastCall("WriteFloatIntent").payload) as Record<string, unknown>;
+        assert.deepEqual(converged["records"], [
+            { win: "win-a", data: DATA_A },
+            { win: "win-c", data: DATA_B },
+        ]);
+        // The latest reply applies after its own stored success.
+        answerWrite(flow, storedWriteReply(flow, 2));
+        assert.equal(flow.appliedCount(), appliedBefore + 1);
+        flow.handle.stop();
+    });
+
+    it("mid-flight failure never auto-retries: only a later accepted reply recovers", () => {
+        const flow = startFlow({ stored: [], degradeReads: false, holdWrites: true });
+        answerHandshake(flow);
+        answerSettings(flow);
+        flow.pump(120);
+        const appliedBefore = flow.appliedCount();
+        const envelope = firstCapture(flow);
+        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", envelope, [
+            { win: "win-a", data: DATA_B },
+        ], "1"));
+        const second = driveSecondCapture(flow, "gen-1");
+        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", second, [
+            { win: "win-a", data: DATA_A },
+        ], "2"));
+        answerAllTakesPending(flow, "gen-1");
+        assert.equal(flow.writeCount(), 1);
+        answerWrite(flow, JSON.stringify({
+            v: 2, correlation_id: writeCorrelation(flow), outcome: "rejected", reason: "unavailable",
+        }));
+        // No automatic retry and no apply: the held reply is dropped.
+        assert.equal(flow.writeCount(), 1);
+        assert.equal(flow.appliedCount(), appliedBefore);
+        // A later accepted reply carrying the latest projection recovers.
+        const third = driveSecondCapture(flow, "gen-1");
+        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", third, [
+            { win: "win-a", data: DATA_A },
+        ], "3"));
+        answerAllTakesPending(flow, "gen-1");
+        assert.equal(flow.writeCount(), 2);
+        answerWrite(flow, storedWriteReply(flow, 1));
+        assert.equal(flow.appliedCount(), appliedBefore + 1);
+        flow.handle.stop();
+    });
+
+    it("duplicate and obsolete replies grant nothing", () => {
+        const flow = startFlow({ stored: [], degradeReads: false });
+        answerHandshake(flow);
+        answerSettings(flow);
+        flow.pump(120);
+        const envelope = firstCapture(flow);
+        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", envelope, [
+            { win: "win-a", data: DATA_B },
+        ], "1"));
+        assert.equal(flow.hasCall("WriteFloatIntent"), true);
+        assert.equal(flow.writeCount(), 1);
+        const appliedAfterFirst = flow.appliedCount();
+        // A same-rev duplicate is stale: no desired update, no new write, no apply.
+        const second = driveSecondCapture(flow, "gen-1");
+        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", second, [
+            { win: "win-a", data: DATA_A },
+        ], "1"));
+        assert.equal(flow.writeCount(), 1);
+        assert.equal(flow.appliedCount(), appliedAfterFirst);
+        assert.ok(flow.logs.some((l) => l.includes("stale")), flow.logs.join("\n"));
+        flow.handle.stop();
+    });
+
+    it("old-generation replies grant nothing", () => {
+        const flow = startFlow({ stored: [], degradeReads: false });
+        answerHandshake(flow);
+        answerSettings(flow);
+        flow.pump(120);
+        const appliedBefore = flow.appliedCount();
+        const envelope = firstCapture(flow);
+        // A foreign generation never updates desire or storage.
+        flow.lastCall("DescribeWorld").callback(buildAccept("gen-2", envelope, [
+            { win: "win-a", data: DATA_B },
+        ], "1"));
+        assert.equal(flow.hasCall("WriteFloatIntent"), false);
+        assert.equal(flow.appliedCount(), appliedBefore);
+        // The bound generation still applies its own reply normally.
+        const second = driveSecondCapture(flow, "gen-1");
+        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", second, [
+            { win: "win-a", data: DATA_B },
+        ], "1"));
+        answerAllTakesPending(flow, "gen-1");
+        assert.equal(flow.hasCall("WriteFloatIntent"), true);
+        assert.equal(flow.appliedCount(), appliedBefore + 1);
+        flow.handle.stop();
+    });
+
+    it("null clear removes the durable row and the retained null owes no further writes", () => {
+        const flow = startFlow();
         answerHandshake(flow);
         answerSettings(flow);
         flow.pump(120);
         answerRead(flow, [{ win: "win-a", data: DATA_A }]);
         flow.pump(120);
-        const appliedBefore = flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length;
+        const appliedBefore = flow.appliedCount();
+        const envelope = firstCapture(flow);
+        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", envelope, [
+            { win: "win-a", data: null },
+        ]));
+        const write = flow.lastCall("WriteFloatIntent");
+        assert.deepEqual((JSON.parse(write.payload) as Record<string, unknown>)["records"], []);
+        write.callback(storedWriteReply(flow, 0));
+        assert.equal(flow.appliedCount(), appliedBefore + 1);
+        // Follow-up reports no longer live-join the cleared window.
+        flow.pump(120);
+        const captures = flow.calls.filter((c) => c.method === "DescribeWorld");
+        assert.ok(captures.length >= 1);
+        // The retained null projection owes no further writes on the next accept.
+        const second = driveSecondCapture(flow, "gen-1");
+        const writesBefore = flow.writeCount();
+        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", second, [
+            { win: "win-a", data: null },
+        ], "2"));
+        answerAllTakesPending(flow, "gen-1");
+        assert.equal(flow.writeCount(), writesBefore);
+        assert.equal(flow.appliedCount(), appliedBefore + 2);
+        flow.handle.stop();
+    });
+
+    it("stop during an owed persist settles nothing further", () => {
+        const flow = startFlow({ stored: [], degradeReads: false, holdWrites: true });
+        answerHandshake(flow);
+        answerSettings(flow);
+        flow.pump(120);
+        const appliedBefore = flow.appliedCount();
         const envelope = firstCapture(flow);
         flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", envelope, [
             { win: "win-a", data: DATA_B },
         ]));
         flow.handle.stop();
         answerWrite(flow, storedWriteReply(flow, 1));
-        assert.deepEqual(
-            flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length,
-            appliedBefore,
-        );
+        assert.equal(flow.appliedCount(), appliedBefore);
     });
+
     it("stale settings snapshot withholds the dependent apply until the covering settings accept", () => {
         const flow = startFlow({ stored: [], degradeReads: false, holdWrites: true });
         answerHandshake(flow);
         answerSettings(flow);
         flow.pump(120);
-        answerRead(flow, [{ win: "win-a", data: DATA_A }]);
-        flow.pump(120);
-        const appliedBefore = flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length;
+        const appliedBefore = flow.appliedCount();
         const geometryBefore = JSON.stringify(flow.geometryOf("win-a"));
         const envelope = firstCapture(flow);
         flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", envelope, [
             { win: "win-a", data: DATA_B },
         ], "1"));
-        assert.equal(flow.calls.filter((c) => c.method === "WriteFloatIntent").length, 1);
+        assert.equal(flow.writeCount(), 1);
         // Live settings injection: changed gap bumps the revision on the
         // configChanged edge; the old intent waiter still carries rev1.
         const settingsBefore = flow.calls.filter((c) => {
@@ -653,14 +793,12 @@ describe("world entry opaque intent persistence", () => {
             status: "accepted", diagnostics: [],
         }));
         answerWrite(flow, storedWriteReply(flow, 1));
-        assert.deepEqual(
-            flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length,
-            appliedBefore,
-        );
+        assert.equal(flow.appliedCount(), appliedBefore);
         assert.equal(JSON.stringify(flow.geometryOf("win-a")), geometryBefore);
         flow.handle.stop();
     });
-    it("superseded accepted intentWrites still persist with no native apply", () => {
+
+    it("superseded accepted desired still converges with no native apply", () => {
         const bus = {
             stored: [
                 { win: "win-a", data: DATA_A },
@@ -672,11 +810,10 @@ describe("world entry opaque intent persistence", () => {
         const flow = startFlow(bus);
         answerHandshake(flow);
         answerSettings(flow);
-        // The bus auto-answers ReadFloatIntent from bus.stored, so no
-        // manual answerRead: a late second callback would not reseed the
-        // already-hydrated map and would drop the out-of-scope ghost.
+        // The bus auto-answers ReadFloatIntent from bus.stored, so the seed
+        // hydrates without a manual answerRead.
         flow.pump(120);
-        const appliedBefore = flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length;
+        const appliedBefore = flow.appliedCount();
         const geometryBefore = JSON.stringify(flow.geometryOf("win-a"));
         const envelope = firstCapture(flow);
         // Native input lands during flight: the watermark advances before
@@ -687,31 +824,25 @@ describe("world entry opaque intent persistence", () => {
             { win: "win-b", data: null },
         ], "1"));
         assert.ok(flow.logs.some((l) => l.includes("superseded-during-flight")), flow.logs.join("\n"));
-        // The superseded accept still persists the exact core writes.
-        assert.equal(flow.calls.filter((c) => c.method === "WriteFloatIntent").length, 1);
+        // The superseded accept still converges the desired target.
+        assert.equal(flow.writeCount(), 1);
         const writeBody = JSON.parse(flow.lastCall("WriteFloatIntent").payload) as Record<string, unknown>;
         assert.deepEqual(writeBody["records"], [
-            { win: "win-a", data: DATA_B },
             { win: "ghost", data: DATA_GHOST },
+            { win: "win-a", data: DATA_B },
         ]);
-        assert.deepEqual(
-            flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length,
-            appliedBefore,
-        );
+        assert.equal(flow.appliedCount(), appliedBefore);
         assert.equal(JSON.stringify(flow.geometryOf("win-a")), geometryBefore);
         // The correlated persist success stays durable but applies nothing:
-        // the waiter carries the superseded watermark.
+        // the held reply was dropped, never resumed.
         answerWrite(flow, storedWriteReply(flow, 2));
         assert.deepEqual(bus.stored, [
-            { win: "win-a", data: DATA_B },
             { win: "ghost", data: DATA_GHOST },
+            { win: "win-a", data: DATA_B },
         ]);
-        assert.deepEqual(
-            flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length,
-            appliedBefore,
-        );
+        assert.equal(flow.appliedCount(), appliedBefore);
         assert.equal(JSON.stringify(flow.geometryOf("win-a")), geometryBefore);
-        // Follow-up fresh capture carries the persisted intent live-joined,
+        // Follow-up fresh capture carries the persisted desire live-joined,
         // and its unchanged acceptance applies normally.
         flow.pump(120);
         const second = JSON.parse(flow.lastCall("DescribeWorld").payload) as Record<string, unknown>;
@@ -719,11 +850,11 @@ describe("world entry opaque intent persistence", () => {
             (second["report"] as Record<string, unknown>)["intentRecords"],
             [{ win: "win-a", data: DATA_B }],
         );
-        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", second, [], "2"));
-        assert.equal(
-            flow.logs.filter((l) => l.includes("omnitiler:world:applied")).length,
-            appliedBefore + 1,
-        );
+        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", second, [
+            { win: "win-a", data: DATA_B },
+            { win: "win-b", data: null },
+        ], "2"));
+        assert.equal(flow.appliedCount(), appliedBefore + 1);
         flow.handle.stop();
         // Restart rereads the persisted snapshot into its first report.
         const revived = startFlow(bus);
@@ -732,5 +863,59 @@ describe("world entry opaque intent persistence", () => {
         revived.pump(120);
         assert.deepEqual(innerIntentRecords(revived), [{ win: "win-a", data: DATA_B }]);
         revived.handle.stop();
+    });
+
+    it("same-generation churn preserves verified storage knowledge without reseed", () => {
+        const bus = {
+            stored: [{ win: "win-a", data: DATA_A }],
+            degradeReads: false,
+        };
+        const flow = startFlow(bus);
+        answerHandshake(flow);
+        answerSettings(flow);
+        flow.pump(120);
+        const readsBefore = flow.readCount();
+        const envelope = firstCapture(flow);
+        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", envelope, [
+            { win: "win-a", data: DATA_B },
+        ]));
+        assert.deepEqual(bus.stored, [{ win: "win-a", data: DATA_B }]);
+        const writesAfterFirst = flow.writeCount();
+        // Same-generation churn (settings edge, no generation rotation)
+        // never reseeds and never rewrites equal desire.
+        flow.fireConfigChanged();
+        flow.pump(120);
+        assert.equal(flow.readCount(), readsBefore);
+        const second = JSON.parse(flow.lastCall("DescribeWorld").payload) as Record<string, unknown>;
+        assert.deepEqual(
+            (second["report"] as Record<string, unknown>)["intentRecords"],
+            [{ win: "win-a", data: DATA_B }],
+        );
+        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", second, [
+            { win: "win-a", data: DATA_B },
+        ], "2"));
+        assert.equal(flow.writeCount(), writesAfterFirst);
+        flow.handle.stop();
+    });
+
+    it("id reuse converges per-window targets without disturbing siblings", () => {
+        const flow = startFlow();
+        answerHandshake(flow);
+        answerSettings(flow);
+        flow.pump(120);
+        answerRead(flow, [{ win: "win-a", data: DATA_A }]);
+        flow.pump(120);
+        const envelope = firstCapture(flow);
+        flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", envelope, [
+            { win: "win-a", data: DATA_A },
+            { win: "win-c", data: DATA_B },
+        ]));
+        const write = flow.lastCall("WriteFloatIntent");
+        assert.deepEqual((JSON.parse(write.payload) as Record<string, unknown>)["records"], [
+            { win: "win-a", data: DATA_A },
+            { win: "win-c", data: DATA_B },
+        ]);
+        write.callback(storedWriteReply(flow, 2));
+        flow.handle.stop();
     });
 });

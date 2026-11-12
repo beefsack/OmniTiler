@@ -6,7 +6,7 @@ use crate::geometry::Rect;
 use crate::intent_data::{IntentData, encode_intent_data};
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    AttemptOutcome, CommandRejectKind, IntentRecord, IntentWrite, ScopeAuthority, StateProperty,
+    AttemptOutcome, CommandRejectKind, IntentDesire, IntentRecord, ScopeAuthority, StateProperty,
     WorldCommand, WorldReportV4,
 };
 use crate::world_v4_support_tests::{accepted, desire, fact, float_fact, report_full, screen};
@@ -121,10 +121,9 @@ fn native_on_from_tile_records_false_prior_and_floats() {
         engine.restored_sticky.get(&WindowId("win-a".to_owned())),
         Some(&false)
     );
-    let save = reply.intent_writes.first().expect("one save");
+    let save = reply.intent_desired.first().expect("one save");
     assert_eq!(
-        crate::intent_data::decode_intent_data(save.data.as_deref().expect("bytes"))
-            .expect("decodes"),
+        (*save.data.as_ref().expect("bytes")),
         IntentData::new(Some(true), Some(false))
     );
     let (value, authority, seq) = target_row(&reply, "win-a").expect("sticky target");
@@ -303,10 +302,9 @@ fn native_on_from_float_records_true_prior() {
         ),
     );
     assert!(reply.command_result.is_none());
-    let save = reply.intent_writes.first().expect("one save");
+    let save = reply.intent_desired.first().expect("one save");
     assert_eq!(
-        crate::intent_data::decode_intent_data(save.data.as_deref().expect("bytes"))
-            .expect("decodes"),
+        (*save.data.as_ref().expect("bytes")),
         IntentData::new(Some(true), Some(true))
     );
     assert_eq!(binding_value(&engine, "win-a"), Some(true));
@@ -347,10 +345,9 @@ fn native_off_holds_float_runtime_and_queues_off_record() {
         .expect("member");
     assert_eq!(after.home, before_home);
     assert!(after.floating);
-    let save = reply.intent_writes.first().expect("one save");
+    let save = reply.intent_desired.first().expect("one save");
     assert_eq!(
-        crate::intent_data::decode_intent_data(save.data.as_deref().expect("bytes"))
-            .expect("decodes"),
+        (*save.data.as_ref().expect("bytes")),
         IntentData::new(Some(false), None)
     );
     let (value, _, seq) = target_row(&reply, "win-a").expect("sticky target");
@@ -387,10 +384,9 @@ fn native_toggle_float_holds_runtime_with_tile_base() {
         .expect("member");
     assert_eq!(after.home, before_home);
     assert!(after.floating);
-    let save = reply.intent_writes.first().expect("one save");
+    let save = reply.intent_desired.first().expect("one save");
     assert_eq!(
-        crate::intent_data::decode_intent_data(save.data.as_deref().expect("bytes"))
-            .expect("decodes"),
+        (*save.data.as_ref().expect("bytes")),
         IntentData::new(Some(false), None)
     );
     let (value, _, _) = target_row(&reply, "win-a").expect("sticky target");
@@ -458,7 +454,10 @@ fn native_unknown_sticky_rejects_state_unknown() {
         })
     );
     assert!(engine.retained_states.is_empty());
-    assert!(engine.sticky_command_save.is_none());
+    assert!(
+        engine.intent_desired.is_empty(),
+        "unknown refusal stores nothing"
+    );
 }
 
 #[test]
@@ -604,10 +603,9 @@ fn native_spent_retry_reemits_canonical_save_preserving_prior() {
             set_sticky("win-a", true),
         ),
     );
-    let first_save = first.intent_writes.first().expect("one save").data.clone();
+    let first_save = first.intent_desired.first().expect("one save").data;
     assert_eq!(
-        crate::intent_data::decode_intent_data(first_save.as_deref().expect("bytes"))
-            .expect("decodes"),
+        first_save.expect("bytes"),
         IntentData::new(Some(true), Some(false))
     );
     // Drive the binding to spent/PossiblyExecuted through the real
@@ -647,15 +645,10 @@ fn native_spent_retry_reemits_canonical_save_preserving_prior() {
         ),
     );
     assert!(retry.command_result.is_none());
-    let save = retry
-        .intent_writes
-        .first()
-        .expect("retry save")
-        .data
-        .clone();
+    let save = retry.intent_desired.first().expect("retry save").data;
     assert_eq!(save, first_save, "retry preserves original prior");
     assert_eq!(
-        crate::intent_data::decode_intent_data(save.as_deref().expect("bytes")).expect("decodes"),
+        save.expect("bytes"),
         IntentData::new(Some(true), Some(false))
     );
     let (_, _, seq) = target_row(&retry, "win-a").expect("reauthorized");
@@ -727,7 +720,7 @@ fn native_on_applied_marks_done_no_extra_save() {
             set_sticky("win-a", true),
         ),
     );
-    assert_eq!(on_reply.intent_writes.len(), 1);
+    assert_eq!(on_reply.intent_desired.len(), 1);
     let rev = binding_rev(&engine, "win-a");
     let mut proof = observe(3, vec![sticky_fact("win-a", "out-a", 0, Some(true))]);
     proof.state_attempts = vec![sticky_attempt(
@@ -748,7 +741,11 @@ fn native_on_applied_marks_done_no_extra_save() {
     let meta = binding.sticky_meta.as_ref().expect("meta");
     assert!(meta.followup_done, "on applied marks done");
     assert_eq!(meta.command_seq, Some(1));
-    assert_eq!(reply.intent_writes.len(), 0, "no extra save on applied");
+    assert_eq!(reply.intent_desired.len(), 1, "no extra save on applied");
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), Some(false)))
+    );
     assert_eq!(
         engine.restored_sticky.get(&WindowId("win-a".to_owned())),
         Some(&false)
@@ -824,7 +821,7 @@ fn native_off_matched_applied_lands_dest_tile() {
             set_sticky("win-a", false),
         ),
     );
-    assert_eq!(off_reply.intent_writes.len(), 1);
+    assert_eq!(off_reply.intent_desired.len(), 1);
     let rev = binding_rev(&engine, "win-a");
     let dest = engine
         .retained_states
@@ -851,7 +848,11 @@ fn native_off_matched_applied_lands_dest_tile() {
         .expect("binding");
     assert_eq!(binding.disposition, AttemptOutcome::Applied);
     assert!(binding.sticky_meta.as_ref().expect("meta").followup_done);
-    assert_eq!(reply.intent_writes.len(), 0, "no extra save on followup");
+    assert_eq!(reply.intent_desired.len(), 1, "no extra save on followup");
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     let member = engine
         .members
         .get(&WindowId("win-a".to_owned()))
@@ -930,7 +931,7 @@ fn native_off_adopted_holds_then_applied_lands_float() {
         &mut engine,
         &cmd(2, 1, vec![adopted.clone()], set_sticky("win-a", false)),
     );
-    assert_eq!(off_reply.intent_writes.len(), 1);
+    assert_eq!(off_reply.intent_desired.len(), 1);
     assert!(
         engine
             .restored_sticky
@@ -1045,7 +1046,7 @@ fn native_off_floating_dest_lands_floated_with_tile_base() {
             set_sticky("win-a", false),
         ),
     );
-    assert_eq!(off_reply.intent_writes.len(), 1);
+    assert_eq!(off_reply.intent_desired.len(), 1);
     let rev = binding_rev(&engine, "win-a");
     let dest = engine
         .retained_states
@@ -1083,9 +1084,9 @@ fn native_off_floating_dest_lands_floated_with_tile_base() {
     );
     assert_eq!(
         engine
-            .sticky_saved
+            .intent_desired
             .get(&WindowId("win-a".to_owned()))
-            .copied(),
+            .and_then(|e| *e),
         Some(IntentData::new(Some(false), None)),
         "tile base saved"
     );
@@ -1287,7 +1288,7 @@ fn native_off_held_and_minimized_retain_proof_then_recover_once() {
         &mut engine,
         &observe(6, vec![sticky_fact("win-a", "out-a", 0, Some(false))]),
     );
-    assert_eq!(recovered.intent_writes.len(), 0);
+    assert_eq!(recovered.intent_desired.len(), 1, "recovery retains");
     let done = engine
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
@@ -1350,7 +1351,11 @@ fn native_off_duplicate_attempt_no_repeat() {
         Some(false),
     )];
     let reply = accepted(&mut engine, &duplicate);
-    assert_eq!(reply.intent_writes.len(), 0);
+    assert_eq!(reply.intent_desired.len(), 1);
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     let binding = engine
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
@@ -1414,7 +1419,7 @@ fn native_on_refused_proven_null_clears_and_returns_tile() {
             set_sticky("win-a", true),
         ),
     );
-    assert_eq!(on_reply.intent_writes.len(), 1);
+    assert_eq!(on_reply.intent_desired.len(), 1);
     assert!(
         engine
             .restored_sticky
@@ -1434,18 +1439,17 @@ fn native_on_refused_proven_null_clears_and_returns_tile() {
         ),
     );
     assert_eq!(
-        reply.intent_writes,
-        vec![IntentWrite {
+        reply.intent_desired,
+        vec![IntentDesire {
             win: WindowId("win-a".to_owned()),
             data: None,
         }],
         "no prior means null-clear rollback"
     );
-    assert!(
-        !engine
-            .sticky_saved
-            .contains_key(&WindowId("win-a".to_owned())),
-        "prior absence restores absence"
+    assert_eq!(
+        engine.intent_desired.get(&WindowId("win-a".to_owned())),
+        Some(&None),
+        "prior absence restores explicit clear"
     );
     assert!(
         !engine
@@ -1480,7 +1484,7 @@ fn native_on_refused_proven_null_clears_and_returns_tile() {
     let (_, authority, seq) = target_row(&reply, "win-a").expect("target retained");
     assert_eq!(seq, Some(1));
     assert_ne!(authority, ScopeAuthority::Controlled);
-    // A duplicate of the original proof emits nothing further.
+    // A duplicate of the original proof retains the same target.
     let again = accepted(
         &mut engine,
         &refused_proof(
@@ -1492,7 +1496,10 @@ fn native_on_refused_proven_null_clears_and_returns_tile() {
             false,
         ),
     );
-    assert!(again.intent_writes.is_empty(), "one proof, one write");
+    assert_eq!(
+        again.intent_desired, reply.intent_desired,
+        "duplicate retains"
+    );
 }
 
 #[test]
@@ -1510,7 +1517,10 @@ fn native_off_refused_proven_restores_prior_and_keeps_sticky() {
     );
     let prior = IntentData::new(Some(true), Some(false));
     assert_eq!(
-        engine.sticky_saved.get(&WindowId("win-a".to_owned())),
+        engine
+            .intent_desired
+            .get(&WindowId("win-a".to_owned()))
+            .and_then(|e| e.as_ref()),
         Some(&prior)
     );
     let off_reply = accepted(
@@ -1522,7 +1532,7 @@ fn native_off_refused_proven_restores_prior_and_keeps_sticky() {
             set_sticky("win-a", false),
         ),
     );
-    assert_eq!(off_reply.intent_writes.len(), 1);
+    assert_eq!(off_reply.intent_desired.len(), 1);
     let rev = binding_rev(&engine, "win-a");
     let home = engine
         .members
@@ -1542,15 +1552,18 @@ fn native_off_refused_proven_restores_prior_and_keeps_sticky() {
         ),
     );
     assert_eq!(
-        reply.intent_writes,
-        vec![IntentWrite {
+        reply.intent_desired,
+        vec![IntentDesire {
             win: WindowId("win-a".to_owned()),
-            data: Some(encode_intent_data(&prior)),
+            data: Some(prior),
         }],
         "rollback restores the exact prior record"
     );
     assert_eq!(
-        engine.sticky_saved.get(&WindowId("win-a".to_owned())),
+        engine
+            .intent_desired
+            .get(&WindowId("win-a".to_owned()))
+            .and_then(|e| e.as_ref()),
         Some(&prior)
     );
     assert_eq!(
@@ -1602,7 +1615,10 @@ fn native_refused_restores_all_nine_prior_shapes() {
         }];
         accepted(&mut engine, &base);
         assert_eq!(
-            engine.sticky_saved.get(&WindowId("win-a".to_owned())),
+            engine
+                .intent_desired
+                .get(&WindowId("win-a".to_owned()))
+                .and_then(|e| e.as_ref()),
             Some(&prior),
             "import establishes exact prior {prior:?}"
         );
@@ -1641,15 +1657,18 @@ fn native_refused_restores_all_nine_prior_shapes() {
             &refused_proof(3, vec![row], "win-a", !sticky_now, rev, sticky_now),
         );
         assert_eq!(
-            reply.intent_writes,
-            vec![IntentWrite {
+            reply.intent_desired,
+            vec![IntentDesire {
                 win: WindowId("win-a".to_owned()),
-                data: Some(encode_intent_data(&prior)),
+                data: Some(prior),
             }],
             "rollback restores exact prior {prior:?}"
         );
         assert_eq!(
-            engine.sticky_saved.get(&WindowId("win-a".to_owned())),
+            engine
+                .intent_desired
+                .get(&WindowId("win-a".to_owned()))
+                .and_then(|e| e.as_ref()),
             Some(&prior),
             "saved knowledge restored on commit {prior:?}"
         );
@@ -1696,10 +1715,13 @@ fn native_on_refused_restores_prior_ordinary_toggle_float_save() {
         &mut engine,
         &cmd(2, 1, vec![fact("win-a", "out-a", 0)], toggle_float("win-a")),
     );
-    assert_eq!(floated.intent_writes.len(), 1);
+    assert_eq!(floated.intent_desired.len(), 1);
     let prior = IntentData::new(Some(true), None);
     assert_eq!(
-        engine.sticky_saved.get(&WindowId("win-a".to_owned())),
+        engine
+            .intent_desired
+            .get(&WindowId("win-a".to_owned()))
+            .and_then(|e| e.as_ref()),
         Some(&prior)
     );
     accepted(
@@ -1719,14 +1741,17 @@ fn native_on_refused_restores_prior_ordinary_toggle_float_save() {
         &refused_proof(4, vec![raw], "win-a", true, rev, false),
     );
     assert_eq!(
-        reply.intent_writes,
-        vec![IntentWrite {
+        reply.intent_desired,
+        vec![IntentDesire {
             win: WindowId("win-a".to_owned()),
-            data: Some(encode_intent_data(&prior)),
+            data: Some(prior),
         }]
     );
     assert_eq!(
-        engine.sticky_saved.get(&WindowId("win-a".to_owned())),
+        engine
+            .intent_desired
+            .get(&WindowId("win-a".to_owned()))
+            .and_then(|e| e.as_ref()),
         Some(&prior)
     );
     assert!(
@@ -1777,9 +1802,16 @@ fn native_ambiguous_keeps_requested_without_retry() {
         Some(true),
     )];
     let reply = accepted(&mut engine, &threw);
-    assert!(reply.intent_writes.is_empty(), "ambiguous mints no save");
+    assert_eq!(reply.intent_desired.len(), 1, "ambiguous mints no save");
     assert_eq!(
-        engine.sticky_saved.get(&WindowId("win-a".to_owned())),
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
+    assert_eq!(
+        engine
+            .intent_desired
+            .get(&WindowId("win-a".to_owned()))
+            .and_then(|e| e.as_ref()),
         Some(&requested),
         "requested record retained"
     );
@@ -1807,7 +1839,11 @@ fn native_ambiguous_keeps_requested_without_retry() {
         Some(false),
     )];
     let reply = accepted(&mut engine, &mismatch);
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "mismatch projects requested");
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     let binding = rollback_binding(&engine, "win-a");
     assert!(binding.spent, "earlier capture latches spent");
     assert_eq!(
@@ -1821,7 +1857,10 @@ fn native_ambiguous_keeps_requested_without_retry() {
         "wrong revision never replaces retained proof"
     );
     assert_eq!(
-        engine.sticky_saved.get(&WindowId("win-a".to_owned())),
+        engine
+            .intent_desired
+            .get(&WindowId("win-a".to_owned()))
+            .and_then(|e| e.as_ref()),
         Some(&requested)
     );
     // An unreadable (incomplete-inventory) exact refusal also stays
@@ -1837,13 +1876,20 @@ fn native_ambiguous_keeps_requested_without_retry() {
         Some(true),
     )];
     let reply = accepted(&mut engine, &gapped);
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "gapped projects requested");
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert_eq!(
         rollback_binding(&engine, "win-a").disposition,
         AttemptOutcome::PossiblyExecuted
     );
     assert_eq!(
-        engine.sticky_saved.get(&WindowId("win-a".to_owned())),
+        engine
+            .intent_desired
+            .get(&WindowId("win-a".to_owned()))
+            .and_then(|e| e.as_ref()),
         Some(&requested)
     );
 }
@@ -1883,7 +1929,7 @@ fn native_refused_overlay_held_then_healthy_recovery_emits_once() {
         rollback_binding(&engine, "win-a").disposition,
         AttemptOutcome::RefusedProven
     );
-    assert!(held.intent_writes.is_empty(), "held proof emits nothing");
+    assert_eq!(held.intent_desired.len(), 1, "held retains");
     assert!(
         !rollback_binding(&engine, "win-a")
             .sticky_meta
@@ -1897,10 +1943,10 @@ fn native_refused_overlay_held_then_healthy_recovery_emits_once() {
     );
     let prior = IntentData::new(Some(true), Some(false));
     assert_eq!(
-        recovered.intent_writes,
-        vec![IntentWrite {
+        recovered.intent_desired,
+        vec![IntentDesire {
             win: WindowId("win-a".to_owned()),
-            data: Some(encode_intent_data(&prior)),
+            data: Some(prior),
         }]
     );
     assert!(
@@ -1913,7 +1959,10 @@ fn native_refused_overlay_held_then_healthy_recovery_emits_once() {
         &mut engine,
         &observe(6, vec![sticky_fact("win-a", "out-a", 0, Some(true))]),
     );
-    assert!(again.intent_writes.is_empty(), "recovery emits once");
+    assert_eq!(
+        again.intent_desired, recovered.intent_desired,
+        "recovery retains"
+    );
 }
 
 #[test]
@@ -1954,9 +2003,14 @@ fn native_rollback_same_window_replacement_owns_new_intent() {
             false,
         ),
     );
-    assert!(
-        stale.intent_writes.is_empty(),
+    assert_eq!(
+        stale.intent_desired.len(),
+        1,
         "old proof cannot act on new intent"
+    );
+    assert_eq!(
+        stale.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
     );
     assert_eq!(binding_rev(&engine, "win-a"), second_rev);
     assert!(
@@ -1979,10 +2033,10 @@ fn native_rollback_same_window_replacement_owns_new_intent() {
     );
     let prior = IntentData::new(Some(true), Some(false));
     assert_eq!(
-        reply.intent_writes,
-        vec![IntentWrite {
+        reply.intent_desired,
+        vec![IntentDesire {
             win: WindowId("win-a".to_owned()),
-            data: Some(encode_intent_data(&prior)),
+            data: Some(prior),
         }]
     );
 }
@@ -2030,26 +2084,23 @@ fn native_rollback_unrelated_newer_command_preserved() {
     proof.command = Some(set_sticky("win-b", true));
     let reply = accepted(&mut engine, &proof);
     let prior = IntentData::new(Some(true), Some(false));
-    let rollback = IntentWrite {
+    let rollback = IntentDesire {
         win: WindowId("win-a".to_owned()),
-        data: Some(encode_intent_data(&prior)),
+        data: Some(prior),
     };
     let fresh = reply
-        .intent_writes
+        .intent_desired
         .iter()
         .find(|write| write.win == WindowId("win-b".to_owned()))
         .expect("fresh unrelated save emits");
     assert_eq!(
-        fresh
-            .data
-            .as_deref()
-            .map(|raw| { crate::intent_data::decode_intent_data(raw).expect("decodes") }),
+        fresh.data.as_ref().copied(),
         Some(IntentData::new(Some(true), Some(false)))
     );
     assert!(
-        reply.intent_writes.contains(&rollback),
+        reply.intent_desired.contains(&rollback),
         "unrelated command never erases rollback: {:?}",
-        reply.intent_writes
+        reply.intent_desired
     );
 }
 
@@ -2092,10 +2143,10 @@ fn native_rollback_consumed_report_still_emits() {
         WorldOutcome::CommandConsumed(reply) => {
             let prior = IntentData::new(Some(true), Some(false));
             assert_eq!(
-                reply.intent_writes,
-                vec![IntentWrite {
+                reply.intent_desired,
+                vec![IntentDesire {
                     win: WindowId("win-a".to_owned()),
-                    data: Some(encode_intent_data(&prior)),
+                    data: Some(prior),
                 }],
                 "consumed suppresses command saves, not rollback"
             );
@@ -2143,10 +2194,10 @@ fn native_toggle_float_refused_keeps_sticky_tile_base() {
     // rollback restores the on-command record (tile base requested).
     let prior = IntentData::new(Some(true), Some(false));
     assert_eq!(
-        reply.intent_writes,
-        vec![IntentWrite {
+        reply.intent_desired,
+        vec![IntentDesire {
             win: WindowId("win-a".to_owned()),
-            data: Some(encode_intent_data(&prior)),
+            data: Some(prior),
         }]
     );
     assert!(
@@ -2212,10 +2263,10 @@ fn native_off_cross_workspace_refused_rolls_back_home() {
     );
     let prior = IntentData::new(Some(true), Some(false));
     assert_eq!(
-        reply.intent_writes,
-        vec![IntentWrite {
+        reply.intent_desired,
+        vec![IntentDesire {
             win: WindowId("win-a".to_owned()),
-            data: Some(encode_intent_data(&prior)),
+            data: Some(prior),
         }]
     );
     let member = engine
@@ -2236,7 +2287,7 @@ fn native_off_cross_workspace_refused_rolls_back_home() {
 fn native_rollback_reserve_rejects_before_mutation_and_small_retry_rolls_back() {
     use crate::world_engine::KIND_REPLY_SIZE;
     use crate::world_report::{WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES};
-    use crate::world_sizing::max_intent_rollback_bound;
+    use crate::world_sizing::max_intent_desired_bound;
     use crate::world_sizing_v4::{reply_upper_bound_v4, report_estimate_v4};
     let mut engine = native_engine();
     accepted(&mut engine, &bootstrap(vec![fact("win-a", "out-a", 0)]));
@@ -2249,16 +2300,16 @@ fn native_rollback_reserve_rejects_before_mutation_and_small_retry_rolls_back() 
             set_sticky("win-a", true),
         ),
     );
-    assert_eq!(on_reply.intent_writes.len(), 1);
+    assert_eq!(on_reply.intent_desired.len(), 1);
     let rev = binding_rev(&engine, "win-a");
     let (value, authority, seq) = target_row(&on_reply, "win-a").expect("pending target");
     assert_eq!((value, seq), (true, Some(1)));
     assert_eq!(authority, ScopeAuthority::Controlled);
-    assert_eq!(engine.rollback_reserve_count(), 1);
+    assert_eq!(engine.intent_desired.len(), 1);
     let empty = observe(3, vec![fact("win-a", "out-a", 0)]);
     assert!(empty.state_attempts.is_empty());
-    assert_eq!(engine.rollback_reserve_count(), 1);
-    assert_eq!(max_intent_rollback_bound(1), 196);
+    assert_eq!(engine.intent_desired.len(), 1);
+    assert_eq!(max_intent_desired_bound(1), 196);
     let logical = engine.engine.domain_keys().len();
     let staged = engine.staged.facts.len() + engine.staged.held_windows.len();
     let retained = engine.retained_publish_footprint();
@@ -2307,7 +2358,7 @@ fn native_rollback_reserve_rejects_before_mutation_and_small_retry_rolls_back() 
     );
     assert!(without <= WORLD_MAX_REPLY_BYTES, "reserveless bound fits");
     assert!(
-        without.saturating_add(max_intent_rollback_bound(1)) > WORLD_MAX_REPLY_BYTES,
+        without.saturating_add(max_intent_desired_bound(1)) > WORLD_MAX_REPLY_BYTES,
         "rollback reserve is the discriminator"
     );
     let revision = engine.state_revision;
@@ -2321,10 +2372,9 @@ fn native_rollback_reserve_rejects_before_mutation_and_small_retry_rolls_back() 
             .followup_done
     );
     let restored = engine.restored_sticky.clone();
-    let saved = engine.sticky_saved.clone();
+    let saved = engine.intent_desired.clone();
     let floats = engine.restored_floats.clone();
     let highwater = engine.command_highwater;
-    let queued = engine.sticky_rollback_saves.clone();
     match engine.handle_report(&report, &[]).0 {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REPLY_SIZE),
         other => panic!("expected reply-oversize, got {other:?}"),
@@ -2332,10 +2382,9 @@ fn native_rollback_reserve_rejects_before_mutation_and_small_retry_rolls_back() 
     assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
     assert_eq!(rollback_binding(&engine, "win-a"), binding_before);
     assert_eq!(engine.restored_sticky, restored);
-    assert_eq!(engine.sticky_saved, saved);
+    assert_eq!(engine.intent_desired, saved);
     assert_eq!(engine.restored_floats, floats);
     assert_eq!(engine.command_highwater, highwater);
-    assert_eq!(engine.sticky_rollback_saves, queued);
     let retry = refused_proof(
         3,
         vec![fact("win-a", "out-a", 0)],
@@ -2345,12 +2394,12 @@ fn native_rollback_reserve_rejects_before_mutation_and_small_retry_rolls_back() 
         false,
     );
     let pre = reply_upper_bound_v4(&retry, 0, logical, 1, staged, retained)
-        .saturating_add(max_intent_rollback_bound(1));
+        .saturating_add(max_intent_desired_bound(1));
     assert!(pre <= WORLD_MAX_REPLY_BYTES, "retry fits the reserve");
     let reply = accepted(&mut engine, &retry);
     assert_eq!(
-        reply.intent_writes,
-        vec![IntentWrite {
+        reply.intent_desired,
+        vec![IntentDesire {
             win: WindowId("win-a".to_owned()),
             data: None,
         }]
@@ -2364,16 +2413,11 @@ fn native_rollback_reserve_rejects_before_mutation_and_small_retry_rolls_back() 
 
 #[test]
 fn native_rollback_queue_cap_refuses_at_cap_preserving_queue() {
-    // v4 refuses once the pre-existing rollback reserve plus inline/batch
-    // rows exceed MAX_INTENT_WRITES (world-contract.md:115-125, :1182-1199
-    // bounded-error gates; world_admit_v4.rs:419-444 before-mutation
-    // section-over-cap gate; pinned by
-    // rapid_input_batch_rowcap_leaves_batch_unsettled): a full reserve
-    // refuses every report before mutation with
-    // snapshot-invalid/section-over-cap, so neither a hold nor a
-    // same-key replacement succeeds at cap.
+    // Whole-map rowcap: a full retained map refuses genuinely new windows
+    // before mutation, while same-key replacement (including rollback)
+    // stays allowed at the cap.
     use crate::world_engine::KIND_SNAPSHOT;
-    use crate::world_report::MAX_INTENT_WRITES;
+    use crate::world_report::MAX_INTENT_DESIRED;
     let mut engine = native_engine();
     accepted(&mut engine, &bootstrap(vec![fact("win-a", "out-a", 0)]));
     accepted(
@@ -2386,91 +2430,65 @@ fn native_rollback_queue_cap_refuses_at_cap_preserving_queue() {
         ),
     );
     let rev = binding_rev(&engine, "win-a");
-    for i in 0..MAX_INTENT_WRITES {
-        engine.sticky_rollback_saves.insert(
-            WindowId(format!("win-q-{i:05}")),
-            IntentWrite {
-                win: WindowId(format!("win-q-{i:05}")),
-                data: None,
+    for i in 0..MAX_INTENT_DESIRED - 1 {
+        let id = WindowId(format!("win-q-{i:05}"));
+        engine.intent_desired.insert(id.clone(), None);
+        engine.members.insert(
+            id,
+            crate::world_members::MemberState {
+                home: crate::session::DomainKey {
+                    output: crate::directional::OutputId("out-a".to_owned()),
+                    workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
+                },
+                floating: false,
+                minimized: false,
+                geometry: None,
             },
         );
     }
-    assert_eq!(engine.sticky_rollback_saves.len(), MAX_INTENT_WRITES);
-    // A full reserve refuses the commandless proof before mutation; the
-    // queued entries are untouched.
-    let revision = engine.state_revision;
-    let highwater = engine.command_highwater;
-    match engine
-        .handle_report(
-            &refused_proof(
-                3,
-                vec![fact("win-a", "out-a", 0)],
-                "win-a",
-                true,
-                rev,
-                false,
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Rejected { kind, message } => {
-            assert_eq!(kind, KIND_SNAPSHOT);
-            assert_eq!(message, "section-over-cap");
-        }
-        other => panic!("expected rowcap refusal, got {other:?}"),
-    }
-    assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
-    assert_eq!(engine.command_highwater, highwater, "command unconsumed");
-    assert_eq!(
-        engine.sticky_rollback_saves.len(),
-        MAX_INTENT_WRITES,
-        "refusal drops no queued proof"
+    assert_eq!(engine.intent_desired.len(), MAX_INTENT_DESIRED);
+    // Same-key rollback at the cap succeeds: the retained target is
+    // replaced in place, never growing the map.
+    let reply = accepted(
+        &mut engine,
+        &refused_proof(
+            3,
+            vec![fact("win-a", "out-a", 0)],
+            "win-a",
+            true,
+            rev,
+            false,
+        ),
     );
+    assert_eq!(
+        reply
+            .intent_desired
+            .iter()
+            .find(|d| d.win == WindowId("win-a".to_owned())),
+        Some(&IntentDesire {
+            win: WindowId("win-a".to_owned()),
+            data: None,
+        }),
+        "rollback replaces at cap"
+    );
+    assert_eq!(engine.intent_desired.len(), MAX_INTENT_DESIRED);
     assert!(
-        !rollback_binding(&engine, "win-a")
+        rollback_binding(&engine, "win-a")
             .sticky_meta
             .as_ref()
             .expect("meta")
             .followup_done,
-        "refused proof marks nothing done"
+        "rollback marks done at cap"
     );
-    // Same-key replacement at the cap refuses the same way: the stale
-    // win-a entry plus unrelated filler still exceed the rowcap, so the
-    // next proof is refused with the queue intact.
-    engine.sticky_rollback_saves.clear();
-    engine.sticky_rollback_saves.insert(
-        WindowId("win-a".to_owned()),
-        IntentWrite {
-            win: WindowId("win-a".to_owned()),
-            data: Some("stale".to_owned()),
-        },
+    // A genuinely new window at the cap refuses before mutation.
+    let new_report = cmd(
+        4,
+        2,
+        vec![fact("win-a", "out-a", 0), fact("win-new", "out-a", 100)],
+        set_sticky("win-new", true),
     );
-    for i in 0..MAX_INTENT_WRITES - 1 {
-        engine.sticky_rollback_saves.insert(
-            WindowId(format!("win-q-{i:05}")),
-            IntentWrite {
-                win: WindowId(format!("win-q-{i:05}")),
-                data: None,
-            },
-        );
-    }
-    assert_eq!(engine.sticky_rollback_saves.len(), MAX_INTENT_WRITES);
     let revision = engine.state_revision;
-    match engine
-        .handle_report(
-            &refused_proof(
-                4,
-                vec![fact("win-a", "out-a", 0)],
-                "win-a",
-                true,
-                rev,
-                false,
-            ),
-            &[],
-        )
-        .0
-    {
+    match engine.handle_report(&new_report, &[]).0 {
         WorldOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT);
             assert_eq!(message, "section-over-cap");
@@ -2479,14 +2497,9 @@ fn native_rollback_queue_cap_refuses_at_cap_preserving_queue() {
     }
     assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
     assert_eq!(
-        engine
-            .sticky_rollback_saves
-            .get(&WindowId("win-a".to_owned())),
-        Some(&IntentWrite {
-            win: WindowId("win-a".to_owned()),
-            data: Some("stale".to_owned()),
-        }),
-        "stale entry survives the refusal"
+        engine.intent_desired.len(),
+        MAX_INTENT_DESIRED,
+        "refusal drops nothing"
     );
 }
 
@@ -2545,9 +2558,10 @@ fn native_rollback_ledger_cap_holds_proof_for_retry() {
         "ledger breach holds proof for retry"
     );
     assert!(
-        !engine
-            .sticky_rollback_saves
-            .contains_key(&WindowId("win-a".to_owned()))
+        engine
+            .intent_desired
+            .contains_key(&WindowId("win-a".to_owned())),
+        "ledger hold keeps retained target"
     );
 }
 
@@ -2614,7 +2628,11 @@ fn native_off_overlay_deferred_restick_holds_until_fresh_false() {
         !binding.sticky_meta.as_ref().expect("meta").followup_done,
         "overlay defers the dependent landing"
     );
-    assert!(proof_reply.intent_writes.is_empty());
+    assert_eq!(proof_reply.intent_desired.len(), 1);
+    assert_eq!(
+        proof_reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     let home_before = engine
         .members
         .get(&WindowId("win-a".to_owned()))
@@ -2657,7 +2675,11 @@ fn native_off_overlay_deferred_restick_holds_until_fresh_false() {
         .expect("member");
     assert_eq!(member.home, home_before, "no home change on restick");
     assert!(member.floating, "no tile landing on restick");
-    assert!(restick.intent_writes.is_empty(), "no save on restick");
+    assert_eq!(restick.intent_desired.len(), 1, "restick projects retained");
+    assert_eq!(
+        restick.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     let (_, authority, seq) = target_row(&restick, "win-a").expect("target retained");
     assert_eq!(seq, Some(2), "spent target keeps the original command");
     assert_ne!(
@@ -2676,11 +2698,7 @@ fn native_off_overlay_deferred_restick_holds_until_fresh_false() {
         .expect("binding");
     assert_eq!(done.disposition, AttemptOutcome::Applied);
     assert!(done.sticky_meta.as_ref().expect("meta").followup_done);
-    assert_eq!(
-        recovered.intent_writes.len(),
-        0,
-        "no extra save on followup"
-    );
+    assert_eq!(recovered.intent_desired.len(), 1, "followup retains");
     let member = engine
         .members
         .get(&WindowId("win-a".to_owned()))
@@ -2751,13 +2769,13 @@ fn native_toggle_float_overlay_deferred_null_holds_until_false() {
         !held.sticky_meta.as_ref().expect("meta").followup_done,
         "null current retains proof"
     );
-    assert!(nulled.intent_writes.is_empty());
+    assert_eq!(nulled.intent_desired.len(), 1, "observation retains");
     assert!(
         engine.restored_sticky.contains_key(&win),
         "semantic sticky survives the unknown observation"
     );
     assert_eq!(
-        engine.sticky_saved.get(&win).copied(),
+        engine.intent_desired.get(&win).and_then(|e| *e),
         Some(IntentData::new(Some(false), None)),
         "requested tile base saved, never rewritten"
     );
@@ -2784,11 +2802,7 @@ fn native_toggle_float_overlay_deferred_null_holds_until_false() {
         .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
         .expect("binding");
     assert!(done.sticky_meta.as_ref().expect("meta").followup_done);
-    assert_eq!(
-        recovered.intent_writes.len(),
-        0,
-        "no extra save on followup"
-    );
+    assert_eq!(recovered.intent_desired.len(), 1, "followup retains");
     let member = engine
         .members
         .get(&WindowId("win-a".to_owned()))
@@ -2857,7 +2871,7 @@ fn native_off_overlay_deferred_null_then_false_recovers() {
         !held.sticky_meta.as_ref().expect("meta").followup_done,
         "null current retains proof"
     );
-    assert!(nulled.intent_writes.is_empty());
+    assert_eq!(nulled.intent_desired.len(), 1, "observation retains");
     assert!(
         engine.restored_sticky.contains_key(&win),
         "semantic sticky survives the unknown observation"
@@ -2885,11 +2899,7 @@ fn native_off_overlay_deferred_null_then_false_recovers() {
         .expect("binding");
     assert_eq!(done.disposition, AttemptOutcome::Applied);
     assert!(done.sticky_meta.as_ref().expect("meta").followup_done);
-    assert_eq!(
-        recovered.intent_writes.len(),
-        0,
-        "no extra save on followup"
-    );
+    assert_eq!(recovered.intent_desired.len(), 1, "followup retains");
     let member = engine
         .members
         .get(&WindowId("win-a".to_owned()))
@@ -3005,7 +3015,7 @@ fn native_binding_cap_replacement_allowed_but_distinct_refused_atomic() {
         binding.sticky_meta.as_ref().expect("meta").command_seq,
         Some(2)
     );
-    assert_eq!(reply.intent_writes.len(), 1);
+    assert_eq!(reply.intent_desired.len(), 1);
 
     // Distinct new binding at the cap refuses with a typed result: the
     // observation still issues (revision +1, sequence consumed), no save
@@ -3036,7 +3046,7 @@ fn native_binding_cap_replacement_allowed_but_distinct_refused_atomic() {
     }
     assert_eq!(capped.retained_states.len(), MAX_RETAINED_STATE_BINDINGS);
     let revision = capped.state_revision;
-    let saved = capped.sticky_saved.clone();
+    let saved = capped.intent_desired.clone();
     let restored = capped.restored_sticky.clone();
     let refused_obs = cmd(
         3,
@@ -3065,7 +3075,7 @@ fn native_binding_cap_replacement_allowed_but_distinct_refused_atomic() {
     }
     assert_eq!(capped.state_revision, revision + 1, "refusal issues");
     assert_eq!(capped.command_highwater, Some(2), "command consumed");
-    assert_eq!(capped.sticky_saved, saved);
+    assert_eq!(capped.intent_desired, saved);
     assert_eq!(capped.restored_sticky, restored);
     // Synthetic filler bindings are not observation-live, so the adoption
     // path legitimately prunes them; the refusal must converge with the
@@ -3086,8 +3096,10 @@ fn native_binding_cap_replacement_allowed_but_distinct_refused_atomic() {
         "no binding minted past the cap"
     );
     assert!(
-        capped.sticky_command_save.is_none(),
-        "no save staged on refusal"
+        capped
+            .intent_desired
+            .contains_key(&WindowId("win-a".to_owned())),
+        "retained survives cap refusal"
     );
 }
 
@@ -3190,11 +3202,11 @@ fn native_producer_lifecycle_close_own_handshake_and_incomplete_retains() {
     let spent = rollback_binding(&gapped, "win-a");
     assert!(spent.spent);
     assert_eq!(spent.disposition, AttemptOutcome::PossiblyExecuted);
-    let saved = gapped.sticky_saved.clone();
+    let saved = gapped.intent_desired.clone();
     let mut incomplete = observe(4, vec![fact("win-a", "out-a", 0)]);
     incomplete.inventory_complete = false;
     let reply = accepted(&mut gapped, &incomplete);
-    assert!(reply.intent_writes.is_empty(), "incomplete emits nothing");
+    assert_eq!(reply.intent_desired.len(), 1, "incomplete retains");
     let held = rollback_binding(&gapped, "win-a");
     assert!(held.spent, "incomplete retains the spent proof");
     assert_eq!(held.disposition, AttemptOutcome::PossiblyExecuted);
@@ -3205,7 +3217,7 @@ fn native_producer_lifecycle_close_own_handshake_and_incomplete_retains() {
     );
     assert!(held.sticky_meta.is_some(), "metadata retained");
     assert!(!held.sticky_meta.as_ref().expect("meta").followup_done);
-    assert_eq!(gapped.sticky_saved, saved, "records untouched");
+    assert_eq!(gapped.intent_desired, saved, "records untouched");
     let (_, authority, seq) = target_row(&reply, "win-a").expect("target retained");
     assert_eq!(seq, Some(1));
     assert_ne!(authority, ScopeAuthority::Controlled);
@@ -3332,8 +3344,14 @@ fn native_unmatched_proof_never_lands_or_rewrites() {
         let mut proof = observe(4, vec![sticky_fact("win-a", "out-a", 0, Some(false))]);
         proof.state_attempts = vec![attempt];
         let reply = accepted(&mut engine, &proof);
-        assert!(
-            reply.intent_writes.is_empty(),
+        assert_eq!(
+            reply.intent_desired.len(),
+            1,
+            "mismatch mints nothing {case}"
+        );
+        assert_eq!(
+            reply.intent_desired[0].data,
+            Some(IntentData::new(Some(false), None)),
             "mismatch mints nothing {case}"
         );
         let binding = rollback_binding(&engine, "win-a");

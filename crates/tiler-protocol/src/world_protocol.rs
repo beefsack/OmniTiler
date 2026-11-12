@@ -87,9 +87,9 @@ use tiler_core::world_report::{
     ArrivalLocation, AttemptLaneV4, AuthorityScope, BorderHideReasonV4, BorderPresentationV4,
     CommandRejectKind, CommandResult, EffectKind, FloatOrigin, FocusFeedback, FocusRequest,
     FocusRequestCause, FrameWitness, FullscreenOwner, HeldAttemptRow, HeldNativeRow,
-    HeldPresentationRow, HeldScreenRow, HeldWindowRow, HoldReason, IntentRecord, IntentWrite,
+    HeldPresentationRow, HeldScreenRow, HeldWindowRow, HoldReason, IntentDesire, IntentRecord,
     LastWrite, LastWritePath, LastWriteProperty, MAX_FOCUS_DEPARTING, MAX_FOCUS_MEMBERS,
-    MAX_FOCUS_SELECTED, MAX_FOCUS_VIEWS, MAX_INTENT_RECORDS, MAX_INTENT_WRITES,
+    MAX_FOCUS_SELECTED, MAX_FOCUS_VIEWS, MAX_INTENT_DESIRED, MAX_INTENT_RECORDS,
     MAX_REPLY_DIAGNOSTICS, MAX_REPLY_EFFECTS, MAX_REPLY_NATIVE_CREATIONS, MAX_REPLY_OPERATIONS,
     MAX_REPLY_OUTPUTS, MAX_REPLY_SCOPES, MAX_REPLY_SWITCH_EVENTS, MAX_REPLY_TRANSFERS,
     MAX_REPLY_WINDOWS, MAX_REPLY_WORKSPACES, MAX_STATE_TARGETS_PER_WINDOW, NativeCreationDesire,
@@ -5836,7 +5836,7 @@ fn decode_native_creation(value: &serde_json::Value) -> Result<NativeCreationDes
     })
 }
 
-fn decode_intent_write(value: &serde_json::Value) -> Result<IntentWrite> {
+fn decode_intent_desire(value: &serde_json::Value) -> Result<IntentDesire> {
     let map = as_object(value)?;
     check_keys(map, &["win", "data"])?;
     let data = match map.get("data") {
@@ -5846,11 +5846,14 @@ fn decode_intent_write(value: &serde_json::Value) -> Result<IntentWrite> {
             if text.len() > MAX_INTENT_DATA_BYTES {
                 return Err(reply_snapshot("intent-data-invalid"));
             }
-            Some(text.clone())
+            Some(
+                tiler_core::intent_data::decode_intent_data(text)
+                    .map_err(|_| reply_snapshot("intent-data-invalid"))?,
+            )
         }
         Some(_) => return Err(malformed()),
     };
-    Ok(IntentWrite {
+    Ok(IntentDesire {
         win: WindowId(req_id(map, "win")?),
         data,
     })
@@ -6183,7 +6186,7 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
             "nativeCreations",
             "warpCursor",
             "presentation",
-            "intentWrites",
+            "intentDesired",
             "switchSettled",
             "diagnostics",
         ],
@@ -6332,19 +6335,19 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
             .and_then(serde_json::Value::as_object)
             .is_some_and(|presentation| presentation.contains_key("suspendedOutput")),
     };
-    let writes_value = map.get("intentWrites").ok_or_else(malformed)?;
+    let writes_value = map.get("intentDesired").ok_or_else(malformed)?;
     let write_items = writes_value.as_array().ok_or_else(malformed)?;
-    if write_items.len() > MAX_INTENT_WRITES {
+    if write_items.len() > MAX_INTENT_DESIRED {
         return Err(reply_snapshot("section-over-cap"));
     }
-    let mut intent_writes = Vec::with_capacity(write_items.len());
+    let mut intent_desired = Vec::with_capacity(write_items.len());
     let mut seen_writes = std::collections::BTreeSet::new();
     for item in write_items {
-        let write = decode_intent_write(item)?;
+        let write = decode_intent_desire(item)?;
         if !seen_writes.insert(write.win.0.clone()) {
-            return Err(reply_snapshot("duplicate-intent-write"));
+            return Err(reply_snapshot("duplicate-intent-desire"));
         }
-        intent_writes.push(write);
+        intent_desired.push(write);
     }
     let switches_value = map.get("switchSettled").ok_or_else(malformed)?;
     let switch_items = switches_value.as_array().ok_or_else(malformed)?;
@@ -6395,7 +6398,7 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
             native_creations,
             cursor_warp,
             presentation,
-            intent_writes,
+            intent_desired,
             switch_settled,
             diagnostics,
         },
@@ -6997,18 +7000,19 @@ fn encode_gesture_settled_v4(settled: &Option<GestureSettled>, out: &mut String)
     tiler_core::world_sizing::encode_gesture_settled(out, settled);
 }
 
-fn encode_intent_write_v4(row: &IntentWrite, out: &mut String) -> Result<()> {
+fn encode_intent_desire_v4(row: &IntentDesire, out: &mut String) -> Result<()> {
     check_reply_id(&row.win.0)?;
-    if let Some(data) = row.data.as_deref()
-        && data.len() > MAX_INTENT_DATA_BYTES
-    {
-        return Err(reply_snapshot("intent-data-invalid"));
+    if let Some(data) = row.data.as_ref() {
+        let encoded = tiler_core::intent_data::encode_intent_data(data);
+        if encoded.len() > MAX_INTENT_DATA_BYTES {
+            return Err(reply_snapshot("intent-data-invalid"));
+        }
     }
     out.push_str("{\"win\":");
     push_json_string(out, &row.win.0);
     out.push_str(",\"data\":");
-    match row.data.as_deref() {
-        Some(data) => push_json_string(out, data),
+    match row.data.as_ref() {
+        Some(data) => push_json_string(out, &tiler_core::intent_data::encode_intent_data(data)),
         None => out.push_str("null"),
     }
     out.push('}');
@@ -7271,7 +7275,7 @@ pub fn encode_reply_v4(decoded: &DecodedReplyV4) -> Result<String> {
     check_reply_cap(reply.effects.len(), MAX_REPLY_EFFECTS)?;
     check_reply_cap(reply.operation_settled.len(), MAX_REPLY_OPERATIONS)?;
     check_reply_cap(reply.native_creations.len(), MAX_REPLY_NATIVE_CREATIONS)?;
-    check_reply_cap(reply.intent_writes.len(), MAX_INTENT_WRITES)?;
+    check_reply_cap(reply.intent_desired.len(), MAX_INTENT_DESIRED)?;
     check_reply_cap(reply.switch_settled.len(), MAX_REPLY_SWITCH_EVENTS)?;
     check_reply_cap(reply.diagnostics.len(), MAX_REPLY_DIAGNOSTICS)?;
     let mut seen_scopes = std::collections::BTreeSet::new();
@@ -7324,9 +7328,9 @@ pub fn encode_reply_v4(decoded: &DecodedReplyV4) -> Result<String> {
         }
     }
     let mut seen_writes = std::collections::BTreeSet::new();
-    for write in &reply.intent_writes {
+    for write in &reply.intent_desired {
         if !seen_writes.insert(write.win.0.clone()) {
-            return Err(reply_snapshot("duplicate-intent-write"));
+            return Err(reply_snapshot("duplicate-intent-desire"));
         }
     }
     let mut seen_switches = std::collections::BTreeSet::new();
@@ -7445,12 +7449,12 @@ pub fn encode_reply_v4(decoded: &DecodedReplyV4) -> Result<String> {
         decoded.wire.suspended_output_present,
         &mut out,
     )?;
-    out.push_str(",\"intentWrites\":[");
-    for (i, write) in reply.intent_writes.iter().enumerate() {
+    out.push_str(",\"intentDesired\":[");
+    for (i, write) in reply.intent_desired.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
-        encode_intent_write_v4(write, &mut out)?;
+        encode_intent_desire_v4(write, &mut out)?;
     }
     out.push_str("],\"switchSettled\":[");
     for (i, event) in reply.switch_settled.iter().enumerate() {
@@ -8852,7 +8856,7 @@ mod tests {
                 underlay: tiler_core::world_presentation::PresentationUnderlay::default(),
                 pager: Vec::new(),
             },
-            intent_writes: Vec::new(),
+            intent_desired: Vec::new(),
             switch_settled: settled.clone(),
             diagnostics: Vec::new(),
         };

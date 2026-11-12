@@ -172,7 +172,7 @@ function startFlow() {
             windows: [winRow("win-a", "ws1"), winRow("win-b", "ws2")],
             transfers: [], effects: [], result: null,
             gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
-            intentWrites: [],
+            intentDesired: [],
             presentation: DISABLED_PRESENTATION,
             switchSettled: [], diagnostics: [],
             source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock,

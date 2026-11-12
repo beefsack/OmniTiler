@@ -71,7 +71,15 @@ fn composed_null_admits_while_nonnull_conflicts_narrowly() {
         data: encode_intent_data(&IntentData::new(Some(true), None)),
     }];
     let reply = accepted_reply(&mut engine, &report);
-    assert!(reply.intent_writes.is_empty(), "{:?}", reply.intent_writes);
+    assert_eq!(reply.intent_desired.len(), 1, "{:?}", reply.intent_desired);
+    assert_eq!(
+        reply.intent_desired[0].win,
+        WindowId("win-false".to_owned())
+    );
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), None))
+    );
     let controlled = controlled(&reply);
     assert!(
         controlled.contains(&"win-composed".to_owned()),
@@ -187,7 +195,11 @@ fn supported_native_keeps_bool_semantics_and_null_holds() {
         None,
     );
     let reply = accepted_reply(&mut engine, &report);
-    assert!(reply.intent_writes.is_empty(), "{:?}", reply.intent_writes);
+    assert!(
+        reply.intent_desired.is_empty(),
+        "{:?}",
+        reply.intent_desired
+    );
     let controlled = controlled(&reply);
     assert!(
         controlled.contains(&"win-false".to_owned()),
@@ -545,7 +557,12 @@ fn conflict_recovery_consumes_pending_and_seals_admission() {
         data: encode_intent_data(&IntentData::new(Some(false), None)),
     }];
     let reply = accepted_reply(&mut engine, &conflict_report);
-    assert!(reply.intent_writes.is_empty(), "{:?}", reply.intent_writes);
+    assert_eq!(reply.intent_desired.len(), 1, "{:?}", reply.intent_desired);
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-r".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(
         engine
             .pending_intent
@@ -573,7 +590,12 @@ fn conflict_recovery_consumes_pending_and_seals_admission() {
         None,
     );
     let reply = accepted_reply(&mut engine, &recovery);
-    assert!(reply.intent_writes.is_empty(), "{:?}", reply.intent_writes);
+    assert_eq!(reply.intent_desired.len(), 1, "{:?}", reply.intent_desired);
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-r".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(
         controlled(&reply).contains(&"win-r".to_owned()),
         "recovered null tiles: {:?}",
@@ -620,7 +642,13 @@ fn conflict_recovery_consumes_pending_and_seals_admission() {
         data: encode_intent_data(&IntentData::new(Some(true), None)),
     }];
     let reply = accepted_reply(&mut engine, &late);
-    assert!(reply.intent_writes.is_empty(), "{:?}", reply.intent_writes);
+    assert_eq!(reply.intent_desired.len(), 1, "{:?}", reply.intent_desired);
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-r".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None)),
+        "late ignored input still projects the admitted target"
+    );
     assert!(
         !engine
             .pending_intent
@@ -690,13 +718,13 @@ fn native_false_null_toggle_float_save_preserved() {
         })),
     );
     let reply = accepted_reply(&mut engine, &toggled);
-    assert_eq!(reply.intent_writes.len(), 1, "{reply:?}");
-    assert_eq!(reply.intent_writes[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
     assert_eq!(
-        reply.intent_writes[0].data.as_deref(),
-        Some(encode_intent_data(&IntentData::new(Some(true), None)).as_str()),
+        reply.intent_desired[0].data.as_ref(),
+        Some(&IntentData::new(Some(true), None)),
         "{:?}",
-        reply.intent_writes
+        reply.intent_desired
     );
     let floated = engine.engine.domain_keys().iter().any(|key| {
         engine

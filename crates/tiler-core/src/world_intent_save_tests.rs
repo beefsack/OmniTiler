@@ -105,9 +105,13 @@ fn toggle_report(seq: u64, windows: Vec<crate::world_report::WindowFact>) -> Wor
 }
 
 fn assert_save(reply: &crate::world_report::WorldReplyV4, win: &str, data: &str) {
-    assert_eq!(reply.intent_writes.len(), 1, "{reply:?}");
-    assert_eq!(reply.intent_writes[0].win, WindowId(win.to_owned()));
-    assert_eq!(reply.intent_writes[0].data.as_deref(), Some(data));
+    // Retained projection: the reply carries the whole map, so the save
+    // row must be present (other retained rows may also project).
+    let found = reply.intent_desired.iter().find(|row| {
+        row.win == WindowId(win.to_owned())
+            && row.data.as_ref().map(encode_intent_data).as_deref() == Some(data)
+    });
+    assert!(found.is_some(), "missing save {win} {data}: {reply:?}");
 }
 
 fn is_tiled(engine: &WorldEngine, win: &str) -> bool {
@@ -379,9 +383,9 @@ fn no_space_retry_emits_no_save_and_stays_float() {
         other => panic!("expected float result, got {other:?}"),
     }
     assert!(
-        reply.intent_writes.is_empty(),
+        reply.intent_desired.is_empty(),
         "no-space retry manufactures no tile: {:?}",
-        reply.intent_writes
+        reply.intent_desired
     );
     let row = row_for(&reply, &victim).expect("victim row");
     assert!(row.floating, "{row:?}");
@@ -411,7 +415,7 @@ fn duplicate_repeats_cached_save() {
     assert_save(&first, "win-a", &float_true());
     match engine.handle_report(&report, &[]).0 {
         WorldOutcome::Duplicate(cached) => {
-            assert_eq!(cached.intent_writes, first.intent_writes);
+            assert_eq!(cached.intent_desired, first.intent_desired);
             assert_save(&cached, "win-a", &float_true());
         }
         other => panic!("expected duplicate, got {other:?}"),
@@ -453,11 +457,14 @@ fn consumed_command_report_emits_no_save() {
             assert!(reply.command_consumed);
             assert_eq!(reply.based_on_observation_seq, 3);
             assert!(reply.command_result.is_none(), "{:?}", reply.command_result);
-            assert!(
-                reply.intent_writes.is_empty(),
-                "consumed command emits nothing: {:?}",
-                reply.intent_writes
+            // Retained desire projects on consumed replies too, never drains.
+            assert_eq!(
+                reply.intent_desired.len(),
+                1,
+                "consumed retains: {:?}",
+                reply.intent_desired
             );
+            assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
         }
         other => panic!("expected consumed, got {other:?}"),
     }
@@ -656,10 +663,11 @@ fn rehandshake_float_save_restores_without_resave_or_placement() {
     restore.adapter_incarnation = "adapter-2".to_owned();
     restore.core_generation = generation;
     let reply = accepted(&mut engine, &restore);
-    assert!(
-        reply.intent_writes.is_empty(),
-        "restore consumes the save without re-saving: {:?}",
-        reply.intent_writes
+    // Retained desire projects after rehandshake import, never drains.
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), None))
     );
     assert!(is_floated(&engine, "win-a"));
     let row = row_for(&reply, "win-a").expect("float row");
@@ -715,10 +723,10 @@ fn rehandshake_tile_save_restores_without_resave() {
     restore.adapter_incarnation = "adapter-2".to_owned();
     restore.core_generation = generation;
     let reply = accepted(&mut engine, &restore);
-    assert!(
-        reply.intent_writes.is_empty(),
-        "restore consumes the save without re-saving: {:?}",
-        reply.intent_writes
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
     );
     assert!(is_tiled(&engine, "win-a"));
     assert!(
@@ -751,10 +759,11 @@ fn sticky_restore_blocks_save_and_clears_later_toggle_with_hold() {
             vec![record("win-a", &sticky_float())],
         ),
     );
-    assert!(
-        reply.intent_writes.is_empty(),
-        "restore publishes no save: {:?}",
-        reply.intent_writes
+    // Q4: valid sticky import initializes retained desire and projects it.
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), Some(false)))
     );
     assert!(is_floated(&engine, "win-a"), "sticky restores as float");
     assert!(
@@ -976,9 +985,9 @@ fn mixed_duplicate_conflicting_sticky_rows_block_and_conflict() {
         ),
     );
     assert!(
-        reply.intent_writes.is_empty(),
+        reply.intent_desired.is_empty(),
         "conflicting sticky suppresses: {:?}",
-        reply.intent_writes
+        reply.intent_desired
     );
     assert!(is_floated(&engine, "win-a"));
 }
@@ -1501,9 +1510,9 @@ fn joint_bound_overflow_latches_saturated_fail_closed() {
         ),
     );
     assert!(
-        reply.intent_writes.is_empty(),
+        reply.intent_desired.is_empty(),
         "saturation suppresses every save: {:?}",
-        reply.intent_writes
+        reply.intent_desired
     );
     assert!(is_floated(&engine, "win-a"), "command still wins");
     let _ = rehandshake(&mut engine);
@@ -1665,7 +1674,16 @@ fn joint_cap_sticky_occupancy_fails_conflict_allocs_closed() {
     );
     capped.inventory_complete = false;
     let reply = accepted(&mut engine, &capped);
-    assert!(reply.intent_writes.is_empty());
+    // Retained projection keeps the pre-existing desired (win-s); the
+    // refused rows confer nothing new.
+    assert!(
+        reply
+            .intent_desired
+            .iter()
+            .any(|row| row.win == WindowId("win-s".to_owned())),
+        "retains win-s: {:?}",
+        reply.intent_desired
+    );
     // win-d: raw duplicate refused at a full ledger (pending+conflicts
     // alone had room: MAX-1). win-p: differing value freed its pending
     // slot, so its conflict fits. win-t: sticky finds no room and latches.
@@ -1839,8 +1857,10 @@ fn save_data_canonical_widths_match_bound_constant() {
     assert_eq!(float_true().len(), 39);
     assert_eq!(tile_false().len(), 40);
     assert_eq!(crate::world_sizing::json_string_len(&float_true()), 47);
+    // Ordinary tile (false,null) is 40 raw bytes -> 48 quoted; the 49
+    // reserve covers the wider rollback (false,false) shape.
     assert_eq!(crate::world_sizing::json_string_len(&tile_false()), 48);
-    assert_eq!(crate::world_sizing::MAX_INTENT_SAVE_DATA_JSON, 48);
+    assert_eq!(crate::world_sizing::MAX_INTENT_DESIRED_DATA_JSON, 49);
 }
 
 #[test]
@@ -1859,7 +1879,7 @@ fn max_bound_reserves_one_row_only_for_toggle_float() {
     );
     assert_eq!(
         max_intent_save_bound(&toggle),
-        16 + json_string_len("win-a") + 48
+        16 + json_string_len("win-a") + 49
     );
     // A window id needing escapes still bounds exactly.
     let mut quoted = toggle.clone();
@@ -1869,16 +1889,16 @@ fn max_bound_reserves_one_row_only_for_toggle_float() {
     }));
     assert_eq!(
         max_intent_save_bound(&quoted),
-        16 + json_string_len("w\"in\\q") + 48
+        16 + json_string_len("w\"in\\q") + 49
     );
     // A valid max-length opaque id reserves the documented maximum row:
-    // 16 punctuation plus the 130-byte quoted id plus the 48-byte value.
+    // 16 punctuation plus the 130-byte quoted id plus the 49-byte value.
     let mut maxed = toggle.clone();
     maxed.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
         window: "w".repeat(128),
         float_rect: None,
     }));
-    assert_eq!(max_intent_save_bound(&maxed), 194);
+    assert_eq!(max_intent_save_bound(&maxed), 195);
     let plain = report_full(
         1,
         1,
@@ -1928,14 +1948,14 @@ fn max_bound_reserves_one_save_row_for_sticky_commands() {
     });
     assert_eq!(
         max_intent_save_bound(&set),
-        16 + json_string_len("win-a") + 48
+        16 + json_string_len("win-a") + 49
     );
     let toggle = sticky(WorldCommand::ToggleSticky {
         window: WindowId("win-a".to_owned()),
     });
     assert_eq!(
         max_intent_save_bound(&toggle),
-        16 + json_string_len("win-a") + 48
+        16 + json_string_len("win-a") + 49
     );
     // A window id needing escapes still bounds exactly.
     let mut quoted = set.clone();
@@ -1944,16 +1964,16 @@ fn max_bound_reserves_one_save_row_for_sticky_commands() {
     });
     assert_eq!(
         max_intent_save_bound(&quoted),
-        16 + json_string_len("w\"in\\q") + 48
+        16 + json_string_len("w\"in\\q") + 49
     );
     // A valid max-length opaque id reserves the documented maximum row:
-    // 16 punctuation plus the 130-byte quoted id plus the 48-byte value.
+    // 16 punctuation plus the 130-byte quoted id plus the 49-byte value.
     let mut maxed = set.clone();
     maxed.command = Some(WorldCommand::SetSticky {
         window: WindowId("w".repeat(128)),
         value: false,
     });
-    assert_eq!(max_intent_save_bound(&maxed), 194);
+    assert_eq!(max_intent_save_bound(&maxed), 195);
     // Non-save commands reserve nothing.
     let plain = report_full(
         1,
@@ -1980,9 +2000,10 @@ fn max_bound_reserves_one_save_row_for_sticky_commands() {
 #[test]
 fn sticky_save_canonical_widths_match_bound_constant() {
     use crate::world_sizing::json_string_len;
-    // Staged sticky family: sticky-on `(Some(true), prior)`, sticky-off
+    // Sticky-on `(Some(true), prior)`, sticky-off
     // `(prior, None)`, and the sticky-clearing toggle `(Some(false),
-    // None)`. The widest escaped forms need the full 48-byte reserve.
+    // None)`. The widest escaped forms need the full 49-byte reserve
+    // (covered by the (false,false) rollback shape, not these 48s).
     let on_tiled = encode_intent_data(&IntentData::new(Some(true), Some(false)));
     let on_float = encode_intent_data(&IntentData::new(Some(true), Some(true)));
     let off = encode_intent_data(&IntentData::new(Some(false), None));
@@ -1992,7 +2013,11 @@ fn sticky_save_canonical_widths_match_bound_constant() {
     assert_eq!(json_string_len(&on_float), 47);
     assert_eq!(json_string_len(&on_tiled), 48);
     assert_eq!(json_string_len(&off), 48);
-    assert_eq!(crate::world_sizing::MAX_INTENT_SAVE_DATA_JSON, 48);
+    assert_eq!(
+        crate::world_sizing::MAX_INTENT_DESIRED_DATA_JSON,
+        49,
+        "sticky canonical width"
+    );
 }
 
 #[test]
@@ -2023,7 +2048,7 @@ fn reply_upper_bound_adds_exactly_one_save_row() {
 
 #[test]
 fn actual_one_save_reply_fits_estimate_with_exact_row() {
-    use crate::world_sizing::{intent_writes_estimate, json_string_len};
+    use crate::world_sizing::{intent_desired_estimate, json_string_len};
     use crate::world_sizing_v4::{
         reply_estimate_v4 as reply_estimate, reply_exact_bytes_v4,
         reply_upper_bound_v4 as reply_upper_bound,
@@ -2058,10 +2083,12 @@ fn actual_one_save_reply_fits_estimate_with_exact_row() {
     );
     let reply = accepted(&mut engine, &input);
     assert_save(&reply, "win-a", &float_true());
-    let data = reply.intent_writes[0].data.clone().expect("save data");
+    let data = reply.intent_desired[0].data.expect("save data");
+    // Section header `,"intentDesired":[` is 18 plus the closing `]` (19
+    // empty); the header is one byte wider than the old `intentWrites` lane.
     assert_eq!(
-        intent_writes_estimate(&reply.intent_writes),
-        18 + 16 + json_string_len("win-a") + json_string_len(&data)
+        intent_desired_estimate(&reply.intent_desired),
+        19 + 16 + json_string_len("win-a") + json_string_len(&encode_intent_data(&data))
     );
     // Exact v4 reply bytes (length arithmetic mirroring the protocol
     // `encode_reply_v4` writer field-by-field; no core v4 writer exists).
@@ -2164,7 +2191,7 @@ fn reply_bound_toggle_report_rejected_without_mutation() {
         ),
     );
     let save_bound = max_intent_save_bound(&toggle_report(2, Vec::new()));
-    assert_eq!(save_bound, 71);
+    assert_eq!(save_bound, 72);
     let logical = engine.engine.domain_keys().len();
     let bound_of = |windows: &[crate::world_report::WindowFact]| {
         let report = report_full(

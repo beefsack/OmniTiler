@@ -20,7 +20,7 @@ import { WorldAdapterState } from "../src/world-state";
 import { parseWorldReply, isWorldRejection, isCoreWorldReply, type WorldReply, type WorldReplyResult, type WorldAuthorityScope, type WorldHoldReason } from "../src/world-report";
 import type { WorldObservation } from "../src/world-observe";
 
-const FIXTURE = path.resolve("..", "test-fixtures", "kde-v4", "migration", "MIGRATE_DRAIN.reply.json");
+const FIXTURE = path.resolve("..", "test-fixtures", "kde-v4-active", "migration", "MIGRATE_DRAIN.reply.json");
 const NATIVES = ["ws-1", "ws-2", "ws-3", "ws-4"];
 
 // Correlated terminal take result for the migration scenario (take lane,
@@ -34,13 +34,11 @@ const MIGRATION_TAKE: WorldReplyResult = {
 };
 
 function loadReply(): WorldReply {
-    // The recorded drain capture predates the required nullable
-    // `focusRequest` lane (no close intent in this migration scenario):
-    // inject the truthful null without touching the frozen bytes.
+    // The active drain capture carries the required nullable
+    // `focusRequest` lane natively (null: no close intent in this
+    // migration scenario); the frozen historical bytes are untouched.
     const raw = JSON.parse(fs.readFileSync(FIXTURE, "utf8")) as Record<string, unknown>;
-    if (!("focusRequest" in raw)) {
-        raw["focusRequest"] = null;
-    }
+    assert.ok("focusRequest" in raw, "active drain reply carries the focusRequest lane");
     const parsed = parseWorldReply(JSON.stringify(raw));
     assert.ok(parsed !== null && !isWorldRejection(parsed));
     return parsed as WorldReply;

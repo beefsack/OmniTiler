@@ -8249,14 +8249,14 @@
           "pointer": "/windows/0/state/3"
         }
       ],
-      "IntentWrite": [
+      "IntentDesire": [
         {
           "fixture": "reply-intent-save-clear",
-          "pointer": "/intentWrites/0"
+          "pointer": "/intentDesired/0"
         },
         {
           "fixture": "reply-intent-save-clear",
-          "pointer": "/intentWrites/1"
+          "pointer": "/intentDesired/1"
         }
       ],
       "CommandResult": [
@@ -11934,7 +11934,7 @@
     },
     {
       "fixture": "reply-intent-save-clear",
-      "pointer": "/intentWrites/1/data",
+      "pointer": "/intentDesired/1/data",
       "value": null
     },
     {
@@ -12663,6 +12663,30 @@
             "foreign-settings-class",
             "own-other-class",
             "unowned-generic-dialog"
+          ]
+        }
+      ],
+      "open": []
+    },
+    {
+      "id": "intent-retained-journey",
+      "file": "scenarios/intent-retained-journey.json",
+      "steps": 6,
+      "rules": [
+        {
+          "contract": "../../../docs/porting/world-contract.md#opaque-intent-storage",
+          "steps": [
+            "save",
+            "retained-1",
+            "retained-2",
+            "clear",
+            "clear-retained"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#raw-attempts-and-settlement",
+          "steps": [
+            "clear"
           ]
         }
       ],

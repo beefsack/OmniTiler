@@ -1,10 +1,12 @@
-// Opaque intent store controller tests (offline only, no D-Bus, no KWin).
+// Retained intent desire store tests (offline only, no D-Bus, no KWin).
 //
-// Covers the bounded persistence contract: v2 seed import byte-identical,
-// degraded-empty failure policy, live-joined reports, verbatim core-write
-// application (string replaces, null deletes), full-snapshot writes that
-// retain out-of-scope records, exactly-once completion, and
-// generation/stop fencing. Never asserts on store bytes in logs.
+// Covers the desired-versus-durable contract: v2 seed imports durable only,
+// degraded-empty failure policy, live-joined durable reports, whole-map
+// desired replacement (string target, null retained absence, missing rows
+// carry no authority), converged writes retaining out-of-scope records,
+// exactly-once completion with captured-snapshot durability, serialization
+// of racing desires, and generation/stop fencing. Never asserts on store
+// bytes in logs.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -76,6 +78,7 @@ function makeTransport() {
         assert.ok(found !== undefined, `expected ${method}`);
         return found as BusCall;
     };
+    const writeCount = (): number => calls.filter((c) => c.method === "WriteFloatIntent").length;
     return {
         transport, calls, timers, logs,
         kicks: () => hydratedKicks,
@@ -85,7 +88,7 @@ function makeTransport() {
         setGen: (v: string | null) => {
             gen = v;
         },
-        fireDelay, lastCall,
+        fireDelay, lastCall, writeCount,
     };
 }
 
@@ -107,7 +110,12 @@ function requestCorrelation(call: BusCall): string {
     return (JSON.parse(call.payload) as Record<string, unknown>)["correlation_id"] as string;
 }
 
-describe("world intent store (opaque persistence controller)", () => {
+function hydrateEmpty(f: ReturnType<typeof makeTransport>): void {
+    const storeSeed = f.lastCall("ReadFloatIntent");
+    storeSeed.callback(okReply(requestCorrelation(storeSeed), []));
+}
+
+describe("world intent store (retained desire controller)", () => {
     it("disabled controllers bypass the bus hydrated and empty", () => {
         const f = makeTransport();
         const store = createWorldIntentStore(f.transport, false);
@@ -116,7 +124,8 @@ describe("world intent store (opaque persistence controller)", () => {
         store.seed("gen-1");
         assert.deepEqual(f.calls, []);
         assert.deepEqual(store.recordsForReport(new Set(["win-a"])), []);
-        assert.equal(store.incorporateWrites([{ win: "win-a", data: DATA_A }]), false);
+        assert.equal(store.setDesired([{ win: "win-a", data: DATA_A }], "gen-1"), false);
+        assert.equal(store.needsWrite(), false);
         let settled: boolean | null = null;
         store.persist((ok) => {
             settled = ok;
@@ -126,7 +135,7 @@ describe("world intent store (opaque persistence controller)", () => {
         store.stop();
     });
 
-    it("seed imports the v2 snapshot byte-identical and joins live only", () => {
+    it("seed imports the v2 durable snapshot and joins live only", () => {
         const f = makeTransport();
         const store = createWorldIntentStore(f.transport, true);
         assert.equal(store.isHydrated("gen-1"), false);
@@ -144,6 +153,8 @@ describe("world intent store (opaque persistence controller)", () => {
         assert.deepEqual(store.recordsForReport(new Set(["win-a", "win-b"])), [
             { win: "win-a", data: DATA_A },
         ]);
+        // Empty desired equals durable: zero disk writes.
+        assert.equal(store.needsWrite(), false);
         for (const line of f.logs) {
             assert.ok(!line.includes(DATA_A), `bytes leaked: ${line}`);
             assert.ok(!line.includes("ghost"), `id leaked: ${line}`);
@@ -181,17 +192,262 @@ describe("world intent store (opaque persistence controller)", () => {
         }
     });
 
-    it("late hydration never overwrites runtime core writes", () => {
+    it("late seed import updates durable without overwriting runtime desired", () => {
         const f = makeTransport();
         const store = createWorldIntentStore(f.transport, true);
         store.seed("gen-1");
         const read = f.lastCall("ReadFloatIntent");
-        assert.equal(store.incorporateWrites([{ win: "win-a", data: DATA_B }]), true);
+        // Runtime desire lands before the seed verdict.
+        assert.equal(store.setDesired([{ win: "win-a", data: DATA_B }], "gen-1"), true);
+        assert.equal(store.needsWrite(), true);
         read.callback(okReply(requestCorrelation(read), [{ win: "win-a", data: DATA_A }]));
         assert.equal(store.isHydrated("gen-1"), true);
+        // Durable imports the server bytes; the runtime target survives.
         assert.deepEqual(store.recordsForReport(new Set(["win-a"])), [
-            { win: "win-a", data: DATA_B },
+            { win: "win-a", data: DATA_A },
         ]);
+        assert.equal(store.needsWrite(), true);
+    });
+
+    it("failed reseed clears durable but keeps the desired target", () => {
+        const f = makeTransport();
+        const store = createWorldIntentStore(f.transport, true);
+        store.seed("gen-1");
+        const first = f.lastCall("ReadFloatIntent");
+        first.callback(okReply(requestCorrelation(first), [{ win: "win-a", data: DATA_A }]));
+        assert.equal(store.setDesired([{ win: "win-a", data: DATA_A }], "gen-1"), true);
+        assert.equal(store.needsWrite(), false);
+        f.setGen("gen-2");
+        store.seed("gen-2");
+        // New generation owns a fresh desired target.
+        assert.equal(store.needsWrite(), false);
+        assert.equal(store.setDesired([{ win: "win-b", data: DATA_B }], "gen-2"), true);
+        const reseed = f.lastCall("ReadFloatIntent");
+        reseed.callback(JSON.stringify({
+            v: 2, correlation_id: requestCorrelation(reseed), outcome: "degraded",
+            records: [], stored: 0, returned: 0, reason: "corrupt",
+        }));
+        assert.equal(store.isHydrated("gen-2"), true);
+        assert.deepEqual(store.recordsForReport(new Set(["win-a", "win-b"])), []);
+        // Desired survives the degraded durable base: still owed.
+        assert.equal(store.needsWrite(), true);
+    });
+
+    it("setDesired replaces the whole map; null retains absence, missing rows grant nothing", () => {
+        const f = makeTransport();
+        const store = createWorldIntentStore(f.transport, true);
+        store.seed("gen-1");
+        hydrateEmpty(f);
+        // First target: string replaces into owed state.
+        assert.equal(store.setDesired([{ win: "win-a", data: DATA_A }], "gen-1"), true);
+        assert.equal(store.needsWrite(), true);
+        // Same target reports no change.
+        assert.equal(store.setDesired([{ win: "win-a", data: DATA_A }], "gen-1"), false);
+        // Null is an explicit retained absence: durable empty already
+        // satisfies it, so nothing is owed.
+        assert.equal(store.setDesired([{ win: "win-a", data: null }], "gen-1"), true);
+        assert.equal(store.needsWrite(), false);
+        // Missing rows carry no authority: an empty projection owes nothing
+        // even with extra durable rows present.
+        const g = makeTransport();
+        const second = createWorldIntentStore(g.transport, true);
+        second.seed("gen-1");
+        const read = g.lastCall("ReadFloatIntent");
+        read.callback(okReply(requestCorrelation(read), [
+            { win: "win-a", data: DATA_A },
+            { win: "ghost", data: DATA_B },
+        ]));
+        assert.equal(second.setDesired([], "gen-1"), false);
+        assert.equal(second.needsWrite(), false);
+        assert.deepEqual(second.recordsForReport(new Set(["win-a", "ghost"])), [
+            { win: "win-a", data: DATA_A },
+            { win: "ghost", data: DATA_B },
+        ]);
+    });
+
+    it("setDesired ignores stale generations, stopped controllers, and malformed rows", () => {
+        const f = makeTransport();
+        const store = createWorldIntentStore(f.transport, true);
+        store.seed("gen-1");
+        hydrateEmpty(f);
+        assert.equal(store.setDesired([{ win: "win-a", data: DATA_A }], "gen-2"), false);
+        assert.equal(store.needsWrite(), false);
+        f.setStopped(true);
+        assert.equal(store.setDesired([{ win: "win-a", data: DATA_A }], "gen-1"), false);
+        f.setStopped(false);
+        // Malformed rows never enter the map: bad id, oversize data, and
+        // non-string data are skipped; first-wins keeps uniqueness.
+        assert.equal(store.setDesired([
+            { win: "", data: DATA_A },
+            { win: "win-a", data: "x".repeat(1025) },
+            { win: "win-b", data: 42 as unknown as string },
+            { win: "win-c", data: DATA_A },
+            { win: "win-c", data: DATA_B },
+        ], "gen-1"), true);
+        assert.equal(store.needsWrite(), true);
+        let settled: boolean | null = null;
+        store.persist((ok) => {
+            settled = ok;
+        });
+        const write = f.lastCall("WriteFloatIntent");
+        const body = JSON.parse(write.payload) as Record<string, unknown>;
+        assert.deepEqual(body["records"], [{ win: "win-c", data: DATA_A }]);
+        write.callback(JSON.stringify({ v: 2, correlation_id: requestCorrelation(write), outcome: "stored", stored: 1 }));
+        assert.equal(settled, true);
+        assert.equal(store.needsWrite(), false);
+    });
+
+    it("equal desired means zero disk writes", () => {
+        const f = makeTransport();
+        const store = createWorldIntentStore(f.transport, true);
+        store.seed("gen-1");
+        const read = f.lastCall("ReadFloatIntent");
+        read.callback(okReply(requestCorrelation(read), [
+            { win: "win-a", data: DATA_A },
+            { win: "ghost", data: DATA_B },
+        ]));
+        // Exact match owes nothing and issues no bus write.
+        assert.equal(store.setDesired([{ win: "win-a", data: DATA_A }], "gen-1"), true);
+        assert.equal(store.needsWrite(), false);
+        assert.equal(f.writeCount(), 0);
+        // Null target with absent durable row also owes nothing.
+        assert.equal(store.setDesired([{ win: "win-new", data: null }], "gen-1"), true);
+        assert.equal(store.needsWrite(), false);
+        assert.equal(f.writeCount(), 0);
+        // Extra durable rows outside the desired projection are retained,
+        // never deleted by equality.
+        assert.deepEqual(store.recordsForReport(new Set(["win-a", "ghost"])), [
+            { win: "win-a", data: DATA_A },
+            { win: "ghost", data: DATA_B },
+        ]);
+    });
+
+    it("persist converges desired onto durable and reports explicit success exactly once", () => {
+        const f = makeTransport();
+        const store = createWorldIntentStore(f.transport, true);
+        store.seed("gen-1");
+        const seedRead = f.lastCall("ReadFloatIntent");
+        seedRead.callback(okReply(requestCorrelation(seedRead), [
+            { win: "win-a", data: DATA_A },
+            { win: "ghost", data: DATA_B },
+        ]));
+        assert.equal(store.setDesired([
+            { win: "win-a", data: DATA_B },
+            { win: "win-b", data: null },
+            { win: "win-c", data: DATA_A },
+        ], "gen-1"), true);
+        let settled: boolean | null = null;
+        let calls = 0;
+        store.persist((ok) => {
+            calls += 1;
+            settled = ok;
+        });
+        const write = f.lastCall("WriteFloatIntent");
+        const body = JSON.parse(write.payload) as Record<string, unknown>;
+        assert.equal(body["v"], 2);
+        // Converged: win-a replaced, win-c added, ghost retained, win-b
+        // (null with no durable row) omitted.
+        assert.deepEqual(body["records"], [
+            { win: "ghost", data: DATA_B },
+            { win: "win-a", data: DATA_B },
+            { win: "win-c", data: DATA_A },
+        ]);
+        write.callback(JSON.stringify({ v: 2, correlation_id: requestCorrelation(write), outcome: "stored", stored: 3 }));
+        assert.equal(settled, true);
+        assert.equal(calls, 1);
+        write.callback(JSON.stringify({ v: 2, correlation_id: requestCorrelation(write), outcome: "stored", stored: 3 }));
+        assert.equal(calls, 1);
+        assert.equal(store.needsWrite(), false);
+        assert.deepEqual(store.recordsForReport(new Set(["win-a", "win-c", "ghost"])), [
+            { win: "ghost", data: DATA_B },
+            { win: "win-a", data: DATA_B },
+            { win: "win-c", data: DATA_A },
+        ]);
+        for (const line of f.logs) {
+            assert.ok(!line.includes(DATA_A), `bytes leaked: ${line}`);
+        }
+    });
+
+    it("persist clears null-desired rows and retains the null target", () => {
+        const f = makeTransport();
+        const store = createWorldIntentStore(f.transport, true);
+        store.seed("gen-1");
+        const seedRead = f.lastCall("ReadFloatIntent");
+        seedRead.callback(okReply(requestCorrelation(seedRead), [{ win: "win-a", data: DATA_A }]));
+        assert.equal(store.setDesired([{ win: "win-a", data: null }], "gen-1"), true);
+        assert.equal(store.needsWrite(), true);
+        let settled: boolean | null = null;
+        store.persist((ok) => {
+            settled = ok;
+        });
+        const write = f.lastCall("WriteFloatIntent");
+        assert.deepEqual((JSON.parse(write.payload) as Record<string, unknown>)["records"], []);
+        write.callback(JSON.stringify({ v: 2, correlation_id: requestCorrelation(write), outcome: "stored", stored: 0 }));
+        assert.equal(settled, true);
+        // Clear is durable now, but the null target stays retained.
+        assert.deepEqual(store.recordsForReport(new Set(["win-a"])), []);
+        assert.equal(store.needsWrite(), false);
+    });
+
+    it("successful stored snapshot captures the sent bytes; racing desire stays owed", () => {
+        const f = makeTransport();
+        const store = createWorldIntentStore(f.transport, true);
+        store.seed("gen-1");
+        hydrateEmpty(f);
+        assert.equal(store.setDesired([{ win: "win-a", data: DATA_A }], "gen-1"), true);
+        let settled: boolean | null = null;
+        store.persist((ok) => {
+            settled = ok;
+        });
+        const write = f.lastCall("WriteFloatIntent");
+        // Newer desired lands while the call flies.
+        assert.equal(store.setDesired([{ win: "win-a", data: DATA_B }], "gen-1"), true);
+        write.callback(JSON.stringify({ v: 2, correlation_id: requestCorrelation(write), outcome: "stored", stored: 1 }));
+        assert.equal(settled, true);
+        // Durable is the captured DATA_A snapshot; DATA_B is still owed.
+        assert.deepEqual(store.recordsForReport(new Set(["win-a"])), [
+            { win: "win-a", data: DATA_A },
+        ]);
+        assert.equal(store.needsWrite(), true);
+    });
+
+    it("persist failures settle false exactly once and never touch durable", () => {
+        const f = makeTransport();
+        const store = createWorldIntentStore(f.transport, true);
+        store.seed("gen-1");
+        f.lastCall("ReadFloatIntent").callback(okReply(requestCorrelation(f.lastCall("ReadFloatIntent")), [{ win: "win-a", data: DATA_A }]));
+        assert.equal(store.setDesired([{ win: "win-a", data: DATA_B }], "gen-1"), true);
+        let settled: boolean | null = null;
+        let calls = 0;
+        store.persist((ok) => {
+            calls += 1;
+            settled = ok;
+        });
+        const write = f.lastCall("WriteFloatIntent");
+        write.callback(JSON.stringify({ v: 2, correlation_id: requestCorrelation(write), outcome: "rejected", reason: "unauthorized" }));
+        assert.equal(settled, false);
+        assert.equal(calls, 1);
+        assert.deepEqual(store.recordsForReport(new Set(["win-a"])), [
+            { win: "win-a", data: DATA_A },
+        ]);
+        // The desired target survives the failure: still owed, no auto-retry
+        // issued by the store itself.
+        assert.equal(store.needsWrite(), true);
+        assert.equal(f.writeCount(), 1);
+        const timeout = makeTransport();
+        {
+            const second = createWorldIntentStore(timeout.transport, true);
+            second.seed("gen-1");
+            const timeoutRead = timeout.lastCall("ReadFloatIntent");
+            timeoutRead.callback(okReply(requestCorrelation(timeoutRead), []));
+            assert.equal(second.setDesired([{ win: "win-a", data: DATA_A }], "gen-1"), true);
+            let done: boolean | null = null;
+            second.persist((ok) => {
+                done = ok;
+            });
+            timeout.fireDelay(2000);
+            assert.equal(done, false);
+        }
     });
 
     it("seed rounds fence on nonce, generation, and stop", () => {
@@ -214,94 +470,6 @@ describe("world intent store (opaque persistence controller)", () => {
         store.stop();
         third.callback(okReply(requestCorrelation(third), [{ win: "win-a", data: DATA_A }]));
         assert.equal(store.isHydrated("gen-2"), false);
-    });
-
-    it("core writes replace, delete, and add; unchanged writes report false", () => {
-        const f = makeTransport();
-        const store = createWorldIntentStore(f.transport, true);
-        store.seed("gen-1");
-        f.lastCall("ReadFloatIntent").callback(okReply(requestCorrelation(f.lastCall("ReadFloatIntent")), [{ win: "win-a", data: DATA_A }]));
-        assert.equal(store.incorporateWrites([{ win: "win-a", data: DATA_A }]), false);
-        assert.equal(
-            store.incorporateWrites([
-                { win: "win-a", data: DATA_B },
-                { win: "win-b", data: null },
-                { win: "win-c", data: DATA_A },
-            ]),
-            true,
-        );
-        assert.deepEqual(store.recordsForReport(new Set(["win-a", "win-b", "win-c"])), [
-            { win: "win-a", data: DATA_B },
-            { win: "win-c", data: DATA_A },
-        ]);
-        assert.equal(store.incorporateWrites([{ win: "win-a", data: DATA_B }]), false);
-    });
-
-    it("persist writes the full snapshot and reports explicit success exactly once", () => {
-        const f = makeTransport();
-        const store = createWorldIntentStore(f.transport, true);
-        store.seed("gen-1");
-        const seedRead = f.lastCall("ReadFloatIntent");
-        seedRead.callback(okReply(requestCorrelation(seedRead), [
-            { win: "win-a", data: DATA_A },
-            { win: "ghost", data: DATA_B },
-        ]));
-        assert.equal(store.incorporateWrites([{ win: "win-b", data: DATA_A }]), true);
-        let settled: boolean | null = null;
-        let calls = 0;
-        store.persist((ok) => {
-            calls += 1;
-            settled = ok;
-        });
-        const write = f.lastCall("WriteFloatIntent");
-        const body = JSON.parse(write.payload) as Record<string, unknown>;
-        assert.equal(body["v"], 2);
-        assert.deepEqual(body["records"], [
-            { win: "win-a", data: DATA_A },
-            { win: "ghost", data: DATA_B },
-            { win: "win-b", data: DATA_A },
-        ]);
-        write.callback(JSON.stringify({ v: 2, correlation_id: requestCorrelation(write), outcome: "stored", stored: 3 }));
-        assert.equal(settled, true);
-        assert.equal(calls, 1);
-        write.callback(JSON.stringify({ v: 2, correlation_id: requestCorrelation(write), outcome: "stored", stored: 3 }));
-        assert.equal(calls, 1);
-        for (const line of f.logs) {
-            assert.ok(!line.includes(DATA_A), `bytes leaked: ${line}`);
-        }
-    });
-
-    it("persist failures settle false exactly once and never touch the map", () => {
-        const f = makeTransport();
-        const store = createWorldIntentStore(f.transport, true);
-        store.seed("gen-1");
-        f.lastCall("ReadFloatIntent").callback(okReply(requestCorrelation(f.lastCall("ReadFloatIntent")), [{ win: "win-a", data: DATA_A }]));
-        let settled: boolean | null = null;
-        let calls = 0;
-        store.persist((ok) => {
-            calls += 1;
-            settled = ok;
-        });
-        const write = f.lastCall("WriteFloatIntent");
-        write.callback(JSON.stringify({ v: 2, correlation_id: requestCorrelation(write), outcome: "rejected", reason: "unauthorized" }));
-        assert.equal(settled, false);
-        assert.equal(calls, 1);
-        assert.deepEqual(store.recordsForReport(new Set(["win-a"])), [
-            { win: "win-a", data: DATA_A },
-        ]);
-        const timeout = makeTransport();
-        {
-            const second = createWorldIntentStore(timeout.transport, true);
-            second.seed("gen-1");
-            const timeoutRead = timeout.lastCall("ReadFloatIntent");
-            timeoutRead.callback(okReply(requestCorrelation(timeoutRead), []));
-            let done: boolean | null = null;
-            second.persist((ok) => {
-                done = ok;
-            });
-            timeout.fireDelay(2000);
-            assert.equal(done, false);
-        }
     });
 
     it("seed timers fence on stop and generation rotation", () => {
@@ -371,43 +539,27 @@ describe("world intent store (opaque persistence controller)", () => {
         }
     });
 
-    it("degraded verdict clears the imported map unless runtime writes landed", () => {
+    it("degraded verdict clears durable even with a surviving desired target", () => {
         const f = makeTransport();
         const store = createWorldIntentStore(f.transport, true);
         store.seed("gen-1");
         const first = f.lastCall("ReadFloatIntent");
         first.callback(okReply(requestCorrelation(first), [{ win: "win-a", data: DATA_A }]));
-        assert.deepEqual(store.recordsForReport(new Set(["win-a"])), [
-            { win: "win-a", data: DATA_A },
-        ]);
+        assert.equal(store.setDesired([{ win: "win-a", data: DATA_A }], "gen-1"), true);
+        assert.equal(store.needsWrite(), false);
         f.setGen("gen-2");
         store.seed("gen-2");
+        // New generation clears desired; re-target win-b before the verdict.
+        assert.equal(store.setDesired([{ win: "win-b", data: DATA_B }], "gen-2"), true);
         const second = f.lastCall("ReadFloatIntent");
         second.callback(JSON.stringify({
             v: 2, correlation_id: requestCorrelation(second), outcome: "degraded",
             records: [], stored: 0, returned: 0, reason: "namespace-unavailable",
         }));
         assert.equal(store.isHydrated("gen-2"), true);
-        assert.deepEqual(store.recordsForReport(new Set(["win-a"])), []);
-        const kept = makeTransport();
-        {
-            const guarded = createWorldIntentStore(kept.transport, true);
-            guarded.seed("gen-1");
-            const seedRead = kept.lastCall("ReadFloatIntent");
-            seedRead.callback(okReply(requestCorrelation(seedRead), [{ win: "win-a", data: DATA_A }]));
-            kept.setGen("gen-2");
-            guarded.seed("gen-2");
-            const reseed = kept.lastCall("ReadFloatIntent");
-            assert.equal(guarded.incorporateWrites([{ win: "win-b", data: DATA_B }]), true);
-            reseed.callback(JSON.stringify({
-                v: 2, correlation_id: requestCorrelation(reseed), outcome: "degraded",
-                records: [], stored: 0, returned: 0, reason: "corrupt",
-            }));
-            assert.deepEqual(guarded.recordsForReport(new Set(["win-a", "win-b"])), [
-                { win: "win-a", data: DATA_A },
-                { win: "win-b", data: DATA_B },
-            ]);
-        }
+        assert.deepEqual(store.recordsForReport(new Set(["win-a", "win-b"])), []);
+        // Desired survives degraded durable: still owed.
+        assert.equal(store.needsWrite(), true);
     });
 
     it("stored with a missing or mismatched count settles false without success", () => {
@@ -417,6 +569,7 @@ describe("world intent store (opaque persistence controller)", () => {
             store.seed("gen-1");
             const seedRead = f.lastCall("ReadFloatIntent");
             seedRead.callback(okReply(requestCorrelation(seedRead), [{ win: "win-a", data: DATA_A }]));
+            assert.equal(store.setDesired([{ win: "win-a", data: DATA_B }], "gen-1"), true);
             let settled: boolean | null = null;
             store.persist((ok) => {
                 settled = ok;
@@ -430,6 +583,7 @@ describe("world intent store (opaque persistence controller)", () => {
             assert.deepEqual(store.recordsForReport(new Set(["win-a"])), [
                 { win: "win-a", data: DATA_A },
             ]);
+            assert.equal(store.needsWrite(), true);
         }
     });
 
@@ -439,6 +593,7 @@ describe("world intent store (opaque persistence controller)", () => {
         store.seed("gen-1");
         const seedRead = f.lastCall("ReadFloatIntent");
         seedRead.callback(okReply(requestCorrelation(seedRead), [{ win: "win-a", data: DATA_A }]));
+        assert.equal(store.setDesired([{ win: "win-a", data: DATA_B }], "gen-1"), true);
         let settled: boolean | null = null;
         let calls = 0;
         store.persist((ok) => {
@@ -452,138 +607,33 @@ describe("world intent store (opaque persistence controller)", () => {
         f.fireDelay(2000);
         assert.equal(settled, false);
         assert.equal(calls, 1);
+        // Durable untouched by the foreign ack; desire still owed.
+        assert.equal(store.needsWrite(), true);
     });
 
-    it("reseed failures degrade empty even with an existing map", () => {
-        // Timeout clears the reseeded map.
-        {
-            const f = makeTransport();
-            const store = createWorldIntentStore(f.transport, true);
-            store.seed("gen-1");
-            const first = f.lastCall("ReadFloatIntent");
-            first.callback(okReply(requestCorrelation(first), [{ win: "win-a", data: DATA_A }]));
-            f.setGen("gen-2");
-            store.seed("gen-2");
-            f.fireDelay(2000);
-            assert.equal(store.isHydrated("gen-2"), true);
-            assert.deepEqual(store.recordsForReport(new Set(["win-a"])), []);
-            assert.ok(f.logs.some((l) => l.includes("reason=timeout") && l.includes("stored=0")), f.logs.join("\n"));
-        }
-        // Corrupt body clears the reseeded map.
-        {
-            const f = makeTransport();
-            const store = createWorldIntentStore(f.transport, true);
-            store.seed("gen-1");
-            const first = f.lastCall("ReadFloatIntent");
-            first.callback(okReply(requestCorrelation(first), [{ win: "win-a", data: DATA_A }]));
-            f.setGen("gen-2");
-            store.seed("gen-2");
-            f.lastCall("ReadFloatIntent").callback("not json{{{");
-            assert.deepEqual(store.recordsForReport(new Set(["win-a"])), []);
-        }
-        // Unreadable (non-string) reply clears the reseeded map.
-        {
-            const f = makeTransport();
-            const store = createWorldIntentStore(f.transport, true);
-            store.seed("gen-1");
-            const first = f.lastCall("ReadFloatIntent");
-            first.callback(okReply(requestCorrelation(first), [{ win: "win-a", data: DATA_A }]));
-            f.setGen("gen-2");
-            store.seed("gen-2");
-            f.lastCall("ReadFloatIntent").callback(42);
-            assert.deepEqual(store.recordsForReport(new Set(["win-a"])), []);
-            assert.ok(f.logs.some((l) => l.includes("reason=unreadable") && l.includes("stored=0")), f.logs.join("\n"));
-        }
-        // Count mismatch clears the reseeded map.
-        {
-            const f = makeTransport();
-            const store = createWorldIntentStore(f.transport, true);
-            store.seed("gen-1");
-            const first = f.lastCall("ReadFloatIntent");
-            first.callback(okReply(requestCorrelation(first), [{ win: "win-a", data: DATA_A }]));
-            f.setGen("gen-2");
-            store.seed("gen-2");
-            const read = f.lastCall("ReadFloatIntent");
-            read.callback(JSON.stringify({
-                v: INTENT_STORE_VERSION, correlation_id: requestCorrelation(read), outcome: "ok",
-                records: [{ win: "win-a", data: DATA_A }], stored: 7, returned: 1,
-            }));
-            assert.deepEqual(store.recordsForReport(new Set(["win-a"])), []);
-        }
-        // Transport throw on reseed clears the reseeded map.
-        {
-            const f = makeTransport();
-            let shouldThrow = false;
-            const throwing: typeof f.transport = {
-                ...f.transport,
-                callDbus: (
-                    service: string, path: string, iface: string, method: string,
-                    payload: string, callback: (reply: unknown) => void,
-                ): void => {
-                    if (shouldThrow) {
-                        throw new Error("bus down");
-                    }
-                    f.transport.callDbus(service, path, iface, method, payload, callback);
-                },
-            };
-            const store = createWorldIntentStore(throwing, true);
-            store.seed("gen-1");
-            const first = f.lastCall("ReadFloatIntent");
-            first.callback(okReply(requestCorrelation(first), [{ win: "win-a", data: DATA_A }]));
-            shouldThrow = true;
-            f.setGen("gen-2");
-            store.seed("gen-2");
-            assert.equal(store.isHydrated("gen-2"), true);
-            assert.deepEqual(store.recordsForReport(new Set(["win-a"])), []);
-            assert.ok(f.logs.some((l) => l.includes("reason=transport") && l.includes("stored=0")), f.logs.join("\n"));
-        }
+    it("stopped persist settles false and new generations reseed cleanly", () => {
+        const f = makeTransport();
+        const store = createWorldIntentStore(f.transport, true);
+        store.seed("gen-1");
+        const first = f.lastCall("ReadFloatIntent");
+        first.callback(okReply(requestCorrelation(first), [{ win: "win-a", data: DATA_A }]));
+        assert.equal(store.setDesired([{ win: "win-a", data: DATA_A }], "gen-1"), true);
+        // Timeout on a reseed clears the reseeded durable base.
+        f.setGen("gen-2");
+        store.seed("gen-2");
+        f.fireDelay(2000);
+        assert.equal(store.isHydrated("gen-2"), true);
+        assert.deepEqual(store.recordsForReport(new Set(["win-a"])), []);
+        assert.ok(f.logs.some((l) => l.includes("reason=timeout") && l.includes("stored=0")), f.logs.join("\n"));
     });
 
-    it("runtime-newer fence keeps the map across failed reseeds", () => {
-        // Timeout with runtime writes landed keeps the map.
-        {
-            const f = makeTransport();
-            const store = createWorldIntentStore(f.transport, true);
-            store.seed("gen-1");
-            const first = f.lastCall("ReadFloatIntent");
-            first.callback(okReply(requestCorrelation(first), [{ win: "win-a", data: DATA_A }]));
-            f.setGen("gen-2");
-            store.seed("gen-2");
-            assert.equal(store.incorporateWrites([{ win: "win-b", data: DATA_B }]), true);
-            f.fireDelay(2000);
-            assert.equal(store.isHydrated("gen-2"), true);
-            assert.deepEqual(store.recordsForReport(new Set(["win-a", "win-b"])), [
-                { win: "win-a", data: DATA_A },
-                { win: "win-b", data: DATA_B },
-            ]);
-        }
-        // Degraded verdict with runtime writes landed keeps the map.
-        {
-            const f = makeTransport();
-            const store = createWorldIntentStore(f.transport, true);
-            store.seed("gen-1");
-            const first = f.lastCall("ReadFloatIntent");
-            first.callback(okReply(requestCorrelation(first), [{ win: "win-a", data: DATA_A }]));
-            f.setGen("gen-2");
-            store.seed("gen-2");
-            assert.equal(store.incorporateWrites([{ win: "win-b", data: DATA_B }]), true);
-            const reseed = f.lastCall("ReadFloatIntent");
-            reseed.callback(JSON.stringify({
-                v: INTENT_STORE_VERSION, correlation_id: requestCorrelation(reseed), outcome: "degraded",
-                records: [], stored: 0, returned: 0, reason: "corrupt",
-            }));
-            assert.deepEqual(store.recordsForReport(new Set(["win-a", "win-b"])), [
-                { win: "win-a", data: DATA_A },
-                { win: "win-b", data: DATA_B },
-            ]);
-        }
-    });
     it("stop settles writes once and cancels their timers", () => {
         const f = makeTransport();
         const store = createWorldIntentStore(f.transport, true);
         store.seed("gen-1");
         const seedRead = f.lastCall("ReadFloatIntent");
         seedRead.callback(okReply(requestCorrelation(seedRead), [{ win: "win-a", data: DATA_A }]));
+        assert.equal(store.setDesired([{ win: "win-a", data: DATA_B }], "gen-1"), true);
         let settled: boolean | null = null;
         let calls = 0;
         store.persist((ok) => {

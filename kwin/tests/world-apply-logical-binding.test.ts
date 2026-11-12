@@ -137,7 +137,7 @@ function coreReply(workspaces: Array<Record<string, unknown>>, transfers: Array<
         effects: [],
         focusRequest: null,
         result: null,
-        intentWrites: [], switchSettled: [], diagnostics: [],
+        intentDesired: [], switchSettled: [], diagnostics: [],
     };
 }
 

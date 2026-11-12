@@ -1,7 +1,9 @@
 //! Fixture-backed coverage for the core-owned opaque intent data codec.
 //!
-//! The nested `intentRecords[].data` / `intentWrites[].data` strings are
-//! extracted from the immutable v4 wire fixtures and run through the core
+//! The nested `intentRecords[].data` strings are extracted from the
+//! immutable v4 wire fixtures and the `intentDesired[].data` strings from
+//! the active v4 family, run through the core decoder/canonical encoder in
+//! `tiler_core::intent_data`. Supported
 //! decoder/canonical encoder in `tiler_core::intent_data`. Supported
 //! positives must canonical-roundtrip byte-for-byte; the unsupported inner
 //! version is ignored as unusable inner data while its envelope stays a
@@ -54,9 +56,14 @@ fn positive_intent_records_canonical_roundtrip() {
 }
 
 #[test]
-fn reply_intent_writes_roundtrip_and_null_clears() {
-    let envelope: serde_json::Value = fixture!("reply-intent-save-clear");
-    let writes = envelope["intentWrites"].as_array().expect("intentWrites");
+fn reply_intent_desired_roundtrip_and_null_clears() {
+    let envelope: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        "../../../test-fixtures/world-wire/v4-active/messages/",
+        "reply-intent-save-clear",
+        ".json"
+    )))
+    .expect("fixture JSON");
+    let writes = envelope["intentDesired"].as_array().expect("intentDesired");
     assert_eq!(writes.len(), 2);
     let data = writes[0]["data"].as_str().expect("write data string");
     let expected = IntentData::new(Some(true), Some(false));

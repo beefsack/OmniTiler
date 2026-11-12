@@ -256,7 +256,7 @@ function setup(): Harness {
                 gestureSettled: settled.settled, gestureAssoc: assoc,
                 focusRequest: null,
                 operationSettled: [], nativeCreations: [], warpCursor: null,
-                intentWrites: [], switchSettled: [], diagnostics: [],
+                intentDesired: [], switchSettled: [], diagnostics: [],
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
                 presentation: DISABLED_PRESENTATION,
             });

@@ -1,6 +1,6 @@
 // Capacity-float ordinary-float echo at the KDE adapter boundary (D4/D5):
 // the shared opaque intent store carries the converged float membership as
-// byte-exact schema-2 records; only accepted core `intentWrites` update
+// byte-exact schema-2 records; only accepted core `intentDesired` update
 // persistence, never inferred floating state. Unclassified held/minimized/
 // tiled rows never converge, and an explicit-tile no-space result records
 // no delete. Offline only: scripted in-memory transport, no D-Bus, no KWin.
@@ -277,7 +277,7 @@ function replyFor(h: Harness, mutate: (body: Record<string, unknown>) => void, r
         focusRequest: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
-        intentWrites: [], switchSettled: [], diagnostics: [],
+        intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
         workspaces: [], outputs: [], transfers: [], effects: [], result: null,
@@ -349,7 +349,7 @@ describe("world capacity-float echo", () => {
             // Explicit core decision: the capacity float converges into the
             // shared opaque membership. Nothing is inferred adapter-side
             // from the classified row alone.
-            pending["intentWrites"] = [{ win: "win-cap", data: DATA_CAP }];
+            pending["intentDesired"] = [{ win: "win-cap", data: DATA_CAP }];
         });
         // The settled change persists through the same opaque store.
         assert.ok(h.writes.length >= 1, "settled change persists");
@@ -379,7 +379,7 @@ describe("world capacity-float echo", () => {
         discover(h);
         replyFor(h, (pending) => {
             pending["windows"] = [TILE_A, CAPACITY_FLOAT, HELD_OVERLAY];
-            pending["intentWrites"] = [{ win: "win-cap", data: DATA_CAP }];
+            pending["intentDesired"] = [{ win: "win-cap", data: DATA_CAP }];
         });
         assert.ok(h.writes.length >= 1);
         // Explicit unfloat attempt on the capacity float while
@@ -390,7 +390,10 @@ describe("world capacity-float echo", () => {
         runTimers(h);
         replyFor(h, (pending) => {
             pending["windows"] = [TILE_A, CAPACITY_FLOAT, HELD_OVERLAY];
-            pending["intentWrites"] = [];
+            // The core retains the target across the no-space report: the
+            // unchanged full projection owes no covering write and records
+            // no delete.
+            pending["intentDesired"] = [{ win: "win-cap", data: DATA_CAP }];
             pending["result"] = { op: "toggle-float", win: "win-cap", rect: null, noSpace: true };
         }, "2");
         assert.ok(
@@ -420,7 +423,7 @@ describe("world capacity-float echo", () => {
             focusRequest: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
-            intentWrites: [], switchSettled: [], diagnostics: [],
+            intentDesired: [], switchSettled: [], diagnostics: [],
             presentation: DISABLED_PRESENTATION,
             scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
             workspaces: [], outputs: [], transfers: [], effects: [], result: null,

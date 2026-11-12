@@ -68,7 +68,7 @@ const ACCEPTED = (
     operationSettled: [], nativeCreations: [],
     warpCursor: null,
     presentation: DISABLED_PRESENTATION,
-    intentWrites: [], switchSettled: [], diagnostics: [],
+    intentDesired: [], switchSettled: [], diagnostics: [],
     source: "req-1",
     nativeInvalid: "1",
     clock: "0",

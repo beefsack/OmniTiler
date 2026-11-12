@@ -188,7 +188,7 @@ fn all_six_sticky_bearing_records_ingest_whole_into_pending() {
     );
     gapped.inventory_complete = false;
     let reply = accepted(&mut engine, &with_records(gapped, records));
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     for (float, prior, win) in &combos {
         let id = WindowId(win.to_string());
         assert_eq!(
@@ -238,7 +238,17 @@ fn sticky_dominates_float_lane_and_commits_exact_prior_without_ops() {
             ],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 2, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), Some(true)))
+    );
+    assert_eq!(reply.intent_desired[1].win, WindowId("win-b".to_owned()));
+    assert_eq!(
+        reply.intent_desired[1].data,
+        Some(IntentData::new(None, Some(false)))
+    );
     for win in ["win-a", "win-b"] {
         assert!(is_floated(&engine, win), "{win} must ride sticky float");
         assert!(!is_tiled(&engine, win), "{win} must never tile");
@@ -311,7 +321,12 @@ fn sticky_provenance_survives_record_free_report_and_prunes_on_close() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), Some(false)))
+    );
     assert!(is_floated(&engine, "win-a"));
     assert_eq!(
         engine.restored_sticky.get(&WindowId("win-a".to_owned())),
@@ -385,8 +400,14 @@ fn all_six_sticky_priors_admit_as_semantic_float_with_exact_prior() {
                 )],
             ),
         );
-        assert!(
-            reply.intent_writes.is_empty(),
+        assert_eq!(
+            reply.intent_desired.len(),
+            1,
+            "float={float:?} prior={prior} reply={reply:?}"
+        );
+        assert_eq!(
+            reply.intent_desired[0].data,
+            Some(IntentData::new(float, Some(prior))),
             "float={float:?} prior={prior}"
         );
         assert!(
@@ -446,7 +467,7 @@ fn native_false_composed_null_tiles_but_sticky_record_forces_float() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert!(is_tiled(&engine, "win-c"));
 
     // The same composed null with a sticky-bearing record restores as a
@@ -473,7 +494,12 @@ fn native_false_composed_null_tiles_but_sticky_record_forces_float() {
             )],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-c".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(None, Some(true)))
+    );
     assert!(is_floated(&engine, "win-c"));
     assert!(!is_tiled(&engine, "win-c"));
     assert_eq!(
@@ -515,7 +541,12 @@ fn native_false_nonnull_fact_with_sticky_record_stays_fail_closed() {
             )],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-x".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), Some(false)))
+    );
     assert!(!is_floated(&engine, "win-x"));
     assert!(!is_tiled(&engine, "win-x"));
     assert!(!reply.windows.iter().any(|row| row.lifetime.0 == "win-x"));
@@ -556,7 +587,12 @@ fn native_false_nonnull_fact_with_sticky_record_stays_fail_closed() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-x".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), Some(false)))
+    );
     assert!(is_floated(&engine, "win-x"));
     assert_eq!(
         engine.restored_sticky.get(&WindowId("win-x".to_owned())),
@@ -595,7 +631,13 @@ fn native_true_null_holds_pending_and_recovers_record_free() {
             )],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-u".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), Some(true))),
+        "import initializes the retained target"
+    );
     assert!(!is_floated(&engine, "win-u"));
     assert!(!is_tiled(&engine, "win-u"));
     assert!(
@@ -626,7 +668,12 @@ fn native_true_null_holds_pending_and_recovers_record_free() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-u".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), Some(true)))
+    );
     assert!(is_floated(&engine, "win-u"));
     assert_eq!(
         engine.restored_sticky.get(&WindowId("win-u".to_owned())),
@@ -673,7 +720,7 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
             &mut engine,
             &with_records(gapped, vec![record("win-a", &sticky)]),
         );
-        assert!(reply.intent_writes.is_empty());
+        assert!(reply.intent_desired.is_empty());
         assert!(!is_floated(&engine, "win-a"));
         assert!(
             engine
@@ -693,7 +740,12 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
                 None,
             ),
         );
-        assert!(reply.intent_writes.is_empty());
+        assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+        assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+        assert_eq!(
+            reply.intent_desired[0].data,
+            Some(IntentData::new(Some(false), Some(true)))
+        );
         assert!(is_floated(&engine, "win-a"));
         assert_eq!(
             engine.restored_sticky.get(&WindowId("win-a".to_owned())),
@@ -721,7 +773,7 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
             &mut engine,
             &with_records(gapped, vec![record("win-a", &sticky)]),
         );
-        assert!(reply.intent_writes.is_empty());
+        assert!(reply.intent_desired.is_empty());
         assert!(
             engine
                 .pending_intent
@@ -745,7 +797,12 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
                 None,
             ),
         );
-        assert!(reply.intent_writes.is_empty());
+        assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+        assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+        assert_eq!(
+            reply.intent_desired[0].data,
+            Some(IntentData::new(Some(false), Some(true)))
+        );
         assert!(is_floated(&engine, "win-a"));
         assert_eq!(
             engine.restored_sticky.get(&WindowId("win-a".to_owned())),
@@ -773,7 +830,7 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
             &mut engine,
             &with_records(gapped, vec![record("win-a", &sticky)]),
         );
-        assert!(reply.intent_writes.is_empty());
+        assert!(reply.intent_desired.is_empty());
         assert!(!is_floated(&engine, "win-a"));
         assert!(
             engine
@@ -793,7 +850,12 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
                 None,
             ),
         );
-        assert!(reply.intent_writes.is_empty());
+        assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+        assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+        assert_eq!(
+            reply.intent_desired[0].data,
+            Some(IntentData::new(Some(false), Some(true)))
+        );
         assert!(is_floated(&engine, "win-a"));
         assert_eq!(
             engine.restored_sticky.get(&WindowId("win-a".to_owned())),
@@ -823,7 +885,12 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
                 vec![record("win-a", &sticky)],
             ),
         );
-        assert!(reply.intent_writes.is_empty());
+        assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+        assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+        assert_eq!(
+            reply.intent_desired[0].data,
+            Some(IntentData::new(Some(false), Some(true)))
+        );
         assert!(is_floated(&engine, "win-a"));
         assert_eq!(
             engine.restored_sticky.get(&WindowId("win-a".to_owned())),
@@ -849,7 +916,7 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
             &mut engine,
             &with_records(gapped, vec![record("win-a", &sticky)]),
         );
-        assert!(reply.intent_writes.is_empty());
+        assert!(reply.intent_desired.is_empty());
         assert!(
             engine
                 .pending_intent
@@ -868,7 +935,12 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
                 None,
             ),
         );
-        assert!(reply.intent_writes.is_empty());
+        assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+        assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+        assert_eq!(
+            reply.intent_desired[0].data,
+            Some(IntentData::new(Some(false), Some(true)))
+        );
         assert!(is_floated(&engine, "win-a"));
         assert_eq!(
             engine.restored_sticky.get(&WindowId("win-a".to_owned())),
@@ -921,7 +993,12 @@ fn sticky_late_and_conflicting_records_stay_ignored_after_admission() {
             )],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), Some(false)))
+    );
     assert!(is_floated(&engine, "win-a"));
     assert!(engine.pending_intent.is_empty());
     assert!(engine.intent_conflicts.is_empty());
@@ -960,7 +1037,13 @@ fn sticky_late_and_conflicting_records_stay_ignored_after_admission() {
             ],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), Some(false))),
+        "duplicate conflict still projects admitted target"
+    );
     assert!(is_floated(&engine, "win-a"));
     assert!(engine.pending_intent.is_empty());
     assert!(engine.intent_conflicts.is_empty());
@@ -1211,7 +1294,7 @@ fn sticky_floating_first_appearance_then_reenable_keeps_provenance() {
             }),
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     // First appearance in the floating workspace with a sticky record:
     // consumes into exact-prior provenance, never ordinary float.
     let reply = accepted(
@@ -1233,7 +1316,12 @@ fn sticky_floating_first_appearance_then_reenable_keeps_provenance() {
             )],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-n".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), Some(true)))
+    );
     assert!(engine.pending_intent.is_empty());
     assert_eq!(
         engine.restored_sticky.get(&WindowId("win-n".to_owned())),
@@ -1267,7 +1355,12 @@ fn sticky_floating_first_appearance_then_reenable_keeps_provenance() {
             }),
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-n".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), Some(true)))
+    );
     assert!(is_floated(&engine, "win-n"));
     assert!(!is_tiled(&engine, "win-n"));
     assert_eq!(
@@ -1317,7 +1410,12 @@ fn sticky_joint_ledger_commit_steady_and_overflow_fail_closed() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), Some(false)))
+    );
     assert_eq!(
         engine.restored_sticky.get(&WindowId("win-a".to_owned())),
         Some(&false)
@@ -1351,7 +1449,7 @@ fn sticky_joint_ledger_commit_steady_and_overflow_fail_closed() {
     );
     gapped.inventory_complete = false;
     let reply = accepted(&mut capped, &gapped);
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert!(capped.intent_sticky_saturated, "overflow latches");
     assert!(
         !capped
@@ -1538,11 +1636,11 @@ fn sticky_toggle_refuses_only_usable_pending_or_restored() {
             "unrelated toggle still runs"
         );
         assert_eq!(
-            reply.intent_writes.len(),
+            reply.intent_desired.len(),
             1,
             "block is per-lifetime: {reply:?}"
         );
-        assert_eq!(reply.intent_writes[0].win, WindowId("win-b".to_owned()));
+        assert_eq!(reply.intent_desired[0].win, WindowId("win-b".to_owned()));
     }
 }
 
@@ -1608,10 +1706,9 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
                 ),
             );
             assert!(on_reply.command_result.is_none(), "prior={prior}");
-            let save = on_reply.intent_writes.first().expect("save").clone();
+            let save = on_reply.intent_desired.first().expect("save").clone();
             assert_eq!(
-                crate::intent_data::decode_intent_data(save.data.as_deref().expect("bytes"))
-                    .expect("decodes"),
+                (*save.data.as_ref().expect("bytes")),
                 crate::intent_data::IntentData::new(Some(true), Some(true)),
                 "prior={prior}"
             );
@@ -1644,20 +1741,19 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
                 ),
             );
             assert!(on_reply.command_result.is_none(), "prior={prior}");
-            let save = on_reply.intent_writes.first().expect("save").clone();
+            let save = on_reply.intent_desired.first().expect("save").clone();
             assert_eq!(
-                crate::intent_data::decode_intent_data(save.data.as_deref().expect("bytes"))
-                    .expect("decodes"),
+                (*save.data.as_ref().expect("bytes")),
                 crate::intent_data::IntentData::new(Some(true), Some(false)),
                 "prior={prior}"
             );
             assert_eq!(save.win.0, "win-a");
         }
         let saved_data = origin
-            .sticky_saved
+            .intent_desired
             .get(&WindowId("win-a".to_owned()))
-            .copied()
-            .expect("origin saved");
+            .and_then(|entry| *entry)
+            .expect("origin retained desire");
         assert_eq!(saved_data.sticky_prior, Some(prior));
 
         // Restart: fresh owner, native original preimage (sticky false)
@@ -1683,7 +1779,14 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
                 vec![record("win-a", &saved_bytes)],
             ),
         );
-        assert!(restart_reply.intent_writes.is_empty(), "prior={prior}");
+        assert_eq!(
+            restart_reply.intent_desired,
+            vec![crate::world_report::IntentDesire {
+                win: WindowId("win-a".to_owned()),
+                data: Some(saved_data),
+            }],
+            "prior={prior}"
+        );
         assert!(is_floated(&fresh, "win-a"), "prior={prior}");
         assert_eq!(
             fresh.restored_sticky.get(&WindowId("win-a".to_owned())),
@@ -1745,7 +1848,14 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
             attempt_ms: 7,
         }];
         let proof_reply = accepted(&mut fresh, &proof);
-        assert!(proof_reply.intent_writes.is_empty(), "prior={prior}");
+        assert_eq!(
+            proof_reply.intent_desired,
+            vec![crate::world_report::IntentDesire {
+                win: WindowId("win-a".to_owned()),
+                data: Some(saved_data),
+            }],
+            "prior={prior}"
+        );
         let settled = fresh
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
@@ -1775,10 +1885,9 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
             ),
         );
         assert!(off_reply.command_result.is_none(), "prior={prior}");
-        let off_save = off_reply.intent_writes.first().expect("off save").clone();
+        let off_save = off_reply.intent_desired.first().expect("off save").clone();
         assert_eq!(
-            crate::intent_data::decode_intent_data(off_save.data.as_deref().expect("bytes"))
-                .expect("decodes"),
+            (*off_save.data.as_ref().expect("bytes")),
             crate::intent_data::IntentData::new(Some(prior), None),
             "prior={prior}"
         );
@@ -1847,7 +1956,14 @@ fn sticky_restart_refusal_preserves_import_without_retry() {
     use crate::world_report::{AttemptOutcome, FrameSetter, StateAttempt, StateProperty};
     let saved = IntentData::new(Some(true), Some(false));
     let (mut fresh, restart_reply) = restart_with_import(&saved, Some(false));
-    assert!(restart_reply.intent_writes.is_empty());
+    assert_eq!(
+        restart_reply.intent_desired,
+        vec![crate::world_report::IntentDesire {
+            win: WindowId("win-a".to_owned()),
+            data: Some(saved),
+        }],
+        "import initializes the retained target"
+    );
     let rev = restart_binding(&fresh, "win-a").target.revision;
     // Exact-tuple refusal: the write never landed, so rollback re-asserts
     // the same import instead of erasing sticky provenance.
@@ -1876,10 +1992,10 @@ fn sticky_restart_refusal_preserves_import_without_retry() {
     }];
     let reply = accepted(&mut fresh, &refused);
     assert_eq!(
-        reply.intent_writes,
-        vec![crate::world_report::IntentWrite {
+        reply.intent_desired,
+        vec![crate::world_report::IntentDesire {
             win: WindowId("win-a".to_owned()),
-            data: Some(encode_intent_data(&saved)),
+            data: Some(saved),
         }]
     );
     assert_eq!(
@@ -1888,18 +2004,25 @@ fn sticky_restart_refusal_preserves_import_without_retry() {
         "proven refusal keeps the import"
     );
     assert_eq!(
-        fresh.sticky_saved.get(&WindowId("win-a".to_owned())),
+        fresh
+            .intent_desired
+            .get(&WindowId("win-a".to_owned()))
+            .and_then(|entry| entry.as_ref()),
         Some(&saved)
     );
     let binding = restart_binding(&fresh, "win-a");
     assert!(binding.spent);
     assert_eq!(binding.disposition, AttemptOutcome::RefusedProven);
-    // A retried proof under a fresh sequence emits nothing further.
+    // A retried proof under a fresh sequence retains the same target:
+    // the map is never drained, so the projection repeats.
     refused.request_seq = 3;
     refused.observation_seq = 3;
     refused.request_id = "req-3".to_owned();
     let again = accepted(&mut fresh, &refused);
-    assert!(again.intent_writes.is_empty(), "one proof, one write");
+    assert_eq!(
+        again.intent_desired, reply.intent_desired,
+        "retained, never drained"
+    );
 }
 
 #[test]
@@ -1907,7 +2030,14 @@ fn sticky_restart_ambiguous_evidence_keeps_import_without_retry() {
     use crate::world_report::{AttemptOutcome, FrameSetter, StateAttempt, StateProperty};
     let saved = IntentData::new(Some(true), Some(true));
     let (mut fresh, restart_reply) = restart_with_import(&saved, Some(false));
-    assert!(restart_reply.intent_writes.is_empty());
+    assert_eq!(
+        restart_reply.intent_desired,
+        vec![crate::world_report::IntentDesire {
+            win: WindowId("win-a".to_owned()),
+            data: Some(saved),
+        }],
+        "import initializes the retained target"
+    );
     let rev = restart_binding(&fresh, "win-a").target.revision;
     // Accepted setter whose post misses the target: ambiguous evidence
     // spends the binding but never settles and never retries.
@@ -1935,7 +2065,14 @@ fn sticky_restart_ambiguous_evidence_keeps_import_without_retry() {
         attempt_ms: 7,
     }];
     let reply = accepted(&mut fresh, &ambiguous);
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(
+        reply.intent_desired,
+        vec![crate::world_report::IntentDesire {
+            win: WindowId("win-a".to_owned()),
+            data: Some(saved),
+        }],
+        "ambiguous retains the import target"
+    );
     let binding = restart_binding(&fresh, "win-a");
     assert!(binding.spent);
     assert_eq!(binding.disposition, AttemptOutcome::PossiblyExecuted);
@@ -1948,7 +2085,10 @@ fn sticky_restart_ambiguous_evidence_keeps_import_without_retry() {
         Some(&true)
     );
     assert_eq!(
-        fresh.sticky_saved.get(&WindowId("win-a".to_owned())),
+        fresh
+            .intent_desired
+            .get(&WindowId("win-a".to_owned()))
+            .and_then(|entry| entry.as_ref()),
         Some(&saved)
     );
     // A retried proof under a fresh sequence emits nothing further.
@@ -1956,7 +2096,14 @@ fn sticky_restart_ambiguous_evidence_keeps_import_without_retry() {
     ambiguous.observation_seq = 3;
     ambiguous.request_id = "req-3".to_owned();
     let again = accepted(&mut fresh, &ambiguous);
-    assert!(again.intent_writes.is_empty(), "ambiguous never retries");
+    assert_eq!(
+        again.intent_desired,
+        vec![crate::world_report::IntentDesire {
+            win: WindowId("win-a".to_owned()),
+            data: Some(saved),
+        }],
+        "retried proof still projects the retained target"
+    );
 }
 
 #[test]
@@ -1964,7 +2111,14 @@ fn sticky_restart_unknown_holds_then_record_free_recovers() {
     use crate::world_report::StateProperty;
     let saved = IntentData::new(Some(true), Some(true));
     let (mut fresh, reply) = restart_with_import(&saved, None);
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(
+        reply.intent_desired,
+        vec![crate::world_report::IntentDesire {
+            win: WindowId("win-a".to_owned()),
+            data: Some(saved),
+        }],
+        "held import still projects the retained target"
+    );
     assert!(
         fresh
             .pending_intent
@@ -1996,7 +2150,9 @@ fn sticky_restart_unknown_holds_then_record_free_recovers() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(reply.intent_desired[0].data, Some(saved));
     assert!(is_floated(&fresh, "win-a"));
     assert_eq!(
         fresh.restored_sticky.get(&WindowId("win-a".to_owned())),
@@ -2070,7 +2226,9 @@ fn sticky_restart_floating_route_mints_binding_next_observation() {
             vec![record("win-n", &encode_intent_data(&saved))],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-n".to_owned()));
+    assert_eq!(reply.intent_desired[0].data, Some(saved));
     assert_eq!(
         engine.restored_sticky.get(&WindowId("win-n".to_owned())),
         Some(&true)
@@ -2187,7 +2345,9 @@ fn sticky_restart_import_shapes_share_binding_policy() {
             vec![record("win-a", &encode_intent_data(&saved))],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(reply.intent_desired[0].data, Some(saved));
     assert_eq!(
         composed.restored_sticky.get(&WindowId("win-a".to_owned())),
         Some(&true)

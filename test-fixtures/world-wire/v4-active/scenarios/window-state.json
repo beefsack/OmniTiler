@@ -1290,7 +1290,7 @@
           ".output.message.windows | any(.win == \"win-a\" and .floating == true and .visibility.shown == true)",
           ".output.message.windows | any(.win == \"win-a\" and any(.state[]; .property == \"above\" and .value == true and .auth == \"controlled\"))",
           "[.output.message.windows[].state[]] | all(.property != \"sticky\")",
-          ".output.message.intentWrites | any(.win == \"win-a\" and (.data | fromjson | .stickyPrior == true))"
+          ".output.message.intentDesired | any(.win == \"win-a\" and (.data | fromjson | .stickyPrior == true))"
         ]
       },
       "rules": [
@@ -1808,7 +1808,7 @@
           ".output.message.windows | any(.win == \"win-a\" and .floating == true and .ws == \"ws-1\")",
           ".output.message.windows | any(.win == \"win-a\" and any(.state[]; .property == \"above\" and .value == true and .auth == \"controlled\"))",
           "[.output.message.windows[].state[]] | all(.property != \"sticky\")",
-          ".output.message.intentWrites | any(.win == \"win-a\" and (.data | fromjson | .stickyPrior == null))"
+          ".output.message.intentDesired | any(.win == \"win-a\" and (.data | fromjson | .stickyPrior == null))"
         ]
       },
       "rules": [
@@ -2153,7 +2153,7 @@
           ".output.message.windows | any(.win == \"win-a\" and .floating == true and .visibility.shown == true)",
           ".output.message.windows | any(.win == \"win-a\" and any(.state[]; .property == \"above\" and .value == true and .auth == \"controlled\"))",
           "[.output.message.windows[].state[]] | all(.property != \"sticky\")",
-          ".output.message.intentWrites | any(.win == \"win-a\" and (.data | fromjson | .stickyPrior == false))"
+          ".output.message.intentDesired | any(.win == \"win-a\" and (.data | fromjson | .stickyPrior == false))"
         ]
       },
       "rules": [
@@ -2326,7 +2326,7 @@
         "assertions": [
           ".output.message.windows | any(.win == \"win-a\" and .floating == false and .ws == \"ws-1\")",
           "[.output.message.windows[].state[]] | all(.property != \"sticky\")",
-          ".output.message.intentWrites | any(.win == \"win-a\" and (.data | fromjson | .stickyPrior == null))"
+          ".output.message.intentDesired | any(.win == \"win-a\" and (.data | fromjson | .stickyPrior == null))"
         ]
       },
       "rules": [
@@ -2498,7 +2498,7 @@
         "assertions": [
           ".output.message.windows | any(.win == \"win-a\" and .floating == true and .visibility.shown == true)",
           "[.output.message.windows[].state[]] | all(.property != \"sticky\")",
-          ".output.message.intentWrites | any(.win == \"win-a\" and (.data | fromjson | .stickyPrior == false))"
+          ".output.message.intentDesired | any(.win == \"win-a\" and (.data | fromjson | .stickyPrior == false))"
         ]
       },
       "rules": [
@@ -2671,7 +2671,7 @@
         "assertions": [
           ".output.message.windows | any(.win == \"win-a\" and .floating == false and .ws == \"ws-1\")",
           "[.output.message.windows[].state[]] | all(.property != \"sticky\")",
-          ".output.message.intentWrites | any(.win == \"win-a\" and (.data | fromjson | .stickyPrior == null))"
+          ".output.message.intentDesired | any(.win == \"win-a\" and (.data | fromjson | .stickyPrior == null))"
         ]
       },
       "rules": [

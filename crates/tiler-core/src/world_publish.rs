@@ -7,13 +7,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::boundary::{CoreCommand, CoreReply, ProjectionKind, project_retained_tiled_geometry};
+use crate::boundary::{CoreReply, ProjectionKind, project_retained_tiled_geometry};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::session::{DomainKey, RefusalKind};
 use crate::world_engine::WorldEngine;
 use crate::world_report::{
-    CommandResult, FloatOrigin, HoldReason, IntentWrite, OneShotEffect, OutputDesire,
+    CommandResult, FloatOrigin, HoldReason, IntentDesire, OneShotEffect, OutputDesire,
     ScopeAuthority, ScopeStatus, ScreenView, TilingMode, TransferKind, WindowDesire,
     WorkspaceDesire, WorldCommand, workspace_authority_scope,
 };
@@ -29,180 +29,100 @@ pub(crate) struct PublicationRows {
 }
 
 impl WorldEngine {
-    /// Sticky-command save drain plus proven-refusal rollback merge plus
-    /// ordinary ToggleFloat fallback. Queued rollback writes (at most one
-    /// per window, latest wins) drain exactly once on every non-rejected
-    /// reply: fresh command replies, commandless observation replies,
-    /// consumed-command replies, and saturated-generation replies all emit
-    /// them, because the prior they restore is exact known state, not a
-    /// new unsafe save. A matching fresh sticky-command save supersedes
-    /// that window's rollback (the successful transition replaces the
-    /// deferred record); an unrelated non-matching queued save is dropped
-    /// exactly as before and never erases a rollback. Anything else falls
-    /// back to the existing ordinary `toggle_float_intent_save`
-    /// (consumed/saturated/blocks still suppress there), whose same-window
-    /// fresh save likewise wins over a stale rollback. Consumed and
-    /// saturated replies suppress only command and ordinary saves. Every
-    /// resulting write upserts bounded `sticky_saved` knowledge (`Some`
-    /// decodes and stores, `None` clears) for future native rollback;
-    /// undecodable rows are ignored. Import and late-input policy are
-    /// untouched (see `ingest_staged_intent`). The rollback lane reserves
-    /// [`crate::world_sizing::max_intent_rollback_bound`] at the
-    /// pre-mutation gate; the merged section stays under
-    /// [`crate::world_report::MAX_INTENT_WRITES`] via the existing commit
-    /// gate (over-cap rejects without adopting, never a silent drop).
-    pub(crate) fn drain_intent_saves(
-        &mut self,
-        command: Option<&WorldCommand>,
-        command_consumed: bool,
-        command_result: &Option<CommandResult>,
-    ) -> Vec<IntentWrite> {
-        let queued = self.sticky_command_save.take();
-        // Proven-refusal rollback writes drain on every non-rejected reply:
-        // commandless, consumed, and saturated replies still emit them.
-        // Rejected envelopes drop the whole staged candidate upstream, so
-        // nothing leaks there.
-        let mut merged: Vec<IntentWrite> = std::mem::take(&mut self.sticky_rollback_saves)
-            .into_values()
-            .collect();
-        if command_consumed || self.intent_sticky_saturated {
-            // Consumed/saturated suppress command and ordinary saves, never
-            // rollback: the prior is exact known state, not a new save.
-            self.upsert_intent_save_knowledge(&merged);
-            return merged;
-        }
-        if let Some(save) = queued {
-            let unwrapped = command.map(crate::world_report::unwrap_implicit);
-            let matches = match unwrapped {
-                Some(WorldCommand::SetSticky { window, .. }) => window == &save.win,
-                Some(WorldCommand::ToggleSticky { window }) => window == &save.win,
-                Some(WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
-                    window,
-                    ..
-                })) => WindowId(window.clone()) == save.win,
-                _ => false,
-            };
-            if matches {
-                // A fresh same-window save wins over a pending rollback.
-                merged.retain(|write| write.win != save.win);
-                merged.push(save);
-                self.upsert_intent_save_knowledge(&merged);
-                return merged;
+    /// Retained intent projection: the live retained lifetime scope of the
+    /// `intent_desired` map, sorted by window, including explicit null
+    /// clears. Missing rows carry no authority and never appear.
+    /// Publication never drains: observation, consumed, skipped, and
+    /// saturated replies all retain the map. Proven-departure filtering
+    /// uses the same lifetime criterion as [`Self::prune_lifetime_state`]:
+    /// on a complete inventory a target carrying neither a live fact, a
+    /// held row, an exclusion, nor engine/member knowledge is already
+    /// departed, so a reply must never publish it (the prune drops it
+    /// after publication preserves the unrelated cleanup order).
+    /// Incomplete inventories prune only explicit closes (already dropped
+    /// at ingest), so every retained row stays in scope.
+    pub(crate) fn project_intent_desired(&self) -> Vec<IntentDesire> {
+        let in_scope = |id: &WindowId| -> bool {
+            if !self.staged.observation.inventory_complete {
+                return true;
             }
-        }
-        let ordinary = self.toggle_float_intent_save(command, false, command_result);
-        if !ordinary.is_empty() {
-            // A fresh same-window ordinary save wins over a stale rollback.
-            for write in &ordinary {
-                merged.retain(|queued| queued.win != write.win);
-            }
-            merged.extend(ordinary);
-        }
-        self.upsert_intent_save_knowledge(&merged);
-        merged
+            self.staged
+                .observation
+                .raw_windows
+                .iter()
+                .any(|fact| fact.window == *id)
+                || self
+                    .staged
+                    .held_windows
+                    .iter()
+                    .any(|held| held.window == *id)
+                || self.staged.excluded.contains(id)
+                || self.engine_knows_window_any(id)
+                || self.members.contains_key(id)
+        };
+        self.intent_desired
+            .iter()
+            .filter(|(win, _)| in_scope(win))
+            .map(|(win, data)| IntentDesire {
+                win: win.clone(),
+                data: *data,
+            })
+            .collect()
     }
 
-    /// Accumulate one batch command's intent saves into `batch` without
-    /// touching the sticky refusal rollback map: takes the staged
-    /// sticky-command save and the ordinary ToggleFloat save for this exact
-    /// `(command, result)` pair, latest-wins per window. Mirrors
-    /// [`Self::drain_intent_saves`] exactly (saturated generations suppress
-    /// both saves; a matching fresh sticky save wins and suppresses the
-    /// ordinary save; a non-matching queued save drops; consumed commands
-    /// never reach here). The caller merges `batch` into
-    /// `sticky_rollback_saves` once before the single final publication, so
-    /// intermediate commands never consume, duplicate, or drop the
-    /// pre-existing refusal rollback saves, and the final publish drain
-    /// performs the single knowledge update.
-    pub(crate) fn accumulate_batch_command_save(
+    /// Upsert the ordinary ToggleFloat save for one accepted `(command,
+    /// result)` pair into the retained owner, in execution order
+    /// (latest-wins). Sticky mutations already updated the owner during
+    /// execution; this covers only the non-sticky ordinary float/tile save.
+    /// Saturated generations and sticky-blocked lifetimes suppress the
+    /// save; consumed commands never reach here. A full map latches
+    /// incomplete fail-closed instead of silently truncating (the admit
+    /// gate covers it, so this is defensive).
+    pub(crate) fn upsert_ordinary_toggle_float_save(
         &mut self,
-        batch: &mut BTreeMap<WindowId, IntentWrite>,
         command: &WorldCommand,
         result: &Option<CommandResult>,
     ) {
         if self.intent_sticky_saturated {
-            self.sticky_command_save.take();
             return;
         }
-        if let Some(save) = self.sticky_command_save.take() {
-            let unwrapped = Some(crate::world_report::unwrap_implicit(command));
-            let matches = match unwrapped {
-                Some(WorldCommand::SetSticky { window, .. }) => window == &save.win,
-                Some(WorldCommand::ToggleSticky { window }) => window == &save.win,
-                Some(WorldCommand::Operation(CoreCommand::ToggleFloat { window, .. })) => {
-                    WindowId(window.clone()) == save.win
-                }
-                _ => false,
-            };
-            if matches {
-                batch.insert(save.win.clone(), save);
-                return;
-            }
-        }
-        for write in self.toggle_float_intent_save(Some(command), false, result) {
-            batch.insert(write.win.clone(), write);
-        }
-    }
-
-    /// Bounded latest-wins `sticky_saved` knowledge from published writes.
-    /// A cap drop latches [`Self::sticky_saved_incomplete`] fail-closed so
-    /// native priors stay unknown even after later prunes.
-    fn upsert_intent_save_knowledge(&mut self, writes: &[IntentWrite]) {
-        for write in writes {
-            match write.data.as_deref() {
-                Some(raw) => {
-                    let Ok(data) = crate::intent_data::decode_intent_data(raw) else {
-                        continue;
-                    };
-                    if self.sticky_saved.contains_key(&write.win)
-                        || self.sticky_saved.len() < crate::world_report::MAX_INTENT_RECORDS
-                    {
-                        self.sticky_saved.insert(write.win.clone(), data);
-                    } else {
-                        self.sticky_saved_incomplete = true;
-                    }
-                }
-                None => {
-                    self.sticky_saved.remove(&write.win);
-                }
-            }
-        }
+        let Some((win, data)) = self.ordinary_toggle_float_save(command, result) else {
+            return;
+        };
+        self.upsert_retained_intent_desire(&win, Some(data));
     }
 
     /// At-most-one canonical explicit float/tile save for a successful
-    /// non-consumed ToggleFloat: exactly
-    /// `{"v":1,"float":<bool>,"stickyPrior":null}` for the command window,
-    /// published in the same reply before any dependent adapter write.
+    /// ToggleFloat: exactly
+    /// `{"v":1,"float":<bool>,"stickyPrior":null}` for the command window.
     /// The bool is verified from both the command result variant and the
     /// committed post-state, which must agree: a float save needs a
     /// non-automatic exception, an unfloat save needs a tiled link (the
     /// fixed-tile override already committed transactionally through the
     /// lifecycle suppress origin; the save records it, never clears it).
-    /// A no-space retry (`rect: None`, `no_space: true`) emits nothing:
+    /// A no-space retry (`rect: None`, `no_space: true`) yields nothing:
     /// the window never left float, so no tile may be manufactured and
-    /// no redundant float is published. Consumed, rejected, held,
-    /// non-toggle, restore, and bootstrap reports emit nothing, as do
-    /// reports under a sticky block or the saturation latch. Duplicate
-    /// requests repeat the cached reply (and its save); a later consumed
-    /// command report carries no Float result and emits nothing.
-    pub(crate) fn toggle_float_intent_save(
+    /// no redundant float is recorded. Rejected, held, non-toggle,
+    /// restore, and bootstrap reports yield nothing, as do reports under
+    /// a sticky block or the saturation latch. Duplicate requests repeat
+    /// the cached reply (and its projection); a later consumed command
+    /// report carries no Float result and yields nothing.
+    fn ordinary_toggle_float_save(
         &self,
-        command: Option<&WorldCommand>,
-        command_consumed: bool,
+        command: &WorldCommand,
         command_result: &Option<CommandResult>,
-    ) -> Vec<IntentWrite> {
-        if command_consumed || self.intent_sticky_saturated {
-            return Vec::new();
+    ) -> Option<(WindowId, crate::intent_data::IntentData)> {
+        if self.intent_sticky_saturated {
+            return None;
         }
-        let window = match command.map(crate::world_report::unwrap_implicit) {
-            Some(WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
-                window,
-                ..
-            })) => WindowId(window.clone()),
-            _ => return Vec::new(),
+        let window = match crate::world_report::unwrap_implicit(command) {
+            WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
+                window, ..
+            }) => WindowId(window.clone()),
+            _ => return None,
         };
         if self.intent_sticky_blocks.contains(&window) {
-            return Vec::new();
+            return None;
         }
         let (result_window, rect, no_space) = match command_result {
             Some(CommandResult::Float {
@@ -210,30 +130,28 @@ impl WorldEngine {
                 rect,
                 no_space,
             }) => (window, rect, no_space),
-            _ => return Vec::new(),
+            _ => return None,
         };
         if result_window != &window || *no_space {
-            return Vec::new();
+            return None;
         }
         let float = if rect.is_some() {
             if !self.is_exception_window_any(&window)
                 || self.engine.is_automatic_fixed_float_any(&window)
             {
-                return Vec::new();
+                return None;
             }
             true
         } else {
             if !self.is_tiled_window_any(&window) {
-                return Vec::new();
+                return None;
             }
             false
         };
-        vec![IntentWrite {
-            win: window,
-            data: Some(crate::intent_data::encode_intent_data(
-                &crate::intent_data::IntentData::new(Some(float), None),
-            )),
-        }]
+        Some((
+            window,
+            crate::intent_data::IntentData::new(Some(float), None),
+        ))
     }
 
     /// One-place hold classification for sweep failures (capacity B).

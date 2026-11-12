@@ -451,7 +451,10 @@ fn composed_sticky_clear_restages_and_keeps_tile_save() {
         "the admitted lifetime leaves no pending late import"
     );
     assert_eq!(
-        engine.sticky_saved.get(&win),
+        engine
+            .intent_desired
+            .get(&win)
+            .and_then(|entry| entry.as_ref()),
         Some(&IntentData::new(Some(false), None)),
         "tile-base save adopted from staged facts"
     );

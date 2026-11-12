@@ -207,18 +207,18 @@ pub(crate) fn codec_transact(
     }
 }
 
-/// Adapter-side fail-closed gate for unpersisted intent writes: the core has
-/// no durable backend yet, so any nonempty `intent_writes` refuses before
+/// Adapter-side fail-closed gate for unpersisted intent desires: the core has
+/// no durable backend yet, so any nonempty `intent_desired` refuses before
 /// any dependent native apply (no effect spend, no slot/outbox write).
 /// Ordinary admission/reflow emits none, so this never fires honestly.
-fn intent_writes_hold(reply: &WorldReplyV4) -> bool {
-    !reply.intent_writes.is_empty()
+fn intent_desired_hold(reply: &WorldReplyV4) -> bool {
+    !reply.intent_desired.is_empty()
 }
 
-/// Session-lifetime fail-closed latch over [`intent_writes_hold`]: the
-/// first applied reply carrying nonempty `intent_writes` latches
+/// Session-lifetime fail-closed latch over [`intent_desired_hold`]: the
+/// first applied reply carrying nonempty `intent_desired` latches
 /// [`WorldSession`] for its whole lifetime, so a later reply without
-/// writes stays held (a bare per-reply check would wrongly release it).
+/// desires stays held (a bare per-reply check would wrongly release it).
 /// Never clears: no filesystem storage/backend or recovery exists, so no
 /// later empty reply can prove persistence, and nothing here claims
 /// durability. Call at every real apply route after acceptance and before
@@ -227,8 +227,8 @@ fn unpersisted_hold(session: &mut WorldSession, reply: &WorldReplyV4) -> bool {
     if session.unpersisted_intent_hold() {
         return true;
     }
-    if intent_writes_hold(reply) {
-        session.mark_unpersisted_intent_writes();
+    if intent_desired_hold(reply) {
+        session.mark_unpersisted_intent_desired();
         return true;
     }
     false
@@ -4401,7 +4401,7 @@ mod tests {
             native_creations: Vec::new(),
             cursor_warp: None,
             presentation: crate::runtime::empty_world_presentation_v4(),
-            intent_writes: Vec::new(),
+            intent_desired: Vec::new(),
             switch_settled: Vec::new(),
             diagnostics: Vec::new(),
         }
@@ -4420,10 +4420,10 @@ mod tests {
         let focus_queue = Arc::new(Mutex::new(Vec::new()));
         let mut first = empty_reply();
         first
-            .intent_writes
-            .push(tiler_core::world_report::IntentWrite {
+            .intent_desired
+            .push(tiler_core::world_report::IntentDesire {
                 win: WindowId("4242_7".to_owned()),
-                data: Some("opaque-save".to_owned()),
+                data: Some(tiler_core::intent_data::IntentData::new(Some(true), None)),
             });
         first.effects.push(focus_effect(5));
         assert!(

@@ -206,7 +206,7 @@ fn v4_reply_valid_shapes_spot_check() {
     let diagnostics = decode_ok("messages/reply-row-diagnostics.json");
     assert_eq!(diagnostics.reply.diagnostics.len(), 5);
     let intent = decode_ok("messages/reply-intent-save-clear.json");
-    assert_eq!(intent.reply.intent_writes.len(), 2);
+    assert_eq!(intent.reply.intent_desired.len(), 2);
     let suspended = decode_ok("messages/reply-presentation-hidden-suspended.json");
     assert!(
         suspended.wire.suspended_output_present,
@@ -865,9 +865,12 @@ fn v4_reply_structural_regression() {
     let error = decode_value(&state).expect_err("duplicate property refuses");
     assert_eq!(error.message, "state-target-count");
 
-    // Overbound intent data refuses with the typed helper token.
+    // Overbound intent data refuses with the typed helper token. This is a
+    // strict raw-wire negative only: typed `IntentData` always encodes to a
+    // short canonical form, so an overbound typed value is unspellable and
+    // has no writer-side counterpart (see `v4_reply_writer_refuses_unspellable`).
     let mut intent = valid_reply_value();
-    intent["intentWrites"] = serde_json::json!([{"win": "win-a", "data": "x".repeat(1025)}]);
+    intent["intentDesired"] = serde_json::json!([{"win": "win-a", "data": "x".repeat(1025)}]);
     let error = decode_value(&intent).expect_err("overbound intent refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "intent-data-invalid");
@@ -905,9 +908,9 @@ fn v4_reply_structural_regression() {
             "duplicate-native-creation",
         ),
         (
-            "intentWrites",
+            "intentDesired",
             serde_json::json!({"win":"win-a","data":null}),
-            "duplicate-intent-write",
+            "duplicate-intent-desire",
         ),
         (
             "switchSettled",
@@ -926,6 +929,74 @@ fn v4_reply_structural_regression() {
         assert_eq!(error.kind, "snapshot-invalid", "section {section}");
         assert_eq!(error.message, message, "section {section}");
     }
+}
+
+#[test]
+fn v4_reply_intent_desired_lane_strictness() {
+    // Required field: missing `intentDesired` refuses as malformed, even
+    // when every other lane is valid.
+    let mut missing = valid_reply_value();
+    missing
+        .as_object_mut()
+        .expect("object")
+        .remove("intentDesired");
+    let error = decode_value(&missing).expect_err("missing intentDesired refuses");
+    assert_eq!(error.kind, "malformed");
+
+    // Old field: the retired `intentWrites` spelling refuses as an unknown
+    // field, never as a silent alias. Both the extra-key and the
+    // swapped-key shapes refuse.
+    let mut extra = valid_reply_value();
+    extra["intentWrites"] = serde_json::json!([]);
+    let error = decode_value(&extra).expect_err("extra intentWrites refuses");
+    assert_eq!(error.kind, "unknown-field");
+    assert_eq!(error.message, "request contains an unknown field");
+    let mut swapped = valid_reply_value();
+    let kept = swapped
+        .as_object_mut()
+        .expect("object")
+        .remove("intentDesired");
+    assert!(kept.is_some(), "valid reply carries intentDesired");
+    swapped["intentWrites"] = kept.expect("kept");
+    let error = decode_value(&swapped).expect_err("swapped intentWrites refuses");
+    assert_eq!(error.kind, "unknown-field");
+
+    // Null save/clear spellings: an explicit null clears, a canonical
+    // string saves; both ride the required lane with unique windows.
+    let mut save_clear = valid_reply_value();
+    save_clear["intentDesired"] = serde_json::json!([
+        {"win": "win-a", "data": "{\"v\":1,\"float\":true,\"stickyPrior\":false}"},
+        {"win": "win-b", "data": null},
+    ]);
+    let decoded = decode_value(&save_clear).expect("save/clear decodes");
+    assert_eq!(decoded.reply.intent_desired.len(), 2);
+    assert!(decoded.reply.intent_desired[1].data.is_none());
+
+    // Unique windows: a repeated win refuses on both decode and encode.
+    let mut dup = valid_reply_value();
+    dup["intentDesired"] = serde_json::json!([
+        {"win": "win-a", "data": null},
+        {"win": "win-a", "data": null},
+    ]);
+    let error = decode_value(&dup).expect_err("duplicate win refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "duplicate-intent-desire");
+
+    // Row cap: 10000 tiny rows admit, 10001 refuse with the section token.
+    let at_cap: Vec<serde_json::Value> = (0..10_000)
+        .map(|i| serde_json::json!({"win": format!("win-{i}"), "data": null}))
+        .collect();
+    let mut capped = valid_reply_value();
+    capped["intentDesired"] = serde_json::Value::Array(at_cap);
+    decode_value(&capped).expect("cap admits");
+    let mut over = valid_reply_value();
+    let rows = (0..10_001)
+        .map(|i| serde_json::json!({"win": format!("win-{i}"), "data": null}))
+        .collect();
+    over["intentDesired"] = serde_json::Value::Array(rows);
+    let error = decode_value(&over).expect_err("over cap refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "section-over-cap");
 }
 
 #[test]
@@ -1073,13 +1144,20 @@ fn v4_reply_writer_refuses_unspellable() {
         .as_mut()
         .expect("visible")
         .fallback = true;
-    let mut intent_overbound = writer_base();
-    intent_overbound
+    let mut duplicate_intent = writer_base();
+    duplicate_intent
         .reply
-        .intent_writes
-        .push(tiler_core::world_report::IntentWrite {
+        .intent_desired
+        .push(tiler_core::world_report::IntentDesire {
             win: tiler_core::directional::WindowId("win-a".to_owned()),
-            data: Some("x".repeat(1025)),
+            data: Some(tiler_core::intent_data::IntentData::new(Some(true), None)),
+        });
+    duplicate_intent
+        .reply
+        .intent_desired
+        .push(tiler_core::world_report::IntentDesire {
+            win: tiler_core::directional::WindowId("win-a".to_owned()),
+            data: None,
         });
     let mut warp_overbound = writer_base();
     warp_overbound.reply.cursor_warp = Some((16385, 0));
@@ -1175,10 +1253,10 @@ fn v4_reply_writer_refuses_unspellable() {
             show_fallback,
         ),
         (
-            "intent-overbound",
+            "duplicate-intent-desire",
             "snapshot-invalid",
-            "intent-data-invalid",
-            intent_overbound,
+            "duplicate-intent-desire",
+            duplicate_intent,
         ),
         (
             "warp-overbound",

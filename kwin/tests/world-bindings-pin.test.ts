@@ -152,7 +152,7 @@ describe("world binding retention flags", () => {
             focusRequest: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
-            intentWrites: [], switchSettled: [], diagnostics: [],
+            intentDesired: [], switchSettled: [], diagnostics: [],
             presentation: DISABLED_PRESENTATION,
             scopes: [{ scope: { kind: "workspace", out: "out-1", ws: "ws-1" }, auth: "controlled", reason: "" }],
             workspaces: [

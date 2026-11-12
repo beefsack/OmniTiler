@@ -44,7 +44,7 @@ impl WorldEngine {
     pub(crate) fn publish_v4(
         &mut self,
         envelope: PublishEnvelopeV4,
-        command: Option<&WorldCommand>,
+        _command: Option<&WorldCommand>,
         effects: Vec<OneShotEffect>,
         command_result: Option<CommandResult>,
         held_scopes: &BTreeSet<DomainKey>,
@@ -156,8 +156,7 @@ impl WorldEngine {
                     .is_none_or(|output| *output != desire.target_output)
             })
             .collect();
-        let intent_writes =
-            self.drain_intent_saves(command, envelope.command_consumed, &command_result);
+        let intent_desired = self.project_intent_desired();
         let switch_settled = std::mem::take(&mut self.switch_settled);
         // Retained transfer projection: the explicit originating command
         // correlation rides verbatim (never parsed from operation ids), with
@@ -215,7 +214,7 @@ impl WorldEngine {
             native_creations,
             cursor_warp,
             presentation,
-            intent_writes,
+            intent_desired,
             switch_settled,
         }
     }

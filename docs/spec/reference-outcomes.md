@@ -203,6 +203,25 @@ counterpart. Those sources do not prove macOS delivery or the sequences below.
 | Minimal action sequence | Selected core outcome | Unproven native outcome |
 | --- | --- | --- |
 | Return a verified float/tile intent record with a held/unreadable window; recover admissibility without returning the record again; separately admit without a record, return one late, then make a newer runtime choice | User 2026-11-03: retain pending intent until first successful admission; after admission ignore late records, never overwrite newer runtime intent. Adapter returns storage in or before the first admissible report; late return is diagnostic only, no write authority | Native slot/store read ordering and held-to-admissible restart restoration TBD; [R-FLT-05](reference-outcomes/floating.md#r-flt-05-restart-with-a-sticky-float) establishes i3 restart carry, not asynchronous late-record handling |
+| Import a verified valid record before admission; admit; lose/change the storage slot; reconnect without a command; contrast a late import after a runtime choice | User 2026-11-12: the accepted import initializes that lifetime's retained desire; reconcile storage drift without a command. Late imports never overwrite runtime intent. Canonical re-encoding may cause one rewrite per window for noncanonical imported bytes | Reference/native outcomes TBD |
+
+### Intent desired storage feedback
+
+| Minimal action sequence | Ours | Reference/native outcomes |
+| --- | --- | --- |
+| Save intent; lose the storage response; verify storage as present, absent or unreadable; restart with a lifetime-verified record | User 2026-11-12: durability remains adapter-local, with no new core report field. Only verified durable equality releases dependent apply; absent/unknown retries on a later accepted reply, and restart imports before admission | TBD |
+
+### Intent store recovery
+
+| Minimal action sequence | Ours | Reference/native outcomes |
+| --- | --- | --- |
+| Fail a save; restore storage without changing the target; deliver an unchanged accepted publication | User 2026-11-12: retry on that later acceptance while desired differs from durable storage; successful equality releases the hold. No timer, recovery signal or new command required; subsequent unchanged desire makes zero disk writes | TBD |
+
+### Intent failure isolation
+
+| Minimal action sequence | Ours | Reference/native outcomes |
+| --- | --- | --- |
+| A's intent save fails while B needs reflow; recover A's storage and deliver the next accepted reply | User 2026-11-12: preserve the whole-reply dependent native-application hold, including B; recovery applies only the current fresh reply after durability. Narrower isolation is separate work | TBD |
 
 ### Sticky intent current-mode encoding
 

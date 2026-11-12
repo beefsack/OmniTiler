@@ -305,7 +305,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         focusRequest: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
-        intentWrites: [], switchSettled: [], diagnostics: [],
+        intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out-a", ws: "ws-a" }, auth: "controlled", reason: "" }],
         workspaces: [],

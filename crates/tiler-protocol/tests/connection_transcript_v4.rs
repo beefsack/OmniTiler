@@ -163,7 +163,7 @@ fn assert_bootstrap(decoded: &DecodedReplyV4, generation: &str, request: &str, o
     assert!(reply.operation_settled.is_empty());
     assert!(reply.native_creations.is_empty());
     assert_eq!(reply.cursor_warp, None);
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert!(reply.switch_settled.is_empty());
     assert!(reply.diagnostics.is_empty());
     assert_eq!(reply.presentation.foreground, "");

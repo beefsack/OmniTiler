@@ -52,7 +52,7 @@ function acceptedReply(source: string, nativeInvalid: string, rev: string, extra
         source, nativeInvalid, clock: "1",
         gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [],
         warpCursor: null,
-        intentWrites: [], switchSettled: [], diagnostics: [],
+        intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
         workspaces: [],

@@ -184,7 +184,7 @@ function makeHarness() {
             focusRequest: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
-            intentWrites: [], switchSettled: [], diagnostics: [],
+            intentDesired: [], switchSettled: [], diagnostics: [],
             presentation: DISABLED_PRESENTATION,
             scopes: [{ scope: { kind: "workspace", out: OUT, ws: WS_A }, auth: "controlled", reason: "" }],
             workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,

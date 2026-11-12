@@ -594,7 +594,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         focusRequest: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
-        intentWrites: [], switchSettled: [], diagnostics: [],
+        intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
         workspaces: [],
@@ -3744,7 +3744,7 @@ describe("world entry float-intent reconcile controls", () => {
         const cleared = makeFloatHarness();
         acceptHead(cleared, {
             windows: [],
-            intentWrites: [{ win: "win-a", data: TILE_DATA }],
+            intentDesired: [{ win: "win-a", data: TILE_DATA }],
             result: { op: "toggle-float", win: "win-a", rect: null },
         });
         const done = lastWrite(cleared);
@@ -3770,7 +3770,7 @@ describe("world entry float-intent reconcile controls", () => {
             (handler as (payload?: unknown) => void)(h.w1);
         }
         h.live.splice(h.live.indexOf(h.w1), 1);
-        acceptHead(h, { windows: [], intentWrites: [{ win: "win-a", data: null }] });
+        acceptHead(h, { windows: [], intentDesired: [{ win: "win-a", data: null }] });
         const done = lastWrite(h);
         assert.equal(done["v"], 2, `store write rides schema2: ${JSON.stringify(done).slice(0, 200)}`);
         const doneRecs = done["records"] as Array<{ win: string; data: string }>;
@@ -5333,7 +5333,7 @@ describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
         // behind the genuinely in-flight persist.
         h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", flight1["source"] as string, flight1["nativeInvalid"] as string, "1", {
             workspaces: [{ id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" }],
-            intentWrites: [{ win: "win-a", data: "{\"t\":1}" }],
+            intentDesired: [{ win: "win-a", data: "{\"t\":1}" }],
             focusRequest: { id: "focus-old", target: "win-c", rev: "1", cause: "automatic-admission", out: "out", ws: "wl-1", cmdSeq: null, afterShown: null },
         }));
         assert.equal(h.intentWriteFlights.length, 1, "first persist genuinely in flight");
@@ -5352,7 +5352,7 @@ describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
         assert.ok((reportOf(h)["closed"] as Array<string>).includes("win-d"), "undelivered close retained across the skipped publication");
         h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", (requestOf(h)["source"] as string), (requestOf(h)["nativeInvalid"] as string), "2", {
             workspaces: [{ id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" }],
-            intentWrites: [{ win: "win-a", data: "{\"t\":2}" }],
+            intentDesired: [{ win: "win-a", data: "{\"t\":2}" }],
             focusRequest: { id: "focus-mid", target: "win-c", rev: "2", cause: "automatic-admission", out: "out", ws: "wl-1", cmdSeq: null, afterShown: null },
         }));
         assert.equal(h.intentWriteFlights.length, 1, "second publication queues behind the in-flight write");
@@ -5363,7 +5363,7 @@ describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
         assert.equal(queueCalls(h).length, 3, "third batch files its park");
         h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", (requestOf(h)["source"] as string), (requestOf(h)["nativeInvalid"] as string), "3", {
             workspaces: [{ id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" }],
-            intentWrites: [{ win: "win-a", data: "{\"t\":3}" }],
+            intentDesired: [{ win: "win-a", data: "{\"t\":3}" }],
             focusRequest: { id: "focus-new", target: "win-a", rev: "3", cause: "automatic-admission", out: "out", ws: "wl-1", cmdSeq: null, afterShown: null },
         }));
         assert.equal(h.intentWriteFlights.length, 1, "third publication queues behind the same in-flight write");

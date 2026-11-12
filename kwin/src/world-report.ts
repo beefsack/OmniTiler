@@ -580,11 +580,14 @@ export interface WorldReply {
     // Desired cursor warp point (cross-output focus only) or null. The
     // adapter never warps (unsupported): null or ignored, never chased.
     warpCursor: [number, number] | null;
-    // Accepted core intent writes (opaque session records, never policy):
-    // string replaces, null deletes, at most one row per subject. The lane
+    // Retained intent desire for one window lifetime (never policy):
+    // string is the exact saved bytes, null is an explicit desired slot
+    // absence kept after a successful clear, missing rows carry no storage
+    // authority and never delete. At most one row per subject. The lane
     // is required on every v4 core reply (bootstrap and capture alike);
-    // this adapter only applies and persists verbatim.
-    intentWrites: WorldIntentWrite[];
+    // this adapter compares it against verified durable storage and writes
+    // only on difference.
+    intentDesired: WorldIntentDesire[];
     presentation: WorldPresentation;
     // Broker transport bindings: per-capture source correlation, the local
     // native-invalidation watermark the capture carried, and the broker
@@ -1706,25 +1709,27 @@ function parseNativeCreationRow(e: unknown): WorldNativeCreation {
     return { op, ws, out };
 }
 
-// Opaque intent write from the core (v4 `intentWrites` lane): the verified
-// live subject plus the exact core record (null deletes the row). The
-// adapter never interprets `data`: string replaces verbatim, null deletes.
-// Exact two-key rows, opaque subject, null-or-`<=1024`-UTF-8-byte data, no
-// duplicate subjects, at most 10000 rows (mirrors the core lane caps).
-export interface WorldIntentWrite {
+// Retained intent desire from the core (v4 `intentDesired` lane): one
+// authoritative current target per window lifetime. String means exact
+// saved bytes, null means explicit desired slot absence, missing row
+// carries no storage authority and never deletes. The adapter never
+// interprets `data`. Exact two-key rows, opaque subject,
+// null-or-`<=1024`-UTF-8-byte data, no duplicate subjects, at most 10000
+// rows (mirrors the core lane caps).
+export interface WorldIntentDesire {
     readonly win: string;
     readonly data: string | null;
 }
 
-const MAX_INTENT_WRITES = 10000;
+const MAX_INTENT_DESIRED = 10000;
 const MAX_INTENT_DATA_BYTES = 1024;
 
-export function parseIntentWrites(value: unknown): WorldIntentWrite[] | null {
-    if (!Array.isArray(value) || value.length > MAX_INTENT_WRITES) {
+export function parseIntentDesired(value: unknown): WorldIntentDesire[] | null {
+    if (!Array.isArray(value) || value.length > MAX_INTENT_DESIRED) {
         return null;
     }
     const seen = new Set<string>();
-    const out: WorldIntentWrite[] = [];
+    const out: WorldIntentDesire[] = [];
     for (const item of value) {
         if (typeof item !== "object" || item === null || Array.isArray(item)) {
             return null;
@@ -1754,16 +1759,16 @@ export function parseIntentWrites(value: unknown): WorldIntentWrite[] | null {
 }
 
 // Exact v4 core reply shape: the 23 core keys the Rust canonical encoder
-// emits (including the required opaque `intentWrites`, `switchSettled`,
+// emits (including the required opaque `intentDesired`, `switchSettled`,
 // and `diagnostics` lanes), plus source/nativeInvalid/clock/gestureAssoc
 // on the bound (capture) lane. Any unknown key refuses, and a
-// present-but-malformed `intentWrites` lane refuses the whole reply. The
+// present-but-malformed `intentDesired` lane refuses the whole reply. The
 // bootstrap lane (no capture flown yet) carries exactly the 24 core keys;
 // the bindings default without validation.
 const CORE_REPLY_KEYS = ["v", "adapter", "gen", "req", "obs", "rev", "ready", "consumed",
     "scopes", "workspaces", "outputs", "windows", "transfers", "effects", "focusRequest", "result",
     "gestureSettled", "operationSettled", "nativeCreations", "warpCursor", "presentation",
-    "intentWrites", "switchSettled", "diagnostics"] as const;
+    "intentDesired", "switchSettled", "diagnostics"] as const;
 const BOUND_REPLY_KEYS = [...CORE_REPLY_KEYS, "source", "nativeInvalid", "clock", "gestureAssoc"] as const;
 
 function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): WorldReply | null {
@@ -1924,17 +1929,17 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
             warpCursor = [pair[0] as number, pair[1] as number];
         }
         const presentation = parsePresentation(r["presentation"]);
-        // Accepted core intent writes: the required v4 lane; malformed
+        // Accepted core intent desire: the required v4 lane; malformed
         // refuses the whole reply.
-        const intentWrites = parseIntentWrites(r["intentWrites"]);
-        if (intentWrites === null) {
-            throw new Error("intent-writes");
+        const intentDesired = parseIntentDesired(r["intentDesired"]);
+        if (intentDesired === null) {
+            throw new Error("intent-desired");
         }
         return {
             adapter, gen, req, obs, rev,
             ready: r["ready"] as boolean, consumed: r["consumed"] as boolean,
             scopes, workspaces, outputs, windows, transfers, effects, focusRequest, result,
-            gestureSettled, gestureAssoc, operationSettled, nativeCreations, warpCursor, intentWrites, presentation,
+            gestureSettled, gestureAssoc, operationSettled, nativeCreations, warpCursor, intentDesired, presentation,
             switchSettled, diagnostics,
             source, nativeInvalid, clock,
         };

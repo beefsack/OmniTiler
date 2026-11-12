@@ -1,6 +1,6 @@
 //! Wire ingress/publication for the opaque outer intent lanes.
 //!
-//! Nested `intentRecords[].data` / `intentWrites[].data` strings are
+//! Nested `intentRecords[].data` / `intentDesired[].data` strings are
 //! extracted from the immutable v4 fixtures and run through the genuine v4
 //! wire path: [`decode_request`](tiler_protocol::world_protocol::decode_request)
 //! preserves them verbatim (unsupported or malformed inner JSON stays an
@@ -24,11 +24,11 @@ use tiler_core::connection::{
 use tiler_core::directional::WindowId;
 use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
-    IntentRecord, IntentWrite, WORLD_CONTRACT_VERSION_V4, WorldReplyV4,
-    validate_intent_writes_reason,
+    IntentDesire, IntentRecord, WORLD_CONTRACT_VERSION_V4, WorldReplyV4,
+    validate_intent_desired_reason,
 };
 use tiler_core::world_report_v4_checks::{report_digest_v4, validate_report_v4_reason};
-use tiler_core::world_sizing::{intent_records_estimate, intent_writes_estimate};
+use tiler_core::world_sizing::{intent_desired_estimate, intent_records_estimate};
 use tiler_core::world_sizing_v4::{
     reply_estimate_v4, reply_exact_bytes_v4, reply_upper_bound_v4, report_estimate_v4,
 };
@@ -68,10 +68,15 @@ fn nested_record(name: &str) -> serde_json::Value {
 }
 
 fn nested_write(name: &str, index: usize) -> serde_json::Value {
-    let envelope_fixture: serde_json::Value = fixture(name);
-    let writes = envelope_fixture["intentWrites"]
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/world-wire/v4-active/messages")
+        .join(format!("{name}.json"));
+    let envelope_fixture: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("fixture JSON"))
+            .expect("fixture JSON");
+    let writes = envelope_fixture["intentDesired"]
         .as_array()
-        .expect("fixture intentWrites");
+        .expect("fixture intentDesired");
     writes[index].clone()
 }
 
@@ -352,7 +357,7 @@ fn engine_accepts_opaque_record_and_publishes_empty_writes() {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
-    assert!(reply.intent_writes.is_empty(), "no writes this increment");
+    assert!(reply.intent_desired.is_empty(), "no writes this increment");
     // Empty-record twin: the opaque record changes no behavior versus no
     // records at all (identical published reply on a fresh engine).
     let mut twin = connected_engine("gen-1", HostCapabilities::default());
@@ -369,12 +374,12 @@ fn engine_accepts_opaque_record_and_publishes_empty_writes() {
         .find("\"presentation\"")
         .expect("presentation publishes");
     let writes = wire
-        .find("\"intentWrites\":[]")
+        .find("\"intentDesired\":[]")
         .expect("empty writes publish");
     let diagnostics = wire.find("\"diagnostics\"").expect("diagnostics publish");
     assert!(
         presentation_end < writes && writes < diagnostics,
-        "key order presentation < intentWrites < diagnostics, got {wire}"
+        "key order presentation < intentDesired < diagnostics, got {wire}"
     );
 }
 
@@ -393,12 +398,14 @@ fn canonical_save_and_clear_spell_exact_key_order() {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
-    reply.intent_writes = vec![
-        IntentWrite {
+    reply.intent_desired = vec![
+        IntentDesire {
             win: WindowId("win-a".to_owned()),
-            data: Some(save_data),
+            data: Some(
+                tiler_core::intent_data::decode_intent_data(&save_data).expect("typed save"),
+            ),
         },
-        IntentWrite {
+        IntentDesire {
             win: WindowId("win-b".to_owned()),
             data: None,
         },
@@ -406,7 +413,7 @@ fn canonical_save_and_clear_spell_exact_key_order() {
     let wire = reply_wire(&reply);
     assert!(
         wire.contains(
-            "\"intentWrites\":[{\"win\":\"win-a\",\"data\":\"{\\\"v\\\":1,\
+            "\"intentDesired\":[{\"win\":\"win-a\",\"data\":\"{\\\"v\\\":1,\
              \\\"float\\\":true,\\\"stickyPrior\\\":false}\"},{\"win\":\"win-b\",\"data\":null}]"
         ),
         "exact save/clear bytes, got {wire}"
@@ -414,20 +421,134 @@ fn canonical_save_and_clear_spell_exact_key_order() {
 }
 
 #[test]
+fn engine_sticky_save_and_rollback_clear_spell_exact_fixture_bytes() {
+    use tiler_core::intent_data::IntentData;
+    use tiler_core::world_report::{FrameSetter, StateAttempt, StateProperty, WorldCommand};
+    // Genuine engine publication, never a hand-set reply: native sticky ON
+    // from tile records the false-prior save, and the refused proof rolls
+    // back to the explicit null clear. The combined projection spells the
+    // committed save/clear fixture rows byte-exact through the genuine
+    // canonical writer.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("bound engine");
+    let mut seed = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
+    let mut win_b = seed.windows[0].clone();
+    win_b.window = WindowId("win-b".to_owned());
+    seed.windows.push(win_b);
+    let seed_reply = match engine.handle_report(&seed, &[]).0 {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted seed, got {other:?}"),
+    };
+    assert!(
+        seed_reply.intent_desired.is_empty(),
+        "seed publishes no writes"
+    );
+    let mut sticky_a = seed.clone();
+    sticky_a.request_id = "req-2".to_owned();
+    sticky_a.request_seq = 2;
+    sticky_a.observation_seq = 2;
+    sticky_a.command_seq = Some(1);
+    sticky_a.command = Some(WorldCommand::SetSticky {
+        window: WindowId("win-a".to_owned()),
+        value: true,
+    });
+    let save_reply = match engine.handle_report(&sticky_a, &[]).0 {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted sticky save, got {other:?}"),
+    };
+    assert_eq!(
+        save_reply.intent_desired,
+        vec![IntentDesire {
+            win: WindowId("win-a".to_owned()),
+            data: Some(IntentData::new(Some(true), Some(false))),
+        }],
+        "sticky ON records the false-prior save"
+    );
+    let mut sticky_b = seed.clone();
+    sticky_b.request_id = "req-3".to_owned();
+    sticky_b.request_seq = 3;
+    sticky_b.observation_seq = 3;
+    sticky_b.command_seq = Some(2);
+    sticky_b.command = Some(WorldCommand::SetSticky {
+        window: WindowId("win-b".to_owned()),
+        value: true,
+    });
+    let second_reply = match engine.handle_report(&sticky_b, &[]).0 {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted second save, got {other:?}"),
+    };
+    assert_eq!(second_reply.intent_desired.len(), 2, "both saves retained");
+    // The accepted reply carries the binding revision the refused proof
+    // must stamp: read it from genuine engine output, never hardcoded.
+    let binding_rev = second_reply.state_revision;
+    let mut proof = seed.clone();
+    proof.request_id = "req-4".to_owned();
+    proof.request_seq = 4;
+    proof.observation_seq = 4;
+    proof.state_attempts = vec![StateAttempt {
+        window: WindowId("win-b".to_owned()),
+        property: StateProperty::Sticky,
+        target: true,
+        revision: binding_rev,
+        setter: FrameSetter::Refused,
+        pre: Some(false),
+        post: Some(false),
+        attempt_ms: 7,
+    }];
+    let clear_reply = match engine.handle_report(&proof, &[]).0 {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted rollback proof, got {other:?}"),
+    };
+    assert_eq!(
+        clear_reply.intent_desired,
+        vec![
+            IntentDesire {
+                win: WindowId("win-a".to_owned()),
+                data: Some(IntentData::new(Some(true), Some(false))),
+            },
+            IntentDesire {
+                win: WindowId("win-b".to_owned()),
+                data: None,
+            },
+        ],
+        "refused proof rolls back to the explicit null clear"
+    );
+    let wire = reply_wire(&clear_reply);
+    assert!(
+        wire.contains(
+            "\"intentDesired\":[{\"win\":\"win-a\",\"data\":\"{\\\"v\\\":1,\
+             \\\"float\\\":true,\\\"stickyPrior\\\":false}\"},{\"win\":\"win-b\",\"data\":null}]"
+        ),
+        "exact save/clear bytes, got {wire}"
+    );
+    // The committed fixture rows spell the same save and clear.
+    let save_row = nested_write("reply-intent-save-clear", 0);
+    let clear_row = nested_write("reply-intent-save-clear", 1);
+    assert_eq!(save_row["win"], "win-a");
+    assert_eq!(
+        save_row["data"],
+        "{\"v\":1,\"float\":true,\"stickyPrior\":false}"
+    );
+    assert_eq!(clear_row["win"], "win-b");
+    assert!(clear_row["data"].is_null(), "fixture clear is null");
+}
+
+#[test]
 fn estimates_count_escaped_bytes_and_both_arrays() {
-    // Escapes (quote, backslash, C0) and multibyte chars count exact
-    // escaped widths on both lanes.
+    use tiler_core::intent_data::{IntentData, encode_intent_data};
+    // Records lane keeps opaque strings with escapes; desired lane is typed
+    // canonical encodings.
     let data = "a\"b\\c\x01\u{e9}d".to_owned();
     let records = vec![IntentRecord {
         win: WindowId("w".to_owned()),
         data: data.clone(),
     }];
+    let desired_value = IntentData::new(Some(true), Some(false));
     let writes = vec![
-        IntentWrite {
+        IntentDesire {
             win: WindowId("w".to_owned()),
-            data: Some(data.clone()),
+            data: Some(desired_value),
         },
-        IntentWrite {
+        IntentDesire {
             win: WindowId("x".to_owned()),
             data: None,
         },
@@ -435,16 +556,20 @@ fn estimates_count_escaped_bytes_and_both_arrays() {
     // Hand-built JSON for the same rows: lengths must match the helpers.
     let escaped = "a\\\"b\\\\c\\u0001\u{e9}d";
     let record_json = format!("{{\"win\":\"w\",\"data\":\"{escaped}\"}}");
+    let encoded = encode_intent_data(&desired_value);
+    // The canonical encoding rides as an escaped JSON string: each of its
+    // six quotes gains a backslash on the wire.
+    let escaped_encoded = encoded.replace('"', "\\\"");
     let write_json =
-        format!("{{\"win\":\"w\",\"data\":\"{escaped}\"}},{{\"win\":\"x\",\"data\":null}}");
+        format!("{{\"win\":\"w\",\"data\":\"{escaped_encoded}\"}},{{\"win\":\"x\",\"data\":null}}");
     assert_eq!(
         intent_records_estimate(&records),
         19 + record_json.len(),
         "records: empty base plus exact row bytes"
     );
     assert_eq!(
-        intent_writes_estimate(&writes),
-        18 + write_json.len(),
+        intent_desired_estimate(&writes),
+        19 + write_json.len(),
         "writes: empty base plus exact rows with their comma"
     );
     // The reply estimator is exact over the canonical encoding, escapes
@@ -456,13 +581,13 @@ fn estimates_count_escaped_bytes_and_both_arrays() {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
-    reply.intent_writes = writes;
+    reply.intent_desired = writes;
     let wire = reply_wire(&reply);
     // The reply estimator is exact over the new section (the wider reply
     // base carries pre-existing one-count conservatism, so the witness
     // pins the delta plus the standing upper-bound convention).
     let mut empty_reply = reply.clone();
-    empty_reply.intent_writes = Vec::new();
+    empty_reply.intent_desired = Vec::new();
     let empty_wire = reply_wire(&empty_reply);
     assert_eq!(
         reply_estimate_v4(&reply) - reply_estimate_v4(&empty_reply),
@@ -476,10 +601,10 @@ fn estimates_count_escaped_bytes_and_both_arrays() {
     // The request estimator grows by exactly the carried rows on the record
     // lane: a maxed-out `intentRecords` section alone exceeds the 4 MiB
     // candidate budget through `report_estimate_v4`. The outbound
-    // `intentWrites` lane is not estimated here: the typed helper plus the
+    // `intentDesired` lane is not estimated here: the typed helper plus the
     // publication commit gate refuse over-cap/invalid rows, the
     // pre-mutation bound carries no max-write reservation, and the envelope
-    // slack covers the empty 18-byte section (see
+    // slack covers the empty 19-byte section (see
     // `outbound_write_rows_share_the_fixed_outer_vocabulary` and
     // `published_replies_originate_valid_under_the_commit_gate`).
     let wire_len = envelope(serde_json::json!([])).len();
@@ -500,108 +625,64 @@ fn estimates_count_escaped_bytes_and_both_arrays() {
 
 #[test]
 fn outbound_write_rows_share_the_fixed_outer_vocabulary() {
+    use tiler_core::intent_data::IntentData;
     // Empty (the engine's steady state this increment) is trivially valid.
-    assert_eq!(validate_intent_writes_reason(&[]), None);
-    // Save and clear spellings with valid subjects admit.
+    assert_eq!(validate_intent_desired_reason(&[]), None);
+    // Save and clear spellings with valid subjects admit. Typed values are
+    // always canonically encodable; no byte verdict arises here.
     let writes = vec![
-        IntentWrite {
+        IntentDesire {
             win: WindowId("win-a".to_owned()),
-            data: Some("{\"v\":1}".to_owned()),
+            data: Some(IntentData::new(Some(true), None)),
         },
-        IntentWrite {
+        IntentDesire {
             win: WindowId("win-b".to_owned()),
             data: None,
         },
     ];
-    assert_eq!(validate_intent_writes_reason(&writes), None);
-    // Bad subjects refuse with the same fixed reason as the record lane on
-    // both the save and the clear spelling; no bytes are echoed.
-    for data in [Some("{\"v\":1}".to_owned()), None] {
-        let bad = vec![IntentWrite {
+    assert_eq!(validate_intent_desired_reason(&writes), None);
+    // Bad subjects refuse; no bytes are echoed.
+    for data in [Some(IntentData::new(Some(true), None)), None] {
+        let bad = vec![IntentDesire {
             win: WindowId("bad id!".to_owned()),
-            data: data.clone(),
+            data,
         }];
         assert_eq!(
-            validate_intent_writes_reason(&bad),
+            validate_intent_desired_reason(&bad),
             Some("window-id-invalid")
         );
     }
-    // ASCII slot bound: 1024 admits, 1025 refuses.
-    let save_1024 = "x".repeat(1024);
-    assert_eq!(save_1024.len(), 1024);
-    assert_eq!(
-        validate_intent_writes_reason(&[IntentWrite {
+    // Duplicates refuse.
+    let dup = vec![
+        IntentDesire {
             win: WindowId("w".to_owned()),
-            data: Some(save_1024),
-        }]),
-        None
-    );
-    assert_eq!(
-        validate_intent_writes_reason(&[IntentWrite {
+            data: None,
+        },
+        IntentDesire {
             win: WindowId("w".to_owned()),
-            data: Some("x".repeat(1025)),
-        }]),
-        Some("intent-data-invalid")
-    );
-    // UTF-8 bytes, not chars: 512 e-acute are exactly 1024 bytes (admit);
-    // one more multibyte char is 1026 (refuse).
-    let at_bound = "\u{e9}".repeat(512);
-    assert_eq!(at_bound.len(), 1024);
+            data: None,
+        },
+    ];
     assert_eq!(
-        validate_intent_writes_reason(&[IntentWrite {
-            win: WindowId("w".to_owned()),
-            data: Some(at_bound.clone()),
-        }]),
-        None
-    );
-    let over = format!("{at_bound}\u{e9}");
-    assert_eq!(over.len(), 1026);
-    assert_eq!(
-        validate_intent_writes_reason(&[IntentWrite {
-            win: WindowId("w".to_owned()),
-            data: Some(over),
-        }]),
-        Some("intent-data-invalid")
-    );
-    // Escapes ride raw: quote, backslash, and C0 bytes count once each
-    // toward the 1024 raw-byte bound even though the wire spells them
-    // wider.
-    let mut escaped = String::from("a\"b\\c\x01");
-    assert_eq!(escaped.len(), 6);
-    escaped.push_str(&"x".repeat(1024 - escaped.len()));
-    assert_eq!(escaped.len(), 1024);
-    assert_eq!(
-        validate_intent_writes_reason(&[IntentWrite {
-            win: WindowId("w".to_owned()),
-            data: Some(escaped.clone()),
-        }]),
-        None
-    );
-    escaped.push('y');
-    assert_eq!(escaped.len(), 1025);
-    assert_eq!(
-        validate_intent_writes_reason(&[IntentWrite {
-            win: WindowId("w".to_owned()),
-            data: Some(escaped),
-        }]),
-        Some("intent-data-invalid")
+        validate_intent_desired_reason(&dup),
+        Some("duplicate-intent-desire")
     );
     // Section cap: 10000 admits, 10001 refuses; the cap precedes row checks.
-    let at_cap: Vec<IntentWrite> = (0..10_000)
-        .map(|i| IntentWrite {
+    let at_cap: Vec<IntentDesire> = (0..10_000)
+        .map(|i| IntentDesire {
             win: WindowId(format!("win-{i}")),
-            data: Some("{\"v\":1}".to_owned()),
+            data: Some(tiler_core::intent_data::IntentData::new(Some(true), None)),
         })
         .collect();
     assert_eq!(at_cap.len(), 10_000);
-    assert_eq!(validate_intent_writes_reason(&at_cap), None);
+    assert_eq!(validate_intent_desired_reason(&at_cap), None);
     let mut over_cap = at_cap;
-    over_cap.push(IntentWrite {
+    over_cap.push(IntentDesire {
         win: WindowId("win-last".to_owned()),
         data: None,
     });
     assert_eq!(
-        validate_intent_writes_reason(&over_cap),
+        validate_intent_desired_reason(&over_cap),
         Some("section-over-cap")
     );
 }
@@ -619,13 +700,68 @@ fn published_replies_originate_valid_under_the_commit_gate() {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
-    assert_eq!(validate_intent_writes_reason(&reply.intent_writes), None);
+    assert_eq!(validate_intent_desired_reason(&reply.intent_desired), None);
     let wire = reply_wire(&reply);
     // The pre-mutation bound covers the published bytes, including the
-    // empty 18-byte `intentWrites` section inside the envelope slack.
+    // empty 19-byte `intentDesired` section inside the envelope slack.
     assert!(
         reply_upper_bound_v4(&report, 0, 0, report.screens.len(), 0, 0) >= wire.len(),
         "pre-mutation bound covers the published reply"
+    );
+}
+
+#[test]
+fn full_map_exact_and_bound_sizing() {
+    use tiler_core::intent_data::IntentData;
+    use tiler_core::world_sizing::{MAX_INTENT_DESIRED_ROW_BYTES, max_intent_desired_bound};
+    // Full retained map: three max-width rows (two saves, one explicit
+    // clear) spell exact bytes through the genuine writer, the independent
+    // core count stays exact, the structural estimate bounds the wire, and
+    // the per-row max bound covers the section.
+    let report = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
+    let mut engine = connected_engine("gen-1", HostCapabilities::default());
+    let mut reply = match engine.handle_report(&report, &[]).0 {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    let max_id = "w".repeat(128);
+    reply.intent_desired = vec![
+        IntentDesire {
+            win: WindowId(format!("a{max_id}", max_id = &max_id[1..])),
+            data: Some(IntentData::new(Some(false), Some(false))),
+        },
+        IntentDesire {
+            win: WindowId(format!("b{max_id}", max_id = &max_id[1..])),
+            data: Some(IntentData::new(Some(false), None)),
+        },
+        IntentDesire {
+            win: WindowId(format!("c{max_id}", max_id = &max_id[1..])),
+            data: None,
+        },
+    ];
+    assert_eq!(validate_intent_desired_reason(&reply.intent_desired), None);
+    let wire = reply_wire(&reply);
+    assert!(
+        reply_estimate_v4(&reply) >= wire.len(),
+        "estimate bounds the full map"
+    );
+    let mut empty_reply = reply.clone();
+    empty_reply.intent_desired = Vec::new();
+    let empty_wire = reply_wire(&empty_reply);
+    let section_bytes = wire.len().saturating_sub(empty_wire.len());
+    // Section delta is the three bodies plus two commas plus the wider
+    // header delta already in the empty base: it stays under the max-row
+    // reserve plus the single closing-bracket byte conservatism.
+    assert!(section_bytes <= 1 + max_intent_desired_bound(3));
+    assert_eq!(
+        max_intent_desired_bound(3),
+        3 * MAX_INTENT_DESIRED_ROW_BYTES
+    );
+    assert!(
+        reply_upper_bound_v4(&report, 0, 0, report.screens.len(), 0, 0)
+            .saturating_add(max_intent_desired_bound(3))
+            >= wire.len(),
+        "pre-mutation plus full-map reserve covers the wire"
     );
 }
 

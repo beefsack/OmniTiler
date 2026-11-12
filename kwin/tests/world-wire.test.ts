@@ -172,7 +172,7 @@ function acceptCapture(gen: string, envelope: Record<string, unknown>, rev: stri
         }],
         transfers: [], effects: [], focusRequest: null, result: null,
         gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
-        intentWrites: [], switchSettled: [], diagnostics: [],
+        intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "7",
         ...extra,
@@ -612,7 +612,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         ((withToken["windows"] as Array<Record<string, unknown>>)[0] as Record<string, unknown>)["frame_op"] = "";
         assert.equal(parseWorldReply(JSON.stringify(withToken)), null, "frame_op refuses on the presentation lane");
         // One-shot lanes refuse: result, transfers, effects, settlement.
-        for (const lane of ["result", "transfers", "effects", "gestureSettled", "operationSettled", "warpCursor", "intentWrites", "switchSettled", "diagnostics"] as const) {
+        for (const lane of ["result", "transfers", "effects", "gestureSettled", "operationSettled", "warpCursor", "intentDesired", "switchSettled", "diagnostics"] as const) {
             const withLane = JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")) as Record<string, unknown>;
             withLane[lane] = lane === "result" || lane === "gestureSettled" || lane === "warpCursor" ? null : [];
             assert.equal(parseWorldReply(JSON.stringify(withLane)), null, `${lane} refuses on the presentation lane`);
@@ -785,8 +785,8 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
             "unknown top-level field refuses",
         );
         const missing = bound();
-        delete missing["intentWrites"];
-        assert.equal(parseWorldReply(JSON.stringify(missing)), null, "missing intentWrites refuses");
+        delete missing["intentDesired"];
+        assert.equal(parseWorldReply(JSON.stringify(missing)), null, "missing intentDesired refuses");
         const missingClock = bound();
         delete missingClock["clock"];
         assert.equal(parseWorldReply(JSON.stringify(missingClock)), null, "missing binding refuses");

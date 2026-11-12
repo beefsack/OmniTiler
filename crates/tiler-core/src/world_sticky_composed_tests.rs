@@ -1,8 +1,8 @@
 //! Composed sticky command execution: `SetSticky`/`ToggleSticky` transitions,
-//! staged saves, current-workspace landing, and `ToggleFloat` clearing
+//! retained saves, current-workspace landing, and `ToggleFloat` clearing
 //! sticky. Both-host-absent consumes with a typed `StateUnsupported`
-//! rejection. Publish drain and visibility decoration are covered alongside
-//! the transitions: saves drain through `drain_intent_saves` and the
+//! rejection. Retained projection and visibility decoration are covered
+//! alongside the transitions: saves persist in `intent_desired` and the
 //! composed show target decorates via `decorate_sticky_visibility`. Native
 //! sticky production lives in `world_sticky_native_tests`.
 
@@ -10,7 +10,7 @@ use crate::boundary::CoreCommand;
 use crate::connection::HostCapabilities;
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
-use crate::intent_data::{IntentData, decode_intent_data, encode_intent_data};
+use crate::intent_data::{IntentData, encode_intent_data};
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
     CommandRejectKind, CommandResult, IntentRecord, ScopeAuthority, StateProperty,
@@ -131,17 +131,22 @@ fn is_tiled(engine: &WorldEngine, win: &str) -> bool {
 }
 
 fn staged_save(engine: &WorldEngine, win: &str) -> IntentData {
-    // Publish drains the staged queue exactly once: the save is read back
-    // from the actual published reply, and the queue must be empty.
-    assert!(
-        engine.sticky_command_save.is_none(),
-        "publish drains the staged save"
-    );
+    // Retained owner: the save persists in `intent_desired` and projects
+    // into the published reply; nothing drains. The reply carries the
+    // whole retained map, so assert presence, not singularity.
+    let retained = *engine
+        .intent_desired
+        .get(&WindowId(win.to_owned()))
+        .and_then(|e| e.as_ref())
+        .expect("retained desire");
     let reply = engine.last_reply_v4.as_ref().expect("published reply");
-    assert_eq!(reply.intent_writes.len(), 1, "exactly one save");
-    let save = &reply.intent_writes[0];
-    assert_eq!(save.win, WindowId(win.to_owned()));
-    decode_intent_data(save.data.as_deref().expect("save bytes")).expect("save decodes")
+    let projected = reply
+        .intent_desired
+        .iter()
+        .find(|d| d.win == WindowId(win.to_owned()))
+        .expect("projected desire");
+    assert_eq!(*projected.data.as_ref().expect("save bytes"), retained);
+    retained
 }
 
 fn assert_no_state_targets(engine: &WorldEngine) {
@@ -180,7 +185,10 @@ fn set_sticky_on_from_tiled_floats_with_false_prior_save() {
         IntentData::new(Some(true), Some(false))
     );
     assert_eq!(
-        engine.sticky_saved.get(&WindowId("win-a".to_owned())),
+        engine
+            .intent_desired
+            .get(&WindowId("win-a".to_owned()))
+            .and_then(|e| e.as_ref()),
         Some(&IntentData::new(Some(true), Some(false)))
     );
     // Raw facts never rewrite: the staged fact stays sticky-null.
@@ -553,9 +561,14 @@ fn set_same_state_consumes_without_a_repeat_save() {
             set_sticky("win-a", true),
         ),
     );
-    // Publish drains the staged save into the reply exactly once.
-    assert!(engine.sticky_command_save.is_none(), "drained at publish");
-    let before = engine.sticky_saved.clone();
+    // Retained owner persists after publish: the target stays authoritative.
+    assert!(
+        engine
+            .intent_desired
+            .contains_key(&WindowId("win-a".to_owned())),
+        "retained at publish"
+    );
+    let before = engine.intent_desired.clone();
     let reply = accepted(
         &mut engine,
         &cmd(
@@ -566,11 +579,8 @@ fn set_same_state_consumes_without_a_repeat_save() {
         ),
     );
     assert!(reply.command_result.is_none());
-    assert!(
-        engine.sticky_command_save.is_none(),
-        "same-state stages no save"
-    );
-    assert_eq!(engine.sticky_saved, before);
+    assert_eq!(reply.intent_desired.len(), 1, "retained projects again");
+    assert_eq!(engine.intent_desired, before);
     // A consumed duplicate never re-executes either: same command
     // sequence on a fresh observation reconciles without staging.
     match engine
@@ -585,11 +595,18 @@ fn set_same_state_consumes_without_a_repeat_save() {
         )
         .0
     {
-        WorldOutcome::CommandConsumed(_) => {}
+        WorldOutcome::CommandConsumed(consumed) => {
+            assert_eq!(consumed.intent_desired.len(), 1, "consumed retains");
+        }
         other => panic!("expected consumed, got {other:?}"),
     }
-    assert!(engine.sticky_command_save.is_none());
-    assert_eq!(engine.sticky_saved, before);
+    assert!(
+        engine
+            .intent_desired
+            .contains_key(&WindowId("win-a".to_owned())),
+        "consumed retains"
+    );
+    assert_eq!(engine.intent_desired, before);
 }
 
 #[test]
@@ -914,7 +931,10 @@ fn sticky_off_into_a_floating_workspace_lands_float_without_a_session() {
             .contains(&WindowId("win-a".to_owned()))
     );
     assert_eq!(
-        engine.sticky_saved.get(&WindowId("win-a".to_owned())),
+        engine
+            .intent_desired
+            .get(&WindowId("win-a".to_owned()))
+            .and_then(|e| e.as_ref()),
         Some(&IntentData::new(Some(false), None))
     );
 }
@@ -1002,7 +1022,6 @@ fn all_six_restore_shapes_turn_off_to_their_exact_prior() {
             None,
             "{name} never rewrites facts"
         );
-        engine.sticky_command_save.take();
     }
     assert_no_state_targets(&engine);
 }
@@ -1022,10 +1041,12 @@ fn late_imports_never_clobber_runtime_sticky_knowledge() {
     );
     let established = IntentData::new(Some(true), Some(false));
     assert_eq!(
-        engine.sticky_saved.get(&WindowId("win-a".to_owned())),
+        engine
+            .intent_desired
+            .get(&WindowId("win-a".to_owned()))
+            .and_then(|e| e.as_ref()),
         Some(&established)
     );
-    engine.sticky_command_save.take();
     let mut late = cmd(
         3,
         2,
@@ -1041,7 +1062,10 @@ fn late_imports_never_clobber_runtime_sticky_knowledge() {
     // clobbers the saved knowledge: it records the new off instead.
     assert!(is_tiled(&engine, "win-a"));
     assert_eq!(
-        engine.sticky_saved.get(&WindowId("win-a".to_owned())),
+        engine
+            .intent_desired
+            .get(&WindowId("win-a".to_owned()))
+            .and_then(|e| e.as_ref()),
         Some(&IntentData::new(Some(false), None))
     );
 }
@@ -1067,8 +1091,8 @@ fn unsupported_route_consumes_with_state_unsupported() {
         })
     );
     assert!(engine.restored_sticky.is_empty());
-    assert!(engine.sticky_command_save.is_none());
-    assert!(engine.sticky_saved.is_empty());
+    assert!(engine.intent_desired.is_empty(), "no save on refusal");
+    assert!(engine.intent_desired.is_empty());
 }
 
 #[test]
@@ -1115,8 +1139,13 @@ fn native_route_accepts_sticky_on_with_target() {
     );
     assert!(row.state[0].value);
     assert_eq!(row.state[0].command_seq, Some(1));
-    assert!(engine.sticky_command_save.is_none());
-    assert_eq!(reply.intent_writes.len(), 1);
+    assert!(
+        engine
+            .intent_desired
+            .contains_key(&WindowId("win-a".to_owned())),
+        "retained after publish"
+    );
+    assert_eq!(reply.intent_desired.len(), 1);
 }
 
 #[test]
@@ -1156,7 +1185,10 @@ fn held_scope_refuses_without_mutation() {
         other => panic!("expected held refusal, got {other:?}"),
     }
     assert!(engine.restored_sticky.is_empty());
-    assert!(engine.sticky_command_save.is_none());
+    assert!(
+        engine.intent_desired.is_empty(),
+        "held refusal stores nothing"
+    );
     assert!(!is_floated(&engine, "win-a"));
 }
 
@@ -1195,7 +1227,7 @@ fn minimized_and_excluded_subjects_refuse_without_mutation() {
         other => panic!("expected refusal, got {other:?}"),
     }
     assert!(engine.restored_sticky.is_empty());
-    assert!(engine.sticky_command_save.is_none());
+    assert!(engine.intent_desired.is_empty(), "refusal stores nothing");
 }
 
 #[test]
@@ -1224,11 +1256,14 @@ fn unknown_window_refuses_without_mutation() {
         other => panic!("expected refusal, got {other:?}"),
     }
     assert!(engine.restored_sticky.is_empty());
-    assert!(engine.sticky_command_save.is_none());
+    assert!(
+        engine.intent_desired.is_empty(),
+        "unknown refusal stores nothing"
+    );
 }
 
 #[test]
-fn sticky_on_publishes_once_then_commandless_empty() {
+fn sticky_on_publishes_once_then_commandless_retains() {
     let mut engine = composed_engine();
     accepted(&mut engine, &bootstrap(vec![cfact("win-a", "out-a", 0)]));
     let reply = accepted(
@@ -1240,13 +1275,17 @@ fn sticky_on_publishes_once_then_commandless_empty() {
             set_sticky("win-a", true),
         ),
     );
-    assert_eq!(reply.intent_writes.len(), 1);
+    assert_eq!(reply.intent_desired.len(), 1);
     assert_eq!(
-        decode_intent_data(reply.intent_writes[0].data.as_deref().expect("bytes"))
-            .expect("decodes"),
+        (*reply.intent_desired[0].data.as_ref().expect("bytes")),
         IntentData::new(Some(true), Some(false))
     );
-    assert!(engine.sticky_command_save.is_none(), "drained exactly once");
+    assert!(
+        engine
+            .intent_desired
+            .contains_key(&WindowId("win-a".to_owned())),
+        "retained after publish"
+    );
     let idle = accepted(
         &mut engine,
         &report_full(
@@ -1260,8 +1299,13 @@ fn sticky_on_publishes_once_then_commandless_empty() {
             None,
         ),
     );
-    assert!(idle.intent_writes.is_empty(), "no leak into later replies");
-    assert!(engine.sticky_command_save.is_none());
+    assert_eq!(idle.intent_desired.len(), 1, "observation retains");
+    assert!(
+        engine
+            .intent_desired
+            .contains_key(&WindowId("win-a".to_owned())),
+        "retained across observation"
+    );
 }
 
 #[test]
@@ -1286,17 +1330,21 @@ fn sticky_toggle_float_clear_publishes_tile_save() {
             toggle_float("win-a"),
         ),
     );
-    assert_eq!(reply.intent_writes.len(), 1);
+    assert_eq!(reply.intent_desired.len(), 1);
     assert_eq!(
-        decode_intent_data(reply.intent_writes[0].data.as_deref().expect("bytes"))
-            .expect("decodes"),
+        (*reply.intent_desired[0].data.as_ref().expect("bytes")),
         IntentData::new(Some(false), None)
     );
-    assert!(engine.sticky_command_save.is_none());
+    assert!(
+        engine
+            .intent_desired
+            .contains_key(&WindowId("win-a".to_owned())),
+        "retained clear"
+    );
 }
 
 #[test]
-fn duplicate_repeats_save_while_consumed_emits_none() {
+fn duplicate_repeats_save_while_consumed_retains() {
     let mut engine = composed_engine();
     accepted(&mut engine, &bootstrap(vec![cfact("win-a", "out-a", 0)]));
     let fresh = cmd(
@@ -1306,10 +1354,10 @@ fn duplicate_repeats_save_while_consumed_emits_none() {
         toggle_sticky("win-a"),
     );
     let reply = accepted(&mut engine, &fresh);
-    assert_eq!(reply.intent_writes.len(), 1);
+    assert_eq!(reply.intent_desired.len(), 1);
     match engine.handle_report(&fresh, &[]).0 {
         WorldOutcome::Duplicate(cached) => {
-            assert_eq!(cached.intent_writes, reply.intent_writes)
+            assert_eq!(cached.intent_desired, reply.intent_desired)
         }
         other => panic!("expected duplicate, got {other:?}"),
     }
@@ -1326,18 +1374,26 @@ fn duplicate_repeats_save_while_consumed_emits_none() {
         .0
     {
         WorldOutcome::CommandConsumed(consumed) => {
-            assert!(consumed.intent_writes.is_empty(), "consumed emits none")
+            assert_eq!(
+                consumed.intent_desired, reply.intent_desired,
+                "consumed retains"
+            )
         }
         other => panic!("expected consumed, got {other:?}"),
     }
-    assert!(engine.sticky_command_save.is_none(), "consumed cannot leak");
+    assert!(
+        engine
+            .intent_desired
+            .contains_key(&WindowId("win-a".to_owned())),
+        "consumed retains"
+    );
 }
 
 #[test]
 fn ordinary_toggle_float_publishes_and_upserts_saved_knowledge() {
     let mut engine = composed_engine();
     accepted(&mut engine, &bootstrap(vec![cfact("win-a", "out-a", 0)]));
-    assert!(engine.sticky_saved.is_empty());
+    assert!(engine.intent_desired.is_empty());
     let reply = accepted(
         &mut engine,
         &cmd(
@@ -1347,14 +1403,16 @@ fn ordinary_toggle_float_publishes_and_upserts_saved_knowledge() {
             toggle_float("win-a"),
         ),
     );
-    assert_eq!(reply.intent_writes.len(), 1);
+    assert_eq!(reply.intent_desired.len(), 1);
     assert_eq!(
-        decode_intent_data(reply.intent_writes[0].data.as_deref().expect("bytes"))
-            .expect("decodes"),
+        (*reply.intent_desired[0].data.as_ref().expect("bytes")),
         IntentData::new(Some(true), None)
     );
     assert_eq!(
-        engine.sticky_saved.get(&WindowId("win-a".to_owned())),
+        engine
+            .intent_desired
+            .get(&WindowId("win-a".to_owned()))
+            .and_then(|e| e.as_ref()),
         Some(&IntentData::new(Some(true), None))
     );
 }
@@ -1460,7 +1518,11 @@ fn view_change_without_a_save_keeps_visibility_rev_stable() {
             WorldCommand::SelectTrailing { output: None },
         ),
     );
-    assert!(moved.intent_writes.is_empty(), "view change stages no save");
+    assert_eq!(moved.intent_desired.len(), 1, "view change stages no save");
+    assert_eq!(
+        moved.intent_desired[0].data,
+        Some(IntentData::new(Some(true), Some(false)))
+    );
     assert_eq!(
         engine.sticky_visible_rev.get(&WindowId("win-a".to_owned())),
         Some(&rev),
@@ -1510,7 +1572,11 @@ fn suppression_hold_then_recovery_keeps_the_same_rev() {
             None,
         ),
     );
-    assert!(held.intent_writes.is_empty());
+    assert_eq!(held.intent_desired.len(), 1);
+    assert_eq!(
+        held.intent_desired[0].data,
+        Some(IntentData::new(Some(true), Some(false)))
+    );
     let row = desire(&held, "win-a");
     assert_eq!(
         row.visibility,
@@ -1803,7 +1869,11 @@ fn restore_admits_a_visibility_target_without_a_save() {
         data: encode_intent_data(&IntentData::new(None, Some(true))),
     }];
     let reply = accepted(&mut engine, &boot);
-    assert!(reply.intent_writes.is_empty(), "restore stages no save");
+    assert_eq!(reply.intent_desired.len(), 1, "restore stages no save");
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(None, Some(true)))
+    );
     assert_eq!(
         engine.restored_sticky.get(&WindowId("win-a".to_owned())),
         Some(&true)
@@ -1848,7 +1918,7 @@ fn sticky_reply_bound_rejects_before_mutation_and_small_retry_wins() {
     let staged = engine.staged.facts.len() + engine.staged.held_windows.len();
     let retained = engine.retained_publish_footprint();
     let save_bound = max_intent_save_bound_v4(&cmd(2, 1, Vec::new(), set_sticky("win-a", true)));
-    assert_eq!(save_bound, 16 + json_string_len("win-a") + 48);
+    assert_eq!(save_bound, 16 + json_string_len("win-a") + 49);
     let lanes_of = |windows_len: usize, held_len: usize| {
         windows_len
             .saturating_add(held_len)
@@ -1905,7 +1975,7 @@ fn sticky_reply_bound_rejects_before_mutation_and_small_retry_wins() {
     );
     let revision = engine.state_revision;
     let sticky = engine.restored_sticky.clone();
-    let saved = engine.sticky_saved.clone();
+    let saved = engine.intent_desired.clone();
     match engine.handle_report(&report, &[]).0 {
         WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, KIND_REPLY_SIZE);
@@ -1915,7 +1985,7 @@ fn sticky_reply_bound_rejects_before_mutation_and_small_retry_wins() {
     assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
     assert!(engine.command_highwater.is_none(), "command unconsumed");
     assert_eq!(engine.restored_sticky, sticky, "provenance intact");
-    assert_eq!(engine.sticky_saved, saved, "no staged save leaks");
+    assert_eq!(engine.intent_desired, saved, "no staged save leaks");
     // The same command sequence still wins once the report fits: the small
     // retry publishes the sticky save and the composed show inside the
     // pre-mutation bound.
@@ -1928,8 +1998,7 @@ fn sticky_reply_bound_rejects_before_mutation_and_small_retry_wins() {
     let pre_bound = reply_upper_bound_v4(&retry, 0, logical, 1, staged, retained);
     let reply = accepted(&mut engine, &retry);
     assert_eq!(
-        decode_intent_data(reply.intent_writes[0].data.as_deref().expect("save"))
-            .expect("save decodes"),
+        (*reply.intent_desired[0].data.as_ref().expect("save")),
         IntentData::new(Some(true), Some(false))
     );
     let row = desire(&reply, "win-a");
@@ -2227,7 +2296,7 @@ fn toggle_float_into_a_floating_destination_lands_float_with_tile_base() {
     assert!(is_tiled(&engine, "win-a"), "retile restores the tile base");
     assert!(!engine.restored_floats.contains(&id));
     assert_eq!(
-        engine.sticky_saved.get(&id),
+        engine.intent_desired.get(&id).and_then(|e| e.as_ref()),
         Some(&IntentData::new(Some(false), None))
     );
 }
@@ -2294,7 +2363,7 @@ fn sticky_on_refuses_when_the_joint_ledger_is_full_without_mutation() {
     );
     let revision = engine.state_revision;
     let sticky = engine.restored_sticky.clone();
-    let saved = engine.sticky_saved.clone();
+    let saved = engine.intent_desired.clone();
     match engine
         .handle_report(
             &cmd(
@@ -2319,55 +2388,50 @@ fn sticky_on_refuses_when_the_joint_ledger_is_full_without_mutation() {
     assert_eq!(engine.state_revision, revision + 1, "refusal issues");
     assert_eq!(engine.command_highwater, Some(1), "command consumed");
     assert_eq!(engine.restored_sticky, sticky, "no provenance leaks");
-    assert_eq!(engine.sticky_saved, saved, "no save leaks");
-    assert!(engine.sticky_command_save.is_none(), "no staged save leaks");
+    assert_eq!(engine.intent_desired, saved, "no save leaks");
 }
 
 #[test]
 fn sticky_on_refuses_when_saved_knowledge_is_full_without_mutation() {
     let mut engine = composed_engine();
     accepted(&mut engine, &bootstrap(vec![cfact("win-a", "out-a", 0)]));
-    for i in 0..crate::world_report::MAX_INTENT_RECORDS {
-        engine.sticky_saved.insert(
+    for i in 0..crate::world_report::MAX_INTENT_DESIRED {
+        engine.intent_desired.insert(
             WindowId(format!("win-saved-{i:05}")),
-            IntentData::new(Some(false), None),
+            Some(IntentData::new(Some(false), None)),
         );
     }
     let revision = engine.state_revision;
-    let sticky = engine.restored_sticky.clone();
+    let highwater = engine.command_highwater;
+    let cached = engine.last_reply_v4.clone();
     let refused_obs = cmd(
         2,
         1,
         vec![cfact("win-a", "out-a", 0)],
         set_sticky("win-a", true),
     );
-    // Commandless control with the same observation: the refusal must
-    // converge identically apart from the consumed sequence and typed
-    // result. Synthetic ledger fillers are not observation-live, so the
-    // adoption path legitimately prunes them on either path.
-    let mut control = engine.clone();
-    let mut control_obs = refused_obs.clone();
-    control_obs.command = None;
-    control_obs.command_seq = None;
-    let _ = control.handle_report(&control_obs, &[]).0;
     match engine.handle_report(&refused_obs, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "expected saved-cap refusal"
-        ),
-        other => panic!("expected saved-cap refusal, got {other:?}"),
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, crate::world_engine::KIND_SNAPSHOT);
+            assert_eq!(message, "section-over-cap");
+        }
+        other => panic!("expected transactional cap refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision + 1, "refusal issues");
-    assert_eq!(engine.command_highwater, Some(1), "command consumed");
-    assert_eq!(engine.restored_sticky, sticky, "no provenance leaks");
+    assert_eq!(engine.state_revision, revision, "refusal advances nothing");
     assert_eq!(
-        engine.sticky_saved, control.sticky_saved,
-        "saved knowledge converges with the commandless control"
+        engine.command_highwater, highwater,
+        "refusal consumes nothing"
     );
-    assert!(engine.sticky_command_save.is_none(), "no staged save leaks");
+    assert_eq!(
+        engine.intent_desired.len(),
+        crate::world_report::MAX_INTENT_DESIRED,
+        "refusal mutates no ledger"
+    );
+    assert!(
+        !engine.sticky_saved_incomplete,
+        "transactional refusal never latches incomplete"
+    );
+    assert_eq!(engine.last_reply_v4, cached, "refusal preserves cache");
 }
 
 #[test]
@@ -2436,7 +2500,11 @@ fn visibility_supported_maximize_null_holds_frame_only() {
             None,
         ),
     );
-    assert!(gated.intent_writes.is_empty());
+    assert_eq!(gated.intent_desired.len(), 1);
+    assert_eq!(
+        gated.intent_desired[0].data,
+        Some(IntentData::new(Some(true), Some(false)))
+    );
     let row = desire(&gated, "win-a");
     assert_eq!(
         row.visibility,
@@ -2515,7 +2583,11 @@ fn visibility_owned_supported_null_holds_frame_only() {
             None,
         ),
     );
-    assert!(gated.intent_writes.is_empty());
+    assert_eq!(gated.intent_desired.len(), 1);
+    assert_eq!(
+        gated.intent_desired[0].data,
+        Some(IntentData::new(Some(true), Some(false)))
+    );
     let row = desire(&gated, "win-a");
     assert_eq!(
         row.visibility,
@@ -2673,7 +2745,7 @@ fn sticky_clear_refuses_whole_candidate_when_no_space_and_smaller_retry_wins() {
     let revision = engine.state_revision;
     let highwater = engine.command_highwater;
     let sticky = engine.restored_sticky.clone();
-    let saved = engine.sticky_saved.clone();
+    let saved = engine.intent_desired.clone();
     match engine
         .handle_report(&tiny_cmd(3, 2, echo.clone(), toggle_float(&victim)), &[])
         .0
@@ -2695,8 +2767,7 @@ fn sticky_clear_refuses_whole_candidate_when_no_space_and_smaller_retry_wins() {
     );
     assert_eq!(highwater, Some(1), "sticky-on consumed its own sequence");
     assert_eq!(engine.restored_sticky, sticky, "sticky retained");
-    assert_eq!(engine.sticky_saved, saved, "no false save staged");
-    assert!(engine.sticky_command_save.is_none(), "no staged save leaks");
+    assert_eq!(engine.intent_desired, saved, "no false save staged");
     assert!(is_floated(&engine, &victim), "victim stays floated");
     assert!(!is_tiled(&engine, &victim), "never retiled by refusal");
     // Smaller retry: the closed filler frees one tile slot; the same
@@ -2718,8 +2789,7 @@ fn sticky_clear_refuses_whole_candidate_when_no_space_and_smaller_retry_wins() {
     }
     assert!(is_tiled(&engine, &victim));
     assert_eq!(
-        decode_intent_data(retry.intent_writes[0].data.as_deref().expect("save"))
-            .expect("save decodes"),
+        (*retry.intent_desired[0].data.as_ref().expect("save")),
         IntentData::new(Some(false), None)
     );
 }
@@ -2736,7 +2806,10 @@ fn null_null_import_caches_exact_saved_without_pending_authority() {
     boot.inventory_complete = false;
     accepted(&mut engine, &boot);
     assert_eq!(
-        engine.sticky_saved.get(&WindowId("win-n".to_owned())),
+        engine
+            .intent_desired
+            .get(&WindowId("win-n".to_owned()))
+            .and_then(|e| e.as_ref()),
         Some(&IntentData::new(None, None)),
         "null/null exact shape cached"
     );
@@ -2770,7 +2843,10 @@ fn conflicting_import_drops_bogus_first_saved_and_latches() {
     boot.inventory_complete = false;
     accepted(&mut engine, &boot);
     assert_eq!(
-        engine.sticky_saved.get(&WindowId("win-a".to_owned())),
+        engine
+            .intent_desired
+            .get(&WindowId("win-a".to_owned()))
+            .and_then(|e| e.as_ref()),
         Some(&IntentData::new(Some(false), Some(false)))
     );
     let second = encode_intent_data(&IntentData::new(Some(true), Some(true)));
@@ -2783,7 +2859,7 @@ fn conflicting_import_drops_bogus_first_saved_and_latches() {
     accepted(&mut engine, &clash);
     assert!(
         !engine
-            .sticky_saved
+            .intent_desired
             .contains_key(&WindowId("win-a".to_owned())),
         "conflict must not leave bogus first prior"
     );
@@ -2807,7 +2883,7 @@ fn conflicting_import_drops_bogus_first_saved_and_latches() {
 
 #[test]
 fn saved_full_import_latches_and_native_still_refuses_after_prune() {
-    use crate::world_report::MAX_INTENT_RECORDS;
+    use crate::world_report::MAX_INTENT_DESIRED;
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
@@ -2816,10 +2892,10 @@ fn saved_full_import_latches_and_native_still_refuses_after_prune() {
             cfact("win-new", "out-a", 100),
         ]),
     );
-    for i in 0..MAX_INTENT_RECORDS {
-        engine.sticky_saved.insert(
+    for i in 0..MAX_INTENT_DESIRED {
+        engine.intent_desired.insert(
             WindowId(format!("win-fill-{i:05}")),
-            IntentData::new(Some(false), None),
+            Some(IntentData::new(Some(false), None)),
         );
     }
     assert!(!engine.sticky_saved_incomplete);
@@ -2836,83 +2912,101 @@ fn saved_full_import_latches_and_native_still_refuses_after_prune() {
     );
     full.intent_records = vec![IntentRecord {
         win: WindowId("win-new".to_owned()),
-        data,
+        data: data.clone(),
     }];
     full.inventory_complete = false;
-    accepted(&mut engine, &full);
+    let revision = engine.state_revision;
+    match engine.handle_report(&full, &[]).0 {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, crate::world_engine::KIND_SNAPSHOT);
+            assert_eq!(message, "section-over-cap");
+        }
+        other => panic!("expected transactional cap refusal, got {other:?}"),
+    }
+    assert_eq!(engine.state_revision, revision, "refusal advances nothing");
+    assert_eq!(engine.intent_desired.len(), MAX_INTENT_DESIRED);
     assert!(
-        engine.sticky_saved_incomplete,
-        "saved cap drop latches incomplete"
+        !engine
+            .intent_desired
+            .contains_key(&WindowId("win-new".to_owned())),
+        "transactional refusal inserts nothing"
+    );
+    assert!(
+        !engine.sticky_saved_incomplete,
+        "transactional refusal never latches incomplete"
     );
     engine
-        .sticky_saved
+        .intent_desired
         .remove(&WindowId("win-fill-00000".to_owned()));
     assert!(
-        engine.sticky_saved.len() < MAX_INTENT_RECORDS,
+        engine.intent_desired.len() < MAX_INTENT_DESIRED,
         "prune frees room"
     );
-    assert!(engine.sticky_saved_incomplete, "latch survives prune");
-    // Fail-closed: a supplied `Some(false)` raw proves the refusal comes
-    // from the latched incomplete prior (the knowledge gate), not an
-    // unreadable null: native observations stay authoritative, so the
-    // known non-sticky fact reaches the exact-prior check and refuses
-    // through the typed operation lane with no save and no binding.
+    let reply = accepted(&mut engine, &full);
+    assert!(
+        !engine.sticky_saved_incomplete,
+        "room lets the import retain without latching"
+    );
+    assert_eq!(
+        engine
+            .intent_desired
+            .get(&WindowId("win-new".to_owned()))
+            .and_then(|entry| *entry),
+        Some(IntentData::new(Some(false), Some(false))),
+        "freed room retains the import"
+    );
+    assert!(
+        reply
+            .intent_desired
+            .iter()
+            .any(|row| row.win == WindowId("win-new".to_owned())),
+        "freed import projects: {:?}",
+        reply.intent_desired
+    );
+}
+
+#[test]
+fn ordinary_save_overflow_latches_and_late_ignored_never_latches() {
+    use crate::world_report::MAX_INTENT_DESIRED;
+    let mut engine = composed_engine();
+    accepted(&mut engine, &bootstrap(vec![cfact("win-a", "out-a", 0)]));
+    for i in 0..MAX_INTENT_DESIRED {
+        engine.intent_desired.insert(
+            WindowId(format!("win-fill-{i:05}")),
+            Some(IntentData::new(Some(false), None)),
+        );
+    }
+    assert!(!engine.sticky_saved_incomplete);
+    let revision = engine.state_revision;
     match engine
         .handle_report(
             &cmd(
-                3,
+                2,
                 1,
-                vec![fact("win-a", "out-a", 0), fact("win-new", "out-a", 100)],
-                set_sticky("win-new", false),
+                vec![cfact("win-a", "out-a", 0)],
+                toggle_float("win-a"),
             ),
             &[],
         )
         .0
     {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "expected knowledge-gate refusal"
-        ),
-        other => panic!("expected knowledge-gate refusal, got {other:?}"),
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, crate::world_engine::KIND_SNAPSHOT);
+            assert_eq!(message, "section-over-cap");
+        }
+        other => panic!("expected transactional cap refusal, got {other:?}"),
     }
-    assert!(engine.sticky_command_save.is_none());
-    assert!(engine.retained_states.is_empty());
-}
-
-#[test]
-fn ordinary_save_overflow_latches_and_late_ignored_never_latches() {
-    use crate::world_report::MAX_INTENT_RECORDS;
-    let mut engine = composed_engine();
-    accepted(&mut engine, &bootstrap(vec![cfact("win-a", "out-a", 0)]));
-    for i in 0..MAX_INTENT_RECORDS {
-        engine.sticky_saved.insert(
-            WindowId(format!("win-fill-{i:05}")),
-            IntentData::new(Some(false), None),
-        );
-    }
-    assert!(!engine.sticky_saved_incomplete);
-    let reply = accepted(
-        &mut engine,
-        &cmd(
-            2,
-            1,
-            vec![cfact("win-a", "out-a", 0)],
-            toggle_float("win-a"),
-        ),
-    );
-    assert_eq!(reply.intent_writes.len(), 1, "ordinary float still emits");
-    assert!(
-        engine.sticky_saved_incomplete,
-        "ordinary save cap drop latches"
-    );
+    assert_eq!(engine.state_revision, revision, "refusal advances nothing");
+    assert_eq!(engine.intent_desired.len(), MAX_INTENT_DESIRED);
     assert!(
         !engine
-            .sticky_saved
+            .intent_desired
             .contains_key(&WindowId("win-a".to_owned())),
-        "overflowed save is not silently kept"
+        "transactional refusal inserts nothing"
+    );
+    assert!(
+        !engine.sticky_saved_incomplete,
+        "transactional refusal never latches incomplete"
     );
     let mut engine2 = composed_engine();
     accepted(&mut engine2, &bootstrap(vec![cfact("win-a", "out-a", 0)]));
@@ -2977,7 +3071,10 @@ fn null_null_first_then_valid_differs_latches_native_refuses() {
     second.inventory_complete = false;
     accepted(&mut engine, &second);
     assert_eq!(
-        engine.sticky_saved.get(&WindowId("win-a".to_owned())),
+        engine
+            .intent_desired
+            .get(&WindowId("win-a".to_owned()))
+            .and_then(|e| e.as_ref()),
         Some(&IntentData::new(None, None)),
         "null/null cached first"
     );
@@ -3005,7 +3102,7 @@ fn null_null_first_then_valid_differs_latches_native_refuses() {
     );
     assert!(
         !engine
-            .sticky_saved
+            .intent_desired
             .contains_key(&WindowId("win-a".to_owned())),
         "bogus null/null prior dropped, newcomer never recached"
     );
@@ -3030,7 +3127,7 @@ fn null_null_first_then_valid_differs_latches_native_refuses() {
         ),
         other => panic!("expected fail-closed native refusal, got {other:?}"),
     }
-    assert!(engine.sticky_command_save.is_none(), "no save staged");
+    assert!(engine.intent_desired.is_empty(), "no save staged");
     assert!(
         !engine
             .retained_states
@@ -3073,7 +3170,10 @@ fn valid_first_then_null_null_differs_latches_native_refuses() {
     second.inventory_complete = false;
     accepted(&mut engine, &second);
     assert_eq!(
-        engine.sticky_saved.get(&WindowId("win-a".to_owned())),
+        engine
+            .intent_desired
+            .get(&WindowId("win-a".to_owned()))
+            .and_then(|e| e.as_ref()),
         Some(&IntentData::new(Some(false), Some(false))),
         "valid shape cached first"
     );
@@ -3101,7 +3201,7 @@ fn valid_first_then_null_null_differs_latches_native_refuses() {
     );
     assert!(
         !engine
-            .sticky_saved
+            .intent_desired
             .contains_key(&WindowId("win-a".to_owned())),
         "bogus valid prior dropped, null/null never overwrites"
     );
@@ -3126,11 +3226,154 @@ fn valid_first_then_null_null_differs_latches_native_refuses() {
         ),
         other => panic!("expected fail-closed native refusal, got {other:?}"),
     }
-    assert!(engine.sticky_command_save.is_none(), "no save staged");
+    assert!(engine.intent_desired.is_empty(), "no save staged");
     assert!(
         !engine
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Sticky)),
         "no native target minted"
     );
+}
+
+#[test]
+fn accepted_mutation_never_drops_desired_target() {
+    // Transactional whole-map budget: an accepted save into room always
+    // retains its target; the reply projects it and the map grows by one.
+    use crate::world_report::MAX_INTENT_DESIRED;
+    let mut engine = composed_engine();
+    accepted(&mut engine, &bootstrap(vec![cfact("win-a", "out-a", 0)]));
+    for i in 0..MAX_INTENT_DESIRED - 1 {
+        engine.intent_desired.insert(
+            WindowId(format!("win-fill-{i:05}")),
+            Some(IntentData::new(Some(false), None)),
+        );
+    }
+    assert_eq!(engine.intent_desired.len(), MAX_INTENT_DESIRED - 1);
+    let mut second = cmd(
+        2,
+        1,
+        vec![cfact("win-a", "out-a", 0)],
+        toggle_float("win-a"),
+    );
+    second.inventory_complete = false;
+    let reply = accepted(&mut engine, &second);
+    assert_eq!(engine.intent_desired.len(), MAX_INTENT_DESIRED);
+    assert!(
+        engine
+            .intent_desired
+            .contains_key(&WindowId("win-a".to_owned())),
+        "accepted mutation retains its target"
+    );
+    assert!(
+        reply
+            .intent_desired
+            .iter()
+            .any(|row| row.win == WindowId("win-a".to_owned())),
+        "accepted reply projects the new target: {:?}",
+        reply.intent_desired
+    );
+    assert!(!engine.sticky_saved_incomplete);
+}
+
+#[test]
+fn import_into_full_map_refuses_transactionally() {
+    // Combined retained-map cap: an import needing one more slot than the
+    // full physical map refuses before mutation with no latch and no
+    // partial insert, even on the incomplete bootstrap-style path.
+    use crate::world_report::MAX_INTENT_DESIRED;
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted(
+        &mut engine,
+        &bootstrap(vec![
+            cfact("win-a", "out-a", 0),
+            cfact("win-new", "out-a", 100),
+        ]),
+    );
+    for i in 0..MAX_INTENT_DESIRED {
+        engine.intent_desired.insert(
+            WindowId(format!("win-fill-{i:05}")),
+            Some(IntentData::new(Some(false), None)),
+        );
+    }
+    assert!(!engine.sticky_saved_incomplete);
+    let data = encode_intent_data(&IntentData::new(Some(false), Some(false)));
+    let mut full = report_full(
+        2,
+        2,
+        vec![screen("out-a", 0)],
+        vec![cfact("win-a", "out-a", 0), cfact("win-new", "out-a", 100)],
+        vec![],
+        "",
+        None,
+        None,
+    );
+    full.intent_records = vec![IntentRecord {
+        win: WindowId("win-new".to_owned()),
+        data,
+    }];
+    full.inventory_complete = false;
+    let revision = engine.state_revision;
+    match engine.handle_report(&full, &[]).0 {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, crate::world_engine::KIND_SNAPSHOT);
+            assert_eq!(message, "section-over-cap");
+        }
+        other => panic!("expected transactional cap refusal, got {other:?}"),
+    }
+    assert_eq!(engine.state_revision, revision, "refusal advances nothing");
+    assert_eq!(engine.intent_desired.len(), MAX_INTENT_DESIRED);
+    assert!(
+        !engine
+            .intent_desired
+            .contains_key(&WindowId("win-new".to_owned())),
+        "refusal inserts nothing"
+    );
+    assert!(
+        !engine.sticky_saved_incomplete,
+        "transactional refusal never latches incomplete"
+    );
+}
+
+#[test]
+fn replacement_at_cap_stays_accepted() {
+    // Same-key replacement never grows the map, so a full map still
+    // accepts an update to an existing retained target.
+    use crate::world_report::MAX_INTENT_DESIRED;
+    let mut engine = composed_engine();
+    accepted(&mut engine, &bootstrap(vec![cfact("win-a", "out-a", 0)]));
+    engine.intent_desired.insert(
+        WindowId("win-a".to_owned()),
+        Some(IntentData::new(Some(false), None)),
+    );
+    for i in 0..MAX_INTENT_DESIRED - 1 {
+        engine.intent_desired.insert(
+            WindowId(format!("win-fill-{i:05}")),
+            Some(IntentData::new(Some(false), None)),
+        );
+    }
+    assert_eq!(engine.intent_desired.len(), MAX_INTENT_DESIRED);
+    let mut second = cmd(
+        2,
+        1,
+        vec![cfact("win-a", "out-a", 0)],
+        toggle_float("win-a"),
+    );
+    second.inventory_complete = false;
+    let reply = accepted(&mut engine, &second);
+    assert_eq!(engine.intent_desired.len(), MAX_INTENT_DESIRED);
+    assert!(
+        engine
+            .intent_desired
+            .contains_key(&WindowId("win-a".to_owned())),
+        "replacement keeps its target"
+    );
+    assert!(
+        reply
+            .intent_desired
+            .iter()
+            .any(|row| row.win == WindowId("win-a".to_owned())),
+        "replacement reply projects the target: {:?}",
+        reply.intent_desired
+    );
+    assert!(!engine.sticky_saved_incomplete);
 }

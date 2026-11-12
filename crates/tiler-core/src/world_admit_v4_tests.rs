@@ -8,7 +8,7 @@ use crate::connection::{ApplicationIdentity, HandshakeRequest, HostCapabilities,
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::ids::{CorrelationId, OwnerId};
-use crate::intent_data::{IntentData, MAX_INTENT_DATA_BYTES, encode_intent_data};
+use crate::intent_data::{IntentData, encode_intent_data};
 use crate::workspace_scope::DisplacedEntry;
 use crate::world_admit_v4::{V4Replay, classify_replay_v4};
 use crate::world_engine::{
@@ -18,7 +18,7 @@ use crate::world_engine::{
 use crate::world_report::{
     AfterShown, AfterShownMember, AfterShownScope, AttemptLaneV4, AuthorityScope,
     CommandRejectKind, CommandResult, FocusRequest, FocusRequestCause, HeldAttemptRow,
-    HeldWindowRow, IntentWrite, MAX_FOCUS_DEPARTING, MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED,
+    HeldWindowRow, IntentDesire, MAX_FOCUS_DEPARTING, MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED,
     MAX_FOCUS_VIEWS, PresentationIngressV4, PresentationRowV4, RowDiagnostic, RowDiagnosticKind,
     RowDiagnosticLane, ScreenReport, SendSource, WORLD_CONTRACT_VERSION_V4, WORLD_MAX_REPLY_BYTES,
     WindowFact, WorldCommand, WorldReportV4, retained_window_fields, validate_after_shown_reason,
@@ -26,7 +26,7 @@ use crate::world_report::{
 };
 use crate::world_report_v4_checks::{graded_effective_v4, report_digest_v4};
 use crate::world_run_v4::V4RunOutcome;
-use crate::world_sizing::max_intent_rollback_bound;
+use crate::world_sizing::max_intent_desired_bound;
 use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4, reply_upper_bound_v4};
 use crate::world_v4_support_tests::{fact, screen};
 
@@ -726,7 +726,7 @@ fn prebound_reply_refusal_is_atomic_then_same_seq_fits() {
             None,
             Vec::new(),
         );
-        reply_upper_bound_v4(&probe, 0, 0, 1, 0, 0).saturating_add(max_intent_rollback_bound(0))
+        reply_upper_bound_v4(&probe, 0, 0, 1, 0, 0).saturating_add(max_intent_desired_bound(0))
     };
     while bound_of(&windows) <= WORLD_MAX_REPLY_BYTES && windows.len() < 10_000 {
         let id = windows.len();
@@ -1092,14 +1092,20 @@ fn forged_staged_reply_never_adopts() {
         other => panic!("expected staged run, got {other:?}"),
     };
     let mut forged = genuine;
-    forged.intent_writes = vec![IntentWrite {
-        win: WindowId("win-a".to_owned()),
-        data: Some("x".repeat(MAX_INTENT_DATA_BYTES + 1)),
-    }];
+    forged.intent_desired = vec![
+        IntentDesire {
+            win: WindowId("win-a".to_owned()),
+            data: None,
+        },
+        IntentDesire {
+            win: WindowId("win-a".to_owned()),
+            data: None,
+        },
+    ];
     match engine.finalize_v4_candidate(staged, &first, digest, forged) {
         V4RunOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT, "intent forgery refuses: {message}");
-            assert_eq!(message, "intent-data-invalid");
+            assert_eq!(message, "duplicate-intent-desire");
         }
         other => panic!("expected snapshot-invalid refusal, got {other:?}"),
     }

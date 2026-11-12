@@ -613,7 +613,7 @@
               }
             ]
           },
-          "intentWrites": [],
+          "intentDesired": [],
           "switchSettled": [],
           "diagnostics": []
         }
@@ -1044,7 +1044,7 @@
               }
             ]
           },
-          "intentWrites": [],
+          "intentDesired": [],
           "switchSettled": [],
           "diagnostics": []
         }
@@ -1525,7 +1525,7 @@
               }
             ]
           },
-          "intentWrites": [],
+          "intentDesired": [],
           "switchSettled": [],
           "diagnostics": []
         }
@@ -1946,7 +1946,7 @@
               }
             ]
           },
-          "intentWrites": [],
+          "intentDesired": [],
           "switchSettled": [],
           "diagnostics": []
         }
@@ -2405,7 +2405,7 @@
               }
             ]
           },
-          "intentWrites": [],
+          "intentDesired": [],
           "switchSettled": [],
           "diagnostics": []
         }
@@ -2886,7 +2886,7 @@
               }
             ]
           },
-          "intentWrites": [],
+          "intentDesired": [],
           "switchSettled": [],
           "diagnostics": []
         }

@@ -455,75 +455,53 @@ pub fn warp_cursor_estimate(warp: &Option<(i32, i32)>) -> usize {
     }
 }
 
-/// Maximum escaped canonical JSON width of one staged sticky/float save
-/// value: the sticky command path stages `IntentData` canonical forms with
-/// an always-present float lane (`Some(true)` on sticky-on, the prior on
-/// sticky-off, `Some(false)` on the sticky-clearing toggle) and a sticky
-/// lane of `true`/`false` (sticky-on) or `null` (sticky-off/clear). The
-/// longest staged forms are
-/// `{"v":1,"float":true,"stickyPrior":false}` and
-/// `{"v":1,"float":false,"stickyPrior":null}`: 40 bytes with six `"`
-/// characters, so [`json_string_len`] spells each as 2 + 40 + 6 = 48.
-/// Every other staged form is shorter (47). Canonical bytes are ASCII
-/// without `\` or C0 controls, so no other escaping applies; opaque
-/// subject ids likewise never escape ([`crate::bounds::is_opaque_id`]).
-pub const MAX_INTENT_SAVE_DATA_JSON: usize = 48;
-
-/// Maximum per-row intent-save write width with array comma: `{"win":,"data":}`
-/// is 16 punctuation plus the longest opaque subject id (128 raw bytes,
-/// never escaped, so 130 quoted) plus [`MAX_INTENT_SAVE_DATA_JSON`], plus
-/// one array comma. Exactly 16 + 130 + 48 + 1 = 195. The comma overcounts
-/// the final row by one, conservatively.
-pub const MAX_INTENT_SAVE_ROW_BYTES: usize = 195;
-
-/// Maximum escaped canonical JSON width of one rollback save value: every
-/// `IntentData` shape the proven-refusal rollback can restore (all nine
-/// `(float, sticky_prior)` combinations, including record-free priors never
-/// carried on this report). The longest canonical form is
+/// Maximum escaped canonical JSON width of one retained intent-desire value:
+/// every `IntentData` shape (all nine `(float, sticky_prior)` combinations)
+/// plus the explicit null clear (`data: null`, 4, cheaper and covered).
+/// The longest canonical form is
 /// `{"v":1,"float":false,"stickyPrior":false}`: 41 bytes with six `"`
-/// characters, so [`json_string_len`] spells it as 2 + 41 + 6 = 49. The
-/// command-path staged family tops out at 48
-/// ([`MAX_INTENT_SAVE_DATA_JSON`]); rollback reserves the wider shape. A
-/// null-clear rollback (`data: null`, 4) is cheaper and stays covered.
-pub const MAX_INTENT_ROLLBACK_DATA_JSON: usize = 49;
+/// characters, so [`json_string_len`] spells it as 2 + 41 + 6 = 49.
+/// Canonical bytes are ASCII without `\` or C0 controls; opaque subject
+/// ids likewise never escape ([`crate::bounds::is_opaque_id`]).
+pub const MAX_INTENT_DESIRED_DATA_JSON: usize = 49;
 
-/// Maximum per-row rollback write width in the published `intentWrites`
+/// Maximum per-row retained desire width in the published `intentDesired`
 /// section: `{"win":,"data":}` is 16 punctuation plus the longest opaque
 /// subject id (128 raw bytes, never escaped, so 130 quoted) plus
-/// [`MAX_INTENT_ROLLBACK_DATA_JSON`], plus one array comma. Exactly
+/// [`MAX_INTENT_DESIRED_DATA_JSON`], plus one array comma. Exactly
 /// 16 + 130 + 49 + 1 = 196. The comma overcounts the final row by one,
 /// conservatively.
-pub const MAX_INTENT_ROLLBACK_ROW_BYTES: usize = 196;
+pub const MAX_INTENT_DESIRED_ROW_BYTES: usize = 196;
 
-/// Pre-mutation bound for queued native sticky rollback writes: one
-/// [`MAX_INTENT_ROLLBACK_ROW_BYTES`] per potentially generated write. The
-/// count is the pending-rollback reserve (every sticky binding with
-/// `sticky_meta` and `!followup_done`, any disposition, plus already-queued
-/// writes), never the report's own `stateAttempts` length, so record-free
-/// priors and commandless proofs reserve alike. Conservative like every
+/// Pre-mutation bound for the whole retained intent-desire map: one
+/// [`MAX_INTENT_DESIRED_ROW_BYTES`] per retained row. The count is the live
+/// retained map length, never a drain queue length. Conservative like every
 /// other [`reply_upper_bound_v4`](crate::world_sizing_v4::reply_upper_bound_v4) term; the exact-encoded staged reply stays
-/// the commit backstop. Kept separate from [`max_intent_save_bound_v4`](crate::world_sizing_v4::max_intent_save_bound_v4) (the
-/// command's own save row, at most 194 with a max-length id).
+/// the commit backstop. Whole-map refusal is transactional, never truncation.
 #[must_use]
-pub fn max_intent_rollback_bound(count: usize) -> usize {
-    count.saturating_mul(MAX_INTENT_ROLLBACK_ROW_BYTES)
+pub fn max_intent_desired_bound(count: usize) -> usize {
+    count.saturating_mul(MAX_INTENT_DESIRED_ROW_BYTES)
 }
 
-/// Structural size estimate for the core intent save/clear section:
-/// `,"intentWrites":[]` (18) when empty; each row
+/// Structural size estimate for the retained core intent-desire section:
+/// `,"intentDesired":[]` (19) when empty; each row
 /// `{"win":S,"data":S|null}` counts 16 fixed punctuation plus the subject
-/// id and the save value (`null` counts 4 when the slot clears).
+/// id and the desire value (`null` counts 4 for an explicit clear, else the
+/// canonical typed encoding).
 #[must_use]
-pub fn intent_writes_estimate(writes: &[crate::world_report::IntentWrite]) -> usize {
-    // `,"intentWrites":[` (17) plus `]` (1) when empty = 18.
-    let mut bytes = 18usize;
+pub fn intent_desired_estimate(writes: &[crate::world_report::IntentDesire]) -> usize {
+    // `,"intentDesired":[` (18) plus `]` (1) when empty = 19.
+    let mut bytes = 19usize;
     for (i, write) in writes.iter().enumerate() {
         if i > 0 {
             bytes += 1;
         }
         // `{"win":,"data":}` = 16 punctuation.
-        bytes +=
-            16 + json_string_len(&write.win.0) + write.data.as_deref().map_or(4, json_string_len);
+        bytes += 16
+            + json_string_len(&write.win.0)
+            + write.data.as_ref().map_or(4, |data| {
+                json_string_len(&crate::intent_data::encode_intent_data(data))
+            });
     }
     bytes
 }
@@ -2571,13 +2549,13 @@ mod target_lane_sizing_tests {
             widest = widest.max(json_string_len(&encode_intent_data(&save)));
         }
         assert_eq!(widest, 48);
-        assert_eq!(MAX_INTENT_SAVE_DATA_JSON, 48);
+        assert_eq!(MAX_INTENT_DESIRED_DATA_JSON, 49);
     }
 
     #[test]
     fn rollback_prior_family_max_is_49_and_rows_fit_bound() {
         use crate::intent_data::{IntentData, encode_intent_data};
-        use crate::world_report::IntentWrite;
+        use crate::world_report::IntentDesire;
         // All nine rollback shapes the proven-refusal path can restore,
         // including the record-free `(None, None)` and the escaped-49
         // `(Some(false), Some(false))` outside the command-save family.
@@ -2599,45 +2577,42 @@ mod target_lane_sizing_tests {
             widest = widest.max(expected);
         }
         assert_eq!(widest, 49);
-        assert_eq!(MAX_INTENT_ROLLBACK_DATA_JSON, 49);
-        assert_eq!(MAX_INTENT_ROLLBACK_ROW_BYTES, 16 + 130 + 49 + 1);
+        assert_eq!(MAX_INTENT_DESIRED_DATA_JSON, 49);
+        assert_eq!(MAX_INTENT_DESIRED_ROW_BYTES, 16 + 130 + 49 + 1);
         // One max-id rollback row costs 195 on the wire; the per-row bound
-        // reserves one comma conservatively.
+        // reserves one comma conservatively. Section header
+        // `,"intentDesired":[` is 18 plus the closing `]` (19 empty), one
+        // byte wider than the old `intentWrites` lane.
         let max_id = "w".repeat(128);
-        let row = IntentWrite {
+        let row = IntentDesire {
             win: crate::directional::WindowId(max_id),
-            data: Some(encode_intent_data(&IntentData::new(
-                Some(false),
-                Some(false),
-            ))),
+            data: Some(IntentData::new(Some(false), Some(false))),
         };
         let writes = vec![row];
-        assert_eq!(intent_writes_estimate(&writes), 18 + 16 + 130 + 49);
-        assert!(intent_writes_estimate(&writes) <= 18 + max_intent_rollback_bound(1));
-        assert_eq!(max_intent_rollback_bound(1), 196);
-        // Three max rows: three bodies plus two commas stay under the bound.
-        let max_rows: Vec<IntentWrite> = (0..3)
-            .map(|i| IntentWrite {
+        assert_eq!(intent_desired_estimate(&writes), 19 + 16 + 130 + 49);
+        assert!(intent_desired_estimate(&writes) <= 19 + max_intent_desired_bound(1));
+        assert_eq!(max_intent_desired_bound(1), 196);
+        // Three max rows: three bodies plus two commas plus the closing `]`
+        // stay under the bound.
+        let max_rows: Vec<IntentDesire> = (0..3)
+            .map(|i| IntentDesire {
                 win: crate::directional::WindowId(format!("w{i}") + &"w".repeat(126)),
-                data: Some(encode_intent_data(&IntentData::new(
-                    Some(false),
-                    Some(false),
-                ))),
+                data: Some(IntentData::new(Some(false), Some(false))),
             })
             .collect();
-        let section = intent_writes_estimate(&max_rows) - 18;
-        assert_eq!(section, 3 * (16 + 130 + 49) + 2);
-        assert!(section <= max_intent_rollback_bound(3));
+        let section = intent_desired_estimate(&max_rows) - 18;
+        assert_eq!(section, 1 + 3 * (16 + 130 + 49) + 2);
+        assert!(section <= 1 + max_intent_desired_bound(3));
         // Rollback plus an unrelated max-id command save share one section:
-        // 195 + 194 + 1 comma = 390 fits the split prebound exactly.
-        let save_row = IntentWrite {
+        // 195 + 194 + 1 comma + 1 closer = 391 fits the split prebound exactly.
+        let save_row = IntentDesire {
             win: crate::directional::WindowId("w".repeat(128)),
-            data: Some(encode_intent_data(&IntentData::new(Some(false), None))),
+            data: Some(IntentData::new(Some(false), None)),
         };
         let both = vec![max_rows[0].clone(), save_row];
-        let both_section = intent_writes_estimate(&both) - 18;
-        assert_eq!(both_section, (16 + 130 + 49) + (16 + 130 + 48) + 1);
-        assert!(both_section <= max_intent_rollback_bound(1) + 194);
+        let both_section = intent_desired_estimate(&both) - 18;
+        assert_eq!(both_section, 1 + (16 + 130 + 49) + (16 + 130 + 48) + 1);
+        assert!(both_section <= 1 + max_intent_desired_bound(1) + 195);
     }
 
     #[test]
@@ -2984,7 +2959,7 @@ mod effect_vocabulary_sizing_tests {
             engine.staged.facts.len() + engine.staged.held_windows.len(),
             engine.retained_publish_footprint(),
         )
-        .saturating_add(max_intent_rollback_bound(engine.rollback_reserve_count()));
+        .saturating_add(max_intent_desired_bound(engine.intent_desired.len()));
         let reply = accepted_v4(&mut engine, &input);
         assert!(
             reply.effects.is_empty(),

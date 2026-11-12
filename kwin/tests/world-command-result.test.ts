@@ -240,7 +240,7 @@ function setup(wins: FakeWindow[], currents: Map<string, string>, floatIntent = 
             focusRequest: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
-            intentWrites: [], switchSettled: [], diagnostics: [],
+            intentDesired: [], switchSettled: [], diagnostics: [],
             presentation: DISABLED_PRESENTATION,
             scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws" }, auth: "controlled", reason: "" }],
             workspaces: [],
@@ -311,7 +311,7 @@ function discover(h: Harness): void {
         ready: true, consumed: false,
         source: autoEnv["source"], nativeInvalid: autoEnv["nativeInvalid"], clock: "1",
         gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
-        intentWrites: [], switchSettled: [], diagnostics: [],
+        intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws" }, auth: "controlled", reason: "" }],
         workspaces: [], outputs: [], windows: [],
@@ -587,7 +587,7 @@ describe("world command result entry", () => {
                 focusRequest: null,
                 operationSettled: [], nativeCreations: [],
                 warpCursor: null,
-                intentWrites: [], switchSettled: [], diagnostics: [],
+                intentDesired: [], switchSettled: [], diagnostics: [],
                 presentation: DISABLED_PRESENTATION,
                 scopes: [
                     { scope: { kind: "workspace", out: "out-b", ws: "ws-1" }, auth: "controlled", reason: "" },
@@ -658,7 +658,7 @@ describe("world command result entry", () => {
                 { ...tiledRow("win-a"), alloc: [162, 122, 475, 355], frame: [162, 122, 475, 355] },
                 tiledRow("win-b"),
             ];
-            accept["intentWrites"] = [{ win: "win-a", data: "{\"v\":1,\"float\":true,\"stickyPrior\":null}" }];
+            accept["intentDesired"] = [{ win: "win-a", data: "{\"v\":1,\"float\":true,\"stickyPrior\":null}" }];
         });
         const floatWrites = h.calls.filter((c) => c.method === "WriteFloatIntent");
         assert.ok(floatWrites.length >= 1, "float decision persists");
@@ -695,7 +695,7 @@ describe("world command result entry", () => {
             focusRequest: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
-            intentWrites: [{ win: "win-a", data: "{\"v\":1,\"float\":false,\"stickyPrior\":null}" }],
+            intentDesired: [{ win: "win-a", data: "{\"v\":1,\"float\":false,\"stickyPrior\":null}" }],
             switchSettled: [], diagnostics: [],
             presentation: DISABLED_PRESENTATION,
             scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws" }, auth: "controlled", reason: "" }],

@@ -71,7 +71,7 @@ function loadReply(): WorldReply {
                 ],
             }],
         },
-        intentWrites: [], switchSettled: [], diagnostics: [],
+        intentDesired: [], switchSettled: [], diagnostics: [],
     }));
     assert.ok(parsed !== null && !isWorldRejection(parsed));
     const reply = parsed as WorldReply;

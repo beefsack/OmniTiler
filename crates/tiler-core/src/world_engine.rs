@@ -1517,18 +1517,21 @@ pub struct WorldEngine {
     /// with [`Self::pending_intent`]/[`Self::intent_conflicts`] (a
     /// pending-to-retained commit holds the joint count steady).
     pub(crate) restored_sticky: BTreeMap<WindowId, bool>,
-    /// Lifetime-scoped exact saved-record knowledge for sticky rollback:
-    /// the last published or first-imported [`IntentData`] per window,
-    /// including nullable imported shapes (never synthesized from the
-    /// current float bool). Established by first accepted imports and by
-    /// prior emitted ToggleFloat/sticky saves; late ignored imports never
-    /// clobber newer runtime state. Pruned on own-process proof, explicit
+    /// Retained per-window intent desire: one authoritative current target
+    /// per window lifetime, bound by `(adapter,gen,win)`. `Some` is the
+    /// exact typed save value; `None` is an explicit desired slot absence
+    /// kept after successful clear. A missing row carries no storage
+    /// authority and never deletes. Established by first accepted imports
+    /// (valid records initialize the target; late imports never overwrite
+    /// runtime intent) and by accepted runtime mutations in execution
+    /// order; refusal rollback replaces with the exact prior. Published by
+    /// projection, never drained. Pruned on own-process proof, explicit
     /// close, proven complete departure, and handshake reset like the
-    /// other intent ledgers. Bounded by [`MAX_INTENT_RECORDS`].
-    pub(crate) sticky_saved: BTreeMap<WindowId, crate::intent_data::IntentData>,
+    /// other intent ledgers. Bounded by [`MAX_INTENT_DESIRED`].
+    pub(crate) intent_desired: BTreeMap<WindowId, Option<crate::intent_data::IntentData>>,
     /// Generation-scoped fail-closed latch for exact saved-record knowledge:
     /// set when a first-admission exact prior is lost to a bound
-    /// (`sticky_saved` or joint-ledger cap) or to conflicting imports, and
+    /// (`intent_desired` or joint-ledger cap) or to conflicting imports, and
     /// reset on handshake (fresh construction). While set, native commands
     /// refuse as unknown even if the maps later shrink, because a pruned
     /// length can no longer prove the prior was `None`. Late ignored
@@ -1541,21 +1544,6 @@ pub struct WorldEngine {
     /// Plain observation never renews it; a fresh explicit command
     /// reauthorizes. Pruned with [`Self::sticky_saved`].
     pub(crate) sticky_visible_rev: BTreeMap<WindowId, u64>,
-    /// Staged sticky command save for the reply being built (execute
-    /// stages, publish drains next unit). At most one per command: only
-    /// the successful accepted transition stages; same-state consumes
-    /// stage nothing; envelope rejections never reach staging.
-    pub(crate) sticky_command_save: Option<crate::world_report::IntentWrite>,
-    /// Staged proven-refusal rollback writes for the reply being built
-    /// (followup stages pre-sweep, publish drains). Latest-wins per window:
-    /// at most one write per lifetime, bounded by the live inventory. The
-    /// write restores the exact pre-command saved record (or null-clears
-    /// when there was none). Drained on commandless, consumed, and
-    /// saturated replies alike; a same-window fresh command save
-    /// supersedes at merge. Envelope rejections drop the whole staged
-    /// candidate, so nothing leaks. Budget prebound in the reply-size
-    /// reservation via [`crate::world_sizing::max_intent_rollback_bound`].
-    pub(crate) sticky_rollback_saves: BTreeMap<WindowId, crate::world_report::IntentWrite>,
     /// Lifetime-scoped save blocks for deferred sticky intent: lifetimes
     /// with a pre-admission `stickyPrior` non-null record. A blocked
     /// lifetime publishes no intent save, even on a later successful
@@ -1933,11 +1921,9 @@ impl WorldEngine {
             intent_admitted: BTreeSet::new(),
             restored_floats: BTreeSet::new(),
             restored_sticky: BTreeMap::new(),
-            sticky_saved: BTreeMap::new(),
+            intent_desired: BTreeMap::new(),
             sticky_saved_incomplete: false,
             sticky_visible_rev: BTreeMap::new(),
-            sticky_command_save: None,
-            sticky_rollback_saves: BTreeMap::new(),
             intent_sticky_blocks: BTreeSet::new(),
             intent_sticky_saturated: false,
             presentation_order_v4: Vec::new(),
@@ -2593,29 +2579,50 @@ impl WorldEngine {
         }
     }
 
-    /// First-accepted exact saved-record store: inserts only when no newer
-    /// runtime save exists (no late clobber). A cap drop latches
-    /// [`Self::sticky_saved_incomplete`] fail-closed instead of silently
-    /// losing the exact prior.
+    /// First-accepted retained desire initializer: inserts only when no
+    /// retained target exists (no late clobber of runtime intent). A cap
+    /// drop latches [`Self::sticky_saved_incomplete`] fail-closed instead
+    /// of silently losing the exact prior.
     pub(crate) fn remember_first_sticky_saved(
         &mut self,
         win: &WindowId,
         data: crate::intent_data::IntentData,
     ) {
-        if self.sticky_saved.contains_key(win) {
+        if self.intent_desired.contains_key(win) {
             return;
         }
-        if self.sticky_saved.len() < crate::world_report::MAX_INTENT_RECORDS {
-            self.sticky_saved.insert(win.clone(), data);
+        if self.intent_desired.len() < crate::world_report::MAX_INTENT_DESIRED {
+            self.intent_desired.insert(win.clone(), Some(data));
+        } else {
+            self.sticky_saved_incomplete = true;
+        }
+    }
+
+    /// Retained desire upsert for accepted runtime mutations, in execution
+    /// order (latest-wins per window). Replacing an existing target is
+    /// always allowed; a new window refuses fail-closed at the cap via the
+    /// caller (admit gate covers it; defensive latch here never truncates
+    /// silently).
+    pub(crate) fn upsert_retained_intent_desire(
+        &mut self,
+        win: &WindowId,
+        data: Option<crate::intent_data::IntentData>,
+    ) {
+        if self.intent_desired.contains_key(win) {
+            self.intent_desired.insert(win.clone(), data);
+            return;
+        }
+        if self.intent_desired.len() < crate::world_report::MAX_INTENT_DESIRED {
+            self.intent_desired.insert(win.clone(), data);
         } else {
             self.sticky_saved_incomplete = true;
         }
     }
 
     /// Conflicting imports invalidate any first-cached exact prior: drop
-    /// the bogus saved record and latch incomplete fail-closed.
+    /// the bogus retained target and latch incomplete fail-closed.
     pub(crate) fn drop_saved_as_conflicting(&mut self, win: &WindowId) {
-        self.sticky_saved.remove(win);
+        self.intent_desired.remove(win);
         self.sticky_saved_incomplete = true;
     }
 
@@ -2635,7 +2642,9 @@ impl WorldEngine {
         }
         let closed: BTreeSet<&WindowId> = observation.closed.iter().collect();
         // Explicit closes end the lifetime: drop every ledger entry and
-        // never store a closed subject.
+        // never store a closed subject. A closed id never survives even
+        // under reuse; a replacement lifetime re-initializes from its own
+        // first accepted import.
         for id in &observation.closed {
             self.pending_intent.remove(id);
             self.intent_conflicts.remove(id);
@@ -2643,9 +2652,8 @@ impl WorldEngine {
             self.restored_floats.remove(id);
             self.restored_sticky.remove(id);
             self.intent_sticky_blocks.remove(id);
-            self.sticky_saved.remove(id);
+            self.intent_desired.remove(id);
             self.sticky_visible_rev.remove(id);
-            self.sticky_rollback_saves.remove(id);
         }
         // Own-process facts prove no import authority: drop pending and
         // conflict entries for proven-own subjects without touching
@@ -2670,9 +2678,8 @@ impl WorldEngine {
             self.restored_floats.remove(id);
             self.restored_sticky.remove(id);
             self.intent_sticky_blocks.remove(id);
-            self.sticky_saved.remove(id);
+            self.intent_desired.remove(id);
             self.sticky_visible_rev.remove(id);
-            self.sticky_rollback_saves.remove(id);
         }
         // Group raw rows by subject; >1 distinct string is a conflict.
         let mut grouped: BTreeMap<&WindowId, BTreeSet<&str>> = BTreeMap::new();
@@ -2736,8 +2743,11 @@ impl WorldEngine {
             // path. Already admitted lifetimes returned above, so late rows
             // never latch.
             let decoded_null = decoded.float.is_none() && decoded.sticky_prior.is_none();
-            let saved_boundary_conflict =
-                self.sticky_saved.get(win).copied().is_some_and(|cached| {
+            let saved_boundary_conflict = self
+                .intent_desired
+                .get(win)
+                .and_then(|cached| *cached)
+                .is_some_and(|cached| {
                     cached != decoded
                         && (decoded_null
                             || (cached.float.is_none() && cached.sticky_prior.is_none()))
@@ -2866,25 +2876,98 @@ impl WorldEngine {
         total
     }
 
-    /// Pre-mutation count of potentially generated native sticky rollback
-    /// writes: every sticky binding with metadata and `!followup_done` (any
-    /// disposition can still settle into a queued rollback on a healthy
-    /// commandless proof or record-free recovery), plus already-queued
-    /// rollback writes. The sum is conservative on overlap (dedup optional):
-    /// a window present in both still fits. Never derived from the report's
-    /// own `stateAttempts` length, so record-free priors reserve alike.
-    pub(crate) fn rollback_reserve_count(&self) -> usize {
-        let pending = self
-            .retained_states
-            .values()
-            .filter(|binding| {
-                binding
-                    .sticky_meta
-                    .as_ref()
-                    .is_some_and(|meta| !meta.followup_done)
+    /// Pre-mutation count of newly stageable retained intent rows: distinct
+    /// save-capable windows in the inline report command plus the parked
+    /// FIFO batch that are not already carrying a retained target.
+    /// Conservative on implicit subjects (unresolved subjects count as new).
+    /// Replacements never grow the map; only genuinely new windows reserve.
+    pub(crate) fn intent_desired_new_rows(
+        &self,
+        inline: Option<&crate::world_report::WorldCommand>,
+        queued: &[(u64, crate::world_report::WorldCommand)],
+    ) -> usize {
+        use crate::world_sizing_v4::is_intent_save_command_v4;
+        use std::collections::BTreeSet;
+        let mut distinct: BTreeSet<String> = BTreeSet::new();
+        let mut implicit_new: usize = 0;
+        let mut inline_key: Option<String> = None;
+        if let Some(command) = inline
+            && is_intent_save_command_v4(command)
+        {
+            if matches!(command, crate::world_report::WorldCommand::Implicit(_)) {
+                implicit_new = implicit_new.saturating_add(1);
+            } else {
+                let key = match crate::world_report::unwrap_implicit(command) {
+                    crate::world_report::WorldCommand::SetSticky { window, .. } => {
+                        Some(window.0.clone())
+                    }
+                    crate::world_report::WorldCommand::ToggleSticky { window } => {
+                        Some(window.0.clone())
+                    }
+                    crate::world_report::WorldCommand::Operation(
+                        crate::boundary::CoreCommand::ToggleFloat { window, .. },
+                    ) => Some(window.clone()),
+                    _ => None,
+                };
+                if let Some(key) = key {
+                    inline_key = Some(key.clone());
+                    distinct.insert(key);
+                }
+            }
+        }
+        for (_, command) in queued {
+            if !is_intent_save_command_v4(command) {
+                continue;
+            }
+            if matches!(command, crate::world_report::WorldCommand::Implicit(_)) {
+                implicit_new = implicit_new.saturating_add(1);
+                continue;
+            }
+            match crate::world_report::unwrap_implicit(command) {
+                crate::world_report::WorldCommand::SetSticky { window, .. } => {
+                    distinct.insert(window.0.clone());
+                }
+                crate::world_report::WorldCommand::ToggleSticky { window } => {
+                    distinct.insert(window.0.clone());
+                }
+                crate::world_report::WorldCommand::Operation(
+                    crate::boundary::CoreCommand::ToggleFloat { window, .. },
+                ) => {
+                    distinct.insert(window.clone());
+                }
+                _ => {}
+            }
+        }
+        if let Some(inline) = inline_key {
+            distinct.remove(&inline);
+            // The inline window counted once below when new; batch distinct
+            // excludes it here so latest-wins collapse is exact.
+            let inline_new = usize::from(
+                !self
+                    .intent_desired
+                    .contains_key(&crate::directional::WindowId(inline.clone())),
+            );
+            let batch_new = distinct
+                .iter()
+                .filter(|id| {
+                    !self
+                        .intent_desired
+                        .contains_key(&crate::directional::WindowId((*id).clone()))
+                })
+                .count();
+            return inline_new
+                .saturating_add(batch_new)
+                .saturating_add(implicit_new);
+        }
+        let batch_new = distinct
+            .iter()
+            .filter(|id| {
+                !self
+                    .intent_desired
+                    .contains_key(&crate::directional::WindowId((*id).clone()))
             })
             .count();
-        pending.saturating_add(self.sticky_rollback_saves.len())
+        batch_new.saturating_add(implicit_new)
     }
 
     /// Latch first successful admissions, commit durable intent, and keep
@@ -2920,7 +3003,7 @@ impl WorldEngine {
             self.restored_floats.remove(&id);
             self.restored_sticky.remove(&id);
             self.intent_sticky_blocks.remove(&id);
-            self.sticky_saved.remove(&id);
+            self.intent_desired.remove(&id);
             self.sticky_visible_rev.remove(&id);
         }
         // Latch first successful admissions: late rows for already
@@ -3295,7 +3378,7 @@ impl WorldEngine {
                 .chain(self.intent_admitted.iter())
                 .chain(self.restored_floats.iter())
                 .chain(self.restored_sticky.keys())
-                .chain(self.sticky_saved.keys())
+                .chain(self.intent_desired.keys())
                 .filter(|id| self.engine_knows_window_any(id) || self.members.contains_key(*id))
                 .cloned()
                 .collect();
@@ -3339,14 +3422,12 @@ impl WorldEngine {
                     || excluded.contains(id)
                     || known.contains(id)
             });
-            self.sticky_saved.retain(|id, _| {
+            self.intent_desired.retain(|id, _| {
                 live.contains(id)
                     || held.contains(id)
                     || excluded.contains(id)
                     || known.contains(id)
             });
-            self.sticky_rollback_saves
-                .retain(|id, _| live.contains(id) || held.contains(id) || excluded.contains(id));
             self.sticky_visible_rev.retain(|id, _| {
                 live.contains(id)
                     || held.contains(id)

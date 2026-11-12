@@ -2,34 +2,37 @@
 //
 // The core owns the inner `data` bytes; this controller stores them unchanged,
 // never interprets inner JSON, and never synthesizes membership. One bounded
-// ReadFloatIntent before the first admissible report hydrates the map; every
-// accepted core `intentWrites` row applies verbatim (string replaces, null
-// deletes) and a change persists the full snapshot through WriteFloatIntent.
+// ReadFloatIntent per generation hydrates the verified durable map before the
+// first admissible report; every accepted core `intentDesired` row replaces
+// that window's latest target (string means exact saved bytes, null means
+// explicit desired slot absence, missing rows carry no storage authority and
+// never delete). The reconciler compares the latest desired target against
+// verified durable storage and persists the converged full snapshot through
+// WriteFloatIntent only on difference; equality means zero disk writes.
 // Same Planner service, intent methods only.
 //
 // v1 membership payloads are unsupported with no conversion: a non-v2 store
-// body degrades empty, the next full write replaces. The byte contents under
-// this controller are never logged: logs carry only the validated
+// body degrades empty, the next covering write replaces. The byte contents
+// under this controller are never logged: logs carry only the validated
 // correlation (or `-`), op, outcome, record counts, and fixed reasons.
 //
-// Fences (never polling, never retry): every read/write carries a nonce plus
-// the sending generation; a stopped controller, a superseded nonce, a
-// rotated generation, or a foreign correlation drops the callback. A
-// hydration that lands after local runtime writes never overwrites them
-// (startup dispatch still proceeds on the runtime data). Any failed seed
+// Fences (never polling, never timer retry): every read/write carries a nonce
+// plus the sending generation; a stopped controller, a superseded nonce, a
+// rotated generation, or a foreign correlation drops the callback. Seed
+// imports touch the durable map only and never overwrite the runtime desired
+// target, so late imports cannot overwrite runtime choices. Any failed seed
 // round (timeout, unreadable, corrupt, malformed, transport, degraded or
-// rejected verdict, unknown outcome) clears the map to the server-empty
-// snapshot (records: []), unless local runtime writes landed first; the
-// next full write replaces the server bytes. A late or failed write settles its completion exactly
-// once and never authorizes dependent native writes: the reply unit reads
-// the explicit boolean. Replies are closed-shape per outcome with exact
-// counts: ok requires stored === returned === records.length,
-// stored requires stored === sent rows; anything else settles degraded
-// (seed) or false (write), never synthesized success.
+// rejected verdict, unknown outcome) clears the durable map to the
+// server-empty snapshot (records: []); the next covering write replaces the
+// server bytes. A late or failed write settles its completion exactly once
+// and never authorizes dependent native writes. Replies are closed-shape per
+// outcome with exact counts: ok requires stored === returned ===
+// records.length, stored requires stored === sent rows; anything else
+// settles degraded (seed) or false (write), never synthesized success.
 
 import { isCorrelationId, isOpaqueId, utf8ByteLength, WORLD_MAX_REPLY_BYTES } from "./world-seq";
 import { normalizeNativeId } from "./native-id";
-import type { WorldIntentWrite } from "./world-report";
+import type { WorldIntentDesire } from "./world-report";
 
 export const INTENT_STORE_VERSION = 2;
 export const INTENT_READ_METHOD = "ReadFloatIntent";
@@ -70,17 +73,34 @@ export interface WorldIntentStore {
     // or degraded). Disabled controllers read hydrated without bus traffic.
     readonly isHydrated: (gen: string | null) => boolean;
     // Fire one bounded read for this generation. Supersedes an outstanding
-    // round; no-ops while that same round is outstanding.
+    // round; no-ops while that same round is outstanding. A new generation
+    // clears the desired target; the durable map is replaced by the seed
+    // verdict (imported or degraded-empty).
     readonly seed: (gen: string | null) => void;
-    // Exact bytes for the live-joined report: only records whose subject is
-    // in the captured native set ride. Out-of-scope records stay stored.
+    // Exact durable bytes for the live-joined report: only records whose
+    // subject is in the captured native set ride. Out-of-scope records stay
+    // stored.
     readonly recordsForReport: (live: ReadonlySet<string>) => WorldIntentRecord[];
-    // Apply accepted core writes verbatim. True when the map changed.
-    readonly incorporateWrites: (writes: ReadonlyArray<WorldIntentWrite>) => boolean;
-    // Persist the full snapshot (out-of-scope records retained; empty
-    // clears). The completion reports explicit success exactly once: true
-    // only on a bound `stored` reply, false on every failure, fence, or
-    // stop. Never authorizes dependent native writes.
+    // Replace the latest desired target with the accepted reply's full
+    // projection. Missing rows carry no authority and leave storage alone;
+    // null is retained as an explicit desired absence. Ignores stale
+    // generations, stopped controllers, and disabled controllers. True when
+    // the desired map changed.
+    readonly setDesired: (
+        desires: ReadonlyArray<WorldIntentDesire>,
+        gen: string | null,
+    ) => boolean;
+    // True when the latest desired target differs from verified durable
+    // storage and a covering write is owed. Equality (including empty
+    // desired) means zero disk writes.
+    readonly needsWrite: () => boolean;
+    // Persist the converged snapshot (durable plus desired applied;
+    // out-of-scope durable records retained; desired null clears). The
+    // completion reports explicit success exactly once: true only on a
+    // bound `stored` reply, false on every failure, fence, or stop. On
+    // success the durable map becomes the captured sent snapshot; newer
+    // desired arrivals stay desired until the next covering write. Never
+    // authorizes dependent native writes.
     readonly persist: (onSettled?: (ok: boolean) => void) => void;
     readonly stop: () => void;
 }
@@ -124,7 +144,10 @@ function isRecordRow(value: unknown): value is { win: string; data: string } {
 }
 
 export function createWorldIntentStore(transport: WorldIntentStoreTransport, enabled: boolean): WorldIntentStore {
-    const records = new Map<string, string>();
+    // Verified durable storage: the last seeded or successfully stored
+    // snapshot. Desired target: the latest accepted core projection.
+    const durable = new Map<string, string>();
+    const desired = new Map<string, string | null>();
     // Last generation whose seed round settled (imported or degraded);
     // undefined before the first settlement.
     let hydratedGen: string | null | undefined;
@@ -133,9 +156,6 @@ export function createWorldIntentStore(transport: WorldIntentStoreTransport, ena
     let seedGen: string | null = null;
     let seedTimerCancel: (() => void) | null = null;
     let seedCorrelation = "-";
-    // Set when accepted core writes land after the seed request: a late
-    // hydration must not overwrite runtime data.
-    let runtimeNewer = false;
     let writeNonce = 0;
     interface WriteFlight {
         done: (ok: boolean) => void;
@@ -171,13 +191,12 @@ export function createWorldIntentStore(transport: WorldIntentStoreTransport, ena
         }
     };
 
-    // Failed-seed clear: every failed/degraded seed round degrades to
-    // empty unless runtime core writes landed after the request. The
-    // cleared snapshot matches the server-empty verdict(bytes never logged).
+    // Failed-seed clear: every failed/degraded seed round degrades the
+    // durable map to empty. Desired targets are never touched: late imports
+    // cannot overwrite runtime choices, and the next covering write
+    // converges the surviving desired target onto the degraded base.
     const degradeClearSeed = (nonce: number, settledGen: string | null, reason: string): void => {
-        if (!runtimeNewer) {
-            records.clear();
-        }
+        durable.clear();
         finishSeed(nonce, settledGen, "degraded", ` reason=${reason} stored=0 returned=0`);
     };
 
@@ -193,7 +212,9 @@ export function createWorldIntentStore(transport: WorldIntentStoreTransport, ena
         const nonce = seedNonce;
         seedOutstanding = nonce;
         seedGen = gen;
-        runtimeNewer = false;
+        // A new generation owns a fresh desired target: late rows from the
+        // dead generation never carry authority here.
+        desired.clear();
         seedCorrelation = `intent-seed-${nonce}`;
         const payload = `{"v":${INTENT_STORE_VERSION},"correlation_id":${JSON.stringify(seedCorrelation)}}`;
         seedTimerCancel = transport.scheduleOnce(INTENT_STORE_TIMEOUT_MS, () => {
@@ -204,8 +225,8 @@ export function createWorldIntentStore(transport: WorldIntentStoreTransport, ena
             if (transport.getGeneration() !== gen) {
                 return;
             }
-            // No server verdict before the deadline: degrade empty (unless
-            // runtime writes landed), still settle so dispatch proceeds.
+            // No server verdict before the deadline: degrade durable empty
+            // (desired survives), still settle so dispatch proceeds.
             degradeClearSeed(nonce, gen, "timeout");
         });
         try {
@@ -282,21 +303,18 @@ export function createWorldIntentStore(transport: WorldIntentStoreTransport, ena
                             degradeClearSeed(nonce, gen, "corrupt");
                             return;
                         }
-                        if (runtimeNewer) {
-                            finishSeed(nonce, gen, "ok-import-skipped", " reason=runtime-newer");
-                            return;
-                        }
-                        records.clear();
+                        // Import durable only; the runtime desired target
+                        // survives every seed verdict.
+                        durable.clear();
                         for (const [win, data] of next) {
-                            records.set(win, data);
+                            durable.set(win, data);
                         }
                         finishSeed(nonce, gen, "ok", ` stored=${next.size} returned=${next.size}`);
                         return;
                     }
                     if (outcome === "degraded") {
                         // Server verdict with an empty snapshot
-                        // (read_degraded_reply): honor the bytes unless local
-                        // runtime writes landed first.
+                        // (read_degraded_reply): honor the bytes.
                         if (!hasExactKeys(r, ["v", "correlation_id", "outcome", "records", "stored", "returned", "reason"])) {
                             degradeClearSeed(nonce, gen, "corrupt");
                             return;
@@ -313,8 +331,7 @@ export function createWorldIntentStore(transport: WorldIntentStoreTransport, ena
                         return;
                     }
                     if (outcome === "rejected") {
-                        // Server verdict (intent_rejection): empty snapshot,
-                        // same honor rule as degraded.
+                        // Server verdict (intent_rejection): empty snapshot.
                         if (!hasExactKeys(r, ["v", "correlation_id", "outcome", "records", "reason"])) {
                             degradeClearSeed(nonce, gen, "corrupt");
                             return;
@@ -338,6 +355,19 @@ export function createWorldIntentStore(transport: WorldIntentStoreTransport, ena
         }
     };
 
+    const desiredEqualsDurable = (): boolean => {
+        for (const [win, data] of desired) {
+            if (data === null) {
+                if (durable.has(win)) {
+                    return false;
+                }
+            } else if (durable.get(win) !== data) {
+                return false;
+            }
+        }
+        return true;
+    };
+
     return {
         enabled,
         isHydrated: (gen: string | null): boolean => {
@@ -352,19 +382,22 @@ export function createWorldIntentStore(transport: WorldIntentStoreTransport, ena
                 return [];
             }
             const out: WorldIntentRecord[] = [];
-            for (const [win, data] of records) {
+            for (const [win, data] of durable) {
                 if (live.has(win)) {
                     out.push({ win, data });
                 }
             }
             return out;
         },
-        incorporateWrites: (writes: ReadonlyArray<WorldIntentWrite>): boolean => {
+        setDesired: (desires: ReadonlyArray<WorldIntentDesire>, gen: string | null): boolean => {
             if (!enabled || stopped || transport.isStopped()) {
                 return false;
             }
-            let changed = false;
-            for (const row of writes) {
+            if (transport.getGeneration() !== gen) {
+                return false;
+            }
+            const next = new Map<string, string | null>();
+            for (const row of desires) {
                 if (typeof row !== "object" || row === null) {
                     continue;
                 }
@@ -374,23 +407,41 @@ export function createWorldIntentStore(transport: WorldIntentStoreTransport, ena
                 }
                 const data = (row as { data?: unknown }).data;
                 if (data === null) {
-                    if (records.delete(win)) {
-                        changed = true;
+                    if (!next.has(win)) {
+                        next.set(win, null);
                     }
                     continue;
                 }
                 if (typeof data !== "string" || utf8ByteLength(data) > INTENT_MAX_DATA_BYTES) {
                     continue;
                 }
-                if (records.get(win) !== data) {
-                    records.set(win, data);
-                    changed = true;
+                if (!next.has(win)) {
+                    next.set(win, data);
                 }
             }
-            if (changed) {
-                runtimeNewer = true;
+            if (next.size === desired.size) {
+                let equal = true;
+                for (const [win, data] of next) {
+                    if (!desired.has(win) || desired.get(win) !== data) {
+                        equal = false;
+                        break;
+                    }
+                }
+                if (equal) {
+                    return false;
+                }
             }
-            return changed;
+            desired.clear();
+            for (const [win, data] of next) {
+                desired.set(win, data);
+            }
+            return true;
+        },
+        needsWrite: (): boolean => {
+            if (!enabled) {
+                return false;
+            }
+            return !desiredEqualsDurable();
         },
         persist: (onSettled?: (ok: boolean) => void): void => {
             const done = (ok: boolean): void => {
@@ -409,12 +460,37 @@ export function createWorldIntentStore(transport: WorldIntentStoreTransport, ena
                 return;
             }
             const gen = transport.getGeneration();
+            // Converged snapshot: durable base plus the latest desired
+            // target applied (string replaces, null clears). Out-of-scope
+            // durable records are retained; desired rows without authority
+            // were never added to the map.
+            const merged = new Map<string, string>(durable);
+            for (const [win, data] of desired) {
+                if (data === null) {
+                    merged.delete(win);
+                } else {
+                    merged.set(win, data);
+                }
+            }
+            const wins = [...merged.keys()].sort();
             const rows: string[] = [];
-            for (const [win, data] of records) {
+            for (const win of wins) {
+                const data = merged.get(win) as string;
                 if (!isOpaqueId(win) || utf8ByteLength(data) > INTENT_MAX_DATA_BYTES) {
                     continue;
                 }
                 rows.push(`{"win":${JSON.stringify(win)},"data":${JSON.stringify(data)}}`);
+            }
+            // Captured snapshot for the completion: on `stored` success the
+            // durable map becomes exactly this, and the latest desired
+            // target is compared afterwards. Never claim a newer target
+            // durable.
+            const captured = new Map<string, string>();
+            for (const win of wins) {
+                const data = merged.get(win) as string;
+                if (isOpaqueId(win) && utf8ByteLength(data) <= INTENT_MAX_DATA_BYTES) {
+                    captured.set(win, data);
+                }
             }
             writeNonce += 1;
             const nonce = writeNonce;
@@ -441,6 +517,12 @@ export function createWorldIntentStore(transport: WorldIntentStoreTransport, ena
                     void error;
                 }
                 pendingWrites.delete(nonce);
+                if (ok) {
+                    durable.clear();
+                    for (const [win, data] of captured) {
+                        durable.set(win, data);
+                    }
+                }
                 transport.log(line);
                 try {
                     done(ok);

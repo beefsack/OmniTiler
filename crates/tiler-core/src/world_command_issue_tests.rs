@@ -396,7 +396,10 @@ fn sticky_toggle_float_clear_restages_staged_facts_only() {
         "clear drops sticky provenance",
     );
     assert_eq!(
-        engine.sticky_saved.get(&win),
+        engine
+            .intent_desired
+            .get(&win)
+            .and_then(|entry| entry.as_ref()),
         Some(&IntentData::new(Some(false), None)),
         "tile-base save adopted from staged facts",
     );
@@ -486,7 +489,10 @@ fn sticky_composed_transition_restages_staged_facts_only() {
         "tiled origin restores with a false prior",
     );
     assert_eq!(
-        engine.sticky_saved.get(&win),
+        engine
+            .intent_desired
+            .get(&win)
+            .and_then(|entry| entry.as_ref()),
         Some(&IntentData::new(Some(true), Some(false))),
         "ON save adopted from staged facts",
     );

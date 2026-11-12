@@ -14,10 +14,10 @@ use crate::boundary::CoreCommand;
 use crate::connection::{HostCapabilities, RawSettingValue};
 use crate::directional::{OutputId, SameAxisMove, WindowId};
 use crate::ids::{CorrelationId, OwnerId};
-use crate::intent_data::{IntentData, decode_intent_data, encode_intent_data};
+use crate::intent_data::IntentData;
 use crate::world_engine::{EventIssue, WorldEngine};
 use crate::world_report::{
-    BatchSettlement, CommandResult, IntentWrite, NativeObservation, NativeOccupancy,
+    BatchSettlement, CommandResult, IntentDesire, NativeObservation, NativeOccupancy,
     NativeWorkspaceFact, PresentationIngressV4, PresentationRowV4, SendSource, TransferKind,
     WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
@@ -840,13 +840,11 @@ fn rapid_input_batch_refusal_keeps_rollback_and_command_saves() {
     engine
         .handle_report_v4_for_test(&observe(1, windows(), "win-a"))
         .expect("admission observes");
-    // Seed a pending refusal rollback save for an untouched live window.
-    engine.sticky_rollback_saves.insert(
+    // Seed a retained desire for an untouched live window (as a prior
+    // proven-refusal rollback would have left it).
+    engine.intent_desired.insert(
         WindowId("win-b".to_owned()),
-        IntentWrite {
-            win: WindowId("win-b".to_owned()),
-            data: Some(encode_intent_data(&IntentData::new(Some(false), None))),
-        },
+        Some(IntentData::new(Some(false), None)),
     );
     let (reply, settlements) = run_batched(
         &mut engine,
@@ -886,7 +884,7 @@ fn rapid_input_batch_refusal_keeps_rollback_and_command_saves() {
         reply.effects
     );
     let mut wins: Vec<String> = reply
-        .intent_writes
+        .intent_desired
         .iter()
         .map(|write| write.win.0.clone())
         .collect();
@@ -895,7 +893,7 @@ fn rapid_input_batch_refusal_keeps_rollback_and_command_saves() {
         wins,
         vec!["win-a".to_owned(), "win-b".to_owned()],
         "command save plus untouched rollback save publish exactly once: {:?}",
-        reply.intent_writes
+        reply.intent_desired
     );
 }
 
@@ -1173,11 +1171,8 @@ fn implicit_set_sticky(value: bool) -> WorldCommand {
     })
 }
 
-fn float_write_pair(write: &IntentWrite) -> (String, IntentData) {
-    (
-        write.win.0.clone(),
-        decode_intent_data(write.data.as_deref().expect("bytes")).expect("decodes"),
-    )
+fn float_write_pair(write: &IntentDesire) -> (String, IntentData) {
+    (write.win.0.clone(), (*write.data.as_ref().expect("bytes")))
 }
 
 #[test]
@@ -1252,9 +1247,9 @@ fn rapid_input_implicit_float_intermediate_save_publishes() {
         reply.command_result, settlements[1].result,
         "the final publication carries the last command's result"
     );
-    assert_eq!(reply.intent_writes.len(), 1, "{:?}", reply.intent_writes);
+    assert_eq!(reply.intent_desired.len(), 1, "{:?}", reply.intent_desired);
     assert_eq!(
-        float_write_pair(&reply.intent_writes[0]),
+        float_write_pair(&reply.intent_desired[0]),
         ("win-b".to_owned(), IntentData::new(Some(true), None)),
         "intermediate implicit float save publishes resolved"
     );
@@ -1281,7 +1276,7 @@ fn rapid_input_mixed_implicit_explicit_float_batch_keeps_both_saves() {
     assert_ready_settlement(&settlements[1]);
     assert_accepted(&reply, "mixed float batch accepts");
     let mut pairs: Vec<(String, IntentData)> =
-        reply.intent_writes.iter().map(float_write_pair).collect();
+        reply.intent_desired.iter().map(float_write_pair).collect();
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(
         pairs,
@@ -1290,7 +1285,7 @@ fn rapid_input_mixed_implicit_explicit_float_batch_keeps_both_saves() {
             ("win-b".to_owned(), IntentData::new(Some(true), None)),
         ],
         "both resolved saves publish: {:?}",
-        reply.intent_writes
+        reply.intent_desired
     );
 }
 
@@ -1322,13 +1317,11 @@ fn rapid_input_implicit_sticky_batch_keeps_command_and_rollback_saves() {
     engine
         .handle_report_v4_for_test(&observe(1, windows(), "win-a"))
         .expect("admission observes");
-    // Seed a pending refusal rollback save for an untouched live window.
-    engine.sticky_rollback_saves.insert(
+    // Seed a retained desire for an untouched live window (as a prior
+    // proven-refusal rollback would have left it).
+    engine.intent_desired.insert(
         WindowId("win-b".to_owned()),
-        IntentWrite {
-            win: WindowId("win-b".to_owned()),
-            data: Some(encode_intent_data(&IntentData::new(Some(false), None))),
-        },
+        Some(IntentData::new(Some(false), None)),
     );
     let (reply, settlements) = run_batched(
         &mut engine,
@@ -1362,7 +1355,7 @@ fn rapid_input_implicit_sticky_batch_keeps_command_and_rollback_saves() {
         reply.effects
     );
     let mut wins: Vec<String> = reply
-        .intent_writes
+        .intent_desired
         .iter()
         .map(|write| write.win.0.clone())
         .collect();
@@ -1371,15 +1364,15 @@ fn rapid_input_implicit_sticky_batch_keeps_command_and_rollback_saves() {
         wins,
         vec!["win-a".to_owned(), "win-b".to_owned()],
         "implicit command save plus untouched rollback save publish exactly once: {:?}",
-        reply.intent_writes
+        reply.intent_desired
     );
     let sticky_write = reply
-        .intent_writes
+        .intent_desired
         .iter()
         .find(|write| write.win.0 == "win-a")
         .expect("resolved sticky save");
     assert_eq!(
-        decode_intent_data(sticky_write.data.as_deref().expect("bytes")).expect("decodes"),
+        (*sticky_write.data.as_ref().expect("bytes")),
         IntentData::new(Some(true), Some(false)),
         "implicit sticky save carries the resolved subject data"
     );
@@ -1410,9 +1403,9 @@ fn rapid_input_single_implicit_float_batch_publishes_resolved_save() {
         reply.command_result, settlements[0].result,
         "the final publication carries the last command's result"
     );
-    assert_eq!(reply.intent_writes.len(), 1, "{:?}", reply.intent_writes);
+    assert_eq!(reply.intent_desired.len(), 1, "{:?}", reply.intent_desired);
     assert_eq!(
-        float_write_pair(&reply.intent_writes[0]),
+        float_write_pair(&reply.intent_desired[0]),
         ("win-b".to_owned(), IntentData::new(Some(true), None)),
         "final-drain implicit float save publishes resolved"
     );
@@ -1474,9 +1467,9 @@ fn rapid_input_implicit_fixed_tile_unfloat_records_tile_save() {
         ),
         other => panic!("expected float result, got {other:?}"),
     }
-    assert_eq!(reply.intent_writes.len(), 1, "{:?}", reply.intent_writes);
+    assert_eq!(reply.intent_desired.len(), 1, "{:?}", reply.intent_desired);
     assert_eq!(
-        float_write_pair(&reply.intent_writes[0]),
+        float_write_pair(&reply.intent_desired[0]),
         ("win-a".to_owned(), IntentData::new(Some(false), None)),
         "implicit fixed unfloat records the exact tile save"
     );
@@ -1761,17 +1754,17 @@ fn rapid_input_save_reserve_covers_inline_implicit_max_id() {
     );
     assert_eq!(
         max_intent_save_bound_v4(&probe),
-        16 + 130 + crate::world_sizing::MAX_INTENT_SAVE_DATA_JSON,
+        16 + 130 + crate::world_sizing::MAX_INTENT_DESIRED_DATA_JSON,
         "implicit inline reserves the max resolved id, not the placeholder"
     );
 }
 
 #[test]
 fn rapid_input_batch_save_bound_covers_distinct_saves() {
-    // The drained FIFO batch stages real intentWrites bytes beyond
+    // The drained FIFO batch stages real intentDesired bytes beyond
     // report.command: the combined inline-plus-batch reserve must cover the
     // exact published section.
-    use crate::world_sizing::intent_writes_estimate;
+    use crate::world_sizing::intent_desired_estimate;
     use crate::world_sizing_v4::{max_intent_save_batch_bound_v4, max_intent_save_bound_v4};
     let mut eng = engine();
     let windows = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
@@ -1796,8 +1789,8 @@ fn rapid_input_batch_save_bound_covers_distinct_saves() {
     ];
     let (reply, settlements) = run_batched(&mut eng, &report, &queued);
     assert_eq!(settlements.len(), 2);
-    assert!(!reply.intent_writes.is_empty(), "batch publishes saves");
-    let exact_section = intent_writes_estimate(&reply.intent_writes);
+    assert!(!reply.intent_desired.is_empty(), "batch publishes saves");
+    let exact_section = intent_desired_estimate(&reply.intent_desired);
     let bound =
         max_intent_save_bound_v4(&report).saturating_add(max_intent_save_batch_bound_v4(&queued));
     // Structural estimator only (same sizing family, not the canonical
@@ -1808,7 +1801,7 @@ fn rapid_input_batch_save_bound_covers_distinct_saves() {
     assert!(
         bound.saturating_add(18) >= exact_section,
         "combined bound must cover the batch section: bound={bound} exact={exact_section} writes={:?}",
-        reply.intent_writes
+        reply.intent_desired
     );
 }
 
@@ -1817,7 +1810,7 @@ fn rapid_input_batch_save_bound_max_widths_and_distinct() {
     // Exact canonical encoding stays under the bound at maximum opaque id
     // widths; repeated explicit subjects count once while each implicit
     // save counts a max row.
-    use crate::world_sizing::{MAX_INTENT_SAVE_DATA_JSON, json_string_len};
+    use crate::world_sizing::{MAX_INTENT_DESIRED_DATA_JSON, json_string_len};
     use crate::world_sizing_v4::{
         is_intent_save_command_v4, max_intent_save_batch_bound_v4, max_intent_save_batch_rows_v4,
     };
@@ -1851,19 +1844,17 @@ fn rapid_input_batch_save_bound_max_widths_and_distinct() {
     assert!(queued.iter().all(|(_, c)| is_intent_save_command_v4(c)));
     assert_eq!(max_intent_save_batch_rows_v4(&queued), 128);
     let bound = max_intent_save_batch_bound_v4(&queued);
-    assert_eq!(bound, 128 * (16 + 130 + MAX_INTENT_SAVE_DATA_JSON + 1));
+    assert_eq!(bound, 128 * (16 + 130 + MAX_INTENT_DESIRED_DATA_JSON + 1));
     // Manual exact section with 128 max-id rows fits under the bound.
-    let writes: Vec<crate::world_report::IntentWrite> = queued
+    let writes: Vec<crate::world_report::IntentDesire> = queued
         .iter()
         .enumerate()
-        .map(|(i, _)| crate::world_report::IntentWrite {
+        .map(|(i, _)| crate::world_report::IntentDesire {
             win: WindowId(format!("w{:0127}", i)),
-            data: Some(crate::intent_data::encode_intent_data(
-                &crate::intent_data::IntentData::new(Some(true), None),
-            )),
+            data: Some(crate::intent_data::IntentData::new(Some(true), None)),
         })
         .collect();
-    let exact = crate::world_sizing::intent_writes_estimate(&writes);
+    let exact = crate::world_sizing::intent_desired_estimate(&writes);
     assert!(
         bound >= exact,
         "max-width bound covers exact: {bound} vs {exact}"
@@ -1883,7 +1874,7 @@ fn rapid_input_batch_save_bound_max_widths_and_distinct() {
     assert_eq!(max_intent_save_batch_rows_v4(&repeated), 1);
     assert_eq!(
         max_intent_save_batch_bound_v4(&repeated),
-        16 + json_string_len("win-a") + MAX_INTENT_SAVE_DATA_JSON + 1
+        16 + json_string_len("win-a") + MAX_INTENT_DESIRED_DATA_JSON + 1
     );
     // Non-save commands reserve nothing.
     let unrelated = vec![(1, focus_cmd("win-a")), (2, focus_cmd("win-b"))];
@@ -1893,25 +1884,24 @@ fn rapid_input_batch_save_bound_max_widths_and_distinct() {
 
 #[test]
 fn rapid_input_batch_rowcap_leaves_batch_unsettled() {
-    // Fixed rowcap: rollback plus inline plus distinct batch saves must fit
-    // MAX_INTENT_WRITES. Seed the rollback map full, then one queued save
-    // must refuse before mutation with empty settlements, leaving the batch
-    // unsettled for the caller (core itself holds no broker queue).
-    use crate::world_report::MAX_INTENT_WRITES;
+    // Fixed rowcap: the whole retained map plus genuinely new rows from the
+    // inline command and the parked batch must fit MAX_INTENT_DESIRED.
+    // Seed the retained map full with unrelated windows, then one queued
+    // save for a new window must refuse before mutation with empty
+    // settlements, leaving the batch unsettled for the caller (core
+    // itself holds no broker queue).
+    use crate::world_report::MAX_INTENT_DESIRED;
     let mut eng = engine();
     let windows = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
     eng.handle_report_v4_for_test(&observe(1, windows(), "win-a"))
         .expect("admission observes");
-    for i in 0..MAX_INTENT_WRITES {
-        eng.sticky_rollback_saves.insert(
+    for i in 0..MAX_INTENT_DESIRED {
+        eng.intent_desired.insert(
             WindowId(format!("win-rb-{i:05}")),
-            IntentWrite {
-                win: WindowId(format!("win-rb-{i:05}")),
-                data: Some(encode_intent_data(&IntentData::new(Some(false), None))),
-            },
+            Some(IntentData::new(Some(false), None)),
         );
     }
-    assert_eq!(eng.sticky_rollback_saves.len(), MAX_INTENT_WRITES);
+    assert_eq!(eng.intent_desired.len(), MAX_INTENT_DESIRED);
     let queued = vec![(
         1,
         WorldCommand::Operation(CoreCommand::ToggleFloat {
@@ -1943,8 +1933,8 @@ fn rapid_input_batch_rowcap_leaves_batch_unsettled() {
         "rowcap refusal consumes no sequence"
     );
     assert_eq!(
-        eng.sticky_rollback_saves.len(),
-        MAX_INTENT_WRITES,
+        eng.intent_desired.len(),
+        MAX_INTENT_DESIRED,
         "rowcap refusal mutates no ledger"
     );
     assert_eq!(

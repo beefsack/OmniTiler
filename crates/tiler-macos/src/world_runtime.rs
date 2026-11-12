@@ -158,11 +158,11 @@ pub(crate) struct WorldSession {
     /// still apply; omitted keys diagnose `Missing` with core defaults.
     initial_settings: Option<tiler_core::connection::SettingsReply>,
     /// Session-lifetime fail-closed latch for unpersisted opaque intent
-    /// saves: set when an applied reply carries nonempty `intent_writes`
+    /// desires: set when an applied reply carries nonempty `intent_desired`
     /// (no durable backend exists, so nothing is persisted). Once set it
-    /// never clears — later replies without writes stay held. Ordinary
-    /// admission/reflow emits no saves, so this never fires honestly.
-    unpersisted_intent_writes: bool,
+    /// never clears - later replies without desires stay held. Ordinary
+    /// admission/reflow emits no desires, so this never fires honestly.
+    unpersisted_intent_desired: bool,
 }
 
 impl WorldSession {
@@ -224,7 +224,7 @@ impl WorldSession {
                 presentation_style: crate::active_border::PresentationStylePx::default(),
                 connection_bound: false,
                 initial_settings: None,
-                unpersisted_intent_writes: false,
+                unpersisted_intent_desired: false,
             };
         };
         // `seed` mints the bound generation below, so the constructor always
@@ -262,7 +262,7 @@ impl WorldSession {
             presentation_style: crate::active_border::PresentationStylePx::default(),
             connection_bound,
             initial_settings,
-            unpersisted_intent_writes: false,
+            unpersisted_intent_desired: false,
         }
     }
 
@@ -284,14 +284,14 @@ impl WorldSession {
     /// Whether the session already holds unpersisted intent writes
     /// (fail-closed latch, session lifetime).
     pub(crate) fn unpersisted_intent_hold(&self) -> bool {
-        self.unpersisted_intent_writes
+        self.unpersisted_intent_desired
     }
 
     /// Latch unpersisted intent writes for the session lifetime. Never
     /// cleared: no durability backend exists, so no later reply can prove
     /// persistence.
-    pub(crate) fn mark_unpersisted_intent_writes(&mut self) {
-        self.unpersisted_intent_writes = true;
+    pub(crate) fn mark_unpersisted_intent_desired(&mut self) {
+        self.unpersisted_intent_desired = true;
     }
 
     /// Adapter incarnation bound into every report.

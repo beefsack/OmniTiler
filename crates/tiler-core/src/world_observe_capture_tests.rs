@@ -21,7 +21,7 @@ use crate::world_members::MemberState;
 use crate::world_report::{
     ArrivalBracket, ArrivalLocation, AttemptLaneV4, AttemptOutcome, AuthorityScope, ClearAttempt,
     CommandResult, EffectCause, FocusFeedback, FrameAttempt, FrameSetter, HeldAttemptRow,
-    HeldNativeRow, HeldScreenRow, HeldWindowRow, HoldReason, IntentRecord, IntentWrite, LastWrite,
+    HeldNativeRow, HeldScreenRow, HeldWindowRow, HoldReason, IntentRecord, LastWrite,
     LastWritePath, LastWriteProperty, MemberAttempt, NativeCreationAttempt, NativeObservation,
     NativeOccupancy, NativeWorkspaceFact, OneShotEffect, OutputIdentity, PresentationIngressV4,
     PresentationRowV4, RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind,
@@ -262,7 +262,7 @@ fn restage_after_command_mutation_does_not_reingest() {
     subject.pending_intent.remove(&win);
     subject.intent_conflicts.remove(&win);
     let save = IntentData::new(Some(false), None);
-    subject.sticky_saved.insert(win.clone(), save);
+    subject.intent_desired.insert(win.clone(), Some(save));
     // Restaging the same report (still carrying the import row) must
     // not re-add pending, latch a conflict, or disturb the command's
     // saved state.
@@ -272,7 +272,10 @@ fn restage_after_command_mutation_does_not_reingest() {
         "restage must not reingest cleared intent"
     );
     assert!(!subject.intent_conflicts.contains(&win));
-    assert_eq!(subject.sticky_saved.get(&win), Some(&save));
+    assert_eq!(
+        subject.intent_desired.get(&win).and_then(|e| e.as_ref()),
+        Some(&save)
+    );
     // Classification still runs against the command-cleared ledgers:
     // with no pending float the fact classifies tiled.
     assert!(
@@ -355,7 +358,7 @@ fn restage_classification_matches_intake_and_conserves_effective() {
     engine.pending_intent.remove(&win);
     engine.intent_conflicts.remove(&win);
     let save = IntentData::new(Some(false), None);
-    engine.sticky_saved.insert(win.clone(), save);
+    engine.intent_desired.insert(win.clone(), Some(save));
     engine.restage_classification();
     assert!(
         engine
@@ -374,7 +377,10 @@ fn restage_classification_matches_intake_and_conserves_effective() {
         "restage must not reingest cleared intent"
     );
     assert!(!engine.intent_conflicts.contains(&win));
-    assert_eq!(engine.sticky_saved.get(&win), Some(&save));
+    assert_eq!(
+        engine.intent_desired.get(&win).and_then(|e| e.as_ref()),
+        Some(&save)
+    );
 }
 
 /// Every raw observation lane with at least two distinct rows per
@@ -1780,13 +1786,7 @@ fn seed_canonical_ledgers(engine: &mut WorldEngine, window: &str, output: &str) 
     engine
         .excluded_intent
         .insert(id.clone(), ExcludedIntent::default());
-    engine.sticky_rollback_saves.insert(
-        id.clone(),
-        IntentWrite {
-            win: id,
-            data: None,
-        },
-    );
+    engine.intent_desired.insert(id.clone(), None);
 }
 
 #[test]
@@ -1832,16 +1832,16 @@ fn lifetime_prune_canonical_and_intent_ledger_discriminators() {
         "exclusion ledger keeps live/excluded only, never held-only"
     );
     assert!(
-        engine.sticky_rollback_saves.contains_key(&id),
-        "rollback saves retain held rows"
+        engine.intent_desired.contains_key(&id),
+        "retained desire retains held rows"
     );
 }
 
 #[test]
 fn lifetime_prune_known_arm_saves_pending_only() {
-    // Engine/member-known presence retains pending intent but neither
-    // rollback saves nor the exclusion ledger: those two have no known
-    // arm by design.
+    // Engine/member-known presence retains pending intent and the retained
+    // desire (known-arm inclusive); the exclusion ledger has no known arm
+    // by design.
     let mut engine = engine();
     seed_canonical_ledgers(&mut engine, "win-a", "out-a");
     engine.members.insert(
@@ -1869,8 +1869,8 @@ fn lifetime_prune_known_arm_saves_pending_only() {
         "member-known lifetime keeps pending intent"
     );
     assert!(
-        !engine.sticky_rollback_saves.contains_key(&id),
-        "rollback saves have no known-only retention"
+        engine.intent_desired.contains_key(&id),
+        "retained desire has known-only retention"
     );
     assert!(
         !engine.excluded_intent.contains_key(&id),
@@ -8597,7 +8597,11 @@ fn staged_native_sticky_followup_uses_staged_gates_and_original_seq() {
             .contains_key(&WindowId("win-a".to_owned()))
     );
     assert_eq!(engine.command_highwater, Some(7));
-    assert!(engine.sticky_command_save.is_none());
+    assert!(
+        !engine
+            .intent_desired
+            .contains_key(&WindowId("win-a".to_owned()))
+    );
     assert!(engine.command_result.is_none());
     let binding = engine
         .retained_states
@@ -8615,8 +8619,8 @@ fn staged_native_sticky_followup_uses_staged_gates_and_original_seq() {
 }
 
 /// v4-staged proven-refusal rollback: `run_native_sticky_followups` driven
-/// directly off a v4 capture restores the exact pre-command runtime, queues
-/// one null-clear write for a prior-less producer, and leaves the original
+/// directly off a v4 capture restores the exact pre-command runtime, stores
+/// one explicit null clear for a prior-less producer, and leaves the original
 /// producer seq/revision untouched under a distinct followup issue.
 /// Held scopes and incomplete inventory retain proof with no write.
 #[test]
@@ -8635,8 +8639,8 @@ fn v4_staged_native_sticky_refused_proven_rolls_back_with_original_seq() {
         // Runtime after an ON producer from a tiled base.
         engine.restored_sticky.insert(win.clone(), false);
         engine
-            .sticky_saved
-            .insert(win.clone(), IntentData::new(Some(true), Some(false)));
+            .intent_desired
+            .insert(win.clone(), Some(IntentData::new(Some(true), Some(false))));
         let member = engine.members.get_mut(&win).expect("member seeded");
         member.floating = true;
         engine.retained_states.insert(
@@ -8689,7 +8693,14 @@ fn v4_staged_native_sticky_refused_proven_rolls_back_with_original_seq() {
     held_engine.run_native_sticky_followups(&issue, &held);
     let held_binding = binding_of(&held_engine);
     assert!(!held_binding.sticky_meta.expect("meta").followup_done);
-    assert!(held_engine.sticky_rollback_saves.is_empty());
+    assert_eq!(
+        held_engine
+            .intent_desired
+            .get(&win)
+            .and_then(|e| e.as_ref()),
+        Some(&IntentData::new(Some(true), Some(false))),
+        "held retains proof with no write"
+    );
     assert!(held_engine.restored_sticky.contains_key(&win));
     // Incomplete inventory retains proof the same way.
     let mut gapped_engine = setup();
@@ -8697,7 +8708,14 @@ fn v4_staged_native_sticky_refused_proven_rolls_back_with_original_seq() {
     gapped_engine.run_native_sticky_followups(&issue, &BTreeSet::new());
     let gapped_binding = binding_of(&gapped_engine);
     assert!(!gapped_binding.sticky_meta.expect("meta").followup_done);
-    assert!(gapped_engine.sticky_rollback_saves.is_empty());
+    assert_eq!(
+        gapped_engine
+            .intent_desired
+            .get(&win)
+            .and_then(|e| e.as_ref()),
+        Some(&IntentData::new(Some(true), Some(false))),
+        "gap retains proof with no write"
+    );
     // Healthy run: prior runtime restored through fresh restage.
     let mut engine = setup();
     engine.run_native_sticky_followups(&issue, &BTreeSet::new());
@@ -8710,22 +8728,23 @@ fn v4_staged_native_sticky_refused_proven_rolls_back_with_original_seq() {
     assert_eq!(member.home, home);
     assert!(!member.floating);
     assert_eq!(engine.staged_homing(&win).as_ref(), Some(&home));
-    // Prior-less producer: save slot returns to absence with exactly
-    // one null-clear rollback write.
-    assert!(!engine.sticky_saved.contains_key(&win));
+    // Prior-less producer: retained desire holds an explicit null clear.
     assert_eq!(
-        engine.sticky_rollback_saves.get(&win),
-        Some(&IntentWrite {
-            win: win.clone(),
-            data: None,
-        })
+        engine.intent_desired.get(&win),
+        Some(&None),
+        "prior-less rollback stores explicit clear"
     );
     // Original producer identity untouched by the distinct issue.
     assert_eq!(binding.target.revision, 1);
     assert_eq!(meta.command_seq, Some(7));
-    // Exactly-once queue: a second run writes nothing new.
+    // Exactly-once retained target: a second run writes nothing new.
     engine.run_native_sticky_followups(&issue, &BTreeSet::new());
-    assert_eq!(engine.sticky_rollback_saves.len(), 1);
+    assert_eq!(
+        engine.intent_desired.get(&win),
+        Some(&None),
+        "second run retains the clear"
+    );
+    assert_eq!(engine.intent_desired.len(), 1);
 }
 
 #[test]

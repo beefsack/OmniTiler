@@ -200,7 +200,7 @@ function acceptedAutoReply(gen: string, source: string, nativeInvalid: string, r
         focusRequest: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
-        intentWrites: [], switchSettled: [], diagnostics: [],
+        intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
     });

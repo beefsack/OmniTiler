@@ -1563,7 +1563,7 @@ fn golden_bootstrap_reply_bytes_lock_wire_shape() {
         \"border\":{\"visible\":false,\"reason\":\"\",\"subject\":null,\"outsets\":null,\
         \"width\":null,\"radius\":null,\"witness\":null},\
         \"underlay\":{\"status\":\"hidden\",\"reason\":\"no-group\",\"baseRev\":null},\"pager\":[]},\
-        \"intentWrites\":[],\"switchSettled\":[],\"diagnostics\":[]}"
+        \"intentDesired\":[],\"switchSettled\":[],\"diagnostics\":[]}"
     );
 }
 

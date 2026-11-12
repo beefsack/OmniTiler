@@ -304,7 +304,7 @@ fn clean_publish_authorizes_without_holds() {
     assert_eq!(reply.gesture_settled, None);
     assert!(reply.operation_settled.is_empty());
     assert!(reply.switch_settled.is_empty());
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert_eq!(reply.cursor_warp, None);
     assert_eq!(reply.presentation.foreground, "win-a");
     assert_eq!(reply.presentation.rev, 7);

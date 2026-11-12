@@ -900,7 +900,7 @@ acceptance or adopt the separate close-focus amendment.
 | `nativeCreations` | NativeCreationDesire[] | no | Only authorization for native desktop creation. |
 | `warpCursor` | Point | yes | Core-decided cursor target. |
 | `presentation` | WorldPresentation | no | Full accepted rendering publication. |
-| `intentWrites` | IntentWrite[] | no | Core save/clear decisions. |
+| `intentDesired` | IntentDesire[] | no | Complete retained per-window storage targets, including explicit clears. |
 | `switchSettled` | SwitchEvent[] | no | Terminal event on existing transfer/view parent. |
 | `diagnostics` | RowDiagnostic[] | no | Narrow held-row errors. |
 
@@ -1186,6 +1186,38 @@ acceptance or adopt the separate close-focus amendment.
   slots and pre-loaded atomic stores both satisfy it. Native delivery of that
   ordering remains a port acceptance check, not proof from offline import tests.
 
+- `intentDesired` is required and unique by `win`, replacing the one-time storage
+  lane in place in v4. No alias, version bump or compatibility path exists.
+  Core retains one typed target per `(adapter,gen,win)` lifetime, independent of
+  visible `WindowDesire` rows. Publications project the complete retained map,
+  never drain it, including observation-only and consumed-command replies.
+  Accepted mutations replace the target in command order; rejected mutations
+  leave it unchanged. Proven native sticky refusal restores the prior record or
+  explicit null clear under the existing rollback rule; storage failure is not
+  native refusal. Null remains retained after a successful clear; a missing row
+  carries no storage authority and never means deletion.
+- Accepted valid imports initialize desired storage before admission. Late imports
+  never overwrite runtime intent. Protocol encoding is canonical, so an accepted
+  noncanonical record may be rewritten once per window; no byte-preserving import
+  special case exists. Retain targets through holds, minimize and incomplete
+  omission; forget on proven lifetime end or complete departure. Old-generation
+  replies and old-window identifiers never authorize writes to replacements.
+- Durability is adapter-local, with no new report field. Reconcile latest accepted
+  desire against verified storage or the last successfully persisted snapshot,
+  not pending data. Equal targets cause zero disk writes. Unknown/different values
+  require atomic save/clear before that reply's dependent native application;
+  preserve the whole-reply hold on failure. Retry on every later accepted reply
+  while unequal, with no timer or recovery signal. Serialize storage calls and
+  correlate their actual success; completion records the captured persisted
+  snapshot, compares it with the latest desire and never resumes an obsolete
+  issuing-reply continuation or proves a newer target durable.
+- Reconnect preserves verified storage knowledge; lost knowledge requires storage
+  and lifetime verification. Restart preloads lifetime-bound imports before first
+  admission. The entire retained map, including clears, must fit the 10,000-row,
+  1024-byte-per-value and 4 MiB whole-reply bounds: refuse overbound candidates
+  transactionally, never truncate. No sequence, acknowledgement or attempt lane
+  is added for repeatable storage replacement.
+
 - Composed maximize is runtime-only: orderly restart drops it and restores base,
   with no maximize field or base-geometry extension in this record. This adds no
   M3 persistence dependency; intentional-float/sticky restart obligations remain.
@@ -1194,7 +1226,7 @@ acceptance or adopt the separate close-focus amendment.
 | --- | --- | --- | --- | --- |
 | `IntentRecord` | `win` | WindowId | no | Storage's verified live subject. |
 | | `data` | opaque bounded string | no | Exact core record, no adapter edits. |
-| `IntentWrite` | `win` | WindowId | no | Exact subject. |
+| `IntentDesire` | `win` | WindowId | no | Exact retained lifetime subject. |
 | | `data` | opaque bounded string | yes | Save value; null explicitly clears the lifetime-bound slot. |
 | Core intent data (inside string) | `v` | integer 1 | no | Storage format version, independent of wire v. |
 | | `float` | bool | yes | Explicit float/tile override; null means no override. |

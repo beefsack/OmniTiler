@@ -105,7 +105,13 @@ fn restore_float_true_floats_at_native_frame_without_ops() {
         vec![record("win-a", &float_true())],
     );
     let reply = accepted(&mut engine, &report);
-    assert!(reply.intent_writes.is_empty());
+    // Q4: valid import initializes retained desire and projects it.
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), None))
+    );
     assert!(is_floated(&engine, "win-a"));
     let row = row_for(&reply, "win-a").expect("float row");
     assert!(row.frame_operation.is_none(), "{row:?}");
@@ -131,7 +137,11 @@ fn restore_tile_false_nonfixed_survives_hints_and_exclusion() {
         vec![record("win-a", &tile_false())],
     );
     let reply = accepted(&mut engine, &report);
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
@@ -153,7 +163,12 @@ fn restore_tile_false_nonfixed_survives_hints_and_exclusion() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    // Retained desire projects on every reply, even without new records.
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(
         is_tiled(&engine, "win-a"),
         "hint change must keep explicit tile"
@@ -189,7 +204,11 @@ fn restore_tile_false_nonfixed_survives_hints_and_exclusion() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(
         is_tiled(&engine, "win-a"),
         "exclusion recovery must keep explicit tile"
@@ -218,7 +237,8 @@ fn pending_survives_held_and_gap_then_admits() {
     gapped.inventory_complete = false;
     let gapped = with_records(gapped, vec![record("win-a", &tile_false())]);
     let reply = accepted(&mut engine, &gapped);
-    assert!(reply.intent_writes.is_empty());
+    // Held bootstrap stages pending without projecting yet.
+    assert!(reply.intent_desired.is_empty());
     assert!(!is_tiled(&engine, "win-a"));
     assert!(
         engine
@@ -240,7 +260,11 @@ fn pending_survives_held_and_gap_then_admits() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(is_tiled(&engine, "win-a"));
 }
 
@@ -279,7 +303,7 @@ fn first_admission_without_record_ignores_late_record() {
             vec![record("win-a", &float_true())],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert!(is_tiled(&engine, "win-a"), "late record must not refloat");
 }
 
@@ -307,11 +331,11 @@ fn same_report_command_supersedes_restore() {
     // deterministic per sequence.
     report.request_seq = 1;
     let reply = accepted(&mut engine, &report);
-    assert_eq!(reply.intent_writes.len(), 1);
-    assert_eq!(reply.intent_writes[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(reply.intent_desired.len(), 1);
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
     assert_eq!(
-        reply.intent_writes[0].data.as_deref(),
-        Some(float_true().as_str())
+        reply.intent_desired[0].data.as_ref(),
+        Some(&IntentData::new(Some(true), None))
     );
     assert!(
         is_floated(&engine, "win-a"),
@@ -324,6 +348,38 @@ fn invalid_records_confer_no_authority() {
     for data in [
         "not-json".to_owned(),
         "{\"v\":2,\"float\":true,\"stickyPrior\":null}".to_owned(),
+    ] {
+        let mut engine = engine();
+        let reply = accepted(
+            &mut engine,
+            &with_records(
+                report_full(
+                    1,
+                    1,
+                    vec![screen("out-a", 0)],
+                    vec![fixed_fact("win-a", "out-a", 0)],
+                    vec![],
+                    "",
+                    None,
+                    None,
+                ),
+                vec![record("win-a", &data)],
+            ),
+        );
+        assert!(reply.intent_desired.is_empty(), "{data}");
+        // Fixed hints with no usable override float automatically.
+        assert!(is_floated(&engine, "win-a"), "{data}");
+        assert!(engine.pending_intent.is_empty(), "{data}");
+        assert!(engine.intent_conflicts.is_empty(), "{data}");
+    }
+}
+
+#[test]
+fn valid_null_and_sticky_records_initialize_retained_desire() {
+    // Q4: valid accepted imports initialize the retained desire owner,
+    // even under fixed hints (hints alter classification, not storage
+    // authority). Malformed/version-invalid above stay empty; these project.
+    for data in [
         encode_intent_data(&IntentData::new(None, None)),
         encode_intent_data(&IntentData::new(Some(true), Some(false))),
         encode_intent_data(&IntentData::new(Some(false), Some(true))),
@@ -345,10 +401,12 @@ fn invalid_records_confer_no_authority() {
                 vec![record("win-a", &data)],
             ),
         );
-        assert!(reply.intent_writes.is_empty(), "{data}");
-        // Fixed hints with no usable override float automatically.
+        assert_eq!(reply.intent_desired.len(), 1, "{data}");
+        assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+        let decoded = crate::intent_data::decode_intent_data(&data).expect("valid");
+        assert_eq!(reply.intent_desired[0].data, Some(decoded), "{data}");
+        // Fixed hints still float; the retained desire is independent.
         assert!(is_floated(&engine, "win-a"), "{data}");
-        assert!(engine.pending_intent.is_empty(), "{data}");
         assert!(engine.intent_conflicts.is_empty(), "{data}");
     }
 }
@@ -375,7 +433,7 @@ fn conflicting_duplicates_confer_no_winner() {
             ],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     // Conflict: fixed hints float automatically, never an explicit tile win.
     assert!(is_floated(&engine, "win-a"));
     assert!(
@@ -400,7 +458,7 @@ fn conflicting_duplicates_confer_no_winner() {
             vec![record("win-a", &tile_false())],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert!(
         !engine
             .engine
@@ -427,7 +485,7 @@ fn pre_first_fact_incomplete_record_admits_on_complete() {
         &mut engine,
         &with_records(report, vec![record("win-a", &float_true())]),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert!(
         engine
             .pending_intent
@@ -455,7 +513,12 @@ fn pre_first_fact_incomplete_record_admits_on_complete() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), None))
+    );
     assert!(is_floated(&engine, "win-a"));
 }
 
@@ -480,7 +543,7 @@ fn own_process_record_restores_nothing() {
             vec![record("win-self", &float_true())],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert!(
         !engine
             .members
@@ -527,7 +590,7 @@ fn close_and_complete_departure_prune() {
     closed.closed = vec![WindowId("win-a".to_owned())];
     let closed = with_records(closed, vec![record("win-a", &tile_false())]);
     let reply = accepted(&mut engine, &closed);
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert!(
         !engine
             .pending_intent
@@ -568,12 +631,15 @@ fn close_and_complete_departure_prune() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    // The complete departure prunes the ledger; the reply publishes
+    // nothing for the proven-departed target.
+    assert!(reply.intent_desired.is_empty(), "{reply:?}");
     assert!(
         !engine
             .pending_intent
             .contains_key(&WindowId("win-z".to_owned()))
     );
+    assert!(engine.intent_desired.is_empty(), "pruned on departure");
 }
 
 #[test]
@@ -653,7 +719,9 @@ fn duplicate_and_oversize_are_non_mutating() {
 #[test]
 fn complete_record_only_orphan_never_retains() {
     let mut engine = engine();
-    // Complete inventory carrying a record but no fact: no retention.
+    // Complete inventory carrying a record but no fact proves no
+    // lifetime: the reply publishes nothing and the footprint-free prune
+    // drops it, so no ledger retains it.
     let reply = accepted(
         &mut engine,
         &with_records(
@@ -670,9 +738,10 @@ fn complete_record_only_orphan_never_retains() {
             vec![record("win-a", &tile_false())],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty(), "{reply:?}");
     assert!(engine.pending_intent.is_empty());
     assert!(engine.intent_conflicts.is_empty());
+    assert!(engine.intent_desired.is_empty(), "pruned footprint-free");
     assert!(!is_tiled(&engine, "win-a"));
 
     // Incomplete inventory retains the orphan; a complete departure prunes it.
@@ -709,11 +778,64 @@ fn complete_record_only_orphan_never_retains() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert!(engine.pending_intent.is_empty());
     assert!(engine.intent_conflicts.is_empty());
     assert!(engine.intent_admitted.is_empty());
     assert!(engine.restored_floats.is_empty());
+}
+
+#[test]
+fn retained_desire_discriminator_live_publishes_departed_never_does() {
+    // Discriminator for the retained owner projection: a live target
+    // (fact present) publishes its retained row, while a target with
+    // proven complete departure (record but no fact, hold, exclusion,
+    // or knowledge) publishes nothing.
+    let mut live = engine();
+    let reply = accepted(
+        &mut live,
+        &with_records(
+            report_full(
+                1,
+                1,
+                vec![screen("out-a", 0)],
+                vec![fact("win-a", "out-a", 100)],
+                vec![],
+                "",
+                None,
+                None,
+            ),
+            vec![record("win-a", &tile_false())],
+        ),
+    );
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
+
+    let mut departed = engine();
+    let reply = accepted(
+        &mut departed,
+        &with_records(
+            report_full(
+                1,
+                1,
+                vec![screen("out-a", 0)],
+                vec![],
+                vec![],
+                "",
+                None,
+                None,
+            ),
+            vec![record("win-a", &tile_false())],
+        ),
+    );
+    assert!(reply.intent_desired.is_empty(), "{reply:?}");
+    assert!(departed.pending_intent.is_empty());
+    assert!(departed.intent_conflicts.is_empty());
+    assert!(departed.intent_desired.is_empty(), "pruned footprint-free");
 }
 
 #[test]
@@ -744,7 +866,12 @@ fn restored_true_float_durable_through_second_fact_and_exclusion() {
             vec![record("win-a", &float_true())],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), None))
+    );
     assert!(is_floated(&engine, "win-a"));
     assert!(
         engine
@@ -769,7 +896,12 @@ fn restored_true_float_durable_through_second_fact_and_exclusion() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), None))
+    );
     assert!(is_floated(&engine, "win-a"));
     assert!(
         engine
@@ -802,7 +934,12 @@ fn restored_true_float_durable_through_second_fact_and_exclusion() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), None))
+    );
     assert!(is_floated(&engine, "win-auto"));
     assert!(
         !engine
@@ -844,7 +981,12 @@ fn restored_true_float_durable_through_second_fact_and_exclusion() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), None))
+    );
     assert!(is_floated(&engine, "win-a"));
     assert!(
         engine
@@ -872,7 +1014,12 @@ fn restored_false_then_user_float_clears_override_and_survives_exclusion() {
             vec![record("win-a", &tile_false())],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
@@ -897,11 +1044,11 @@ fn restored_false_then_user_float_clears_override_and_survives_exclusion() {
             })),
         ),
     );
-    assert_eq!(reply.intent_writes.len(), 1);
-    assert_eq!(reply.intent_writes[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(reply.intent_desired.len(), 1);
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
     assert_eq!(
-        reply.intent_writes[0].data.as_deref(),
-        Some(float_true().as_str())
+        reply.intent_desired[0].data.as_ref(),
+        Some(&IntentData::new(Some(true), None))
     );
     assert!(is_floated(&engine, "win-a"));
     assert!(
@@ -944,7 +1091,12 @@ fn restored_false_then_user_float_clears_override_and_survives_exclusion() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), None))
+    );
     assert!(is_floated(&engine, "win-a"));
     assert!(
         !engine
@@ -992,7 +1144,12 @@ fn restored_false_minimized_then_fixed_stays_tiled() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(!is_tiled(&engine, "win-a"));
     assert!(
         engine
@@ -1019,7 +1176,12 @@ fn restored_false_minimized_then_fixed_stays_tiled() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
@@ -1056,7 +1218,12 @@ fn restored_false_minimized_then_fixed_stays_tiled() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
@@ -1108,7 +1275,7 @@ fn own_process_prunes_pending_and_conflict_clears_on_admission() {
             vec![record("win-self", &tile_false())],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert!(
         !engine
             .pending_intent
@@ -1157,7 +1324,7 @@ fn own_process_prunes_pending_and_conflict_clears_on_admission() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert!(engine.intent_conflicts.is_empty());
     assert!(
         !engine
@@ -1181,7 +1348,7 @@ fn own_process_prunes_pending_and_conflict_clears_on_admission() {
             vec![record("win-c", &tile_false())],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert!(
         !engine
             .engine
@@ -1239,11 +1406,11 @@ fn restored_true_unfloat_clears_and_late_record_stays_ignored() {
             })),
         ),
     );
-    assert_eq!(reply.intent_writes.len(), 1);
-    assert_eq!(reply.intent_writes[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(reply.intent_desired.len(), 1);
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
     assert_eq!(
-        reply.intent_writes[0].data.as_deref(),
-        Some(tile_false().as_str())
+        reply.intent_desired[0].data.as_ref(),
+        Some(&IntentData::new(Some(false), None))
     );
     assert!(is_tiled(&engine, "win-a"));
     assert!(
@@ -1272,7 +1439,12 @@ fn restored_true_unfloat_clears_and_late_record_stays_ignored() {
             vec![record("win-a", &float_true())],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         !engine
@@ -1309,7 +1481,12 @@ fn hints_null_record_still_admits_and_joint_bound_holds() {
             vec![record("win-a", &float_true())],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), None))
+    );
     assert!(is_floated(&engine, "win-a"));
 
     // Joint pending/conflict storage never exceeds the contract bound.
@@ -1340,7 +1517,7 @@ fn hints_null_record_still_admits_and_joint_bound_holds() {
             vec![record("win-new", &tile_false())],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert!(
         bounded.pending_intent.len() + bounded.intent_conflicts.len()
             <= crate::world_report::MAX_INTENT_RECORDS
@@ -1419,7 +1596,7 @@ fn floating_pending_false_survives_tiling_enable_as_explicit_tile() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     let ws = reply
         .workspaces
         .iter()
@@ -1444,7 +1621,7 @@ fn floating_pending_false_survives_tiling_enable_as_explicit_tile() {
             }),
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert_eq!(
         engine.logical_tiling("out-a", &ws),
         crate::world_report::TilingMode::Floating
@@ -1467,7 +1644,12 @@ fn floating_pending_false_survives_tiling_enable_as_explicit_tile() {
             vec![record("win-n", &tile_false())],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-n".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(!is_tiled(&engine, "win-n"));
     assert!(
         engine
@@ -1507,7 +1689,12 @@ fn floating_pending_false_survives_tiling_enable_as_explicit_tile() {
             }),
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-n".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(is_tiled(&engine, "win-n"));
     assert!(
         engine
@@ -1543,7 +1730,7 @@ fn floating_pending_true_stays_intentional_across_tiling_changes() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     let ws = reply
         .workspaces
         .iter()
@@ -1567,7 +1754,7 @@ fn floating_pending_true_stays_intentional_across_tiling_changes() {
             }),
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert_eq!(
         engine.logical_tiling("out-a", &ws),
         crate::world_report::TilingMode::Floating
@@ -1593,7 +1780,12 @@ fn floating_pending_true_stays_intentional_across_tiling_changes() {
             vec![record("win-n", &float_true())],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-n".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), None))
+    );
     assert!(
         engine.pending_intent.is_empty(),
         "floating success consumes pending true"
@@ -1640,7 +1832,12 @@ fn floating_pending_true_stays_intentional_across_tiling_changes() {
             }),
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-n".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(true), None))
+    );
     assert!(is_floated(&engine, "win-n"));
     assert!(
         engine
@@ -1672,7 +1869,7 @@ fn hints_null_twice_without_record_then_first_admissible_imports() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert!(!is_tiled(&engine, "win-a"));
     assert!(engine.pending_intent.is_empty());
     assert!(
@@ -1696,7 +1893,7 @@ fn hints_null_twice_without_record_then_first_admissible_imports() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert!(!is_tiled(&engine, "win-a"));
     assert!(
         !engine
@@ -1721,7 +1918,12 @@ fn hints_null_twice_without_record_then_first_admissible_imports() {
             vec![record("win-a", &tile_false())],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
@@ -1753,7 +1955,7 @@ fn floating_workspace_first_admission_ignores_late_record() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     let ws = reply
         .workspaces
         .iter()
@@ -1778,7 +1980,7 @@ fn floating_workspace_first_admission_ignores_late_record() {
             }),
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert_eq!(
         engine.logical_tiling("out-a", &ws),
         crate::world_report::TilingMode::Floating
@@ -1797,7 +1999,7 @@ fn floating_workspace_first_admission_ignores_late_record() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert!(
         engine
             .intent_admitted
@@ -1824,7 +2026,7 @@ fn floating_workspace_first_admission_ignores_late_record() {
             vec![record("win-new", &tile_false())],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert!(
         !engine
             .pending_intent
@@ -1884,7 +2086,12 @@ fn pending_false_exclusion_gains_fixed_hints_then_recovers_tiled() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(!is_tiled(&engine, "win-a"));
     assert!(
         engine
@@ -1913,7 +2120,12 @@ fn pending_false_exclusion_gains_fixed_hints_then_recovers_tiled() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(!is_tiled(&engine, "win-a"));
     assert!(
         engine
@@ -1940,7 +2152,12 @@ fn pending_false_exclusion_gains_fixed_hints_then_recovers_tiled() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
@@ -1997,7 +2214,7 @@ fn pending_false_hints_null_and_omission_then_success() {
     );
     omitted.inventory_complete = false;
     let reply = accepted(&mut engine, &omitted);
-    assert!(reply.intent_writes.is_empty());
+    assert!(reply.intent_desired.is_empty());
     assert!(
         engine
             .pending_intent
@@ -2025,7 +2242,12 @@ fn pending_false_hints_null_and_omission_then_success() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(!is_tiled(&engine, "win-a"));
     assert!(
         engine
@@ -2052,7 +2274,12 @@ fn pending_false_hints_null_and_omission_then_success() {
             None,
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
@@ -2097,11 +2324,11 @@ fn same_report_true_restore_with_unfloat_then_late_ignored() {
     );
     report.request_seq = 1;
     let reply = accepted(&mut engine, &report);
-    assert_eq!(reply.intent_writes.len(), 1);
-    assert_eq!(reply.intent_writes[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(reply.intent_desired.len(), 1);
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
     assert_eq!(
-        reply.intent_writes[0].data.as_deref(),
-        Some(tile_false().as_str())
+        reply.intent_desired[0].data.as_ref(),
+        Some(&IntentData::new(Some(false), None))
     );
     assert!(
         is_tiled(&engine, "win-a"),
@@ -2133,7 +2360,12 @@ fn same_report_true_restore_with_unfloat_then_late_ignored() {
             vec![record("win-a", &float_true())],
         ),
     );
-    assert!(reply.intent_writes.is_empty());
+    assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
+    assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
+    assert_eq!(
+        reply.intent_desired[0].data,
+        Some(IntentData::new(Some(false), None))
+    );
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         !engine

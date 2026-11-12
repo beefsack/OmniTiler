@@ -150,7 +150,7 @@ describe("native gesture lifecycle transport", () => {
                         gestureAssoc: assoc,
                         focusRequest: null,
                         operationSettled: [], nativeCreations: [], warpCursor: null,
-                        intentWrites: [], switchSettled: [], diagnostics: [],
+                        intentDesired: [], switchSettled: [], diagnostics: [],
                         source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
                         presentation: DISABLED_PRESENTATION,
                     });
@@ -329,7 +329,7 @@ describe("native gesture broker cutover", () => {
                 ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
                 windows: [], transfers: [], effects: [], focusRequest: null, result: null,
                 gestureSettled: settled, gestureAssoc: assoc, operationSettled: [], nativeCreations: [], warpCursor: null,
-                intentWrites: [], switchSettled: [], diagnostics: [],
+                intentDesired: [], switchSettled: [], diagnostics: [],
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
                 presentation: DISABLED_PRESENTATION,
             });
@@ -1233,7 +1233,7 @@ describe("native gesture broker cutover", () => {
                 ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
                 windows: [], transfers: [], effects: [], focusRequest: null, result: null,
                 gestureSettled: settled, gestureAssoc: assoc, operationSettled: [], nativeCreations: [], warpCursor: null,
-                intentWrites: [], switchSettled: [], diagnostics: [],
+                intentDesired: [], switchSettled: [], diagnostics: [],
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
                 presentation,
             });

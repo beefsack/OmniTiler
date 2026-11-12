@@ -1639,19 +1639,19 @@ fn same_report_close_beats_hover_cursor_follows_winner() {
     );
     assert!(
         reply
-            .intent_writes
+            .intent_desired
             .iter()
             .any(|write| write.win.0 == "win-c"),
         "implicit non-focus resolves to winner C: {:?}",
-        reply.intent_writes
+        reply.intent_desired
     );
     assert!(
         reply
-            .intent_writes
+            .intent_desired
             .iter()
             .all(|write| write.win.0 != "win-d"),
         "hover loser D takes no implicit subject: {:?}",
-        reply.intent_writes
+        reply.intent_desired
     );
 }
 

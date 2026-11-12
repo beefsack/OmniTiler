@@ -32,8 +32,8 @@ use crate::world_engine::{
 use crate::world_gesture::GestureOutcome;
 use crate::world_publish_v4::PublishEnvelopeV4;
 use crate::world_report::{
-    BatchSettlement, CommandRejectKind, CommandResult, EffectKind, HoldReason, IntentWrite,
-    TilingMode, TransferKind, WorldCommand, WorldReplyV4, WorldReportV4,
+    BatchSettlement, CommandRejectKind, CommandResult, EffectKind, HoldReason, TilingMode,
+    TransferKind, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 use crate::world_report_v4_checks::graded_effective_v4;
 
@@ -522,21 +522,23 @@ impl WorldEngine {
         // state, before the first command runs. Observations applied once
         // above; every command below owns post-previous-command state.
         self.snapshot_batch_focus_baseline();
-        // Explicit batch intent accumulator, latest-wins per window. The
-        // pre-existing sticky refusal rollback saves stay untouched in
-        // their map until the single final merge below, so intermediate
-        // commands never consume, duplicate, or drop them.
-        let mut batch_saves: BTreeMap<WindowId, IntentWrite> = BTreeMap::new();
+        // Retained intent updates in execution order: sticky mutations
+        // already updated the single owner during execution, and each
+        // successful command below upserts its ordinary ToggleFloat save
+        // (latest-wins per window). Refusals restore the pre-command image
+        // including its retained targets, so earlier batch effects stay
+        // published while the refused command's partial mutation never
+        // survives. Consumed skips never executed.
         // Post-command bookkeeping identity per executed command: the
         // resolved execution subject carried from pre-execution state,
         // never focus after the action. The final publish drains with the
         // last executed command's identity.
         let mut last_bookkeeping: Option<WorldCommand> = None;
         let mut first = true;
-        let last_index = commands.len() - 1;
-        for (index, (command_seq, command, is_inline)) in commands.iter().enumerate() {
-            let command_seq = *command_seq;
-            let is_inline = *is_inline;
+        for (command_seq, command, is_inline) in commands
+            .iter()
+            .map(|(seq, cmd, inline)| (*seq, cmd, *inline))
+        {
             // Already-consumed sequences reconcile without re-executing:
             // no effect, no result, no high-watermark motion.
             if self
@@ -613,14 +615,7 @@ impl WorldEngine {
                     self.build_staged_domains();
                     self.settle_intent_admissions();
                     self.sync_toggle_float_command(&bookkeeping);
-                    if index == last_index {
-                        // Final command: its staged saves stay for the
-                        // single final publish drain, preserving exact
-                        // single-command semantics (including queued-match
-                        // ordinary suppression).
-                    } else {
-                        self.accumulate_batch_command_save(&mut batch_saves, &bookkeeping, &result);
-                    }
+                    self.upsert_ordinary_toggle_float_save(&bookkeeping, &result);
                     if effect.kind == EffectKind::Focus {
                         // Latest explicit focus wins: drop every unissued
                         // prior Focus (admission or earlier batch).
@@ -646,9 +641,7 @@ impl WorldEngine {
                     self.settle_intent_admissions();
                     self.sync_toggle_float_command(&bookkeeping);
                     let result = self.command_result.take();
-                    if index != last_index {
-                        self.accumulate_batch_command_save(&mut batch_saves, &bookkeeping, &result);
-                    }
+                    self.upsert_ordinary_toggle_float_save(&bookkeeping, &result);
                     crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
                     settlements.push(BatchSettlement {
                         seq: command_seq,
@@ -696,15 +689,9 @@ impl WorldEngine {
                 }
             }
         }
-        // Single final intent merge: earlier batch saves win over the
-        // pre-existing refusal rollback map latest-wins per window. The
-        // final command's own staged saves stay staged, so the publish
-        // drain below emits everything exactly once with one knowledge
-        // update. Rejected commands restored their pre-command image and
+        // The final publish projects the retained map (never drains it):
+        // rejected commands restored their pre-command image and
         // accumulated nothing; consumed skips never executed.
-        for (win, write) in batch_saves {
-            self.sticky_rollback_saves.insert(win, write);
-        }
         // The final publish drains with the last executed command's
         // carried identity (resolved pre-execution subject); commands
         // that never executed fall back to the reported spelling.

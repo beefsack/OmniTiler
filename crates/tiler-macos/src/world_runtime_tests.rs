@@ -1307,7 +1307,7 @@ fn restart_sessions_mint_distinct_tokens_and_fence_old_traffic() {
                 },
                 pager: Vec::new(),
             },
-            intent_writes: Vec::new(),
+            intent_desired: Vec::new(),
             switch_settled: Vec::new(),
             diagnostics: Vec::new(),
         }

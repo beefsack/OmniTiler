@@ -33,7 +33,7 @@ function baseCapture(result: string): string {
         `"presentation":{"foreground":"","rev":"0","border":{"visible":false,"reason":"disabled",` +
         `"subject":null,"outsets":null,"width":null,"radius":null,"witness":null},` +
         `"underlay":{"status":"hidden","reason":"disabled","baseRev":null},"pager":[]},` +
-        `"intentWrites":[],"switchSettled":[],"diagnostics":[],` +
+        `"intentDesired":[],"switchSettled":[],"diagnostics":[],` +
         `"source":"req-1","nativeInvalid":"1","clock":"0","gestureAssoc":null}`;
 }
 

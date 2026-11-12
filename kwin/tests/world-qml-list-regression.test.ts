@@ -38,7 +38,7 @@ const TRANSFER_OP = "op-3";
 // adapter lifetime, the serving generation, the capture source correlation
 // with scripted obs/rev advancing together (separate from nativeInvalid),
 // structural scopes, and the required
-// intentWrites/switchSettled/diagnostics lanes; the terminal result stays
+// intentDesired/switchSettled/diagnostics lanes; the terminal result stays
 // null (the take lane serves it requester-only).
 const REPLY_TEXT = JSON.stringify({
     v: 4, adapter: ADAPTER, gen: GEN, req: REQ, obs: OBS, rev: REV,
@@ -50,7 +50,7 @@ const REPLY_TEXT = JSON.stringify({
     focusRequest: null,
     operationSettled: [], nativeCreations: [],
     warpCursor: null,
-    intentWrites: [], switchSettled: [], diagnostics: [],
+    intentDesired: [], switchSettled: [], diagnostics: [],
     presentation: DISABLED_PRESENTATION,
     scopes: [
         { scope: { kind: "workspace", out: OUT, ws: WS_A }, auth: "controlled", reason: "" },
@@ -132,7 +132,7 @@ describe("world qml-list regression", () => {
         assert.equal(transfer.ws, WS_B);
         assert.equal(transfer.held, false);
         // Required v4 lanes ride (empty here, never omitted, never nulled).
-        assert.deepEqual(parsed.intentWrites, []);
+        assert.deepEqual(parsed.intentDesired, []);
         assert.deepEqual(parsed.switchSettled, []);
         assert.deepEqual(parsed.diagnostics, []);
     });

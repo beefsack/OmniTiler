@@ -17,10 +17,10 @@
 //! readable, or explicit unknown; strict coverage of each ordered id).
 
 pub use crate::world_sizing::{
-    MAX_INTENT_ROLLBACK_DATA_JSON, MAX_INTENT_ROLLBACK_ROW_BYTES, NonFiniteNumber,
+    MAX_INTENT_DESIRED_DATA_JSON, MAX_INTENT_DESIRED_ROW_BYTES, NonFiniteNumber,
     encode_finite_json_number, encode_held_screen_canonical, encode_held_window_canonical,
     encode_screen_canonical, encode_window_canonical, int_len, json_number_len, json_string_len,
-    max_intent_rollback_bound, push_json_number, push_raw_setting_value, push_row_diagnostic,
+    max_intent_desired_bound, push_json_number, push_raw_setting_value, push_row_diagnostic,
     raw_setting_value_len, u64_len, usize_len,
 };
 
@@ -142,8 +142,10 @@ pub const MAX_METADATA_TEXT_BYTES: usize = 4096;
 
 /// Bound on opaque host intent return rows per report (`intentRecords`).
 pub const MAX_INTENT_RECORDS: usize = 10_000;
-/// Bound on core intent save/clear decisions per reply (`intentWrites`).
-pub const MAX_INTENT_WRITES: usize = 10_000;
+/// Bound on retained core intent desire rows per reply (`intentDesired`).
+/// One authoritative current target per window lifetime, including explicit
+/// null clears; missing rows carry no storage authority and never delete.
+pub const MAX_INTENT_DESIRED: usize = 10_000;
 
 /// Opaque host intent return row: the storage-verified live subject plus the
 /// exact core record bytes, never interpreted by the adapter. The outer
@@ -155,12 +157,15 @@ pub struct IntentRecord {
     pub data: String,
 }
 
-/// Core intent save/clear decision: the exact subject plus the opaque save
-/// value, or `None` (wire `null`) to explicitly clear the lifetime slot.
+/// Retained core intent desire: one authoritative current target per window
+/// lifetime, bound by `(adapter, gen, win)`. `Some` is the exact typed save
+/// value (wire opaque string, canonical inner v1); `None` (wire `null`) is
+/// an explicit desired slot absence kept after successful clear. A missing
+/// row carries no storage authority and never deletes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IntentWrite {
+pub struct IntentDesire {
     pub win: WindowId,
-    pub data: Option<String>,
+    pub data: Option<crate::intent_data::IntentData>,
 }
 
 /// Tiling policy for one desired workspace row. The core retains one mode
@@ -2544,7 +2549,7 @@ pub struct BatchSettlement {
 /// decoder, mirroring the report-side analogues. Outputs mirror screens;
 /// window-keyed lanes mirror facts; retained-operation lanes mirror the
 /// attempt caps; native creations mirror creation attempts; intent writes
-/// reuse [`MAX_INTENT_WRITES`]. Over-cap sections refuse the whole message;
+/// reuse [`MAX_INTENT_DESIRED`]. Over-cap sections refuse the whole message;
 /// replies carry no held-row concept.
 pub const MAX_REPLY_SCOPES: usize = 1024;
 pub const MAX_REPLY_WORKSPACES: usize = 1024;
@@ -2618,7 +2623,7 @@ pub struct WorldReplyV4 {
     pub native_creations: Vec<NativeCreationDesire>,
     pub cursor_warp: Option<(i32, i32)>,
     pub presentation: WorldPresentationV4,
-    pub intent_writes: Vec<IntentWrite>,
+    pub intent_desired: Vec<IntentDesire>,
     pub switch_settled: Vec<SwitchEvent>,
     pub diagnostics: Vec<RowDiagnostic>,
 }
@@ -3218,33 +3223,31 @@ pub(crate) fn conflicting_window(
     })
 }
 
-/// Name the failed outbound intent save/clear check in fixed vocabulary
-/// (never payload bytes): `None` when every write row is publishable,
+/// Name the failed outbound retained intent-desire check in fixed vocabulary
+/// (never payload bytes): `None` when every desired row is publishable,
 /// otherwise the static reason token the engine carries as its rejection
 /// message under kind `snapshot-invalid`.
 ///
-/// Intent-specific typed helper only: it validates the `intentWrites`
-/// outbound lane (section cap [`MAX_INTENT_WRITES`], opaque subject ids,
-/// save slot bound [`crate::intent_data::MAX_INTENT_DATA_BYTES`]), never a
-/// full reply. The canonical v4 writer `encode_reply_v4` in the protocol
-/// crate spells whatever rows it is given and stays unchecked: callers must
-/// prove this helper is `None` before encoding (the engine publication gate
-/// does).
+/// Validates the `intentDesired` outbound lane (section cap
+/// [`MAX_INTENT_DESIRED`], opaque subject ids, duplicate subjects). Typed
+/// values are always canonically encodable within
+/// [`crate::intent_data::MAX_INTENT_DATA_BYTES`], so no byte verdict arises
+/// here; the exact writer stays the commit backstop. The canonical v4 writer
+/// `encode_reply_v4` in the protocol crate spells whatever rows it is given
+/// and stays unchecked: callers must prove this helper is `None` before
+/// encoding (the engine publication gate does).
 #[must_use]
-pub fn validate_intent_writes_reason(writes: &[IntentWrite]) -> Option<&'static str> {
-    if writes.len() > MAX_INTENT_WRITES {
+pub fn validate_intent_desired_reason(writes: &[IntentDesire]) -> Option<&'static str> {
+    if writes.len() > MAX_INTENT_DESIRED {
         return Some("section-over-cap");
     }
+    let mut seen = std::collections::BTreeSet::new();
     for write in writes {
         if !is_opaque_id(&write.win.0) {
             return Some("window-id-invalid");
         }
-        if write
-            .data
-            .as_deref()
-            .is_some_and(|data| data.len() > crate::intent_data::MAX_INTENT_DATA_BYTES)
-        {
-            return Some("intent-data-invalid");
+        if !seen.insert(write.win.0.clone()) {
+            return Some("duplicate-intent-desire");
         }
     }
     None

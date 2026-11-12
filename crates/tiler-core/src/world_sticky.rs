@@ -12,8 +12,10 @@
 //! `run_native_sticky_followups`.
 //! The live engine adopts the clone only after every affected sweep and
 //! homing check succeeds, so envelope rejections leak no map, session,
-//! or record mutation. The staged save (`sticky_command_save`) is drained
-//! at publish by `drain_intent_saves`; visibility decoration lives in
+//! or record mutation. Accepted mutations update the retained
+//! `intent_desired` owner in execution order; proven-refusal rollback
+//! replaces the target with the exact prior. Publication projects the
+//! entire map and never drains it; visibility decoration lives in
 //! `decorate_sticky_visibility` and native state publication in
 //! `decorate_native_sticky_state` below.
 
@@ -23,7 +25,7 @@ use crate::boundary::{CoreCommand, CoreEvent};
 use crate::directional::{WindowId, WorkspaceId};
 use crate::engine::Engine;
 use crate::geometry::Rect;
-use crate::intent_data::{IntentData, encode_intent_data};
+use crate::intent_data::IntentData;
 use crate::session::{DomainKey, OutputDomain, centered_float_rect};
 use crate::world_commands::CommandApplied;
 use crate::world_engine::{
@@ -32,8 +34,8 @@ use crate::world_engine::{
 };
 use crate::world_members::MemberState;
 use crate::world_report::{
-    AttemptOutcome, CommandRejectKind, CommandResult, HoldReason, IntentWrite, ScopeAuthority,
-    StateProperty, StateTarget, TransferKind, VisibilityTarget, WindowDesire,
+    AttemptOutcome, CommandRejectKind, CommandResult, HoldReason, ScopeAuthority, StateProperty,
+    StateTarget, TransferKind, VisibilityTarget, WindowDesire,
 };
 use crate::world_state::{MAX_RETAINED_STATE_BINDINGS, NativeStickyMeta};
 
@@ -361,7 +363,7 @@ impl WorldEngine {
     }
 
     fn native_prior_exact(&self, window: &WindowId) -> (Option<IntentData>, bool) {
-        let prior_saved = self.sticky_saved.get(window).copied();
+        let prior_saved = self.intent_desired.get(window).and_then(|entry| *entry);
         let mut unknown = false;
         if self.intent_conflicts.contains(window) {
             unknown = true;
@@ -373,7 +375,7 @@ impl WorldEngine {
             unknown = true;
         }
         if prior_saved.is_none()
-            && self.sticky_saved.len() >= crate::world_report::MAX_INTENT_RECORDS
+            && self.intent_desired.len() >= crate::world_report::MAX_INTENT_DESIRED
         {
             unknown = true;
         }
@@ -472,7 +474,7 @@ impl WorldEngine {
         let Some(dest) = self.sticky_dest(&home, window) else {
             return;
         };
-        let prior_saved = self.sticky_saved.get(window).copied();
+        let prior_saved = self.intent_desired.get(window).and_then(|entry| *entry);
         let prior_restored_floats = self.restored_floats.contains(window);
         let prior_float = self.is_exception_window_any(window);
         let requested_save = IntentData::new(Some(true), Some(prior));
@@ -526,18 +528,14 @@ impl WorldEngine {
                 None => return refused(KIND_OPERATION, MSG_OPERATION),
             };
             let requested_save = IntentData::new(Some(true), Some(prior));
-            if !self.sticky_saved.contains_key(window)
-                && (self.sticky_saved.len() >= crate::world_report::MAX_INTENT_RECORDS
+            if !self.intent_desired.contains_key(window)
+                && (self.intent_desired.len() >= crate::world_report::MAX_INTENT_DESIRED
                     || (self.intent_ledger_used() >= crate::world_report::MAX_INTENT_RECORDS
                         && !self.restored_sticky.contains_key(window)))
             {
                 return refused(KIND_OPERATION, MSG_OPERATION);
             }
-            self.sticky_saved.insert(window.clone(), requested_save);
-            self.sticky_command_save = Some(IntentWrite {
-                win: window.clone(),
-                data: Some(encode_intent_data(&requested_save)),
-            });
+            self.upsert_retained_intent_desire(window, Some(requested_save));
             self.mint_native_sticky_on_binding(
                 window,
                 home,
@@ -559,9 +557,9 @@ impl WorldEngine {
             _ => return applied,
         }
         let requested_save = self
-            .sticky_saved
+            .intent_desired
             .get(window)
-            .copied()
+            .and_then(|entry| *entry)
             .unwrap_or(IntentData::new(Some(true), Some(snap_float)));
         self.mint_native_sticky_on_binding(
             window,
@@ -605,8 +603,8 @@ impl WorldEngine {
             };
             IntentData::new(Some(prior_bool), None)
         };
-        if !self.sticky_saved.contains_key(window)
-            && (self.sticky_saved.len() >= crate::world_report::MAX_INTENT_RECORDS
+        if !self.intent_desired.contains_key(window)
+            && (self.intent_desired.len() >= crate::world_report::MAX_INTENT_DESIRED
                 || (self.intent_ledger_used() >= crate::world_report::MAX_INTENT_RECORDS
                     && !self.restored_sticky.contains_key(window)))
         {
@@ -629,11 +627,7 @@ impl WorldEngine {
             }
             self.restored_sticky.insert(window.clone(), true);
         }
-        self.sticky_saved.insert(window.clone(), requested_save);
-        self.sticky_command_save = Some(IntentWrite {
-            win: window.clone(),
-            data: Some(encode_intent_data(&requested_save)),
-        });
+        self.upsert_retained_intent_desire(window, Some(requested_save));
         let meta = NativeStickyMeta {
             command_seq: Some(command_seq),
             prior_saved,
@@ -756,17 +750,13 @@ impl WorldEngine {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
         let save = IntentData::new(Some(false), None);
-        if staged.sticky_saved.contains_key(window)
-            || staged.sticky_saved.len() < crate::world_report::MAX_INTENT_RECORDS
+        if staged.intent_desired.contains_key(window)
+            || staged.intent_desired.len() < crate::world_report::MAX_INTENT_DESIRED
         {
-            staged.sticky_saved.insert(window.clone(), save);
+            staged.upsert_retained_intent_desire(window, Some(save));
         } else {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
-        staged.sticky_command_save = Some(IntentWrite {
-            win: window.clone(),
-            data: Some(encode_intent_data(&save)),
-        });
         let rect = staged.staged.facts.get(window).and_then(|fact| fact.rect);
         match staged.members.get_mut(window) {
             Some(state) => {
@@ -1095,17 +1085,13 @@ impl WorldEngine {
         if staged.intent_ledger_used() > crate::world_report::MAX_INTENT_RECORDS {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
-        if staged.sticky_saved.contains_key(window)
-            || staged.sticky_saved.len() < crate::world_report::MAX_INTENT_RECORDS
+        if staged.intent_desired.contains_key(window)
+            || staged.intent_desired.len() < crate::world_report::MAX_INTENT_DESIRED
         {
-            staged.sticky_saved.insert(window.clone(), save);
+            staged.upsert_retained_intent_desire(window, Some(save));
         } else {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
-        staged.sticky_command_save = Some(IntentWrite {
-            win: window.clone(),
-            data: Some(encode_intent_data(&save)),
-        });
         let rect = staged.staged.facts.get(window).and_then(|fact| fact.rect);
         // A tiled-origin sticky-on carries the intentional-float placement
         // as its member geometry (falling back to the observed frame only
@@ -1436,30 +1422,17 @@ impl WorldEngine {
                 );
             }
         }
-        let rollback = match meta.prior_saved {
-            Some(prior) => {
-                if !staged.sticky_saved.contains_key(&window)
-                    && staged.sticky_saved.len() >= crate::world_report::MAX_INTENT_RECORDS
-                {
-                    // Cap-safe: latch incomplete instead of silently
-                    // dropping the exact prior (mirrors first-admission).
-                    staged.sticky_saved_incomplete = true;
-                } else {
-                    staged.sticky_saved.insert(window.clone(), prior);
-                }
-                IntentWrite {
-                    win: window.clone(),
-                    data: Some(encode_intent_data(&prior)),
-                }
-            }
-            None => {
-                staged.sticky_saved.remove(&window);
-                IntentWrite {
-                    win: window.clone(),
-                    data: None,
-                }
-            }
-        };
+        // Retained rollback: restore the exact prior target (or an explicit
+        // null clear when there was none) in the single retained owner.
+        // Cap-safe: a full map holds proof for retry (same-key replacement
+        // stays allowed) instead of silently dropping the desire.
+        if !staged.intent_desired.contains_key(&window)
+            && staged.intent_desired.len() >= crate::world_report::MAX_INTENT_DESIRED
+        {
+            staged.sticky_saved_incomplete = true;
+            return;
+        }
+        staged.upsert_retained_intent_desire(&window, meta.prior_saved);
         staged.restage_classification();
         staged.build_staged_domains();
         if staged.staged_homing(&window).as_ref() != Some(&home) {
@@ -1498,18 +1471,6 @@ impl WorldEngine {
         if staged.intent_ledger_used() > crate::world_report::MAX_INTENT_RECORDS {
             return;
         }
-        // Latest-wins per window: one proof, one write. The queue is
-        // explicitly bounded by MAX_INTENT_WRITES; a full queue holds proof
-        // for retry (same-key replacement stays allowed) instead of
-        // silently dropping the write while marking the followup done.
-        if !staged.sticky_rollback_saves.contains_key(&window)
-            && staged.sticky_rollback_saves.len() >= crate::world_report::MAX_INTENT_WRITES
-        {
-            return;
-        }
-        staged
-            .sticky_rollback_saves
-            .insert(window.clone(), rollback);
         if let Some(binding) = staged.retained_states.get_mut(key)
             && let Some(meta_mut) = binding.sticky_meta.as_mut()
         {
@@ -1652,7 +1613,7 @@ impl WorldEngine {
                 continue;
             }
             let mut staged = self.clone();
-            let pre_cmd_save = staged.sticky_command_save.clone();
+            let pre_desire = staged.intent_desired.get(&window).cloned();
             let pre_result = staged.command_result.clone();
             // OFF followups replay the originating command: commandless
             // restore bindings (requested ON) never reach here, and a
@@ -1684,7 +1645,14 @@ impl WorldEngine {
                 CommandApplied::NoEffect => {}
                 CommandApplied::Rejected { .. } | CommandApplied::Effect(_) => continue,
             }
-            staged.sticky_command_save = pre_cmd_save;
+            match pre_desire {
+                Some(desire) => {
+                    staged.intent_desired.insert(window.clone(), desire);
+                }
+                None => {
+                    staged.intent_desired.remove(&window);
+                }
+            }
             staged.command_result = pre_result;
             if let Some(binding) = staged.retained_states.get_mut(&key)
                 && let Some(meta_mut) = binding.sticky_meta.as_mut()

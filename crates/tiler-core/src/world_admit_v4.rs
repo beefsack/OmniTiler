@@ -41,16 +41,16 @@ use crate::world_presentation::{GroupHideReason, PresentationUnderlay};
 use crate::world_report::{
     AttemptLaneV4, BatchSettlement, BorderPresentationV4, WORLD_CONTRACT_VERSION_V4,
     WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldCommand, WorldPresentationV4,
-    WorldReplyV4, WorldReportV4, validate_focus_request_reason, validate_intent_writes_reason,
+    WorldReplyV4, WorldReportV4, validate_focus_request_reason, validate_intent_desired_reason,
 };
 use crate::world_report_v4_checks::{
     graded_effective_v4, report_digest_v4, validate_report_v4_reason,
 };
 use crate::world_run_v4::V4RunOutcome;
-use crate::world_sizing::max_intent_rollback_bound;
+use crate::world_sizing::max_intent_desired_bound;
 use crate::world_sizing_v4::{
-    is_intent_save_command_v4, max_intent_save_batch_bound_v4, max_intent_save_batch_rows_v4,
-    reply_estimate_v4, reply_exact_bytes_v4, reply_upper_bound_v4, report_estimate_v4,
+    max_intent_save_batch_bound_v4, reply_estimate_v4, reply_exact_bytes_v4, reply_upper_bound_v4,
+    report_estimate_v4,
 };
 
 /// Pure v4 replay verdict over request identity: the digest is only a fast
@@ -371,7 +371,10 @@ impl WorldEngine {
         // Conservative pre-mutation reply bound: no observation convergence,
         // slot cleanup, or command mutation runs when the worst-case reply
         // cannot fit. All v4 bounds ride here, including the retained
-        // publication footprint, rollback, and selection terminal reserves.
+        // publication footprint, the whole retained intent-desire map, and
+        // selection terminal reserves. The intent term budgets the entire
+        // map (including explicit null clears) transactionally, never
+        // truncation; the exact-encoded staged reply stays the backstop.
         let retained_len = self.retained.len() + self.retained_floats.len();
         let created_len = report.screens.len();
         let staged_windows = self
@@ -387,7 +390,7 @@ impl WorldEngine {
             staged_windows,
             self.retained_publish_footprint(),
         )
-        .saturating_add(max_intent_rollback_bound(self.rollback_reserve_count()))
+        .saturating_add(max_intent_desired_bound(self.intent_desired.len()))
         .saturating_add(self.switch_settle_reserve())
         // A select-family command can mint one zero-obligation issuing
         // terminal while old bindings settle in the same report; reserve
@@ -397,10 +400,10 @@ impl WorldEngine {
         // terminal per fresh displaced/returned workspace at publish;
         // bound the placements knowable before convergence.
         .saturating_add(self.policy_terminal_reserve_v4(report))
-        // Drained FIFO batch saves: the inline bound above covers at most
-        // the report command; queued save-capable commands (explicit
-        // distinct plus implicit max-width) stage additional latest-wins
-        // rows merged into the single final publication.
+        // Potential retained-map growth: the inline bound above covers at
+        // most the report command; queued intent-changing commands reserve
+        // additional targets (distinct explicit plus implicit max-width).
+        // These are admission bounds, not a publication/drain queue.
         .saturating_add(max_intent_save_batch_bound_v4(queued))
             > WORLD_MAX_REPLY_BYTES
         {
@@ -412,24 +415,35 @@ impl WorldEngine {
                 Vec::new(),
             );
         }
-        // Fixed rowcap: the merged final section (pre-existing rollback
-        // plus inline plus distinct batch saves, latest-wins collapsed only
-        // at publish) must fit `MAX_INTENT_WRITES`. Bytes alone cannot gate
-        // this: rows and bytes are distinct limits. Over-cap refuses before
-        // mutation with the outbound section vocabulary so the caller
-        // reparks the whole batch.
+        // Fixed rowcap: the whole physical retained map plus genuinely new
+        // rows from accepted imports, the inline command, and the parked
+        // FIFO batch must fit `MAX_INTENT_DESIRED`. Dead identities stay
+        // resident until the staged prune, so the gate budgets them
+        // conservatively (same as the existing byte gate): a full physical
+        // map refuses before mutation with the outbound section vocabulary
+        // so the caller reparks the whole batch. Replacements never grow
+        // the map and are excluded from the new-row count. Bytes alone
+        // cannot gate this: rows and bytes are distinct limits. Over-cap
+        // refuses before mutation; accepted runs always have room, so
+        // physical insertion never silently drops a desired target.
         {
-            let inline_rows = usize::from(
-                report
-                    .command
-                    .as_ref()
-                    .is_some_and(is_intent_save_command_v4),
-            );
+            use std::collections::BTreeSet;
+            let closed: BTreeSet<&crate::directional::WindowId> = report.closed.iter().collect();
+            let import_new = report
+                .intent_records
+                .iter()
+                .filter(|record| !closed.contains(&record.win))
+                .map(|record| &record.win)
+                .collect::<BTreeSet<_>>()
+                .iter()
+                .filter(|id| !self.intent_desired.contains_key(**id))
+                .count();
             let total_rows = self
-                .rollback_reserve_count()
-                .saturating_add(inline_rows)
-                .saturating_add(max_intent_save_batch_rows_v4(queued));
-            if total_rows > crate::world_report::MAX_INTENT_WRITES {
+                .intent_desired
+                .len()
+                .saturating_add(import_new)
+                .saturating_add(self.intent_desired_new_rows(report.command.as_ref(), queued));
+            if total_rows > crate::world_report::MAX_INTENT_DESIRED {
                 return (
                     V4RunOutcome::Rejected {
                         kind: KIND_SNAPSHOT,
@@ -512,6 +526,9 @@ impl WorldEngine {
                 staged
                     .intent_sticky_blocks
                     .retain(|id| live.contains(id) || held.contains(id));
+                staged
+                    .intent_desired
+                    .retain(|id, _| live.contains(id) || held.contains(id));
             }
             let reply = staged.bootstrap_reply_v4(report, &issue.correlation);
             if let Some(refused) = Self::refuse_outbound_v4(&reply) {
@@ -571,7 +588,7 @@ impl WorldEngine {
     /// must not publish or cache, `None` when it may adopt.
     fn refuse_outbound_v4(reply: &WorldReplyV4) -> Option<V4RunOutcome> {
         // Fixed check vocabulary, never payload.
-        if let Some(reason) = validate_intent_writes_reason(&reply.intent_writes) {
+        if let Some(reason) = validate_intent_desired_reason(&reply.intent_desired) {
             return Some(V4RunOutcome::Rejected {
                 kind: KIND_SNAPSHOT,
                 message: reason,
@@ -641,8 +658,8 @@ impl WorldEngine {
         report: &WorldReportV4,
         correlation: &CorrelationId,
     ) -> WorldReplyV4 {
-        // Bootstrap publishes no intent decisions: the empty `intent_writes`
-        // below trivially satisfies `validate_intent_writes_reason`, and the
+        // Bootstrap publishes no intent decisions: the empty `intent_desired`
+        // below trivially satisfies `validate_intent_desired_reason`, and the
         // fixed empty shape trivially satisfies the exact size bound, so the
         // pre-ready gate above stays the single enforcing boundary.
         let presentation = WorldPresentationV4 {
@@ -687,7 +704,7 @@ impl WorldEngine {
             native_creations: Vec::new(),
             cursor_warp: None,
             presentation,
-            intent_writes: Vec::new(),
+            intent_desired: Vec::new(),
             switch_settled: Vec::new(),
         }
     }

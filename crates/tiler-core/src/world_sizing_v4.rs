@@ -15,7 +15,7 @@ use crate::world_sizing::{
     MAX_CANONICAL_F64_LEN, MAX_EFFECT_RESERVE_BYTES, MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES,
     MAX_TARGET_LANES_PER_WINDOW, anchored_border_estimate, authority_scope_len, bool_len,
     command_estimate_owned, command_result_estimate, focus_feedback_estimate,
-    gesture_settled_estimate, int_len, intent_records_estimate, intent_writes_estimate,
+    gesture_settled_estimate, int_len, intent_desired_estimate, intent_records_estimate,
     json_string_len, last_write_estimate, native_creations_estimate, operation_settled_estimate,
     raw_setting_value_estimate, rect_len, scope_status_estimate, switch_settled_estimate, u64_len,
     usize_len, warp_cursor_estimate, window_target_lanes_estimate, workspace_ref_option_len,
@@ -571,7 +571,7 @@ pub fn reply_estimate_v4(reply: &WorldReplyV4) -> usize {
     bytes += native_creations_estimate(&reply.native_creations);
     bytes += warp_cursor_estimate(&reply.cursor_warp);
     bytes += presentation_estimate_v4(&reply.presentation);
-    bytes += intent_writes_estimate(&reply.intent_writes);
+    bytes += intent_desired_estimate(&reply.intent_desired);
     bytes += switch_settled_estimate(&reply.switch_settled);
     bytes
 }
@@ -647,9 +647,11 @@ fn presentation_estimate_v4(presentation: &WorldPresentationV4) -> usize {
 /// (`encode_reply_v4(&decoded).unwrap().len()` over every valid fixture).
 #[must_use]
 pub fn reply_exact_bytes_v4(reply: &WorldReplyV4) -> usize {
-    // 307 joiner literals: every `]` closing one array section rides in
+    // 308 joiner literals: every `]` closing one array section rides in
     // the next section's `],` joiner, so no per-section closer is added.
-    let mut bytes = 307
+    // `intentDesired` (13) is one byte wider than the old `intentWrites`
+    // (12), so the base is one past the legacy 307.
+    let mut bytes = 308
         + usize_len(reply.contract_version as usize)
         + json_string_len(&reply.adapter_incarnation)
         + json_string_len(&reply.core_generation)
@@ -813,12 +815,15 @@ pub fn reply_exact_bytes_v4(reply: &WorldReplyV4) -> usize {
         .cursor_warp
         .map_or(4, |(x, y)| 3 + int_len(x) + int_len(y));
     bytes += presentation_exact_v4(&reply.presentation);
-    for write in &reply.intent_writes {
+    for write in &reply.intent_desired {
         // {"win":,"data":} = 16 punctuation.
-        bytes +=
-            16 + json_string_len(&write.win.0) + write.data.as_deref().map_or(4, json_string_len);
+        bytes += 16
+            + json_string_len(&write.win.0)
+            + write.data.as_ref().map_or(4, |data| {
+                json_string_len(&crate::intent_data::encode_intent_data(data))
+            });
     }
-    bytes += reply.intent_writes.len().saturating_sub(1);
+    bytes += reply.intent_desired.len().saturating_sub(1);
     for event in &reply.switch_settled {
         // {"op":,"outcome":,"failed":[],"focus":,"fallback":} = 51 fixed.
         bytes += 51
@@ -1070,8 +1075,8 @@ fn presentation_exact_v4(presentation: &WorldPresentationV4) -> usize {
     bytes
 }
 
-/// Pre-mutation bound for the at-most-one sticky/float save row over a v4
-/// report over the staged report command. Unwraps the execution-time
+/// Pre-mutation bound for the at-most-one sticky/float desired target added
+/// by the staged report command. Unwraps the execution-time
 /// subject and reserves the longest opaque id for implicit save-capable
 /// commands, never the empty placeholder width.
 #[must_use]
@@ -1091,12 +1096,12 @@ pub fn max_intent_save_bound_v4(report: &WorldReportV4) -> usize {
         _ => return 0,
     };
     if is_implicit {
-        return 16 + 130 + crate::world_sizing::MAX_INTENT_SAVE_DATA_JSON;
+        return 16 + 130 + crate::world_sizing::MAX_INTENT_DESIRED_DATA_JSON;
     }
-    16 + json_string_len(window) + crate::world_sizing::MAX_INTENT_SAVE_DATA_JSON
+    16 + json_string_len(window) + crate::world_sizing::MAX_INTENT_DESIRED_DATA_JSON
 }
 
-/// True when one drained command can stage an intent save row: `SetSticky`,
+/// True when one queued command can replace a retained intent target: `SetSticky`,
 /// `ToggleSticky`, or the sticky-clearing `ToggleFloat`, explicit or
 /// execution-time. Every other command reserves nothing.
 #[must_use]
@@ -1148,7 +1153,7 @@ pub fn max_intent_save_batch_rows_v4(queued: &[(u64, WorldCommand)]) -> usize {
 }
 
 /// Pre-mutation byte reserve for one parked FIFO batch: one
-/// [`MAX_INTENT_SAVE_ROW_BYTES`](crate::world_sizing::MAX_INTENT_SAVE_ROW_BYTES)
+/// [`MAX_INTENT_DESIRED_ROW_BYTES`](crate::world_sizing::MAX_INTENT_DESIRED_ROW_BYTES)
 /// per distinct explicit subject at its exact id width (plus comma) and one
 /// max row per implicit save. Zero when the batch holds no save-capable
 /// commands. Conservative like every other reply bound term; the
@@ -1185,10 +1190,10 @@ pub fn max_intent_save_batch_bound_v4(queued: &[(u64, WorldCommand)]) -> usize {
     let mut bytes = 0usize;
     for id in distinct {
         bytes = bytes.saturating_add(
-            16 + json_string_len(id) + crate::world_sizing::MAX_INTENT_SAVE_DATA_JSON + 1,
+            16 + json_string_len(id) + crate::world_sizing::MAX_INTENT_DESIRED_DATA_JSON + 1,
         );
     }
-    bytes.saturating_add(implicit.saturating_mul(crate::world_sizing::MAX_INTENT_SAVE_ROW_BYTES))
+    bytes.saturating_add(implicit.saturating_mul(crate::world_sizing::MAX_INTENT_DESIRED_ROW_BYTES))
 }
 
 /// Conservative pre-mutation v4 reply upper bound for one report over the

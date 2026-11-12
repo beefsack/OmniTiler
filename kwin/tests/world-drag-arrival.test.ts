@@ -63,7 +63,7 @@ function arrivalReply(): WorldReply {
         ],
         effects: [],
         result: null,
-        intentWrites: [],
+        intentDesired: [],
         switchSettled: [],
         diagnostics: [],
     };

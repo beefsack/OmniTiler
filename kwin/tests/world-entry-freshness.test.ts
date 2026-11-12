@@ -244,7 +244,7 @@ function setup(onLog?: (message: string) => void): Harness {
             gestureSettled: settled, gestureAssoc: assoc,
             focusRequest: null,
             operationSettled: [], nativeCreations: [], warpCursor: null,
-            intentWrites: [], presentation: DISABLED_PRESENTATION,
+            intentDesired: [], presentation: DISABLED_PRESENTATION,
             switchSettled: [], diagnostics: [],
             source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
         });

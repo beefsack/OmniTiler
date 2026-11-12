@@ -242,7 +242,7 @@ function accept(
         source: payload["source"], nativeInvalid: payload["nativeInvalid"], clock: "1",
         scopes: [], outputs: [], windows: [], transfers: [], effects: [], focusRequest: null, result: null,
         gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
-        intentWrites: [], switchSettled: [], diagnostics: [],
+        intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: PRESENTATION,
         workspaces: [
             { id: "w1", out: "out-1", bind: "d1", scope: { kind: "output", out: "out-1" }, order: 0, mode: "tiled", exist: true, hold: "" },
@@ -605,7 +605,7 @@ describe("world empty migration controlled scope", () => {
         ],
         effects: [], focusRequest: null, result: null, gestureSettled: null, gestureAssoc: null, operationSettled: [],
         nativeCreations: [], warpCursor: null,
-        intentWrites: [], switchSettled: [], diagnostics: [],
+        intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: { foreground: "", rev: "1", suspendedOutput: null, border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         source: "src-1", nativeInvalid: "0", clock: "1",
     });
@@ -843,7 +843,7 @@ function setterReply(
         outputs: [], windows, transfers,
         effects: [], focusRequest: null, result: null, gestureSettled: null, gestureAssoc: null, operationSettled: [],
         nativeCreations: [], warpCursor: null,
-        intentWrites: [], switchSettled: [], diagnostics: [],
+        intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: { foreground: "", rev: "1", suspendedOutput: null, border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         source: "src-1", nativeInvalid: "0", clock: "9",
     } as never;

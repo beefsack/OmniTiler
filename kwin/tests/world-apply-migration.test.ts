@@ -8,10 +8,10 @@
 // repeats an ambiguous attempt. The reply is genuine v4 core bytes recorded
 // from the retained real WorldEngine against a synthetic offline producer
 // through the test-only MiniBroker transport shim (see
-// test-fixtures/kde-v4/migration/README.md): not live-production-broker or
-// native proof. The core leaves the migrated unit unbound, so each
-// actuation test stages that one binding proof; the unbound hold is
-// covered by the strict-shape parser gate.
+// test-fixtures/kde-v4-active/migration/README.md): not
+// live-production-broker or native proof. The core leaves the migrated unit
+// unbound, so each actuation test stages that one binding proof; the unbound
+// hold is covered by the strict-shape parser gate.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -23,7 +23,7 @@ import { parseWorldReply, isWorldRejection, type WorldReply } from "../src/world
 import type { WorldObservation } from "../src/world-observe";
 import type { WorldReplyResult } from "../src/world-report";
 
-const FIXTURE = path.resolve("..", "test-fixtures", "kde-v4", "migration", "MIGRATE_DRAIN.reply.json");
+const FIXTURE = path.resolve("..", "test-fixtures", "kde-v4-active", "migration", "MIGRATE_DRAIN.reply.json");
 
 // Correlated terminal result for the filed migration command (take lane,
 // requester-only): member/source provenance the snapshot alone cannot
@@ -39,18 +39,16 @@ const MIGRATE_TAKE: WorldReplyResult = {
 // The recorded take result stays exact against the const above: the real
 // core output, not a hand-written oracle.
 assert.deepEqual(
-    JSON.parse(fs.readFileSync(path.resolve("..", "test-fixtures", "kde-v4", "migration", "MIGRATE_TAKE.result.json"), "utf8")),
+    JSON.parse(fs.readFileSync(path.resolve("..", "test-fixtures", "kde-v4-active", "migration", "MIGRATE_TAKE.result.json"), "utf8")),
     MIGRATE_TAKE,
 );
 
 function loadReply(): WorldReply {
-    // The recorded drain capture predates the required nullable
-    // `focusRequest` lane (no close intent in this migration scenario):
-    // inject the truthful null without touching the frozen bytes.
+    // The active drain capture carries the required nullable
+    // `focusRequest` lane natively (null: no close intent in this
+    // migration scenario); the frozen historical bytes are untouched.
     const raw = JSON.parse(fs.readFileSync(FIXTURE, "utf8")) as Record<string, unknown>;
-    if (!("focusRequest" in raw)) {
-        raw["focusRequest"] = null;
-    }
+    assert.ok("focusRequest" in raw, "active drain reply carries the focusRequest lane");
     const parsed = parseWorldReply(JSON.stringify(raw));
     assert.ok(parsed !== null && !isWorldRejection(parsed));
     return parsed as WorldReply;
@@ -277,8 +275,8 @@ describe("world migration apply", () => {
         // Bind the trailing token as a remaining source workspace: the
         // source output refills there once the migrated workspace leaves.
         for (const ws of reply.workspaces) {
-            if (ws.id === "ws-3" && ws.out === "out-a") {
-                ws.bind = "ws-3";
+            if (ws.id === "ws-6" && ws.out === "out-a") {
+                ws.bind = "ws-6";
             }
         }
         const world: FakeWorld = {
@@ -297,7 +295,7 @@ describe("world migration apply", () => {
             reply,
         });
         assert.ok(world.switchViewCalls.some((c) => c === "out-b->wa1"), "target view follows");
-        assert.ok(world.switchViewCalls.some((c) => c === "out-a->ws-3"), "source refills");
+        assert.ok(world.switchViewCalls.some((c) => c === "out-a->ws-6"), "source refills");
     });
 
     it("prefers the core-retained refill view over the rows-lowest fallback", () => {
@@ -305,10 +303,10 @@ describe("world migration apply", () => {
         bindTarget(reply);
         // Two remaining source rows: wa0 sorts first, but the broker's own
         // paired refill child (op-1-refill, emitted with the migration)
-        // names ws-3 and must win. The adapter never selects the refill.
+        // names ws-6 and must win. The adapter never selects the refill.
         for (const ws of reply.workspaces) {
-            if (ws.id === "ws-3" && ws.out === "out-a") {
-                ws.bind = "ws-3";
+            if (ws.id === "ws-6" && ws.out === "out-a") {
+                ws.bind = "ws-6";
             }
         }
         reply.workspaces.push({
@@ -330,7 +328,7 @@ describe("world migration apply", () => {
             observation: makeObservation(world),
             reply,
         });
-        assert.ok(world.switchViewCalls.some((c) => c === "out-a->ws-3"), "core refill wins");
+        assert.ok(world.switchViewCalls.some((c) => c === "out-a->ws-6"), "core refill wins");
         assert.ok(!world.switchViewCalls.some((c) => c === "out-a->wa0"), "rows-lowest loses");
     });
 
@@ -434,12 +432,12 @@ describe("world migration apply", () => {
 
     it("wrong-output visibility never proves the target view", () => {
         const reply = loadReply();
-        // Bare view target on out-b/ws-2 (bound to native wb1). Show wb1
+        // Bare view target on out-b/ws-4 (bound to native wb1). Show wb1
         // on the WRONG output (out-a) while out-b still shows wa1: switching
         // the exact target output still settles, because only the exact
         // target output proves. Any-output visibility alone never settles.
         reply.transfers = [
-            { op: "op-view-9", kind: "view", win: "", out: "out-b", ws: "ws-2", follow: false, held: false, cmdSeq: null },
+            { op: "op-view-9", kind: "view", win: "", out: "out-b", ws: "ws-4", follow: false, held: false, cmdSeq: null },
         ];
         reply.windows = [];
         const world: FakeWorld = {
@@ -462,11 +460,11 @@ describe("world migration apply", () => {
 
     it("a view switch that never lands on the target output holds", () => {
         const reply = loadReply();
-        // Bare view target on out-b/ws-2 (bound to native wb1). The native
+        // Bare view target on out-b/ws-4 (bound to native wb1). The native
         // switch lies (records but never shows), and wb1 stays visible
         // nowhere: any-output visibility must not settle applied.
         reply.transfers = [
-            { op: "op-view-1", kind: "view", win: "", out: "out-b", ws: "ws-2", follow: false, held: false, cmdSeq: null },
+            { op: "op-view-1", kind: "view", win: "", out: "out-b", ws: "ws-4", follow: false, held: false, cmdSeq: null },
         ];
         reply.windows = [];
         const world: FakeWorld = {
@@ -488,7 +486,7 @@ describe("world migration apply", () => {
         assert.ok(world.switchViewCalls.some((c) => c === "out-b->wb1"), "switch attempted on the exact target output");
         assert.deepEqual(world.currents.get("out-b"), "wa1", "target output never shows the target");
         assert.ok(out.held >= 1, "unproven view holds");
-        assert.ok(!state.appliedViewTarget.has("out-b") || state.appliedViewTarget.get("out-b")?.ws !== "ws-2");
+        assert.ok(!state.appliedViewTarget.has("out-b") || state.appliedViewTarget.get("out-b")?.ws !== "ws-4");
     });
 
     it("incomplete observation authorizes no blind removal", () => {
@@ -526,14 +524,14 @@ describe("world migration apply", () => {
 describe("world migration refill gating", () => {
     // Reply with the broker-retained paired refill child (op-1-refill,
     // emitted with the op-1 migration by the recorded core): the paired view
-    // names the core-chosen ws-3 source refill, with wa0 as the
+    // names the core-chosen ws-6 source refill, with wa0 as the
     // rows-lowest decoy.
     function loadPairedReply(): WorldReply {
         const reply = loadReply();
         bindTarget(reply);
         for (const ws of reply.workspaces) {
-            if (ws.id === "ws-3" && ws.out === "out-a") {
-                ws.bind = "ws-3";
+            if (ws.id === "ws-6" && ws.out === "out-a") {
+                ws.bind = "ws-6";
             }
         }
         reply.workspaces.push({
@@ -571,7 +569,7 @@ describe("world migration refill gating", () => {
             reply,
         });
         assert.ok(!world.switchViewCalls.some((c) => c === "out-a->ws-gone"), "conflicting view not chosen");
-        assert.ok(world.switchViewCalls.some((c) => c === "out-a->ws-3"), "paired refill wins");
+        assert.ok(world.switchViewCalls.some((c) => c === "out-a->ws-6"), "paired refill wins");
         assert.ok(world.switchViewCalls.some((c) => c === "out-b->wa1"), "target follows");
         assert.ok(applied.viewWrites >= 2);
     });
@@ -605,7 +603,7 @@ describe("world migration refill gating", () => {
         assert.equal(world.sendToOutputCalls.length, 1, "no member replay on late proof");
         assert.deepEqual(
             world.switchViewCalls,
-            ["out-b->wa1", "out-a->ws-3"],
+            ["out-b->wa1", "out-a->ws-6"],
             "target and refill switch exactly once each",
         );
         assert.ok(second.viewWrites >= 2);
@@ -618,7 +616,7 @@ describe("world migration refill gating", () => {
         });
         assert.equal(world.sendToOutputCalls.length, 1);
         assert.equal(world.setMembershipCalls.length, 0);
-        assert.deepEqual(world.switchViewCalls, ["out-b->wa1", "out-a->ws-3"], "no duplicate views");
+        assert.deepEqual(world.switchViewCalls, ["out-b->wa1", "out-a->ws-6"], "no duplicate views");
         void third;
     });
 
@@ -641,14 +639,14 @@ describe("world migration refill gating", () => {
             },
         };
         const first = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: MIGRATE_TAKE, ...lying, observation: makeObservation(world), reply });
-        assert.ok(world.switchViewCalls.some((c) => c === "out-a->ws-3"), "refill attempted once");
+        assert.ok(world.switchViewCalls.some((c) => c === "out-a->ws-6"), "refill attempted once");
         assert.ok(first.held >= 1, "unproven refill holds");
         void first;
         // A repeat under the fresh revision retries nothing ambiguous.
         const second = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: MIGRATE_TAKE, ...lying, observation: makeObservation(world), reply });
         assert.deepEqual(
-            world.switchViewCalls.filter((c) => c === "out-a->ws-3"),
-            ["out-a->ws-3"],
+            world.switchViewCalls.filter((c) => c === "out-a->ws-6"),
+            ["out-a->ws-6"],
             "ambiguous refill never retried",
         );
         assert.ok(second.held >= 1);
@@ -661,7 +659,7 @@ describe("world migration refill gating", () => {
         // Members already homed at the target, both views already shown.
         world.homing.set("win-a", { out: "out-b", ws: "wa1" });
         world.currents.set("out-b", "wa1");
-        world.currents.set("out-a", "ws-3");
+        world.currents.set("out-a", "ws-6");
         const state = freshState(reply);
         const applied = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: MIGRATE_TAKE,
             ...makeEnv(state, world),

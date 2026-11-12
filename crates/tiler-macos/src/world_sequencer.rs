@@ -635,7 +635,7 @@ mod tests {
             native_creations: Vec::new(),
             cursor_warp: None,
             presentation: empty_presentation(),
-            intent_writes: Vec::new(),
+            intent_desired: Vec::new(),
             switch_settled: Vec::new(),
             diagnostics: Vec::new(),
         }

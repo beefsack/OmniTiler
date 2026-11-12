@@ -2539,13 +2539,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
     };
 
-    // Opaque core-intent persistence (native membership transport only,
-    // never policy): one bounded ReadFloatIntent before the first admissible
-    // report hydrates the map; every accepted core `intentWrites` row applies
-    // verbatim (string replaces, null deletes) and a change persists the
-    // full snapshot via WriteFloatIntent. Enabled only when floatIntent is
-    // set; offline harnesses bypass with an empty hydrated map. Same Planner
-    // service, intent methods.
+    // Opaque retained-intent persistence (native membership transport only,
+    // never policy): one bounded ReadFloatIntent per generation hydrates the
+    // verified durable map before the first admissible report; every accepted
+    // core `intentDesired` row replaces that window's latest target (string
+    // means exact bytes, null means explicit absence, missing rows carry no
+    // authority). The reconciler persists the converged snapshot via
+    // WriteFloatIntent only on desired-versus-durable difference. Enabled
+    // only when floatIntent is set; offline harnesses bypass with an empty
+    // hydrated map. Same Planner service, intent methods.
     const intentStore = createWorldIntentStore(
         {
             route: {
@@ -4784,36 +4786,30 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         dropFollowup = { serial: g.serial, instance: g.instance, win: g.win, remaining: 2 };
     };
 
-    // Serial intent-write persistence: full snapshots must hit disk in
-    // accept order, so at most one WriteFloatIntent flies at a time and
-    // overlapping accepts queue behind it (coalesced per accept, never a
-    // generic retry: each waiter carries its own freshness and apply).
-    // Dependent native writes run only after the correlated persist success
-    // plus a generation/settings/report/window freshness recheck; a failed
-    // persist authorizes nothing and applies nothing.
-    let intentPersistBusy = false;
-    // Owed durability: true while the live map holds accepted core writes
-    // not yet confirmed durable. Set on incorporate-change, cleared only
-    // when a persist covering every change succeeds. No immediate
-    // auto-retry: the next acceptance drives the covering write.
-    let intentNondurable = false;
-    let intentChangedDuringPersist = false;
-    interface IntentPersistWaiter {
+    // Serial desired-versus-durable reconciler: at most one WriteFloatIntent
+    // flies at a time. Every accepted reply replaces the latest desired
+    // target; equality with verified durable storage means zero disk
+    // writes and the current fresh whole reply applies immediately. While
+    // unequal, the whole reply holds and one covering write runs; its
+    // completion records the captured sent snapshot, then compares the
+    // latest target. Success with a newer desired target serializes then
+    // converges latest without resuming the old reply; failure never
+    // auto-retries and never applies, waiting for the next accepted reply.
+    // Obsolete and old-generation replies grant nothing.
+    let intentWriteBusy = false;
+    interface IntentPendingApply {
         readonly run: () => void;
         readonly gen: string;
         readonly watermark: string;
         readonly rev: string;
         readonly settingsRev: string | null;
-        // True when this accept changed the map and owes a full-snapshot
-        // write; false waits only for ordering behind an owed write.
-        // Ordering waits upgrade to a covering write while owed.
-        readonly persist: boolean;
     }
-    const intentPersistWaiters: IntentPersistWaiter[] = [];
-    // Freshness gate shared by the persist and ordering waits: revalidate
-    // before any dependent native write runs. False drops the waiter (with
-    // the same catchup recovery the accept path uses); true runs it.
-    const gatePersistWaiter = (next: IntentPersistWaiter, whileWaiting: string): boolean => {
+    let intentPendingApply: IntentPendingApply | null = null;
+    // Freshness gate for the dependent native write: revalidate the exact
+    // accepted reply still owns the current generation, settings, revision,
+    // and native watermark. False drops the apply with the same catchup
+    // recovery the accept path uses; true runs it.
+    const gateIntentApply = (next: IntentPendingApply): boolean => {
         if (stopped) {
             return false;
         }
@@ -4826,31 +4822,22 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return false;
         }
         if (settingsAcceptedGen !== state.boundGen) {
-            // Settings rotated while waiting: dependent writes wait for
-            // the accepted settings of the current generation.
             scheduleDispatch();
             wakeFollowup();
             return false;
         }
         if (pendingSettings !== null && pendingSettings.gen === state.boundGen) {
-            // Settings sent but not yet accepted on this generation:
-            // dependent writes wait for the accepted settings, never the
-            // merely sent revision.
             scheduleDispatch();
             wakeFollowup();
             return false;
         }
         if (next.settingsRev !== settingsAcceptedRev) {
-            // Accepted settings rotated since this waiter queued: the
-            // accepted snapshot it depends on is superseded.
             scheduleDispatch();
             wakeFollowup();
             return false;
         }
         if (compareU64(next.rev, state.lastAcceptedRev) < 0) {
-            // A newer accepted reply supersedes this waiter even when the
-            // generation and watermark still match.
-            log(`omnitiler:world:stale reason=superseded-during-${whileWaiting} recovery=catchup`);
+            log("omnitiler:world:stale reason=superseded-during-persist recovery=catchup");
             try {
                 presentationSubscriber.notifyInvalidated();
             } catch (error) {
@@ -4863,10 +4850,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return false;
         }
         if (state.currentInvalid !== next.watermark) {
-            // Native input landed while waiting: the accepted snapshot is
-            // superseded, so no setters run on it. Follow-up observes the
-            // newer watermark (dirty is set).
-            log(`omnitiler:world:stale reason=superseded-during-${whileWaiting} recovery=catchup`);
+            log("omnitiler:world:stale reason=superseded-during-persist recovery=catchup");
             try {
                 presentationSubscriber.notifyInvalidated();
             } catch (error) {
@@ -4880,55 +4864,43 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
         return true;
     };
-    const pumpIntentPersistQueue = (): void => {
-        if (intentPersistBusy || stopped) {
+    const startIntentWrite = (): void => {
+        if (intentWriteBusy || stopped) {
             if (stopped) {
-                intentPersistWaiters.length = 0;
+                intentPendingApply = null;
             }
             return;
         }
-        const next = intentPersistWaiters.shift();
-        if (next === undefined) {
+        if (!intentStore.needsWrite()) {
             return;
         }
-        const needsPersist = next.persist || intentNondurable;
-        if (!needsPersist) {
-            // Ordering wait only with nothing owed: no bus write, just
-            // preserve accept order behind the owed snapshot.
-            if (gatePersistWaiter(next, "queue")) {
-                next.run();
-            }
-            pumpIntentPersistQueue();
-            return;
-        }
-        intentPersistBusy = true;
+        intentWriteBusy = true;
         intentStore.persist((ok) => {
-            intentPersistBusy = false;
-            if (!ok) {
-                // Failed persistence never authorizes the dependent native
-                // writes below: report once, keep the map and the owed
-                // status, and let the next acceptance drive the covering
-                // write. No failure ack effects run here. The
-                // during-flight flag resets: the next covering write
-                // snapshots every owed change.
-                log("omnitiler:world:intent-write-failed recovery=on-next-change");
-                intentChangedDuringPersist = false;
-                pumpIntentPersistQueue();
+            intentWriteBusy = false;
+            if (stopped) {
+                intentPendingApply = null;
                 return;
             }
-            if (intentChangedDuringPersist) {
-                // Changes landed mid-flight: keep the owed status for the
-                // queued covering write.
-                intentChangedDuringPersist = false;
-            } else {
-                intentNondurable = false;
+            if (!ok) {
+                // Failed persistence never authorizes dependent native
+                // writes: report once, keep the desired target, drop the
+                // held reply, and let the next accepted reply drive the
+                // covering write. No auto-retry, no old-reply resume.
+                log("omnitiler:world:intent-write-failed recovery=on-next-accept");
+                intentPendingApply = null;
+                return;
             }
-            // Success continuation gate: revalidate freshness before any
-            // dependent native write runs.
-            if (gatePersistWaiter(next, "persist")) {
+            if (intentStore.needsWrite()) {
+                // Newer desired arrived mid-flight: serialize then converge
+                // latest, keeping the newest held reply only.
+                startIntentWrite();
+                return;
+            }
+            const next = intentPendingApply;
+            intentPendingApply = null;
+            if (next !== null && gateIntentApply(next)) {
                 next.run();
             }
-            pumpIntentPersistQueue();
         });
     };
     // Post-accept capture handling with the requester-only terminal result:
@@ -5534,42 +5506,51 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     wakeFollowup();
                     };
-                    // Accepted core intent writes (opaque session records,
-                    // never policy): only this lane updates persistence.
-                    // String replaces, null deletes; a change persists the
-                    // full snapshot (out-of-scope records retained) through
-                    // the serial queue above, and the dependent native
-                    // writes in runApply run only after the correlated
-                    // persist success plus the freshness recheck.
-                    if (intentStore.incorporateWrites(parsed.intentWrites)) {
-                        intentNondurable = true;
-                        if (intentPersistBusy) {
-                            intentChangedDuringPersist = true;
+                    // Accepted retained intent desire (opaque, never policy):
+                    // only this lane updates the desired target. The whole
+                    // reply holds while desired differs from verified
+                    // durable storage; the single reconciler persists the
+                    // converged snapshot, and the dependent native writes in
+                    // runApply run only after durable equality plus the
+                    // freshness recheck. Equality means zero disk writes.
+                    if (parsed.gen !== state.boundGen) {
+                        return;
+                    }
+                    intentStore.setDesired(parsed.intentDesired, parsed.gen);
+                    if (intentStore.needsWrite()) {
+                        // Latest held reply only: a newer accept overwrites
+                        // this slot while the covering write flies, and the
+                        // completion converges latest without resuming old
+                        // replies. Failure waits for the next accept.
+                        intentPendingApply = {
+                            run: runApply, gen: parsed.gen, watermark: flight.watermark,
+                            rev: parsed.rev, settingsRev: settingsAcceptedRev,
+                        };
+                        startIntentWrite();
+                        return;
+                    }
+                    if (intentWriteBusy) {
+                        // A covering write for an older desired target is
+                        // still flying while durable already equals latest:
+                        // hold accept order behind it without a new bus
+                        // write; the completion runs the newest held reply.
+                        intentPendingApply = {
+                            run: runApply, gen: parsed.gen, watermark: flight.watermark,
+                            rev: parsed.rev, settingsRev: settingsAcceptedRev,
+                        };
+                        return;
+                    }
+                    intentPendingApply = {
+                        run: runApply, gen: parsed.gen, watermark: flight.watermark,
+                        rev: parsed.rev, settingsRev: settingsAcceptedRev,
+                    };
+                    {
+                        const next = intentPendingApply;
+                        intentPendingApply = null;
+                        if (gateIntentApply(next)) {
+                            next.run();
                         }
-                        // Latest-pending slot: overlapping accepted
-                        // publications share one slot while writes fly, so a
-                        // superseded unissued publication never issues and an
-                        // intermediate never drives its own covering persist.
-                        // The in-flight waiter lives in the persist closure,
-                        // never in this array, so clearing only drops
-                        // unissued waiters.
-                        intentPersistWaiters.length = 0;
-                        intentPersistWaiters.push({ run: runApply, gen: parsed.gen, watermark: flight.watermark, rev: parsed.rev, settingsRev: settingsAcceptedRev, persist: true });
-                        pumpIntentPersistQueue();
-                        return;
                     }
-                    if (intentPersistBusy || intentPersistWaiters.length > 0 || intentNondurable) {
-                        // Unchanged map but persistence is owed or in flight:
-                        // hold accept order so a newer snapshot never applies
-                        // before the older one it supersedes. While owed the
-                        // pump upgrades this waiter to a covering write;
-                        // otherwise it is ordering-only.
-                        intentPersistWaiters.length = 0;
-                        intentPersistWaiters.push({ run: runApply, gen: parsed.gen, watermark: flight.watermark, rev: parsed.rev, settingsRev: settingsAcceptedRev, persist: false });
-                        pumpIntentPersistQueue();
-                        return;
-                    }
-                    runApply();
     };
 
     // Bounded same-envelope terminal capture retry (finding A): a
@@ -6101,27 +6082,20 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         // superseded, so no setters run on it. Follow-up
                         // observes the newer watermark (dirty is set).
                         log("omnitiler:world:stale reason=superseded-during-flight recovery=catchup");
-                        // K1 durability: accepted core intentWrites still
-                        // incorporate and persist even when superseded. The
-                        // queued waiter carries the superseded watermark so
-                        // its run never actuates (the persist gate drops it
-                        // as superseded); only the serial persist runs.
-                        if (intentStore.incorporateWrites(parsed.intentWrites)) {
-                            intentNondurable = true;
-                            if (intentPersistBusy) {
-                                intentChangedDuringPersist = true;
+                        // Retained desire durability: an accepted but
+                        // superseded reply still replaces the latest desired
+                        // target and converges it to durable storage, but its
+                        // held apply is dropped (watermark stale), so no
+                        // setters run on it. Old-generation rows grant
+                        // nothing. Failure waits for the next accept.
+                        if (parsed.gen === state.boundGen) {
+                            intentStore.setDesired(parsed.intentDesired, parsed.gen);
+                            if (intentStore.needsWrite()) {
+                                intentPendingApply = null;
+                                startIntentWrite();
+                            } else if (intentWriteBusy) {
+                                intentPendingApply = null;
                             }
-                            intentPersistWaiters.push({
-                                run: () => {
-                                    if (state.dirty || pendingQueue.length > 0) {
-                                        scheduleDispatch();
-                                    }
-                                    wakeFollowup();
-                                },
-                                gen: parsed.gen, watermark: flight.watermark, rev: parsed.rev,
-                                settingsRev: settingsAcceptedRev, persist: true,
-                            });
-                            pumpIntentPersistQueue();
                         }
                         // Active-drag preview continuity: a superseded
                         // accepted reply still drives a preview-only

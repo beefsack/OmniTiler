@@ -828,17 +828,17 @@ fn rapid_input_implicit_focus_then_move_uses_post_prior_subject() {
 fn rapid_input_batch_saves_canonical_bytes_fit_reserve() {
     // Canonical-bytes reserve proof (not the structural estimator): the
     // batch reply the real service encoded round-trips through the public
-    // canonical codec, and the exact `intentWrites` section - full encode
-    // minus the empty-writes encode plus the 18-byte empty section - fits
+    // canonical codec, and the exact `intentDesired` section - full encode
+    // minus the empty-writes encode plus the 19-byte empty section - fits
     // the pre-mutation batch reserve. A second leg mutates the decoded
     // reply to 128 synthetic max-width rows and re-encodes through the
     // same public codec to prove the 128-row max-width bound without a
     // 128-window execution.
     use tiler_core::boundary::CoreCommand;
     use tiler_core::directional::WindowId;
-    use tiler_core::intent_data::{IntentData, encode_intent_data};
-    use tiler_core::world_report::{IntentWrite, WorldCommand};
-    use tiler_core::world_sizing::MAX_INTENT_SAVE_ROW_BYTES;
+    use tiler_core::intent_data::IntentData;
+    use tiler_core::world_report::{IntentDesire, WorldCommand};
+    use tiler_core::world_sizing::MAX_INTENT_DESIRED_ROW_BYTES;
     use tiler_core::world_sizing_v4::max_intent_save_batch_bound_v4;
     use tiler_protocol::world_protocol::{decode_reply_v4, encode_reply_v4};
 
@@ -890,7 +890,7 @@ fn rapid_input_batch_saves_canonical_bytes_fit_reserve() {
     // `nativeInvalid`, `clock`, `gestureAssoc`) onto the canonical reply
     // and nulls the requester-only `result`, so strip exactly those four
     // broker keys and decode the remainder through the public strict
-    // codec. The surviving typed rows (including `intentWrites`) are the
+    // codec. The surviving typed rows (including `intentDesired`) are the
     // real service-produced values; the section is then measured through
     // the public canonical encoder (no substring parsing). The `result`
     // lane stays outside the measured section, so its capture-lane
@@ -909,7 +909,7 @@ fn rapid_input_batch_saves_canonical_bytes_fit_reserve() {
     let decoded = decode_reply_v4(&bound.to_string()).expect("service reply decodes");
     let mut wins: Vec<&str> = decoded
         .reply
-        .intent_writes
+        .intent_desired
         .iter()
         .map(|write| write.win.0.as_str())
         .collect();
@@ -918,7 +918,7 @@ fn rapid_input_batch_saves_canonical_bytes_fit_reserve() {
         wins,
         vec![id_a.as_str(), id_b.as_str()],
         "explicit plus resolved implicit saves publish: {:?}",
-        decoded.reply.intent_writes
+        decoded.reply.intent_desired
     );
     let full = encode_reply_v4(&decoded).expect("reply re-encodes");
     assert_eq!(
@@ -927,7 +927,7 @@ fn rapid_input_batch_saves_canonical_bytes_fit_reserve() {
         "canonical round-trip is stable over the service rows"
     );
     let mut emptied = decoded.clone();
-    emptied.reply.intent_writes.clear();
+    emptied.reply.intent_desired.clear();
     let blank = encode_reply_v4(&emptied).expect("empty-writes reply encodes");
     let rows_bytes = full.len().saturating_sub(blank.len());
     let queued = vec![
@@ -951,7 +951,7 @@ fn rapid_input_batch_saves_canonical_bytes_fit_reserve() {
     let bound = max_intent_save_batch_bound_v4(&queued);
     assert_eq!(
         bound,
-        2 * MAX_INTENT_SAVE_ROW_BYTES,
+        2 * MAX_INTENT_DESIRED_ROW_BYTES,
         "one max-width explicit plus one implicit row"
     );
     assert!(
@@ -968,19 +968,16 @@ fn rapid_input_batch_saves_canonical_bytes_fit_reserve() {
     // Synthetic max-width leg: 128 distinct max-width rows through the same
     // public codec prove the per-row bound without a 128-window execution.
     let mut wide = decoded.clone();
-    wide.reply.intent_writes = (0..128u32)
-        .map(|n| IntentWrite {
+    wide.reply.intent_desired = (0..128u32)
+        .map(|n| IntentDesire {
             win: WindowId(format!("w{n:0127}")),
-            data: Some(encode_intent_data(&IntentData::new(
-                Some(true),
-                Some(false),
-            ))),
+            data: Some(IntentData::new(Some(true), Some(false))),
         })
         .collect();
     let wide_full = encode_reply_v4(&wide).expect("128 max-width rows encode");
     let wide_rows = wide_full.len().saturating_sub(blank.len());
     assert!(
-        wide_rows <= 128 * MAX_INTENT_SAVE_ROW_BYTES,
+        wide_rows <= 128 * MAX_INTENT_DESIRED_ROW_BYTES,
         "128 canonical max-width rows fit the max-row reserve: rows={wide_rows}"
     );
 }
