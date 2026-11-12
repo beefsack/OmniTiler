@@ -352,7 +352,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | `actionForeground,actionCached` | OutputId | yes | Observed frozen action context, not chosen source. |
 | `actionOutputs` | OutputId[] | no | Ordered known-output registry. |
 | `presentation` | PresentationIngress | no | Native foreground/render facts. |
-| `cursorHit` | WindowId | omit/null/empty | Native hit-test, never rectangle guess. |
+| `cursorHit` | WindowId | omit/null/empty | Native hit-test, never rectangle guess; empty when the hit is unreported/foreign/unbound. |
 | `monotonicMs` | Counter | omit -> 0 | Arbitrary-epoch milliseconds, not wall-clock. |
 | `frameAttempts` | FrameAttempt[] | omit -> [] | Existing geometry lane. |
 | `memberAttempts` | MemberAttempt[] | omit -> [] | Consolidated namespace evidence. |

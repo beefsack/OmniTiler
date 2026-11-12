@@ -2556,11 +2556,9 @@ export function buildReadRequest(req: string): string {
 // emitted). Optional lanes the producer does not populate (frame/
 // member/view/clear/creation attempts, gestureIngress, primary) are
 // omitted, never nulled: omission backfills the observation-only default.
-// The normative `cursorHit` observed fact rides from the already captured
-// exact `cursorWindow` windowAt fact via the strict nullable-id writer,
-// alongside the raw `cursorWindow` capture lane the broker validates and
-// strips. No target selection or geometric guess in the adapter: the value
-// is the captured identity verbatim, null when unknown.
+// The normative `cursorHit` observed fact rides only when the captured
+// `cursorWindow` windowAt identity resolves to this report's final
+// emitted windows; the raw lane still rides for the broker (see below).
 // Capture-only raw lanes (nativeGesture, cursorWindow,
 // nativeInvalidWitness) ride for the broker to validate and strip before
 // the strict decode; absent keys pass through.
@@ -3118,12 +3116,7 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
     // the strict decode. The script never mints gesture ingress: the
     // gesture lane always rides null and the broker folds the raw native
     // snapshot plus the same-capture windowAt fact into core ingress.
-    // The normative cursorHit fact mirrors the captured cursorWindow
-    // identity verbatim (strict nullable-id spelling) and passes through
-    // to the core; the raw cursorWindow lane still rides for the broker
-    // to validate and strip. Unknown stays omitted (absent normalizes to
-    // None exactly like null, so omission keeps byte-exact gates stable);
-    // only a proven hit identity is emitted.
+    // The normative cursorHit gate lives with the lane below.
     const nativeGesture = (observation.nativeGesture ?? null) === null
         ? "null"
         : rawNativeGestureJson(observation.nativeGesture as NativeGestureSnapshot);
@@ -3133,9 +3126,17 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
     if (cursorWindow === null) {
         return null;
     }
-    // Omit the normative lane when the capture proves no hit; a proven
-    // identity rides verbatim beside the raw lane.
-    const cursorHitLane = cursorWindow === "null" ? "" : `,"cursorHit":${cursorWindow}`;
+    // Omit the normative lane unless the raw hit resolves to the SAME
+    // report's final emitted windows: scope-foreign, unreported
+    // (panel/popup), and unreadable/held hits stay omitted, and a
+    // missing cursor never emits a hit. The raw lane above still rides
+    // verbatim for the broker to validate and strip.
+    const rawHit = observation.cursorWindow ?? null;
+    const cursorHitLane = observation.cursor === null ||
+        typeof rawHit !== "string" ||
+        !seenWindows.has(rawHit)
+        ? ""
+        : `,"cursorHit":${cursorWindow}`;
     const witness = (observation.nativeInvalidWitness ?? null) === null
         ? "null"
         : `{"instance":${esc((observation.nativeInvalidWitness as { instance: string }).instance)},` +

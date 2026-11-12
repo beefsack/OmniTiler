@@ -488,6 +488,105 @@ describe("v4 inner report shape", () => {
     });
 });
 
+describe("v4 cursorHit scoping", () => {
+    function observeScoped(
+        wins: Array<Record<string, unknown>>,
+        opts: { scopeClass?: string; windowAt?: () => unknown } = {},
+    ) {
+        const desktops = [makeDesk("native-a")];
+        const screens = [{ name: "out-a", geometry: { x: 0, y: 0, width: 1920, height: 1080 } }];
+        const surface = {
+            windowList: () => wins,
+            screens,
+            desktops,
+            activeScreen: { name: "out-a" },
+            activeWindow: wins[0] ?? null,
+            cursorPos: { x: 20, y: 30 },
+            windowAt: opts.windowAt ?? (() => (wins.length > 0 ? [wins[0]] : [])),
+            stackingOrder: [...wins].reverse(),
+            clientArea: () => ({ x: 0, y: 0, width: 1920, height: 1040 }),
+            currentDesktopForScreen: () => desktops[0],
+        };
+        const obs = captureWorldObservation({
+            workspace: surface,
+            readMode: () => "per-output-local",
+            readGap: () => 8,
+            readOuterGap: () => 8,
+            gestureActive: () => false,
+            knownClosed: () => [],
+            logicalBindingOf: (nativeId) => ({ logical: `desk-${nativeId}`, out: "out-a", pin: false, disp: false, managed: true }),
+            isFloating: () => false,
+            ...(opts.scopeClass !== undefined ? { scopeClass: opts.scopeClass } : {}),
+        });
+        assert.ok(obs !== null);
+        const json = buildWorldReportV4InnerJson({
+            observation: obs,
+            creationAttempts: [],
+            frameAttempts: [],
+            memberAttempts: [],
+            viewAttempts: [],
+            clearAttempts: [],
+            stateAttempts: [],
+            intentRecords: [],
+        });
+        assert.ok(json !== null);
+        return JSON.parse(json) as Record<string, unknown>;
+    }
+
+    it("omits normative cursorHit for a scope-foreign native hit while keeping the raw lane", () => {
+        const win = makeWin({});
+        const value = observeScoped([win], { scopeClass: "Other", windowAt: () => [win] });
+        assert.deepEqual(value["windows"], [], "scope-foreign window must not be reported");
+        assert.equal(value["cursorWindow"], "win-a", "raw native hit rides for the broker");
+        assert.ok(!("cursorHit" in value), "scope-foreign hit must not ride the normative lane");
+    });
+
+    it("keeps normative cursorHit for a reported in-scope hit", () => {
+        const winA = makeWin({});
+        const winB = makeWin({ internalId: "win-b" });
+        const value = observeScoped([winA, winB], { scopeClass: "Example", windowAt: () => [winB] });
+        assert.equal((value["windows"] as Array<unknown>).length, 2);
+        assert.equal(value["cursorWindow"], "win-b", "raw native hit rides for the broker");
+        assert.equal(value["cursorHit"], "win-b", "reported in-scope hit stays normative");
+    });
+
+    it("omits normative cursorHit for an in-scope unreadable held hit while keeping the raw lane", () => {
+        const win = makeWin({ managed: "bogus" });
+        const value = observeScoped([win], { scopeClass: "Example", windowAt: () => [win] });
+        assert.deepEqual(value["windows"], [], "held inventory must not publish partial rows");
+        assert.equal(value["cursorWindow"], "win-a", "raw native hit rides for the broker");
+        assert.ok(!("cursorHit" in value), "held hit must not ride the normative lane");
+    });
+
+    it("omits normative cursorHit for an unreported panel hit while keeping the raw lane", () => {
+        const panel = makeWin({ normalWindow: false });
+        const value = observeScoped([panel], { windowAt: () => [panel] });
+        assert.deepEqual(value["windows"], [], "non-normal panel must not be reported");
+        assert.equal(value["cursorWindow"], "win-a", "raw native hit rides for the broker");
+        assert.ok(!("cursorHit" in value), "unreported panel hit must not ride the normative lane");
+    });
+
+    it("never emits cursorHit when the cursor is missing", () => {
+        const obs = observe(makeSurface([makeWin({})]));
+        assert.equal(obs.cursorWindow, "win-a");
+        const json = buildWorldReportV4InnerJson({
+            observation: { ...obs, cursor: null },
+            creationAttempts: [],
+            frameAttempts: [],
+            memberAttempts: [],
+            viewAttempts: [],
+            clearAttempts: [],
+            stateAttempts: [],
+            intentRecords: [],
+        });
+        assert.ok(json !== null);
+        const value = JSON.parse(json) as Record<string, unknown>;
+        assert.equal(value["cursor"], null);
+        assert.equal(value["cursorWindow"], "win-a", "raw native hit rides for the broker");
+        assert.ok(!("cursorHit" in value), "missing cursor must never emit a hit");
+    });
+});
+
 describe("v4 frame attempt lane", () => {
     function buildWithFrames(frames: Array<Record<string, unknown>>) {
         const obs = observe(makeSurface([makeWin({})]));

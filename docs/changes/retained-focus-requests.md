@@ -950,6 +950,72 @@ below records which mechanisms were subsequently removed.
   Next: investigate the rejected scoped cursor-hit capture, then rerun this
   smoke sequence from a fresh accepted readiness checkpoint.
 
+### Offline scoped cursor-hit investigation (2026-11-13)
+
+- Source confirms an ingress mismatch: scoped capture drops foreign windows
+  entirely (`kwin/src/world-observe.ts:912-917`), but native `windowAt` head
+  capture reads its identity without scope or reported-window membership checks
+  (`world-observe.ts:1652-1680`). Before repair, the encoder forwarded that
+  identity verbatim as `cursorHit`. Protocol decoding rejects
+  any hit absent from valid reported windows as `snapshot-invalid` /
+  `cursor-hit-unknown` (`crates/tiler-protocol/src/world_protocol.rs:4923-4939`);
+  typed core validation independently enforces the same membership requirement
+  (`crates/tiler-core/src/world_report_v4_checks.rs:123-136`). Foreground capture
+  already treats scope-foreign focus as unknown (`world-observe.ts:871-880`).
+- Surviving smoke evidence was reread: `fixture-list.json` contains `ids:[]`,
+  and `readiness.journal:134,147-151` confirms fixture scope and two zero-window
+  reports followed by this exact rejection. This supports the original hypothesis
+  and confirms the source-level failure mechanism, but the rejected bytes and
+  hit identity/class remain unavailable; the precise native target is not proven.
+- Initial investigation stopped at unspecified unreported-hit handling in the
+  v4 report table. Clarification approved 2026-11-13: option A is a defect repair,
+  consistent with
+  foreign/unbound foreground reporting. Emit a normative hit only when it joins
+  the same report's valid window set; otherwise omit it. Preserve the raw native
+  `cursorWindow` lane for broker processing and leave strict shared validators
+  unchanged. The report table now states empty for unreported/foreign/unbound
+  hits (`docs/porting/world-contract.md:355`); no wire shape changed.
+- Repair: `kwin/src/world-report.ts:3123-3139` retains raw capture spelling and
+  gates only the normative lane on cursor presence and the existing final
+  emitted-window identity set (`:3017-3028`). Scope filtering, native hit-test,
+  gesture evidence and strict validators are unchanged; no geometric fallback
+  or underlying-window substitution was added.
+- Core consequence: absent hit produces no hover candidate
+  (`crates/tiler-core/src/world_cursor.rs:90-92`) and, when hover processing is
+  active, clears last-hover memory without minting focus (`:178-198`). A later
+  return can qualify as a fresh entry. A reported nonempty hit additionally
+  requires current-view, readable tiled membership and automatic eligibility
+  (`:93-128`). Unreported nonempty hits currently refuse before these paths;
+  no previously accepted unscoped hit becomes empty under the same-report join.
+- Five observer-to-serializer regressions
+  (`kwin/tests/world-report-v4.test.ts:491-588`) cover scope-foreign, reported in-scope, explicitly in-scope
+  unreadable, unreported panel and cursorless hits, preserving the raw lane.
+  Before repair the full KWin suite had 1,297 passes and four new omission
+  failures; the reported-hit preservation control already passed. Final
+  `npm test` passes 1,301 tests with zero failures, cancellations or skips;
+  `npm run typecheck` passes. These new tests prove producer projection, not a
+  new strict-reader journey; existing Rust unknown/held-hit rejection tests
+  remain enabled (`crates/tiler-protocol/tests/report_v4_decode.rs:1567-1604`).
+- Sequential offline verification passes: `cargo fmt --all -- --check`,
+  three-package all-target build/check/strict clippy, and
+  `cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture`
+  (3,354 passed, zero failed across 68 target summaries; one test filtered).
+  Independent review accepted the join and unchanged accepted-hit semantics;
+  its evidence-overclaim finding was resolved by removing a mock reader helper,
+  followed by the final KWin typecheck and full-suite rerun above.
+- Read-only platform assessment: macOS emits no hit
+  (`crates/tiler-macos/src/world_builder.rs:658-659`); Windows already resolves
+  raw hits through exactly-bound member identities and requires cursor presence
+  (`crates/tiler-windows/src/tiling_sys/world_capture.rs:861-914,1730-1745`).
+  This excludes the same raw-foreign forwarding pattern, but the Windows route
+  is legacy (`crates/tiler-windows/src/tiling_sys/world_sequencer.rs:355-403`), not proof of amended v4 readiness or
+  final-report membership conformance. Neither platform was changed or tested.
+- All fixture families remain untouched. Native acceptance remains open. A later
+  smoke rerun must first establish an accepted scoped zero-window capture with
+  the cursor over a foreign window, then accepted in-scope capture/application,
+  before resuming admission, explicit focus, positive close, hover, float guard,
+  implicit subjects, intent persistence, command latency and send-follow checks.
+
 ## Source anchors
 
 - E1: `docs/principles.md:135-171`.
