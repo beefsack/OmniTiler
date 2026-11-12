@@ -59,7 +59,7 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 - [Contract](decisions/contract.md): shared core/platform contract, capabilities, persistence and cross-platform wire decisions. <a id="contract"></a>
 - [Development](decisions/development.md): project identity, licensing, tooling and development entry points.
 - [Engine](decisions/engine.md): portable world ownership, convergence, operation policy and KDE route boundaries.
-- [Focus](decisions/focus.md): automatic-focus guards, workspace memory and directional focus.
+- [Focus](decisions/focus.md): automatic-focus guards, the retained focus request, the empty execution subject, workspace memory and directional focus.
 - [Gaming](decisions/gaming.md): game membership, anti-cheat limits and pause/release policy. <a id="anti-cheat-mechanism-limits"></a>
 - [KDE](decisions/kde.md): KDE support, packaging, Planner lifecycle and live-evidence boundary.
 - [Layout and admission](decisions/layout-and-admission.md): placement, admission, movement, output selection and native workspace adoption.
