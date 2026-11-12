@@ -55,6 +55,28 @@
 - Direct frozen-family equality against the pre-change tree: `world-wire/v4` 547/547 files, `stage5` 32/32, `stage5-v4` 52/52, and historical `kde-v4` 20/20 are byte-identical, with no extra files. Both stage5 proofs remain enabled and pass in the final suites.
 - macOS edits are shared-type/hold-name mechanics only and unverified on macOS; no persistence backend, import population or recoverable gating was added. Windows needed no shared-type edits and remains unverified. No live desktop testing was performed. Native storage survival/lifetime proof, physical restart/reconnect and other-port adoption are not established by these offline results.
 
+## Native KDE smoke blocked before intent mutation (2026-11-13)
+
+- Baseline `83ab5b91`. Started the Wayland fixture server with no windows,
+  appended/selected a native workspace through VirtualDesktopManager D-Bus,
+  then ran `just dev trace --scope-class OmniTilerTestWindow`.
+  Discovery connected, but all four initial/event-driven captures were rejected
+  with `snapshot-invalid / cursor-hit-unknown`; no accepted `applied` row exists.
+  Read-only `ReadWorldPresentation` returned
+  `outcome:rejected, kind:not-ready, message:"no accepted capture"`.
+  See the dated [focus smoke record](retained-focus-requests.md#native-kde-smoke-blocked-at-bring-up-2026-11-13).
+- Check 6, floating intent save/equality/restart: **NOT RUN**. No fixture window
+  was spawned or toggled, no unrelated accepted reply followed a mutation, and
+  no restart was attempted. Startup
+  `intent-seed outcome=ok correlation=intent-seed-1 stored=7 returned=7`
+  proves only a store read, not a new fixture save, durable equality, lifetime
+  restoration or absence of redundant writes after restart.
+- Trace/journal and fixture list/shutdown evidence was retained outside the
+  repository before teardown. Final dev status is DOWN; fixture process/socket
+  and `ydotoold` are absent. No persistence acceptance is claimed. Next: resolve
+  startup capture rejection, then perform toggle -> one write -> unrelated
+  replies with zero extra writes -> restart -> restored float with zero rewrite.
+
 ## Wire, fixtures and implementation verification
 
 - In-place strict v4 amendment: no fallback, alias, version bump or second delivery path. Matching core/codecs/KDE change together; later ports must adopt before release acceptance. Frozen `test-fixtures/world-wire/v4`, `test-fixtures/stage5` and existing `test-fixtures/stage5-v4` bytes are immutable.

@@ -898,6 +898,58 @@ below records which mechanisms were subsequently removed.
   for frozen world-wire v4 (547), stage5 (32), and stage5-v4 (52). No fixture
   recordings changed. No macOS/Windows code or live desktop tests changed or ran.
 
+### Native KDE smoke blocked at bring-up (2026-11-13)
+
+- Baseline `83ab5b91`. Exact sequence: verify dev DOWN; start the Wayland
+  fixture server without spawning windows; append a workspace beyond the whole
+  native roster and select it through VirtualDesktopManager D-Bus; run
+  `just dev trace --scope-class OmniTilerTestWindow`. No physical shortcut or
+  planner command was submitted. The fixture's `list` returned `ids:[]`.
+- Startup defect: the script loaded and discovery connected, but every capture
+  was rejected. Fresh current-KWin-PID journal evidence:
+  - `07:41:44.637424 omnitiler:world:ready ... nwinv=0 rev=0`
+  - `07:41:44.648269 omnitiler:world:discovered gen=w-1794516104186983667-818714-0`
+  - `07:41:44.652817 omnitiler:world:dispatch src=src-1-2v8c5b nwinv=3 cmd=observe`
+  - `07:41:44.654491 omnitiler:world:rejected kind=snapshot-invalid msg=cursor-hit-unknown recovery=on-next-event`
+  - `07:41:44.768502 omnitiler:world:dispatch src=src-2-keymti nwinv=3 cmd=observe`
+  - `07:41:44.770472 omnitiler:world:rejected kind=snapshot-invalid msg=cursor-hit-unknown recovery=on-next-event`
+  - Two later event-driven captures, `src-3-1wdesla` / `nwinv=9` and
+    `src-4-5a18wl` / `nwinv=10`, had the same rejection. Their trace rows
+    report `wins=0/0`. No `applied` row exists in the fresh journal.
+- A read-only `ReadWorldPresentation` request
+  `{"v":4,"req":"smoke-read-1"}` returned
+  `outcome:rejected, kind:not-ready, message:"no accepted capture"`.
+  The separate fresh `QT_CATEGORY=kwin_scripting` journal check was empty;
+  this does not establish successful strict reply decoding or native application.
+- Source inspection identifies a likely scoped-capture mismatch, not a captured
+  native target identity: `world-observe.ts` reads the native `windowAt` head's
+  UUID independently of its scoped window facts; `world-report.ts:3121-3138`
+  mirrors it into `cursorHit`. The strict protocol gate
+  (`world_protocol.rs:4923-4937`) rejects a hit absent from reported windows.
+  The exact hit UUID/class and raw rejected body were not captured, so that
+  causal join remains unverified. No code was changed or restart attempted.
+
+| Requested smoke check | Verdict and evidence boundary |
+| --- | --- |
+| 1. Bring-up, fixture tile and automatic admission | NOT RUN as a complete sequence. Startup capture acceptance failed as above; no fixture window was spawned, tiled or focused. |
+| 2. Directional focus and once-per-id settlement | NOT RUN: no accepted capture; no commands or setter/feedback evidence. |
+| 3. Positive close with survivor and reflow | NOT RUN: no accepted capture or fixture tiles. |
+| 4. Focus-follows-cursor when enabled | NOT RUN: readiness failed; setting enablement was not established. |
+| 5. Focused-float admission guard and implicit subject | NOT RUN: readiness failed; no float/newcomer sequence. |
+| 7. Five-command receipt-to-dispatch latency | NOT RUN: no commands submitted; observation timestamps are not command latency. |
+| 8. Workspace send-follow then implicit command | NOT RUN: readiness failed; no send or subsequent implicit command. |
+
+- Raw evidence retained outside the repository: `dev-console.log`, copied
+  `omnitiler-dev.*.log`, `planner.log`, `readiness.journal`,
+  `pre-teardown.journal`, `final.journal`, `presentation-not-ready.bus.json`,
+  fixture list/shutdown replies and final lifecycle checks. Logs were copied
+  before `just dev-off`. Final status proves planner unowned/controller unloaded;
+  no `ydotoold` process was found. Fixture shutdown returned `open_windows:0`
+  and its process/socket were absent. The appended workspace remains.
+- Native focus, guard, persistence, latency and send acceptance remain open.
+  Next: investigate the rejected scoped cursor-hit capture, then rerun this
+  smoke sequence from a fresh accepted readiness checkpoint.
+
 ## Source anchors
 
 - E1: `docs/principles.md:135-171`.
