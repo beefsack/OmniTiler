@@ -4558,7 +4558,7 @@
       "invalid": {
         "pointer": "/effects/0/cmdSeq",
         "rule": "effect-explicit-null-seq",
-        "source": "reply-effect-raise"
+        "source": "reply-effect-focus"
       }
     },
     {
@@ -4573,7 +4573,7 @@
       "invalid": {
         "pointer": "/effects/0/awaitShown",
         "rule": "effect-automatic-await-shown",
-        "source": "reply-effect-raise"
+        "source": "reply-effect-automatic-admission"
       }
     },
     {
@@ -4588,7 +4588,7 @@
       "invalid": {
         "pointer": "/effects/0/cause",
         "rule": "effect-unknown-cause",
-        "source": "reply-effect-raise"
+        "source": "reply-effect-focus"
       }
     },
     {
@@ -6829,7 +6829,7 @@
       "expectation": "valid-wire",
       "json": true,
       "canonical": true,
-      "note": "Retained focus-request lane carries a pending positive-close request.",
+      "note": "Retained close-focus lane carries a pending positive-close request.",
       "context": {
         "ready": "waiting-for-settings-and-complete-facts"
       }
@@ -6842,10 +6842,10 @@
       "expectation": "reject-wire",
       "json": true,
       "canonical": true,
-      "note": "Invalid value at /focusRequest/cause.",
+      "note": "Invalid value at /closeFocus/cause.",
       "invalid": {
-        "pointer": "/focusRequest/cause",
-        "rule": "focus-request-unknown-cause",
+        "pointer": "/closeFocus/cause",
+        "rule": "close-focus-unknown-cause",
         "source": "reply-close-focus-pending"
       }
     },
@@ -6857,10 +6857,10 @@
       "expectation": "reject-wire",
       "json": true,
       "canonical": true,
-      "note": "Missing required key at /focusRequest.",
+      "note": "Missing required key at /closeFocus.",
       "invalid": {
-        "pointer": "/focusRequest",
-        "rule": "focus-request-missing-lane",
+        "pointer": "/closeFocus",
+        "rule": "close-focus-missing-lane",
         "source": "reply-bootstrap"
       }
     }
@@ -8247,6 +8247,10 @@
         }
       ],
       "OneShotEffect": [
+        {
+          "fixture": "reply-effect-focus",
+          "pointer": "/effects/0"
+        },
         {
           "fixture": "reply-effect-raise",
           "pointer": "/effects/0"
@@ -10109,6 +10113,13 @@
         ]
       },
       "EffectKind": {
+        "focus": [
+          {
+            "fixture": "reply-effect-focus",
+            "pointer": "/effects/0/kind",
+            "value": "focus"
+          }
+        ],
         "raise": [
           {
             "fixture": "reply-effect-raise",
@@ -10127,6 +10138,11 @@
       "EffectCause": {
         "explicit-command": [
           {
+            "fixture": "reply-effect-focus",
+            "pointer": "/effects/0/cause",
+            "value": "explicit-command"
+          },
+          {
             "fixture": "reply-effect-raise",
             "pointer": "/effects/0/cause",
             "value": "explicit-command"
@@ -10140,14 +10156,14 @@
         "automatic-admission": [
           {
             "fixture": "reply-effect-automatic-admission",
-            "pointer": "/focusRequest/cause",
+            "pointer": "/effects/0/cause",
             "value": "automatic-admission"
           }
         ],
         "focus-follows-cursor": [
           {
             "fixture": "reply-effect-focus-follows-cursor",
-            "pointer": "/focusRequest/cause",
+            "pointer": "/effects/0/cause",
             "value": "focus-follows-cursor"
           }
         ]

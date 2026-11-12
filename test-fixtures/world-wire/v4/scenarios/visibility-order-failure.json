@@ -415,7 +415,7 @@
           "intentWrites": [],
           "switchSettled": [],
           "diagnostics": [],
-          "focusRequest": null
+          "closeFocus": null
         }
       },
       "expect": {
@@ -739,7 +739,7 @@
           "intentWrites": [],
           "switchSettled": [],
           "diagnostics": [],
-          "focusRequest": null
+          "closeFocus": null
         }
       },
       "expect": {
@@ -1056,7 +1056,7 @@
           "intentWrites": [],
           "switchSettled": [],
           "diagnostics": [],
-          "focusRequest": null
+          "closeFocus": null
         }
       },
       "expect": {
@@ -1340,7 +1340,7 @@
           "intentWrites": [],
           "switchSettled": [],
           "diagnostics": [],
-          "focusRequest": null
+          "closeFocus": null
         }
       },
       "expect": {

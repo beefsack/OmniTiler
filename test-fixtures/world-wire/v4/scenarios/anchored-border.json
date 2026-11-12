@@ -465,7 +465,7 @@
           "intentWrites": [],
           "switchSettled": [],
           "diagnostics": [],
-          "focusRequest": null
+          "closeFocus": null
         }
       },
       "expect": {
