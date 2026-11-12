@@ -554,6 +554,14 @@ pub(crate) fn handle_scoped_observation(
             "no-context-rejected",
             0,
         );
+        crate::diag_cause::emit_observe_reject(
+            pid,
+            generation,
+            seq,
+            Some(snapshot.revision),
+            None,
+            "no-context",
+        );
         return;
     };
     if snapshot.revision != ctx.revision {
@@ -568,6 +576,14 @@ pub(crate) fn handle_scoped_observation(
             "observation",
             "stale-revision-rejected",
             0,
+        );
+        crate::diag_cause::emit_observe_reject(
+            pid,
+            generation,
+            seq,
+            Some(snapshot.revision),
+            Some(ctx.revision),
+            "stale-revision",
         );
         return;
     }
@@ -691,6 +707,58 @@ pub(crate) fn handle_scoped_observation(
         roster_incomplete: false,
         roster_cause: String::new(),
     });
+    // First-AX-absence scan (diagnostic only, before any roster
+    // application): every retained roster window missing from BOTH the
+    // snapshot windows and the classifier exclusions logs its own
+    // close-absence line with the CG-oracle evidence, the retained home,
+    // and the read-only fate the branches below will apply. Nothing is
+    // destroyed here; the prune branches below stay authoritative.
+    if crate::diag_cause::enabled()
+        && let Some(app) = retained.apps.get(&pid)
+    {
+        let mut missing: Vec<u32> = app
+            .roster
+            .keys()
+            .copied()
+            .filter(|wid| {
+                !snapshot.windows.iter().any(|w| w.wid == *wid)
+                    && !snapshot.excluded_reasons.iter().any(|e| e.wid == *wid)
+            })
+            .collect();
+        missing.sort_unstable();
+        for wid in missing {
+            let cg = if !snapshot.cg_complete {
+                "unknown"
+            } else if snapshot.cg_owner_wids.contains(&wid) {
+                "owned"
+            } else {
+                "absent"
+            };
+            let id = crate::runtime_types::window_id(pid, wid);
+            let home = retained
+                .window_domains
+                .get(&id)
+                .map(|key| format!("{}:{}", key.output.0, key.workspace.0))
+                .unwrap_or_else(|| "unavailable".to_owned());
+            let fate: &'static str = if cg == "owned" {
+                "retained-cg-alive"
+            } else if !snapshot.cg_complete {
+                "retained-unknown-oracle"
+            } else if covering
+                || retained
+                    .window_domains
+                    .get(&id)
+                    .is_some_and(|key| ctx.is_current(key))
+            {
+                "pruned"
+            } else {
+                "preserved-hidden"
+            };
+            crate::diag_cause::emit_close_absence_id(
+                pid, generation, seq, wid, cg, &home, fate, covering,
+            );
+        }
+    }
     if !covering {
         // Non-covering empty read: authoritative loss for current domains
         // only (an empty read proves the app holds nothing there), while
@@ -708,6 +776,18 @@ pub(crate) fn handle_scoped_observation(
             session.pending_closes.insert(id.clone());
         }
         if !pruned.is_empty() {
+            crate::diag_cause::emit_close_absence(pid, generation, seq, pruned.len() as u64, false);
+            if crate::diag_cause::enabled() {
+                for id in &pruned {
+                    crate::diag_cause::emit_close_pruned(
+                        pid,
+                        generation,
+                        seq,
+                        id.0.as_str(),
+                        false,
+                    );
+                }
+            }
             emit(
                 shared,
                 pid,
@@ -758,6 +838,11 @@ pub(crate) fn handle_scoped_observation(
             session.pending_closes.insert(id.clone());
         }
         if !pruned.is_empty() {
+            if crate::diag_cause::enabled() {
+                for id in &pruned {
+                    crate::diag_cause::emit_close_pruned(pid, generation, seq, id.0.as_str(), true);
+                }
+            }
             emit(
                 shared,
                 pid,

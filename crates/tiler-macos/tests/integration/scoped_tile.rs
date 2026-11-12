@@ -1208,6 +1208,7 @@ fn display_change_mid_plan_supersedes_frames_and_queued_focus() {
             kind: TapKeyKind::KeyDown,
             flags,
             key_code: 0x04,
+            tap_us: 0,
         })
         .expect("send focus chord");
     wait_diagnostics(
@@ -1338,6 +1339,7 @@ fn space_switch_preserves_hidden_layout_without_retirement() {
             kind: TapKeyKind::KeyDown,
             flags,
             key_code: 0x05,
+            tap_us: 0,
         })
         .expect("send move chord");
     wait_diagnostics(
@@ -2529,6 +2531,7 @@ fn focus_dispatches_through_owner_slot_with_exact_target() {
             kind: TapKeyKind::KeyDown,
             flags,
             key_code: 0x04,
+            tap_us: 0,
         })
         .expect("send focus chord");
     // The SAME owner dispatches the exact target window.
@@ -2635,6 +2638,7 @@ fn float_toggle_uses_existing_core_command() {
             kind: TapKeyKind::KeyDown,
             flags,
             key_code: 0x06,
+            tap_us: 0,
         })
         .expect("send float chord");
     wait_diagnostics(
@@ -2765,6 +2769,7 @@ fn frontmost_change_clears_and_repromotes_without_backend_change() {
             kind: TapKeyKind::KeyDown,
             flags,
             key_code: 0x04,
+            tap_us: 0,
         })
         .expect("send focus chord");
     wait_diagnostics(
@@ -2791,6 +2796,7 @@ fn frontmost_change_clears_and_repromotes_without_backend_change() {
             kind: TapKeyKind::KeyDown,
             flags,
             key_code: 0x04,
+            tap_us: 0,
         })
         .expect("send focus chord");
     let cmd = wait_focus(&fixture);
@@ -2858,6 +2864,7 @@ fn send_select_chord(
             kind: TapKeyKind::KeyDown,
             flags,
             key_code: binding.key_code,
+            tap_us: 0,
         })
         .expect("send select chord");
 }

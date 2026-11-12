@@ -142,15 +142,39 @@ pub trait ManagedSendBackend: Send {
     fn release_key(&mut self) -> Result<(), String>;
     /// Grab settle (50 ms live; fakes override to log-only).
     fn settle_grab(&mut self) {
+        if !crate::stage_timing::enabled() {
+            std::thread::sleep(std::time::Duration::from_millis(
+                crate::space_drag_transfer::GRAB_SETTLE_MS,
+            ));
+            return;
+        }
+        let start = crate::stage_timing::now_us();
         std::thread::sleep(std::time::Duration::from_millis(
             crate::space_drag_transfer::GRAB_SETTLE_MS,
         ));
+        crate::stage_timing::add_wait(
+            crate::stage_timing::WaitKind::GrabSettle,
+            crate::stage_timing::now_us().saturating_sub(start),
+            1,
+        );
     }
     /// Animation hold (400 ms live; fakes override to log-only).
     fn settle_hold(&mut self) {
+        if !crate::stage_timing::enabled() {
+            std::thread::sleep(std::time::Duration::from_millis(
+                crate::space_drag_transfer::ANIMATION_HOLD_MS,
+            ));
+            return;
+        }
+        let start = crate::stage_timing::now_us();
         std::thread::sleep(std::time::Duration::from_millis(
             crate::space_drag_transfer::ANIMATION_HOLD_MS,
         ));
+        crate::stage_timing::add_wait(
+            crate::stage_timing::WaitKind::AnimationHold,
+            crate::stage_timing::now_us().saturating_sub(start),
+            1,
+        );
     }
     fn read_membership(&mut self) -> Option<Vec<u64>>;
     fn read_current(&mut self) -> Option<u64>;
@@ -835,6 +859,7 @@ pub(crate) fn execute_managed_send<B: ManagedSendBackend>(
     }
     let mut adapter = ProvingWithChords::with_chord(backend, target, handoff, (keycode, flags));
     let mut notes = Vec::new();
+    crate::stage_timing::set_send_kind("send-drag");
     match crate::space_drag_transfer::run_drag_leg(&mut adapter, goal, goal, "send", &mut notes) {
         Ok(leg) => SendEffect {
             outcome: SendEffectOutcome::Applied,
@@ -945,6 +970,7 @@ pub(crate) fn execute_bridged_follow<B: ManagedSendBackend>(
     chord: (u32, u64),
     start_counts: PostCounts,
 ) -> SendEffect {
+    crate::stage_timing::set_send_kind("send-bridged");
     if handoff.cancel_requested() {
         return refuse_proven(
             target,
@@ -1108,7 +1134,17 @@ pub(crate) fn execute_bridged_follow<B: ManagedSendBackend>(
                 setter: FrameSetter::Accepted,
             };
         }
-        std::thread::sleep(std::time::Duration::from_millis(poll_ms));
+        if crate::stage_timing::enabled() {
+            let wait_start = crate::stage_timing::now_us();
+            std::thread::sleep(std::time::Duration::from_millis(poll_ms));
+            crate::stage_timing::add_wait(
+                crate::stage_timing::WaitKind::ArrivalPoll,
+                crate::stage_timing::now_us().saturating_sub(wait_start),
+                1,
+            );
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(poll_ms));
+        }
     }
     let (membership, current) = match (backend.read_membership(), backend.read_current()) {
         (Some(membership), Some(current)) => (membership, current),
@@ -1271,6 +1307,7 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
         );
     }
     let forward_effect = execute_managed_send(target, backend, handoff);
+    crate::stage_timing::set_send_kind("send-stay");
     if forward_effect.outcome != SendEffectOutcome::Applied {
         return forward_effect;
     }
@@ -1716,6 +1753,7 @@ pub(crate) fn execute_trailing_send<B: ManagedSendBackend>(
     Option<ManagedSendTarget>,
     Option<TrailingCompletionProof>,
 ) {
+    crate::stage_timing::set_send_kind("send-trailing");
     if handoff.cancel_requested() {
         return (
             SendEffect {
@@ -1844,6 +1882,7 @@ pub(crate) fn execute_trailing_send<B: ManagedSendBackend>(
         );
     }
     let effect = execute_managed_send(&target, backend, handoff);
+    crate::stage_timing::set_send_kind("send-trailing");
     (
         SendEffect {
             outcome: effect.outcome,
@@ -1939,6 +1978,8 @@ impl ManagedSendThread {
                                 // arrival proof needs the verified post. The
                                 // setter below is the effect's own raw
                                 // disposition at the write boundary.
+                                crate::stage_timing::reset_native_agg();
+                                let exec = crate::stage_timing::PhaseClock::start();
                                 let pre_member = single_sid(backend.read_membership());
                                 let pre_view = backend.read_current();
                                 let effect = if target.follow() {
@@ -1963,6 +2004,25 @@ impl ManagedSendThread {
                                         backend.read_current(),
                                     ),
                                 };
+                                // Report BEFORE finish (the main thread polls the
+                                // completion first): a completion staged before its
+                                // report would let a prompt poll observe the settle
+                                // with no report stored yet. Same order as the
+                                // select owner (store then finish).
+                                let kind = crate::stage_timing::take_send_kind().unwrap_or(
+                                    if target.follow() {
+                                        "send-drag"
+                                    } else {
+                                        "send-stay"
+                                    },
+                                );
+                                thread_handoff.store_native_report(
+                                    crate::stage_timing::LaneNativeReport {
+                                        summary: crate::stage_timing::take_native_agg(),
+                                        exec_us: exec.elapsed(),
+                                        kind,
+                                    },
+                                );
                                 let _ = thread_handoff.finish(completion_for_with_reads(
                                     &target,
                                     effect.setter,
@@ -1987,6 +2047,8 @@ impl ManagedSendThread {
                                 // path: pre-write pair before, confirming
                                 // re-read after (the trailing leg carries no
                                 // readback of its own).
+                                crate::stage_timing::reset_native_agg();
+                                let exec = crate::stage_timing::PhaseClock::start();
                                 let pre_member = single_sid(backend.read_membership());
                                 let pre_view = backend.read_current();
                                 let (effect, target, proof) =
@@ -2021,6 +2083,19 @@ impl ManagedSendThread {
                                         post_view: None,
                                     },
                                 };
+                                // Report BEFORE finish: the main thread polls the
+                                // completion first, so a completion staged before its
+                                // report would let a prompt poll observe the settle
+                                // with no report stored yet.
+                                let kind = crate::stage_timing::take_send_kind()
+                                    .unwrap_or("send-trailing");
+                                thread_handoff.store_native_report(
+                                    crate::stage_timing::LaneNativeReport {
+                                        summary: crate::stage_timing::take_native_agg(),
+                                        exec_us: exec.elapsed(),
+                                        kind,
+                                    },
+                                );
                                 let _ = thread_handoff.finish(completion);
                             }
                         }

@@ -414,3 +414,343 @@ fn producer_path_stays_off_main_and_unsafe_free() {
         "phase attribution stays on the metadata-only formatters"
     );
 }
+
+// --- Redundant setter-step skips: scripted gates/setter plus call counts.
+
+use std::cell::{Cell, RefCell};
+
+use crate::dev_selection::TileScope;
+use crate::ffi::AxFrame;
+use crate::runtime_types::AxCompletion;
+use crate::scope::{AppScope, ProcessIdentity};
+
+const SKIP_PID: u32 = 4242;
+const SKIP_WID: u32 = 7;
+const SKIP_REVISION: u64 = 77;
+
+fn skip_frame() -> AxFrame {
+    AxFrame {
+        x: 8.0,
+        y: 38.0,
+        w: 1108.0,
+        h: 1123.0,
+    }
+}
+
+fn skip_scope() -> TileScope {
+    TileScope::Scoped(AppScope {
+        allowed: vec!["com.apple.TextEdit".to_owned()],
+    })
+}
+
+fn skip_identity() -> ProcessIdentity {
+    ProcessIdentity::bind(
+        SKIP_PID,
+        Some("com.apple.TextEdit"),
+        "/Applications/TextEdit.app/Contents/MacOS/TextEdit",
+        "skip-start-token",
+    )
+    .expect("test identity binds")
+}
+
+struct AllowGates {
+    show_calls: Cell<usize>,
+    fail_show_at: usize,
+}
+
+impl AllowGates {
+    fn passing() -> Self {
+        Self {
+            show_calls: Cell::new(0),
+            fail_show_at: 0,
+        }
+    }
+}
+
+impl TileGates for AllowGates {
+    fn revalidate_identity(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn scope_bundle(&self) -> Option<String> {
+        Some("com.apple.TextEdit".to_owned())
+    }
+    fn cg_owner(&self, _pid: u32, _wid: u32) -> Result<(), String> {
+        Ok(())
+    }
+    fn membership(&self, _wid: u32) -> Result<Vec<u64>, String> {
+        Ok(vec![7])
+    }
+    fn current_user_space(&self) -> Result<u64, String> {
+        Ok(7)
+    }
+    fn topology_revision(&self) -> Result<u64, String> {
+        Ok(SKIP_REVISION)
+    }
+    fn show_state(&self, _wid: u32) -> Result<WindowShowState, String> {
+        let next = self.show_calls.get() + 1;
+        self.show_calls.set(next);
+        if self.fail_show_at == next {
+            return Err("scripted fence refusal".to_owned());
+        }
+        Ok(WindowShowState {
+            fullscreen: false,
+            minimized: false,
+            hidden_app: false,
+        })
+    }
+    fn effect_alive(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn session_safe(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+struct CountingSetter {
+    size_calls: Cell<usize>,
+    position_calls: Cell<usize>,
+    readback_calls: Cell<usize>,
+    reads: RefCell<Vec<Option<AxFrame>>>,
+    size_err: Option<String>,
+}
+
+impl CountingSetter {
+    /// `reads` are consumed in call order; script exactly one per expected
+    /// readback (three per full transaction, fewer after a safety skip).
+    fn new(reads: Vec<Option<AxFrame>>) -> Self {
+        Self {
+            size_calls: Cell::new(0),
+            position_calls: Cell::new(0),
+            readback_calls: Cell::new(0),
+            reads: RefCell::new(reads.into_iter().rev().collect()),
+            size_err: None,
+        }
+    }
+}
+
+impl AxSetter for CountingSetter {
+    fn set_position(&mut self, _wid: u32, _frame: &AxFrame) -> Result<(), String> {
+        self.position_calls.set(self.position_calls.get() + 1);
+        Ok(())
+    }
+    fn set_size(&mut self, _wid: u32, _frame: &AxFrame) -> Result<(), String> {
+        self.size_calls.set(self.size_calls.get() + 1);
+        if let Some(reason) = self.size_err.clone() {
+            return Err(reason);
+        }
+        Ok(())
+    }
+    fn set_focus(
+        &mut self,
+        _wid: u32,
+        _route: crate::focus_route::FocusRoute,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    fn readback(&mut self, _wid: u32) -> Result<Option<AxFrame>, String> {
+        self.readback_calls.set(self.readback_calls.get() + 1);
+        Ok(self.reads.borrow_mut().pop().unwrap_or(None))
+    }
+}
+
+#[test]
+fn redundant_position_and_final_size_skip_on_exact_readbacks() {
+    // Requested geometry already landed after the size-first leg: both
+    // later setters are redundant writes, so neither issues an AX call,
+    // while all three proof readbacks still run.
+    let frame = skip_frame();
+    let gates = AllowGates::passing();
+    let mut setter = CountingSetter::new(vec![Some(frame), Some(frame), Some(frame)]);
+    let (completion, report) = apply_scoped_frame(
+        &skip_scope(),
+        &skip_identity(),
+        &gates,
+        &mut setter,
+        SKIP_PID,
+        SKIP_WID,
+        &frame,
+        SKIP_REVISION,
+        0,
+    );
+    assert!(matches!(completion, AxCompletion::Applied { .. }));
+    assert_eq!(report.size_first, LegOutcome::Applied);
+    assert_eq!(report.position, LegOutcome::SkippedRedundant);
+    assert_eq!(report.size, LegOutcome::SkippedRedundant);
+    assert_eq!(setter.size_calls.get(), 1);
+    assert_eq!(setter.position_calls.get(), 0);
+    assert_eq!(setter.readback_calls.get(), 3);
+    assert_eq!(report.readback, Some(frame));
+    assert!(!report.readback_unreadable);
+}
+
+#[test]
+fn position_applies_when_readback_differs_then_final_size_skips() {
+    // A moved window: the size-first readback names a stale position, so
+    // the position setter still fires; the fresh position-leg readback
+    // already names the requested size, so the final size setter skips.
+    let frame = skip_frame();
+    let stale = AxFrame {
+        x: 1124.0,
+        y: 38.0,
+        w: 1108.0,
+        h: 1123.0,
+    };
+    let gates = AllowGates::passing();
+    let mut setter = CountingSetter::new(vec![Some(stale), Some(frame), Some(frame)]);
+    let (completion, report) = apply_scoped_frame(
+        &skip_scope(),
+        &skip_identity(),
+        &gates,
+        &mut setter,
+        SKIP_PID,
+        SKIP_WID,
+        &frame,
+        SKIP_REVISION,
+        0,
+    );
+    assert!(matches!(completion, AxCompletion::Applied { .. }));
+    assert_eq!(report.size_first, LegOutcome::Applied);
+    assert_eq!(report.position, LegOutcome::Applied);
+    assert_eq!(report.size, LegOutcome::SkippedRedundant);
+    assert_eq!(setter.size_calls.get(), 1);
+    assert_eq!(setter.position_calls.get(), 1);
+    assert_eq!(setter.readback_calls.get(), 3);
+}
+
+#[test]
+fn final_size_heals_after_position_perturbs_size() {
+    // The position write perturbs the size (the finicky-AX case behind
+    // SIZE-POSITION-SIZE): the fresh position-leg readback proves the
+    // mismatch, so the final size setter still fires exactly once.
+    let frame = skip_frame();
+    let moved = AxFrame {
+        x: 8.0,
+        y: 38.0,
+        w: 1108.0,
+        h: 1123.0,
+    };
+    let perturbed = AxFrame {
+        x: 8.0,
+        y: 38.0,
+        w: 900.0,
+        h: 1123.0,
+    };
+    let gates = AllowGates::passing();
+    let mut setter = CountingSetter::new(vec![Some(moved), Some(perturbed), Some(frame)]);
+    let (completion, report) = apply_scoped_frame(
+        &skip_scope(),
+        &skip_identity(),
+        &gates,
+        &mut setter,
+        SKIP_PID,
+        SKIP_WID,
+        &frame,
+        SKIP_REVISION,
+        0,
+    );
+    assert!(matches!(completion, AxCompletion::Applied { .. }));
+    assert_eq!(report.position, LegOutcome::SkippedRedundant);
+    assert_eq!(report.size, LegOutcome::Applied);
+    assert_eq!(setter.size_calls.get(), 2);
+    assert_eq!(setter.position_calls.get(), 0);
+    assert_eq!(setter.readback_calls.get(), 3);
+    assert_eq!(report.readback, Some(frame));
+}
+
+#[test]
+fn unreadable_readback_never_skips_a_setter() {
+    // No proof, no skip: unreadable legs attempt every setter and the
+    // completion stays honest about the missing proof.
+    let frame = skip_frame();
+    let gates = AllowGates::passing();
+    let mut setter = CountingSetter::new(vec![None, None, None]);
+    let (completion, report) = apply_scoped_frame(
+        &skip_scope(),
+        &skip_identity(),
+        &gates,
+        &mut setter,
+        SKIP_PID,
+        SKIP_WID,
+        &frame,
+        SKIP_REVISION,
+        0,
+    );
+    assert!(matches!(completion, AxCompletion::Applied { .. }));
+    assert_eq!(setter.size_calls.get(), 2);
+    assert_eq!(setter.position_calls.get(), 1);
+    assert_eq!(setter.readback_calls.get(), 3);
+    assert_eq!(report.readback, None);
+    assert!(report.readback_unreadable);
+}
+
+#[test]
+fn safety_skip_keeps_precedence_over_redundancy() {
+    // The inter-leg fence fails before position even though the fresh
+    // readback already matches: the leg reports SkippedSafety (never
+    // SkippedRedundant), the completion fails, and the position readback
+    // is withheld while the final leg still attempts.
+    let frame = skip_frame();
+    let gates = AllowGates {
+        show_calls: Cell::new(0),
+        fail_show_at: 2,
+    };
+    let mut setter = CountingSetter::new(vec![Some(frame), Some(frame)]);
+    let (completion, report) = apply_scoped_frame(
+        &skip_scope(),
+        &skip_identity(),
+        &gates,
+        &mut setter,
+        SKIP_PID,
+        SKIP_WID,
+        &frame,
+        SKIP_REVISION,
+        0,
+    );
+    assert!(matches!(completion, AxCompletion::Failed { .. }));
+    assert!(matches!(report.position, LegOutcome::SkippedSafety(_)));
+    assert_eq!(report.leg_readbacks[0], Some(frame));
+    assert_eq!(report.leg_readbacks[1], None);
+    assert_eq!(setter.position_calls.get(), 0);
+    assert_eq!(setter.readback_calls.get(), 2);
+}
+
+#[test]
+fn refused_first_leg_reports_partial_with_redundant_rest() {
+    // A refused size-first leg still yields partial truth: the redundant
+    // legs count as settled, so only the refused leg reads as unapplied.
+    let frame = skip_frame();
+    let gates = AllowGates::passing();
+    let mut setter = CountingSetter::new(vec![Some(frame), Some(frame), Some(frame)]);
+    setter.size_err = Some("AXFailure".to_owned());
+    let (completion, report) = apply_scoped_frame(
+        &skip_scope(),
+        &skip_identity(),
+        &gates,
+        &mut setter,
+        SKIP_PID,
+        SKIP_WID,
+        &frame,
+        SKIP_REVISION,
+        0,
+    );
+    match completion {
+        AxCompletion::PartialApplied {
+            size_first_applied,
+            position_applied,
+            size_applied,
+            readback_xywh,
+            readback_unreadable,
+            ..
+        } => {
+            assert!(!size_first_applied);
+            assert!(position_applied);
+            assert!(size_applied);
+            assert_eq!(readback_xywh, Some((8, 38, 1108, 1123)));
+            assert!(!readback_unreadable);
+        }
+        other => panic!("expected PartialApplied, got {other:?}"),
+    }
+    assert!(matches!(report.size_first, LegOutcome::Refused(_)));
+    assert_eq!(setter.size_calls.get(), 1);
+    assert_eq!(setter.position_calls.get(), 0);
+}

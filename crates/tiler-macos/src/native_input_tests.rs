@@ -749,6 +749,7 @@ fn drain_wiring_never_escapes_refused_hits() {
                 key_code,
                 down,
                 flags,
+                tap_us: 0,
             };
             let decision = triage_consumed_hit(specs, key_code, flags, down, basic, select);
             (decision, drain_received_hit(&hit, decision))
@@ -771,6 +772,7 @@ fn drain_wiring_never_escapes_refused_hits() {
             kind: TapKeyKind::KeyDown,
             flags: ctrl_flags,
             key_code: KEY_H,
+            tap_us: 0,
         })
     );
     // Eligible select down escapes too.
@@ -782,6 +784,7 @@ fn drain_wiring_never_escapes_refused_hits() {
             kind: TapKeyKind::KeyDown,
             flags: ctrl_flags,
             key_code: digit2,
+            tap_us: 0,
         })
     );
     // Ineligible up escapes as KeyUp (hold release downstream).
@@ -793,6 +796,7 @@ fn drain_wiring_never_escapes_refused_hits() {
             kind: TapKeyKind::KeyUp,
             flags: ctrl_flags,
             key_code: KEY_H,
+            tap_us: 0,
         })
     );
     // Unowned down escapes (never swallowed here; the input owner

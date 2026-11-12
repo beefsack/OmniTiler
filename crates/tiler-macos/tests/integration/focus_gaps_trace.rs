@@ -349,6 +349,7 @@ fn send_focus_right(fixture: &Fixture) {
             kind: TapKeyKind::KeyDown,
             flags,
             key_code: 0x04,
+            tap_us: 0,
         })
         .expect("send focus chord");
 }

@@ -319,6 +319,7 @@ fn send_key(fixture: &Fixture, flags: u64, key_code: u32) {
             kind: TapKeyKind::KeyDown,
             flags,
             key_code,
+            tap_us: 0,
         })
         .expect("send key");
 }
@@ -330,6 +331,7 @@ fn send_key_up(fixture: &Fixture, flags: u64, key_code: u32) {
             kind: TapKeyKind::KeyUp,
             flags,
             key_code,
+            tap_us: 0,
         })
         .expect("send key up");
 }

@@ -479,11 +479,31 @@ pub trait DragBackend {
     fn post_key(&mut self, down: bool) -> Result<(), String>;
     /// Grab settle (50 ms): log-only override point for the fake.
     fn settle_grab(&mut self) {
+        if !crate::stage_timing::enabled() {
+            std::thread::sleep(std::time::Duration::from_millis(GRAB_SETTLE_MS));
+            return;
+        }
+        let start = crate::stage_timing::now_us();
         std::thread::sleep(std::time::Duration::from_millis(GRAB_SETTLE_MS));
+        crate::stage_timing::add_wait(
+            crate::stage_timing::WaitKind::GrabSettle,
+            crate::stage_timing::now_us().saturating_sub(start),
+            1,
+        );
     }
     /// Animation hold (400 ms): log-only override point for the fake.
     fn settle_hold(&mut self) {
+        if !crate::stage_timing::enabled() {
+            std::thread::sleep(std::time::Duration::from_millis(ANIMATION_HOLD_MS));
+            return;
+        }
+        let start = crate::stage_timing::now_us();
         std::thread::sleep(std::time::Duration::from_millis(ANIMATION_HOLD_MS));
+        crate::stage_timing::add_wait(
+            crate::stage_timing::WaitKind::AnimationHold,
+            crate::stage_timing::now_us().saturating_sub(start),
+            1,
+        );
     }
     fn read_membership(&mut self) -> Option<Vec<u64>>;
     fn read_current(&mut self) -> Option<u64>;
@@ -635,7 +655,17 @@ fn await_effect<B: DragBackend>(
         if start.elapsed() >= std::time::Duration::from_millis(deadline_ms) {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(poll_ms));
+        if crate::stage_timing::enabled() {
+            let wait_start = crate::stage_timing::now_us();
+            std::thread::sleep(std::time::Duration::from_millis(poll_ms));
+            crate::stage_timing::add_wait(
+                crate::stage_timing::WaitKind::ArrivalPoll,
+                crate::stage_timing::now_us().saturating_sub(wait_start),
+                1,
+            );
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(poll_ms));
+        }
         last_membership = backend.read_membership();
         last_current = backend.read_current();
     }

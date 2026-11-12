@@ -53,8 +53,9 @@
 //! Each leg is fenced separately (identity/CG/membership/revision/scope
 //! rechecked between legs) and read back separately, so per-leg truth
 //! survives: an ordinary AX failure on one leg still attempts the
-//! independent remaining legs, and exactly one bounded readback per
-//! attempted leg reports what actually landed. No infinite retry, no
+//! independent remaining legs (a provably redundant setter is skipped
+//! without an AX write, on fresh-read evidence), and exactly one bounded
+//! readback per leg reports what actually landed. No infinite retry, no
 //! fighting loops: a single pass, then the completion (`Applied`, `Failed`,
 //! `Timeout`, or the extended `PartialApplied`) tells the worker what
 //! actually happened.
@@ -163,6 +164,11 @@ pub enum LegOutcome {
     Applied,
     Refused(String),
     SkippedSafety(String),
+    /// The setter was provably redundant: a fresh read already named the
+    /// requested geometry under the product's own truncation-exactness, so
+    /// no AX write was issued. Fences and readbacks still ran; the geometry
+    /// counts as applied in the completion below.
+    SkippedRedundant,
 }
 
 /// Actual partial truth for one scoped frame transaction: per-leg outcomes
@@ -304,11 +310,22 @@ pub fn fence_scoped_effect(
 }
 
 /// Apply one scoped frame SIZE→POSITION→SIZE (Silica order) with one bounded
-/// readback per attempted leg. An ordinary AX failure on one leg never
+/// readback per leg. An ordinary AX failure on one leg never
 /// blocks the independent remaining legs; only a safety fence refusal
 /// (identity/CG/membership/revision/scope/show-state, rechecked between
 /// every leg) skips what follows. Single pass: no retry, no fighting loops.
 /// Per-leg readbacks preserve exactly what landed for re-observation.
+///
+/// A setter leg is skipped without an AX write only when a fresh
+/// in-transaction readback already names the requested geometry under the
+/// product's own truncation-exactness (the same predicate the frame-set
+/// line reports as `exact`): the position leg when the size-first readback
+/// already matches, the final size leg when the position-leg readback
+/// already matches. A skip can never hide a mismatch that proof would
+/// report. Fences and readbacks still run on skipped legs. The size-first
+/// leg always attempts: there is no fresh pre-write read, and threading
+/// the worker's cached observation into the backend needs trait or command
+/// plumbing beyond this change.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_scoped_frame(
     scope: &TileScope,
@@ -344,6 +361,14 @@ pub fn apply_scoped_frame(
             refused,
             [None, None, None],
         );
+        crate::diag_cause::emit_frame_diag(
+            pid,
+            wid,
+            expect_revision,
+            crate::diag_cause::ENTRY_DEGENERATE,
+            "failed",
+            &report,
+        );
         return (
             AxCompletion::Failed {
                 reason: "degenerate frame".to_owned(),
@@ -352,42 +377,94 @@ pub fn apply_scoped_frame(
         );
     }
     if let Err(reason) = fence_scoped_effect(scope, identity, gates, pid, wid, expect_revision) {
+        let completion_token = if reason.contains("timeout") {
+            "timeout"
+        } else {
+            "failed"
+        };
         let leg = LegOutcome::Refused(reason.clone());
         let report = report_of(leg.clone(), leg.clone(), leg, [None, None, None]);
+        crate::diag_cause::emit_frame_diag(
+            pid,
+            wid,
+            expect_revision,
+            crate::diag_cause::ENTRY_FENCE,
+            completion_token,
+            &report,
+        );
         if reason.contains("timeout") {
             return (AxCompletion::Timeout { timeout_ms: 2000 }, report);
         }
         return (AxCompletion::Failed { reason }, report);
     }
     // Leg 1 (size-first): an ordinary refusal still attempts the rest.
-    let size_first = match setter.set_size(wid, frame) {
-        Ok(()) => LegOutcome::Applied,
-        Err(reason) => LegOutcome::Refused(reason),
+    // Each setter/readback leg clocks one honest instrumented call. A
+    // skipped redundant setter issues no AX write and clocks nothing.
+    let want_xy = (frame.x as i32, frame.y as i32);
+    let want_wh = (frame.w as i32, frame.h as i32);
+    let read_xy = |readback: &Option<AxFrame>| readback.map(|f| (f.x as i32, f.y as i32));
+    let read_wh = |readback: &Option<AxFrame>| readback.map(|f| (f.w as i32, f.h as i32));
+    let size_first = {
+        let set_clock = crate::stage_timing::PhaseClock::start();
+        let outcome = match setter.set_size(wid, frame) {
+            Ok(()) => LegOutcome::Applied,
+            Err(reason) => LegOutcome::Refused(reason),
+        };
+        crate::stage_timing::add_ax_set(set_clock.elapsed(), 1);
+        outcome
     };
+    let read_clock = crate::stage_timing::PhaseClock::start();
     let readback_0 = setter.readback(wid).ok().flatten();
+    crate::stage_timing::add_ax_read(read_clock.elapsed(), 1);
     // Narrow safety recheck before the position leg.
     let position = match fence_scoped_effect(scope, identity, gates, pid, wid, expect_revision) {
         Err(reason) => LegOutcome::SkippedSafety(reason),
-        Ok(_) => match setter.set_position(wid, frame) {
-            Ok(()) => LegOutcome::Applied,
-            Err(reason) => LegOutcome::Refused(reason),
-        },
+        Ok(_) if read_xy(&readback_0).is_some_and(|xy| xy == want_xy) => {
+            LegOutcome::SkippedRedundant
+        }
+        Ok(_) => {
+            let set_clock = crate::stage_timing::PhaseClock::start();
+            let outcome = match setter.set_position(wid, frame) {
+                Ok(()) => LegOutcome::Applied,
+                Err(reason) => LegOutcome::Refused(reason),
+            };
+            crate::stage_timing::add_ax_set(set_clock.elapsed(), 1);
+            outcome
+        }
     };
     let readback_1 = match &position {
         LegOutcome::SkippedSafety(_) => None,
-        _ => setter.readback(wid).ok().flatten(),
+        _ => {
+            let read_clock = crate::stage_timing::PhaseClock::start();
+            let readback = setter.readback(wid).ok().flatten();
+            crate::stage_timing::add_ax_read(read_clock.elapsed(), 1);
+            readback
+        }
     };
     // Narrow safety recheck before the final size leg.
     let size = match fence_scoped_effect(scope, identity, gates, pid, wid, expect_revision) {
         Err(reason) => LegOutcome::SkippedSafety(reason),
-        Ok(_) => match setter.set_size(wid, frame) {
-            Ok(()) => LegOutcome::Applied,
-            Err(reason) => LegOutcome::Refused(reason),
-        },
+        Ok(_) if read_wh(&readback_1).is_some_and(|wh| wh == want_wh) => {
+            LegOutcome::SkippedRedundant
+        }
+        Ok(_) => {
+            let set_clock = crate::stage_timing::PhaseClock::start();
+            let outcome = match setter.set_size(wid, frame) {
+                Ok(()) => LegOutcome::Applied,
+                Err(reason) => LegOutcome::Refused(reason),
+            };
+            crate::stage_timing::add_ax_set(set_clock.elapsed(), 1);
+            outcome
+        }
     };
     let readback_2 = match &size {
         LegOutcome::SkippedSafety(_) => None,
-        _ => setter.readback(wid).ok().flatten(),
+        _ => {
+            let read_clock = crate::stage_timing::PhaseClock::start();
+            let readback = setter.readback(wid).ok().flatten();
+            crate::stage_timing::add_ax_read(read_clock.elapsed(), 1);
+            readback
+        }
     };
     let report = report_of(
         size_first.clone(),
@@ -404,24 +481,43 @@ pub fn apply_scoped_frame(
             .as_millis()
             .min(u128::from(u64::MAX)) as u64,
     );
-    let completion = match (&size_first, &position, &size) {
-        (LegOutcome::Applied, LegOutcome::Applied, LegOutcome::Applied) => {
+    let leg_settled =
+        |leg: &LegOutcome| matches!(leg, LegOutcome::Applied | LegOutcome::SkippedRedundant);
+    let safety_refusal = [&size_first, &position, &size].into_iter().find_map(|leg| {
+        if let LegOutcome::SkippedSafety(reason) = leg {
+            Some(reason.clone())
+        } else {
+            None
+        }
+    });
+    let completion = match safety_refusal {
+        Some(reason) => AxCompletion::Failed { reason },
+        None if leg_settled(&size_first) && leg_settled(&position) && leg_settled(&size) => {
             AxCompletion::Applied { elapsed_ms }
         }
-        (LegOutcome::SkippedSafety(reason), _, _)
-        | (_, LegOutcome::SkippedSafety(reason), _)
-        | (_, _, LegOutcome::SkippedSafety(reason)) => AxCompletion::Failed {
-            reason: reason.clone(),
-        },
-        _ => AxCompletion::PartialApplied {
+        None => AxCompletion::PartialApplied {
             elapsed_ms,
-            size_first_applied: size_first == LegOutcome::Applied,
-            position_applied: position == LegOutcome::Applied,
-            size_applied: size == LegOutcome::Applied,
+            size_first_applied: leg_settled(&size_first),
+            position_applied: leg_settled(&position),
+            size_applied: leg_settled(&size),
             readback_xywh,
             readback_unreadable: report.readback_unreadable,
         },
     };
+    let completion_token = match &completion {
+        AxCompletion::Applied { .. } => "applied",
+        AxCompletion::PartialApplied { .. } => "partial",
+        AxCompletion::Failed { .. } => "failed",
+        AxCompletion::Timeout { .. } => "timeout",
+    };
+    crate::diag_cause::emit_frame_diag(
+        pid,
+        wid,
+        expect_revision,
+        "none",
+        completion_token,
+        &report,
+    );
     (completion, report)
 }
 
@@ -1303,8 +1399,8 @@ impl AxBackend for ScopedAxBackend {
             let _ = ctx;
             // Frame-set boundary: the log carries the ACTUAL exact AX
             // readback, never the request alone. `outcome` is dispatch
-            // truth (every leg reported success); `exact` is observed
-            // truth (readback equals the request). A dispatch success with
+            // truth (each leg succeeded or was provably redundant); `exact`
+            // is observed truth (readback equals the request). A dispatch success with
             // `exact=false` (or an unreadable readback) is not arrival -
             // arrival is proven only by a later owned-snapshot join.
             // Token-only: IDs, revision, geometry, static outcome.
@@ -1701,7 +1797,33 @@ mod native {
                         // and the revision anchors arrival attribution.
                         self.reread_seen_generation = Some(seen);
                         self.last_poll_revision = Some(ctx.revision);
+                        let snap = crate::diag_cause::enabled().then(crate::diag_cause::next_snap);
+                        if let Some(snap) = snap {
+                            crate::diag_cause::emit_close_trigger(
+                                self.pid,
+                                "initial",
+                                ctx.revision,
+                                false,
+                            );
+                            crate::diag_cause::emit_snap_start(
+                                snap,
+                                self.pid,
+                                ctx.revision,
+                                "initial",
+                            );
+                        }
                         let result = self.snapshot_scoped_native(&ctx);
+                        if let Some(snap) = snap {
+                            crate::diag_cause::emit_snap_end(
+                                snap,
+                                self.pid,
+                                if result.is_err() { "err" } else { "ok" },
+                                result
+                                    .as_ref()
+                                    .err()
+                                    .map_or("-", |reason| crate::diag_cause::diag_cause(reason)),
+                            );
+                        }
                         self.note_backstop_read(now_ms, result.is_err());
                         return Some(result);
                     }
@@ -1772,7 +1894,23 @@ mod native {
             // a new bump rereads again.
             self.reread_seen_generation = Some(seen);
             self.last_poll_revision = Some(ctx.revision);
+            let snap = crate::diag_cause::enabled().then(crate::diag_cause::next_snap);
+            if let Some(snap) = snap {
+                crate::diag_cause::emit_close_trigger(self.pid, trigger, ctx.revision, notified);
+                crate::diag_cause::emit_snap_start(snap, self.pid, ctx.revision, trigger);
+            }
             let result = self.snapshot_scoped_native(&ctx);
+            if let Some(snap) = snap {
+                crate::diag_cause::emit_snap_end(
+                    snap,
+                    self.pid,
+                    if result.is_err() { "err" } else { "ok" },
+                    result
+                        .as_ref()
+                        .err()
+                        .map_or("-", |reason| crate::diag_cause::diag_cause(reason)),
+                );
+            }
             self.note_backstop_read(now_ms, result.is_err());
             Some(result)
         }
@@ -1840,12 +1978,15 @@ mod native {
                 return AxCompletion::Failed { reason };
             }
             let mut setter = NativeSetter::new(self.pid, cmd.wid);
-            match setter.set_focus(cmd.wid, cmd.route) {
+            let focus_clock = crate::stage_timing::PhaseClock::start();
+            let outcome = match setter.set_focus(cmd.wid, cmd.route) {
                 Ok(()) => AxCompletion::Applied {
                     elapsed_ms: elapsed_ms(),
                 },
                 Err(reason) => AxCompletion::Failed { reason },
-            }
+            };
+            crate::stage_timing::add_ax_focus(focus_clock.elapsed(), 1);
+            outcome
         }
 
         /// Ordered bracket reads for arrival capture on the owning thread

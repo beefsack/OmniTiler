@@ -214,6 +214,77 @@ impl RuntimeHandle {
         }
     }
 
+    /// Flush one select/send lane report under its dispatch trace: the
+    /// owner's accumulation (trace identity, `pid` 0) plus the owner-thread
+    /// execution record (`timing-lane-exec` with the lane class as
+    /// outcome). The lane report rides the handoff, not the engine maps, so
+    /// this joins through the bounded op map (`op-<seq>` to trace): unknown
+    /// or unmapped identities drop silently (the op-settle path already
+    /// stages the drain evidence; this only adds the lane split).
+    pub(crate) fn flush_lane_native(
+        &self,
+        operation_id: &str,
+        report: crate::stage_timing::LaneNativeReport,
+    ) {
+        let Some(seq) = crate::stage_timing::parse_op_seq(operation_id) else {
+            return;
+        };
+        let Some((trace, _, _)) = crate::stage_timing::trace_for_op(seq) else {
+            return;
+        };
+        crate::stage_timing::emit_native_agg_for_trace(&self.shared, trace, report.summary);
+        crate::stage_timing::record(
+            &self.shared,
+            trace,
+            crate::stage_timing::stage::LANE_EXEC,
+            report.kind,
+            report.exec_us,
+        );
+    }
+
+    /// Emit one coalesced border-submit record (`timing-publish` with the
+    /// `border-submit` detail) under the latest publication trace:
+    /// `elapsed_us` is the tick-plus-drive time for a pushed change
+    /// (change-only: `BorderEffect::None` never calls this). Coalesced
+    /// latest-publication attribution only - never an exact causal
+    /// per-action render or paint claim (submit, never painted proof; an
+    /// obsolete publication may be skipped entirely). No-op when disabled
+    /// or when no publication has landed yet (trace 0).
+    pub(crate) fn note_border_submit(&self, elapsed_us: u64) {
+        let trace = crate::stage_timing::last_publish();
+        if trace == 0 {
+            return;
+        }
+        crate::stage_timing::record(
+            &self.shared,
+            trace,
+            crate::stage_timing::stage::PUBLISH,
+            "border-submit",
+            elapsed_us,
+        );
+    }
+
+    /// Emit one coalesced indicator-submit record (`timing-publish` with
+    /// the `indicator-submit` detail) under the latest publication trace:
+    /// `elapsed_us` is the tick-plus-push time for an applied render
+    /// (change-only: duplicate/disarmed ticks never call this). Same
+    /// coalesced-attribution contract as
+    /// [`RuntimeHandle::note_border_submit`]. No-op when disabled or
+    /// publication-less.
+    pub(crate) fn note_indicator_submit(&self, elapsed_us: u64) {
+        let trace = crate::stage_timing::last_publish();
+        if trace == 0 {
+            return;
+        }
+        crate::stage_timing::record(
+            &self.shared,
+            trace,
+            crate::stage_timing::stage::PUBLISH,
+            "indicator-submit",
+            elapsed_us,
+        );
+    }
+
     /// Release one deferred selection focus after the native selection
     /// proved arrival (main thread, on the matching select completion's
     /// verified post): the post must name the bound native Space, the app

@@ -856,6 +856,7 @@ pub(crate) fn drain_received_hit(
             },
             flags: hit.flags,
             key_code: hit.key_code,
+            tap_us: hit.tap_us,
         }),
         _ => None,
     }

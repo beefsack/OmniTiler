@@ -64,9 +64,27 @@ pub(crate) enum EngineJob {
         generation: u64,
         seq: u64,
         snapshot: ScopedBackendSnapshot,
+        /// Stage-timing correlation for host-driven polls: opaque trace id
+        /// minted at poll-result receipt plus the receipt stamp
+        /// (`intake_us`) and the admission enqueue stamp (`enqueue_us`),
+        /// microseconds since the stage-timing clock origin. Zero when
+        /// timing is disabled; the engine treats 0 as untraced (no records,
+        /// no clock reads). There is no tap/notification callback on this
+        /// path, so poll-result receipt IS intake.
+        trace_id: u64,
+        intake_us: u64,
+        enqueue_us: u64,
     },
     InputAction {
         action: InputSemanticAction,
+        /// Stage-timing correlation: opaque trace id minted at intake plus
+        /// the callback receipt stamp (`intake_us`) and the admission
+        /// enqueue stamp (`enqueue_us`), both microseconds since the
+        /// stage-timing clock origin. Zero when timing is disabled; the
+        /// engine treats 0 as untraced (no records, no clock reads).
+        trace_id: u64,
+        intake_us: u64,
+        enqueue_us: u64,
     },
     /// Menu-bar segment click: the armed action plus its immutable
     /// render-time binding (expected SID, UI generation, topology
@@ -82,6 +100,10 @@ pub(crate) enum EngineJob {
         expected_sid: u64,
         ui_generation: u64,
         topology_revision: u64,
+        /// Stage-timing correlation, as for [`EngineJob::InputAction`].
+        trace_id: u64,
+        intake_us: u64,
+        enqueue_us: u64,
     },
     /// Read-only managed-facts query for the dedicated send-effect owner:
     /// publish the engine's current [`EngineManagedFacts`](
@@ -467,6 +489,7 @@ impl Inbox {
                     generation,
                     seq,
                     snapshot,
+                    ..
                 } => Some(CoherencePending::ScopedObservation {
                     pid: *pid,
                     generation: *generation,
@@ -1677,7 +1700,46 @@ pub(crate) fn process_job(
             generation,
             seq,
             snapshot,
+            trace_id,
+            intake_us,
+            enqueue_us,
         } => {
+            // Host-change correlation: the worker minted the trace at
+            // poll-result receipt (intake), so the engine span rejoins it
+            // across the inbox queue exactly like the input-tap path.
+            // `trace_id` 0 (disabled or manual submit) skips every record
+            // below after one flag load each. The INTAKE record is the
+            // notification-receipt marker (host-change token, count always
+            // 0); QUEUE is pure enqueue-to-dequeue wait. Poll acquisition
+            // itself (AX/CG reads inside the poll) is NOT clocked here: the
+            // worker accumulation window cannot attribute those reads to the
+            // poll, so the host total runs poll-result receipt to dispatch
+            // and excludes acquisition. The span
+            // installs thread-locally so the synchronous reconcile below
+            // records its phases under "host-change" (coalesced outcome:
+            // the polled snapshot exposes no create/destroy type).
+            let span = (trace_id != 0).then_some(crate::stage_timing::ActionSpan {
+                id: trace_id,
+                action: "host-change",
+                t0_us: intake_us,
+            });
+            let _trace_guard = span.as_ref().map(|held| crate::stage_timing::enter(*held));
+            if let Some(span) = span {
+                crate::stage_timing::record(
+                    shared,
+                    span.id,
+                    crate::stage_timing::stage::INTAKE,
+                    span.action,
+                    0,
+                );
+                crate::stage_timing::record(
+                    shared,
+                    span.id,
+                    crate::stage_timing::stage::QUEUE,
+                    span.action,
+                    crate::stage_timing::now_us().saturating_sub(enqueue_us),
+                );
+            }
             handle_scoped_observation(
                 session,
                 retained,
@@ -1691,7 +1753,34 @@ pub(crate) fn process_job(
                 snapshot,
             );
         }
-        EngineJob::InputAction { action } => {
+        EngineJob::InputAction {
+            action,
+            trace_id,
+            intake_us,
+            enqueue_us,
+        } => {
+            // Stage timing rejoins the intake stamp across the inbox queue:
+            // `trace_id` 0 (disabled) skips every record below after one
+            // flag load each. The span installs thread-locally so the
+            // synchronous dispatch path records its phases under it. QUEUE
+            // is pure inbox wait (enqueue to dequeue); receipt-to-enqueue
+            // rides the input-side `timing-input-map` record.
+            let span = (trace_id != 0).then(|| crate::stage_timing::ActionSpan {
+                id: trace_id,
+                action: crate::stage_timing::action_token(&action),
+                t0_us: intake_us,
+            });
+            let _trace_guard = span.as_ref().map(|held| crate::stage_timing::enter(*held));
+            let mapping_clock = crate::stage_timing::PhaseClock::start();
+            if let Some(span) = span {
+                crate::stage_timing::record(
+                    shared,
+                    span.id,
+                    crate::stage_timing::stage::QUEUE,
+                    span.action,
+                    crate::stage_timing::now_us().saturating_sub(enqueue_us),
+                );
+            }
             // Unsupported workspace actions (trailing stay-0,
             // relative sends, outputs) are recognized but
             // undispatched: no unsupported transfer and no output-send
@@ -1701,6 +1790,7 @@ pub(crate) fn process_job(
             if let Some(outcome) = workspace_unsupported_outcome(&action) {
                 lock_shared(shared).diagnostics.input_refused_unsupported += 1;
                 emit(shared, 0, 0, 0, "input", outcome, 0);
+                crate::stage_timing::finish(shared, span, outcome);
                 return;
             }
             // Armed select actions dispatch with no focused-window
@@ -1709,6 +1799,15 @@ pub(crate) fn process_job(
             // drain. Targeting resolves core-side; the accepted reply
             // binds the drain plan.
             if is_armed_select(&action) {
+                if let Some(span) = span {
+                    crate::stage_timing::record(
+                        shared,
+                        span.id,
+                        crate::stage_timing::stage::MAPPING,
+                        span.action,
+                        mapping_clock.elapsed(),
+                    );
+                }
                 handle_select_action(
                     session,
                     retained,
@@ -1718,12 +1817,22 @@ pub(crate) fn process_job(
                     focus_capacity,
                     crate::runtime_types::ClaimedSelect::tap(action),
                 );
+                crate::stage_timing::finish(shared, span, crate::stage_timing::outcome::DISPATCHED);
                 return;
             }
             // Armed numbered send-follow 1..9 dispatches through the
             // managed-send lane (see [`admit_send_claim`],
             // [`handle_send_action`]).
             if crate::workspace_input::is_armed_send(&action) {
+                if let Some(span) = span {
+                    crate::stage_timing::record(
+                        shared,
+                        span.id,
+                        crate::stage_timing::stage::MAPPING,
+                        span.action,
+                        mapping_clock.elapsed(),
+                    );
+                }
                 handle_send_action(
                     session,
                     retained,
@@ -1733,12 +1842,14 @@ pub(crate) fn process_job(
                     focus_capacity,
                     crate::runtime_types::ClaimedSelect::tap(action),
                 );
+                crate::stage_timing::finish(shared, span, crate::stage_timing::outcome::DISPATCHED);
                 return;
             }
             // The subject is observed truth, never planned focus.
             let Some(window) = retained.observed_focus.clone() else {
                 lock_shared(shared).diagnostics.input_refused_no_focus += 1;
                 emit(shared, 0, 0, 0, "input", "refused-no-focus", 0);
+                crate::stage_timing::finish(shared, span, "refused-no-focus");
                 return;
             };
             let Some((command, op)) = operation_command(&action, &window.0, retained) else {
@@ -1764,6 +1875,7 @@ pub(crate) fn process_job(
                 let Some(key) = retained.window_domains.get(&window.0).cloned() else {
                     lock_shared(shared).diagnostics.input_refused_no_focus += 1;
                     emit(shared, 0, 0, 0, "input", "refused-no-domain", 0);
+                    crate::stage_timing::finish(shared, span, "refused-no-domain");
                     return;
                 };
                 let current = lock_shared(shared)
@@ -1773,8 +1885,18 @@ pub(crate) fn process_job(
                 if !current {
                     lock_shared(shared).diagnostics.input_refused_no_focus += 1;
                     emit(shared, 0, 0, 0, "input", "refused-hidden-domain", 0);
+                    crate::stage_timing::finish(shared, span, "refused-hidden-domain");
                     return;
                 }
+            }
+            if let Some(span) = span {
+                crate::stage_timing::record(
+                    shared,
+                    span.id,
+                    crate::stage_timing::stage::MAPPING,
+                    span.action,
+                    mapping_clock.elapsed(),
+                );
             }
             dispatch_report(
                 session,
@@ -1793,13 +1915,35 @@ pub(crate) fn process_job(
                 0,
                 0,
             );
+            crate::stage_timing::finish(shared, span, crate::stage_timing::outcome::DISPATCHED);
         }
         EngineJob::IndicatorSelect {
             action,
             expected_sid,
             ui_generation,
             topology_revision,
+            trace_id,
+            intake_us,
+            enqueue_us,
         } => {
+            // Stage timing rejoins the indicator intake stamp across the
+            // queue exactly like the tap lane above (pure enqueue-to-dequeue
+            // wait).
+            let span = (trace_id != 0).then(|| crate::stage_timing::ActionSpan {
+                id: trace_id,
+                action: crate::stage_timing::action_token(&action),
+                t0_us: intake_us,
+            });
+            let _trace_guard = span.as_ref().map(|held| crate::stage_timing::enter(*held));
+            if let Some(span) = span {
+                crate::stage_timing::record(
+                    shared,
+                    span.id,
+                    crate::stage_timing::stage::QUEUE,
+                    span.action,
+                    crate::stage_timing::now_us().saturating_sub(enqueue_us),
+                );
+            }
             // Indicator segment clicks are select-only by construction:
             // the immutable render-time binding rides through admission
             // into the pending claim (see [`admit_select_claim`]);
@@ -1818,6 +1962,7 @@ pub(crate) fn process_job(
                     topology_revision,
                 ),
             );
+            crate::stage_timing::finish(shared, span, crate::stage_timing::outcome::DISPATCHED);
         }
         EngineJob::ViewAttempt {
             operation_id,
@@ -1836,6 +1981,20 @@ pub(crate) fn process_job(
             // view. The ring line makes staging observable end to end.
             session.stage_view_attempt(&operation_id, setter, pre_sid, post_sid, baseline_sid);
             emit(shared, 0, 0, 0, "feedback", "staged", 1);
+            // Drain settlement is the select per-action TOTAL (trace origin
+            // to staging, including the lane's fixed waits unsplit).
+            if crate::stage_timing::enabled()
+                && let Some(op_seq) = crate::stage_timing::parse_op_seq(&operation_id)
+                && let Some((trace, t0_us, _)) = crate::stage_timing::trace_for_op(op_seq)
+            {
+                crate::stage_timing::record(
+                    shared,
+                    trace,
+                    crate::stage_timing::stage::OP_SETTLE,
+                    "view-staged",
+                    crate::stage_timing::now_us().saturating_sub(t0_us),
+                );
+            }
         }
         EngineJob::MemberAttempt {
             operation_id,
@@ -1845,6 +2004,20 @@ pub(crate) fn process_job(
         } => {
             session.stage_member_attempt(&operation_id, setter, pre_sid, post_sid);
             emit(shared, 0, 0, 0, "feedback", "staged", 1);
+            // Drain settlement is the send per-action TOTAL (trace origin to
+            // staging, including the drag fallback's fixed holds unsplit).
+            if crate::stage_timing::enabled()
+                && let Some(op_seq) = crate::stage_timing::parse_op_seq(&operation_id)
+                && let Some((trace, t0_us, _)) = crate::stage_timing::trace_for_op(op_seq)
+            {
+                crate::stage_timing::record(
+                    shared,
+                    trace,
+                    crate::stage_timing::stage::OP_SETTLE,
+                    "member-staged",
+                    crate::stage_timing::now_us().saturating_sub(t0_us),
+                );
+            }
         }
         EngineJob::NativeCreation {
             operation_id,
@@ -1900,6 +2073,26 @@ pub(crate) fn process_job(
             completion,
         } => {
             note_completion(shared, "ax-result", pid, generation, cmd_id, &completion);
+            // Frame settlement joins the dispatch trace through the bounded
+            // cmd map (keyed by the full app lifetime plus `cmd_id`, so two
+            // apps reusing one counter never join): `ref` is the trace, the
+            // outcome is the honest completion class, `count` is the
+            // per-action TOTAL (trace origin to result arrival). Unmapped
+            // completions (synthetic traffic, evicted binds) emit nothing.
+            // This is the action's native settlement edge - never the engine
+            // `timing-done` record, which stops at dispatch return.
+            if crate::stage_timing::enabled()
+                && let Some((trace, t0_us, _)) =
+                    crate::stage_timing::trace_for_cmd(pid, generation, cmd_id)
+            {
+                crate::stage_timing::record(
+                    shared,
+                    trace,
+                    crate::stage_timing::stage::FRAME_SETTLE,
+                    crate::stage_timing::completion_token(&completion),
+                    crate::stage_timing::now_us().saturating_sub(t0_us),
+                );
+            }
             // A staged placement row changes the next report: advance the
             // shared mark now (the completion itself is already
             // incorporated). Ordinary writes stage nothing - no mark moves.
@@ -1914,6 +2107,20 @@ pub(crate) fn process_job(
             completion,
         } => {
             note_completion(shared, "focus-result", pid, generation, cmd_id, &completion);
+            // Focus settlement: same per-action TOTAL convention as frame
+            // settle above (origin to arrival, never dispatch return).
+            if crate::stage_timing::enabled()
+                && let Some((trace, t0_us, _)) =
+                    crate::stage_timing::trace_for_focus(pid, generation, cmd_id)
+            {
+                crate::stage_timing::record(
+                    shared,
+                    trace,
+                    crate::stage_timing::stage::FOCUS_SETTLE,
+                    crate::stage_timing::completion_token(&completion),
+                    crate::stage_timing::now_us().saturating_sub(t0_us),
+                );
+            }
         }
         EngineJob::CloseFocusResult {
             pid,
@@ -1950,6 +2157,23 @@ pub(crate) fn process_job(
                 tiler_core::world_report::VisibilitySetter::NotCalled => ("not-called", 0),
             };
             lock_shared(shared).count_completion(token);
+            // Focus settlement: same per-action TOTAL convention as frame
+            // settle and the legacy focus settle above (origin to arrival,
+            // never dispatch return). Joins the dispatch bind under the
+            // typed command identity (pid/generation/cmd_id); unmapped
+            // completions emit nothing.
+            if crate::stage_timing::enabled()
+                && let Some((trace, t0_us, _)) =
+                    crate::stage_timing::trace_for_focus(pid, generation, cmd_id)
+            {
+                crate::stage_timing::record(
+                    shared,
+                    trace,
+                    crate::stage_timing::stage::FOCUS_SETTLE,
+                    token,
+                    crate::stage_timing::now_us().saturating_sub(t0_us),
+                );
+            }
             // Terminal owner completion (attempt or no-call alike): clear
             // only the exactly matching deferred intent — same request
             // tuple plus the exact queued command identity — before the
@@ -1973,6 +2197,18 @@ pub(crate) fn process_job(
                     guard.selection_focus_pending = None;
                 }
             }
+            // Terminal owner completion retires the exact outbox row (or
+            // rows, when deferral recovery re-queued the same identity): the
+            // terminal result ends the command either way, so a consumed row
+            // must never keep occupying the bounded outbox. Runs on the
+            // staged and the stale-rejected legs alike; feedback rides the
+            // staged row, never the queue, so this drops no core input.
+            crate::world_dispatch::retire_focus_request_exact(
+                focus_queue,
+                cmd_id,
+                &target.0,
+                &close_id,
+            );
             let live = lock_shared(shared)
                 .apps
                 .get(&pid)
@@ -3432,6 +3668,458 @@ mod trailing_join_tests {
         );
     }
 
+    #[test]
+    fn directional_focus_bare_explicit_dispatches_one_native_call() {
+        // Responsiveness-rerun repro: a bare explicit directional focus
+        // accepted by the core must bind exactly one native focus call
+        // between the two tiled windows. The real `process_job`
+        // InputAction path (real codec plus real core) drives the bind;
+        // the mocked backend drives the owner leg; the typed result
+        // stages the Accepted feedback. A bind-time no-call stages its
+        // reason here instead of the capture's reason-less row.
+        let ctx = ctx();
+        let mut seed = retained_send_subject();
+        seed.observed_focus_known = true;
+        let mut neighbor = observed(8);
+        neighbor.x = 700;
+        let subject = seed.apps.get_mut(&4242).expect("subject app retained");
+        subject.windows.push(neighbor);
+        subject.roster.insert(8, roster_entry(neighbor, vec![1]));
+        seed.window_domains.insert(
+            crate::runtime::window_id(4242, 8),
+            DomainKey {
+                output: output(),
+                workspace: WorkspaceId(crate::topology::workspace_key(1)),
+            },
+        );
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), seed);
+        lock_shared(&shared).config.topology_mode = crate::runtime_types::TopologyMode::Native;
+        close_app(&shared, 4242, 7);
+        lock_shared(&shared).focus_evidence = Some(crate::runtime_types::FocusEvidence {
+            frontmost_pid: Some(4242),
+            frontmost_bundle: None,
+            ax_focus: None,
+        });
+        bootstrap_observation(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            &ctx,
+        );
+        assert_fixture_admitted(&session, &retained);
+        assert!(
+            lock_shared(&shared).native_context.is_some(),
+            "native scope present: logical ids must resolve to native"
+        );
+        process_job(
+            EngineJob::InputAction {
+                action: InputSemanticAction::FocusStep {
+                    direction: crate::runtime_types::InputDirection::Left,
+                },
+                trace_id: 0,
+                intake_us: 0,
+                enqueue_us: 0,
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        // The core names logical workspaces while the native scope is
+        // native-keyed: the applied reply must carry both vocabularies.
+        let req = session
+            .sequencer()
+            .last_reply()
+            .and_then(|reply| reply.focus_request.clone())
+            .expect("accepted focus mints a request");
+        assert_eq!(req.target.0, "4242_8", "Left steps onto the neighbor");
+        assert_ne!(
+            req.workspace,
+            crate::topology::workspace_key(1),
+            "request names the logical workspace, never the native key"
+        );
+        if let Some(staged) = session.peek_close_feedback() {
+            panic!(
+                "bind-time no-call staged reason={:?} setter={:?} target={}",
+                staged.reason, staged.setter, staged.target.0
+            );
+        }
+        assert_eq!(
+            crate::runtime_shared::lock_focus(&focus_queue).len(),
+            1,
+            "accepted focus queues exactly one row"
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.focus_dispatched,
+            1,
+            "accepted focus dispatches once"
+        );
+        let cmd = lock_shared(&shared)
+            .apps
+            .get(&4242)
+            .and_then(|app| app.focus.take())
+            .expect("owner slot carries the release");
+        assert_eq!(
+            cmd.window, "4242_8",
+            "release names the Left neighbor, distinct from focus 4242_7"
+        );
+        let close = cmd.close.clone().expect("unified close route");
+        let revision = lock_shared(&shared).topology_revision;
+        let mut fake = FakeFocusBackend {
+            fresh: Some((4242, Some(7))),
+            post: Some((4242, Some(8))),
+            reads: 0,
+            dispatches: 0,
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+        };
+        let job = crate::runtime_worker::handle_close_focus_command(
+            &mut fake, &cmd, &close, 4242, 7, revision, &shared,
+        );
+        assert_eq!(fake.dispatches, 1, "exactly one native focus call");
+        process_job(
+            job,
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        let staged = session.peek_close_feedback().expect("accepted stages");
+        assert_eq!(
+            staged.setter,
+            tiler_core::world_report::VisibilitySetter::Accepted
+        );
+    }
+
+    #[test]
+    fn directional_focus_repeated_roundtrips_never_exhaust_outbox() {
+        // Outbox-exhaustion repro (responsiveness rerun tile-a: 16
+        // dispatched-native then no-call-outbox-full-superseded from
+        // focus-40): 18 sequential directional explicit focus commands
+        // alternating between the two tiled windows. Every round drives the
+        // real `process_job` InputAction path (real codec plus real core),
+        // the mocked backend actuates exactly once, the typed result stages
+        // Accepted, and a genuine target observation settles the core. Each
+        // terminal owner completion must retire its exact outbox row, so the
+        // bounded queue never counts settled work and no round wedges.
+        let ctx = ctx();
+        let mut seed = retained_send_subject();
+        seed.observed_focus_known = true;
+        let mut neighbor = observed(8);
+        neighbor.x = 700;
+        let subject = seed.apps.get_mut(&4242).expect("subject app retained");
+        subject.windows.push(neighbor);
+        subject.roster.insert(8, roster_entry(neighbor, vec![1]));
+        seed.window_domains.insert(
+            crate::runtime::window_id(4242, 8),
+            DomainKey {
+                output: output(),
+                workspace: WorkspaceId(crate::topology::workspace_key(1)),
+            },
+        );
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), seed);
+        lock_shared(&shared).config.topology_mode = crate::runtime_types::TopologyMode::Native;
+        close_app(&shared, 4242, 7);
+        lock_shared(&shared).focus_evidence = Some(crate::runtime_types::FocusEvidence {
+            frontmost_pid: Some(4242),
+            frontmost_bundle: None,
+            ax_focus: None,
+        });
+        bootstrap_observation(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            &ctx,
+        );
+        assert_fixture_admitted(&session, &retained);
+        const ROUNDS: usize = 18;
+        const CAPACITY: usize = 16;
+        let mut queued_lens: Vec<usize> = Vec::with_capacity(ROUNDS);
+        let mut refusals: Vec<bool> = Vec::with_capacity(ROUNDS);
+        let mut settled_lens: Vec<usize> = Vec::with_capacity(ROUNDS);
+        for round in 0..ROUNDS {
+            let before = retained.observed_focus.clone().expect("focus observed");
+            let target_wid = if before.0 == crate::runtime::window_id(4242, 7) {
+                8u32
+            } else {
+                7u32
+            };
+            let target =
+                tiler_core::directional::WindowId(crate::runtime::window_id(4242, target_wid));
+            let direction = if round % 2 == 0 {
+                crate::runtime_types::InputDirection::Left
+            } else {
+                crate::runtime_types::InputDirection::Right
+            };
+            process_job(
+                EngineJob::InputAction {
+                    action: InputSemanticAction::FocusStep { direction },
+                    trace_id: 0,
+                    intake_us: 0,
+                    enqueue_us: 0,
+                },
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                CAPACITY,
+            );
+            let req = session
+                .sequencer()
+                .last_reply()
+                .and_then(|reply| reply.focus_request.clone())
+                .expect("accepted focus mints a request");
+            assert_eq!(
+                req.target, target,
+                "round {round}: focus steps onto the other window"
+            );
+            // Record-only per round: a bind-time no-call (outbox full)
+            // stages here instead of dispatching, so stop driving and let
+            // the terminal assertions below report the refusal round.
+            refusals.push(session.peek_close_feedback().is_some());
+            queued_lens.push(crate::runtime_shared::lock_focus(&focus_queue).len());
+            if session.peek_close_feedback().is_some() {
+                break;
+            }
+            let cmd = lock_shared(&shared)
+                .apps
+                .get(&4242)
+                .and_then(|app| app.focus.take())
+                .expect("owner slot carries the release");
+            let close = cmd.close.clone().expect("unified close route");
+            let revision = lock_shared(&shared).topology_revision;
+            let mut fake = FakeFocusBackend {
+                fresh: Some((4242, Some(if target_wid == 8 { 7 } else { 8 }))),
+                post: Some((4242, Some(target_wid))),
+                reads: 0,
+                dispatches: 0,
+                completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+            };
+            let job = crate::runtime_worker::handle_close_focus_command(
+                &mut fake, &cmd, &close, 4242, 7, revision, &shared,
+            );
+            assert_eq!(fake.dispatches, 1, "round {round}: exactly one native call");
+            process_job(
+                job,
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                CAPACITY,
+            );
+            let staged = session
+                .peek_close_feedback()
+                .expect("actuated feedback stages");
+            assert_eq!(
+                staged.setter,
+                tiler_core::world_report::VisibilitySetter::Accepted,
+                "round {round}: every actuated feedback reports Accepted"
+            );
+            assert_eq!(
+                staged.target, target,
+                "round {round}: feedback names target"
+            );
+            // Genuine target observation: promotes observed focus, drains
+            // the staged row through a transacted report, and clears the
+            // core pending request via target equality.
+            let meta = |wid: u32| crate::runtime_types::ScopedWindowMeta {
+                wid,
+                spaces: vec![1],
+                fullscreen: false,
+                minimized: false,
+                hidden: false,
+                role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                modal: Some(false),
+                resizable: Some(true),
+                layer: Some(0),
+                app_id: Some("com.example.app".to_owned()),
+                activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+            };
+            let seq_last = retained
+                .apps
+                .get(&4242)
+                .map(|app| app.seq_last)
+                .unwrap_or(0);
+            let snapshot_windows = [7u32, 8u32]
+                .iter()
+                .map(|wid| {
+                    let mut window = observed(*wid);
+                    if *wid == 8 {
+                        window.x = 700;
+                    }
+                    window
+                })
+                .collect::<Vec<_>>();
+            process_job(
+                EngineJob::ScopedObservation {
+                    pid: 4242,
+                    generation: 7,
+                    seq: seq_last + 1,
+                    snapshot: crate::runtime_types::ScopedBackendSnapshot {
+                        windows: snapshot_windows,
+                        focused_wid: Some(target_wid),
+                        focus_cg_owned: true,
+                        focus_evidence: Some(crate::runtime_types::FocusEvidence {
+                            frontmost_pid: Some(4242),
+                            frontmost_bundle: None,
+                            ax_focus: Some((4242, Some(target_wid))),
+                        }),
+                        sys_focus: Some((4242, Some(target_wid))),
+                        global_focus: Some((4242, target_wid)),
+                        meta: vec![meta(7), meta(8)],
+                        excluded: 0,
+                        excluded_reasons: Vec::new(),
+                        cg_complete: true,
+                        cg_owner_wids: vec![7, 8],
+                        cg_alive: Vec::new(),
+                        revision,
+                    },
+                    trace_id: 0,
+                    intake_us: 0,
+                    enqueue_us: 0,
+                },
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                CAPACITY,
+            );
+            assert_eq!(
+                retained.observed_focus,
+                Some(target.clone()),
+                "round {round}: target observation promotes focus"
+            );
+            assert!(
+                session
+                    .sequencer()
+                    .last_reply()
+                    .expect("settlement keeps the latest reply")
+                    .focus_request
+                    .is_none(),
+                "round {round}: target equality clears the core request"
+            );
+            assert!(
+                session.peek_close_feedback().is_none(),
+                "round {round}: settled feedback drains through the report"
+            );
+            settled_lens.push(crate::runtime_shared::lock_focus(&focus_queue).len());
+        }
+        assert_eq!(
+            lock_shared(&shared).diagnostics.focus_dispatched,
+            ROUNDS as u64,
+            "every round dispatches once, none refused full"
+        );
+        assert!(
+            queued_lens.iter().all(|len| *len <= 1),
+            "per-round queue depths stay bounded: {queued_lens:?}"
+        );
+        assert!(
+            settled_lens.iter().all(|len| *len == 0),
+            "every round retires its consumed row: {settled_lens:?}"
+        );
+        assert!(
+            refusals.iter().all(|refused| !refused),
+            "no round refuses with a bind-time no-call"
+        );
+        assert!(
+            crate::runtime_shared::lock_focus(&focus_queue).is_empty(),
+            "final outbox drains"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn close_result_emits_focus_settle_joining_typed_command_identity() {
+        // Enabled-only (`TILER_MACOS_STAGE_TIMING=1`, run explicitly so the
+        // default suite stays untraced): the typed `CloseFocusResult`
+        // receipt closes the origin-to-feedback endpoint
+        // (`timing-focus-settle`) joining the dispatch bind under the typed
+        // command identity (pid/generation/cmd_id) - the same TOTAL
+        // convention as the legacy `FocusResult` arm. No live calls: the
+        // dispatch bind is simulated with `note_focus`.
+        if !crate::stage_timing::enabled() {
+            eprintln!("skipped without TILER_MACOS_STAGE_TIMING=1");
+            return;
+        }
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), RetainedCore::default());
+        close_app(&shared, 4242, 1);
+        prime_close_current(&session, &shared, "close-focus-7", 7, 9);
+        struct SettleSink {
+            events: Mutex<Vec<crate::runtime_log::LogEvent>>,
+        }
+
+        impl crate::runtime_log::LogSink for SettleSink {
+            fn write(&self, event: &crate::runtime_log::LogEvent) {
+                self.events.lock().expect("sink").push(event.clone());
+            }
+        }
+
+        let sink = Arc::new(SettleSink {
+            events: Mutex::new(Vec::new()),
+        });
+        let (tx, stop_logger, logger_handle) = crate::runtime_log::spawn_logger(
+            Arc::clone(&sink) as Arc<dyn crate::runtime_log::LogSink>,
+            256,
+        );
+        lock_shared(&shared).log_tx = Some(tx);
+        // Simulate the dispatch bind under the typed command identity
+        // (`cmd_id: 5` matches `close_result` below).
+        let t0_us = crate::stage_timing::now_us();
+        crate::stage_timing::note_focus(4242, 1, 5, 778_001, t0_us);
+        let mut job = close_result(&session, 4242, 1, "close-focus-7", 7, 9);
+        if let EngineJob::CloseFocusResult {
+            ref mut setter,
+            ref mut attempt_ms,
+            ..
+        } = job
+        {
+            *setter = tiler_core::world_report::VisibilitySetter::Accepted;
+            *attempt_ms = 3;
+        }
+        process_job(
+            job,
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        assert!(
+            session.peek_close_feedback().is_some(),
+            "typed result stages"
+        );
+        lock_shared(&shared).log_tx = None;
+        stop_logger.store(true, std::sync::atomic::Ordering::SeqCst);
+        logger_handle.join().expect("logger joins");
+        let events = sink.events.lock().expect("sink").clone();
+        let mut settle = events.iter().filter_map(|event| {
+            let line = crate::stage_timing::format_record(event);
+            let parsed = crate::stage_timing::parse_record(&line).expect("sink line parses");
+            (parsed.stage == crate::stage_timing::stage::FOCUS_SETTLE).then_some(parsed)
+        });
+        let parsed = settle
+            .next()
+            .expect("typed result emits timing-focus-settle");
+        assert_eq!(parsed.ref_id, 778_001, "settle joins the dispatch trace");
+        assert_eq!(parsed.outcome, "applied", "settle names the setter token");
+    }
+
     fn observed(wid: u32) -> ObservedWindow {
         ObservedWindow {
             wid,
@@ -4855,6 +5543,10 @@ mod trailing_join_tests {
                             cg_alive: Vec::new(),
                             revision,
                         },
+
+                        trace_id: 0,
+                        intake_us: 0,
+                        enqueue_us: 0,
                     },
                     &mut session,
                     &mut retained,
@@ -5259,6 +5951,10 @@ mod trailing_join_tests {
                         cg_alive: Vec::new(),
                         revision,
                     },
+
+                    trace_id: 0,
+                    intake_us: 0,
+                    enqueue_us: 0,
                 },
                 &mut session,
                 &mut retained,
@@ -5302,7 +5998,9 @@ mod trailing_join_tests {
                 .is_none(),
             "duplicate latest carries no new command"
         );
-        assert_eq!(crate::runtime_shared::lock_focus(&focus_queue).len(), 1);
+        // The terminal owner completion retires its outbox row: a consumed
+        // round leaves the bounded queue empty instead of leaking one row.
+        assert_eq!(crate::runtime_shared::lock_focus(&focus_queue).len(), 0);
         assert_eq!(fake.dispatches, 1);
         assert!(session.peek_close_feedback().is_none());
     }
@@ -5660,6 +6358,10 @@ mod trailing_join_tests {
                             cg_alive: Vec::new(),
                             revision,
                         },
+
+                        trace_id: 0,
+                        intake_us: 0,
+                        enqueue_us: 0,
                     },
                     &mut session,
                     &mut retained,
@@ -6047,6 +6749,10 @@ mod trailing_join_tests {
                         cg_alive: Vec::new(),
                         revision,
                     },
+
+                    trace_id: 0,
+                    intake_us: 0,
+                    enqueue_us: 0,
                 },
                 &mut session,
                 &mut retained,
@@ -6090,7 +6796,9 @@ mod trailing_join_tests {
                 .is_none(),
             "duplicate latest carries no new command"
         );
-        assert_eq!(crate::runtime_shared::lock_focus(&focus_queue).len(), 1);
+        // The terminal owner completion retires its outbox row: a consumed
+        // round leaves the bounded queue empty instead of leaking one row.
+        assert_eq!(crate::runtime_shared::lock_focus(&focus_queue).len(), 0);
         assert_eq!(fake.dispatches, 1);
         assert!(session.peek_close_feedback().is_none());
     }
@@ -6230,6 +6938,10 @@ mod trailing_join_tests {
                             cg_alive: Vec::new(),
                             revision,
                         },
+
+                        trace_id: 0,
+                        intake_us: 0,
+                        enqueue_us: 0,
                     },
                     &mut session,
                     &mut retained,
@@ -6385,6 +7097,10 @@ mod trailing_join_tests {
                         cg_alive: Vec::new(),
                         revision,
                     },
+
+                    trace_id: 0,
+                    intake_us: 0,
+                    enqueue_us: 0,
                 },
                 &mut session,
                 &mut retained,
@@ -6885,6 +7601,10 @@ mod trailing_join_tests {
                         cg_alive: Vec::new(),
                         revision,
                     },
+
+                    trace_id: 0,
+                    intake_us: 0,
+                    enqueue_us: 0,
                 },
                 &mut session,
                 &mut retained,
@@ -6928,7 +7648,9 @@ mod trailing_join_tests {
                 .is_none(),
             "duplicate latest carries no new command"
         );
-        assert_eq!(crate::runtime_shared::lock_focus(&focus_queue).len(), 1);
+        // The terminal owner completion retires its outbox row: a consumed
+        // round leaves the bounded queue empty instead of leaking one row.
+        assert_eq!(crate::runtime_shared::lock_focus(&focus_queue).len(), 0);
         assert_eq!(fake.dispatches, 1);
         assert!(session.peek_close_feedback().is_none());
         // The pending-admitted fixed newcomer stays live through the settle
@@ -7002,6 +7724,10 @@ mod trailing_join_tests {
                 generation: 1,
                 seq: 2,
                 snapshot: scoped(vec![observed(9), observed(10)], None, false, 2, 9),
+
+                trace_id: 0,
+                intake_us: 0,
+                enqueue_us: 0,
             },
             &mut session,
             &mut retained,
@@ -7055,6 +7781,10 @@ mod trailing_join_tests {
                 generation: 1,
                 seq: 3,
                 snapshot: scoped(vec![observed(9), observed(10)], Some(9), false, 3, 9),
+
+                trace_id: 0,
+                intake_us: 0,
+                enqueue_us: 0,
             },
             &mut session,
             &mut retained,
@@ -7828,6 +8558,10 @@ mod trailing_join_tests {
                 generation: 2,
                 seq: 1,
                 snapshot,
+
+                trace_id: 0,
+                intake_us: 0,
+                enqueue_us: 0,
             },
             &mut session,
             &mut retained,
@@ -7901,6 +8635,10 @@ mod trailing_join_tests {
                 generation: 1,
                 seq: 99,
                 snapshot: stale,
+
+                trace_id: 0,
+                intake_us: 0,
+                enqueue_us: 0,
             },
             &mut session,
             &mut retained,
@@ -8014,6 +8752,10 @@ mod trailing_join_tests {
                     generation: 1,
                     seq: 2,
                     snapshot,
+
+                    trace_id: 0,
+                    intake_us: 0,
+                    enqueue_us: 0,
                 },
                 &mut session,
                 &mut retained,
@@ -8472,6 +9214,10 @@ mod trailing_join_tests {
                     generation: GENERATION,
                     seq,
                     snapshot: snap,
+
+                    trace_id: 0,
+                    intake_us: 0,
+                    enqueue_us: 0,
                 },
                 &mut session,
                 &mut retained,
@@ -8656,6 +9402,10 @@ mod trailing_join_tests {
                 generation: GENERATION,
                 seq,
                 snapshot: snap_b,
+
+                trace_id: 0,
+                intake_us: 0,
+                enqueue_us: 0,
             },
             &mut session,
             &mut retained,
@@ -8703,6 +9453,10 @@ mod trailing_join_tests {
                 generation: GENERATION,
                 seq,
                 snapshot: snapshot_of(&complete_outcome()),
+
+                trace_id: 0,
+                intake_us: 0,
+                enqueue_us: 0,
             },
             &mut session,
             &mut retained,
@@ -8750,6 +9504,10 @@ mod trailing_join_tests {
                 generation: GENERATION,
                 seq,
                 snapshot: snap_c,
+
+                trace_id: 0,
+                intake_us: 0,
+                enqueue_us: 0,
             },
             &mut session,
             &mut retained,
@@ -8935,6 +9693,10 @@ mod trailing_join_tests {
                     generation: GENERATION,
                     seq,
                     snapshot: snapshot_of(&outcome),
+
+                    trace_id: 0,
+                    intake_us: 0,
+                    enqueue_us: 0,
                 },
                 &mut session,
                 &mut retained,
@@ -9911,6 +10673,243 @@ mod drag_gesture_handoff_tests {
         Arc<Inbox>,
         Arc<Mutex<Vec<FocusRequest>>>,
     );
+
+    struct CollectSink {
+        events: Mutex<Vec<crate::runtime_log::LogEvent>>,
+    }
+
+    impl crate::runtime_log::LogSink for CollectSink {
+        fn write(&self, event: &crate::runtime_log::LogEvent) {
+            self.events.lock().expect("sink").push(event.clone());
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn enabled_shared_join_smoke_through_async_sink() {
+        // Enabled-only (`TILER_MACOS_STAGE_TIMING=1`, run explicitly so the
+        // default suite stays untraced): end-to-end join through the real
+        // shared registries plus the real bounded async sink, with no native
+        // calls. A worker thread notes all three maps (the production write
+        // side); the main thread joins them (the engine-feedback plus
+        // main-lane read side), emits bind/settle/lane-split records through
+        // `emit`, and asserts the async sink observes machine-parseable
+        // lines joining on one trace with input-to-feedback-arrival totals.
+        // Durations mix measured clock deltas with synthetic lane counters
+        // (labelled below), never native work.
+        if !crate::stage_timing::enabled() {
+            eprintln!("skipped without TILER_MACOS_STAGE_TIMING=1");
+            return;
+        }
+        let ctx = ctx_current();
+        let shared = test_shared(ctx);
+        let sink = Arc::new(CollectSink {
+            events: Mutex::new(Vec::new()),
+        });
+        let (tx, stop_logger, logger_handle) = crate::runtime_log::spawn_logger(
+            Arc::clone(&sink) as Arc<dyn crate::runtime_log::LogSink>,
+            256,
+        );
+        lock_shared(&shared).log_tx = Some(tx);
+        let t0_us = crate::stage_timing::now_us();
+        std::thread::spawn(move || {
+            crate::stage_timing::note_op(11, 9001, t0_us);
+            crate::stage_timing::note_cmd(4242, 1, 31, 9001, t0_us);
+            crate::stage_timing::note_focus(4242, 1, 41, 9001, t0_us);
+        })
+        .join()
+        .expect("notes join");
+        let (_, op_t0, _) = crate::stage_timing::trace_for_op(11).expect("op join");
+        let (_, cmd_t0, _) = crate::stage_timing::trace_for_cmd(4242, 1, 31).expect("cmd join");
+        let (_, focus_t0, _) =
+            crate::stage_timing::trace_for_focus(4242, 1, 41).expect("focus join");
+        assert_eq!(
+            (op_t0, cmd_t0, focus_t0),
+            (t0_us, t0_us, t0_us),
+            "shared maps reuse the intake origin across threads"
+        );
+        crate::stage_timing::record(
+            &shared,
+            9001,
+            crate::stage_timing::stage::OP_BIND,
+            "select",
+            11,
+        );
+        crate::stage_timing::record_for(
+            &shared,
+            4242,
+            1,
+            31,
+            crate::stage_timing::stage::FRAME_BIND,
+            "frame",
+            9001,
+        );
+        crate::stage_timing::record_for(
+            &shared,
+            4242,
+            1,
+            41,
+            crate::stage_timing::stage::FOCUS_BIND,
+            "focus",
+            9001,
+        );
+        // Intake-to-report stages under the SAME trace with the real
+        // action-class token (schema/join exercise only: synthetic stage
+        // times below are not comparable to the real elapsed totals).
+        // One class (`focus-step`) is sufficient for the join.
+        for (stage, us) in [
+            (crate::stage_timing::stage::INTAKE, 0),
+            (crate::stage_timing::stage::INPUT_MAP, 17),
+            (crate::stage_timing::stage::QUEUE, 23),
+            (crate::stage_timing::stage::REPORT, 31),
+        ] {
+            crate::stage_timing::record(&shared, 9001, stage, "focus-step", us);
+        }
+        // Worker apply + post-batch observe under the command identity
+        // (synthetic durations, same join exercise), plus the readback
+        // total under the trace.
+        crate::stage_timing::record_for(
+            &shared,
+            4242,
+            1,
+            31,
+            crate::stage_timing::stage::FRAME_APPLY,
+            "applied",
+            180,
+        );
+        crate::stage_timing::record_for(
+            &shared,
+            4242,
+            1,
+            31,
+            crate::stage_timing::stage::OBSERVE,
+            "snapshot",
+            90,
+        );
+        crate::stage_timing::record(
+            &shared,
+            9001,
+            crate::stage_timing::stage::READBACK_TOTAL,
+            "snapshot",
+            310,
+        );
+        // Honest completion classes with measured input-to-feedback-arrival
+        // totals (synthetic workload, real clock): settle ref is the trace,
+        // count is origin-to-settle.
+        let settle_us = crate::stage_timing::now_us().saturating_sub(t0_us);
+        crate::stage_timing::record(
+            &shared,
+            9001,
+            crate::stage_timing::stage::FRAME_SETTLE,
+            "applied",
+            settle_us,
+        );
+        crate::stage_timing::record(
+            &shared,
+            9001,
+            crate::stage_timing::stage::FOCUS_SETTLE,
+            "applied",
+            settle_us,
+        );
+        crate::stage_timing::record(
+            &shared,
+            9001,
+            crate::stage_timing::stage::OP_SETTLE,
+            "view-staged",
+            settle_us,
+        );
+        // Select-lane split under the same trace (synthetic counters, no
+        // native calls): accumulation plus the lane exec record.
+        crate::stage_timing::emit_native_agg_for_trace(
+            &shared,
+            9001,
+            crate::stage_timing::NativeTimingSummary {
+                ax_read_us: 120,
+                ax_read_n: 2,
+                wait_us: [0, 0, 0, 400],
+                wait_n: [0, 0, 0, 1],
+                ..Default::default()
+            },
+        );
+        crate::stage_timing::record(
+            &shared,
+            9001,
+            crate::stage_timing::stage::LANE_EXEC,
+            "select-exec",
+            520,
+        );
+        lock_shared(&shared).log_tx = None;
+        stop_logger.store(true, std::sync::atomic::Ordering::SeqCst);
+        logger_handle.join().expect("logger joins");
+        let events = sink.events.lock().expect("sink").clone();
+        assert!(
+            events.len() >= 16,
+            "sink observes every emitted record, got {}",
+            events.len()
+        );
+        let mut kinds = std::collections::BTreeSet::new();
+        for event in &events {
+            let line = crate::stage_timing::format_record(event);
+            let parsed = crate::stage_timing::parse_record(&line).expect("sink line parses");
+            // Worker-side bind lines join by command identity (ref is the
+            // cmd/request id, count carries the trace); every other line
+            // joins by trace ref directly.
+            if parsed.stage == crate::stage_timing::stage::FRAME_BIND
+                || parsed.stage == crate::stage_timing::stage::FOCUS_BIND
+                || parsed.stage == crate::stage_timing::stage::FRAME_APPLY
+                || parsed.stage == crate::stage_timing::stage::OBSERVE
+            {
+                assert_eq!((parsed.pid, parsed.generation), (4242, 1));
+                if parsed.stage == crate::stage_timing::stage::FRAME_BIND
+                    || parsed.stage == crate::stage_timing::stage::FOCUS_BIND
+                {
+                    assert_eq!(parsed.count, 9001, "bind maps to the trace: {line}");
+                } else {
+                    assert_eq!(
+                        parsed.ref_id, 31,
+                        "worker record keeps cmd identity: {line}"
+                    );
+                }
+            } else {
+                assert_eq!(parsed.ref_id, 9001, "line joins the trace: {line}");
+            }
+            // Intake-to-report stages carry the real action-class token.
+            if parsed.stage == crate::stage_timing::stage::INTAKE
+                || parsed.stage == crate::stage_timing::stage::INPUT_MAP
+                || parsed.stage == crate::stage_timing::stage::QUEUE
+                || parsed.stage == crate::stage_timing::stage::REPORT
+            {
+                assert_eq!(
+                    parsed.outcome, "focus-step",
+                    "stage names the class: {line}"
+                );
+            }
+            kinds.insert(parsed.stage.clone());
+            eprintln!("smoke {line}");
+        }
+        eprintln!("smoke sample is a schema/join exercise only; stage times are synthetic");
+        for want in [
+            crate::stage_timing::stage::INTAKE,
+            crate::stage_timing::stage::INPUT_MAP,
+            crate::stage_timing::stage::QUEUE,
+            crate::stage_timing::stage::REPORT,
+            crate::stage_timing::stage::OP_BIND,
+            crate::stage_timing::stage::FRAME_BIND,
+            crate::stage_timing::stage::FOCUS_BIND,
+            crate::stage_timing::stage::FRAME_APPLY,
+            crate::stage_timing::stage::OBSERVE,
+            crate::stage_timing::stage::READBACK_TOTAL,
+            crate::stage_timing::stage::FRAME_SETTLE,
+            crate::stage_timing::stage::FOCUS_SETTLE,
+            crate::stage_timing::stage::OP_SETTLE,
+            crate::stage_timing::stage::NATIVE_AX,
+            crate::stage_timing::stage::NATIVE_WAIT,
+            crate::stage_timing::stage::NATIVE_WAIT_N,
+            crate::stage_timing::stage::LANE_EXEC,
+        ] {
+            assert!(kinds.contains(want), "sink observes {want}");
+        }
+    }
 
     fn harness() -> Harness {
         let ctx = ctx_current();

@@ -121,6 +121,11 @@ pub(crate) struct SelectHandoff {
     /// until then (sticky `settled` stays the truth).
     wake: std::sync::Mutex<crate::ffi::MainWakeSignal>,
     pending_creations: std::sync::Mutex<Vec<crate::workspace_select::PendingCreation>>,
+    /// Single-take select-lane timing report: the owner stores one
+    /// [`LaneNativeReport`](crate::stage_timing::LaneNativeReport) per job
+    /// (overwriting any unpolled one); the main thread takes it alongside
+    /// the completion and flushes it under the dispatch trace.
+    native_report: std::sync::Mutex<Option<crate::stage_timing::LaneNativeReport>>,
 }
 
 impl SelectHandoff {
@@ -134,6 +139,7 @@ impl SelectHandoff {
             settled: Arc::new(AtomicBool::new(false)),
             wake: std::sync::Mutex::new(crate::ffi::MainWakeSignal::detached()),
             pending_creations: std::sync::Mutex::new(Vec::new()),
+            native_report: std::sync::Mutex::new(None),
         }
     }
 
@@ -205,6 +211,21 @@ impl SelectHandoff {
         // submits while a completion stands unpolled.)
         self.settled.store(false, Ordering::SeqCst);
         Some(completion)
+    }
+
+    /// Store one lane timing report (overwrites any unpolled one: a
+    /// stale-dropped completion's report is replaced by the next job).
+    pub(crate) fn store_native_report(&self, report: crate::stage_timing::LaneNativeReport) {
+        *self.native_report.lock().unwrap_or_else(|e| e.into_inner()) = Some(report);
+    }
+
+    /// Take the staged lane timing report (`None` when the owner has not
+    /// stored one since the last take).
+    pub(crate) fn take_native_report(&self) -> Option<crate::stage_timing::LaneNativeReport> {
+        self.native_report
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     /// Flag every queued and inflight job cancelled and pulse their settle
@@ -346,10 +367,27 @@ impl SelectThread {
                         // Cancellation prevents new create/select work: a
                         // flagged job terminal-completes without actuation.
                         if job.cancel.load(Ordering::SeqCst) || job.latch.cancelled() {
-                            let _ = thread_handoff.finish(cancelled_completion(&job));
+                            crate::stage_timing::reset_native_agg();
+                            let exec = crate::stage_timing::PhaseClock::start();
+                            let completion = cancelled_completion(&job);
+                            thread_handoff.store_native_report(
+                                crate::stage_timing::LaneNativeReport {
+                                    summary: crate::stage_timing::take_native_agg(),
+                                    exec_us: exec.elapsed(),
+                                    kind: "select-exec",
+                                },
+                            );
+                            let _ = thread_handoff.finish(completion);
                             continue;
                         }
+                        crate::stage_timing::reset_native_agg();
+                        let exec = crate::stage_timing::PhaseClock::start();
                         let completion = executor(&job, &mut state);
+                        thread_handoff.store_native_report(crate::stage_timing::LaneNativeReport {
+                            summary: crate::stage_timing::take_native_agg(),
+                            exec_us: exec.elapsed(),
+                            kind: "select-exec",
+                        });
                         thread_handoff
                             .pending_creations
                             .lock()
@@ -647,6 +685,15 @@ impl SelectController {
             .as_ref()
             .map(|thread| thread.take_settled())
             .unwrap_or(false)
+    }
+
+    /// Take the staged select-lane timing report (`None` when the owner
+    /// has not stored one since the last take). Call after each polled
+    /// completion and flush it under the completion's operation identity.
+    pub(crate) fn take_native_report(&self) -> Option<crate::stage_timing::LaneNativeReport> {
+        self.thread
+            .as_ref()
+            .and_then(|thread| thread.handoff.take_native_report())
     }
 
     /// Cancel the inflight select (lock/secure/stale paths): flags and

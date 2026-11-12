@@ -84,6 +84,12 @@ pub struct RawKeyEvent {
     pub kind: TapKeyKind,
     pub flags: u64,
     pub key_code: u32,
+    /// Stage-timing receipt stamp taken in the tap callback at delivery
+    /// (microseconds since the stage-timing clock origin; 0 = untraced, from
+    /// non-tap sources or when timing is disabled). The input owner mints
+    /// the trace from this stamp, so INTAKE names callback delivery rather
+    /// than post-`next` handling.
+    pub tap_us: u64,
 }
 
 use crate::input_match::TapKeyKind;

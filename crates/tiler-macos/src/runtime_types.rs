@@ -1104,9 +1104,14 @@ pub struct FrameCommand {
 }
 
 /// Typed focus request out of the engine. `generation` fences PID reuse and
-/// `request_id` is a per-runtime monotonic identity: queued requests are
+/// `request_id` is a per-lane monotonic identity: queued requests are
 /// purged on app terminate/shutdown and re-checked for freshness when
 /// drained, so a stale request can never dispatch after relaunch.
+/// `request_id` alone is NOT unique across lanes: the selection lane mints
+/// it from the executed core command seq while the close lane mints it from
+/// a local `focus_seq` counter, and both count 1,2,3... on the same window.
+/// `close_id` (the core `FocusRequest.id`, e.g. `focus-N`/`close-focus-N`)
+/// disambiguates the two namespaces wherever a row is matched exactly.
 /// `dispatched` means queued for the native dispatcher; `verified` is always
 /// false in the skeleton - only a later [`AxObservation`] can verify focus.
 /// Dispatch must never be read as arrival. `topology_revision` fences
@@ -1117,6 +1122,7 @@ pub struct FocusRequest {
     pub pid: u32,
     pub generation: u64,
     pub request_id: u64,
+    pub close_id: String,
     pub wid: u32,
     pub window: String,
     pub dispatched: bool,

@@ -8649,6 +8649,11 @@ mod macos {
         /// Raw `CGEventFlags` bits at the event, so the input owner can
         /// re-apply the exact-chord match before forwarding.
         pub flags: u64,
+        /// Stage-timing receipt stamp taken in the tap callback at delivery
+        /// (microseconds since the stage-timing clock origin; 0 = untraced
+        /// when timing is disabled). One flag load plus one clock read when
+        /// enabled; never a log call.
+        pub tap_us: u64,
     }
 
     /// Health of one bounded tap pump slice.
@@ -9032,6 +9037,7 @@ mod macos {
                                 key_code: 53,
                                 down: true,
                                 flags,
+                                tap_us: crate::stage_timing::intake_stamp(),
                             })
                             .is_err()
                         {
@@ -9081,6 +9087,10 @@ mod macos {
                                 key_code,
                                 down: matches!(tap_kind, TapKeyKind::KeyDown),
                                 flags,
+                                // Receipt stamp at delivery (before channel,
+                                // pump, and mapping): one flag load plus one
+                                // clock read when enabled, never a log call.
+                                tap_us: crate::stage_timing::intake_stamp(),
                             });
                             // Fixture-only one-shot stall: the first
                             // exact-match KeyDown sleeps inside the callback
@@ -10351,6 +10361,9 @@ mod stub {
         pub key_code: u32,
         pub down: bool,
         pub flags: u64,
+        /// Stage-timing receipt stamp (see the live struct): 0 on this
+        /// fallback (no tap callback stamps here).
+        pub tap_us: u64,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

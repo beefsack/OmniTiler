@@ -53,17 +53,10 @@ pub struct StderrSink;
 
 impl LogSink for StderrSink {
     fn write(&self, event: &LogEvent) {
-        eprintln!(
-            "tiler-log seq={} t={}ms pid={} gen={} ref={} kind={} outcome={} count={}",
-            event.seq,
-            event.timestamp_ms,
-            event.pid,
-            event.generation,
-            event.ref_id,
-            event.kind,
-            event.outcome,
-            event.count
-        );
+        // Single source of truth for the machine-parseable schema: the same
+        // formatter the stage-timing tests roundtrip (see
+        // `crate::stage_timing::format_record`, test-only `parse_record`).
+        eprintln!("{}", crate::stage_timing::format_record(event));
     }
 
     fn name(&self) -> &'static str {

@@ -106,8 +106,7 @@ pub(crate) fn input_main_bound(
             emit(&shared, 0, 0, 0, "input", "eos-unexpected", 0);
             break;
         };
-        // A key-up on the orientation key releases the held press (any
-        // flags: the physical key came up). Key-ups never forward.
+        // Key-ups never forward.
         if event.kind != TapKeyKind::KeyDown {
             if event.key_code == crate::input_policy::KEY_O {
                 orientation_held = false;
@@ -119,6 +118,15 @@ pub(crate) fn input_main_bound(
             }
             continue;
         }
+        // Receipt stamp rides the event itself: the tap callback stamped it
+        // at delivery (`TapHit.tap_us`), before channel, pump, and chord
+        // mapping. Non-tap sources carry 0 (untraced) and fall back to a
+        // post-`next` stamp below. Disabled costs one flag load, no clock.
+        let received_us = if event.tap_us != 0 {
+            event.tap_us
+        } else {
+            crate::stage_timing::intake_stamp()
+        };
         // Forward semantic actions only on key down with an exact chord
         // match. Key-up, inexact modifiers (including extras), and unrelated
         // keys are ignored; the core is never consulted here.
@@ -164,8 +172,38 @@ pub(crate) fn input_main_bound(
         // engine may dequeue the instant the job lands. User intent rides
         // the control lane (never silently dropped on saturation); a
         // closed inbox only happens at teardown, when the loop exits.
+        // The span carries the receipt stamp above (never the mapping
+        // time): INTAKE names arrival, INPUT_MAP names the chord decision.
         crate::runtime::invalidate_clock(&shared);
-        let _ = inbox.send_control(EngineJob::InputAction { action });
+        let trace = crate::stage_timing::mint_at(&action, received_us);
+        let (trace_id, intake_us, enqueue_us) = trace
+            .map(|span| {
+                crate::stage_timing::record(
+                    &shared,
+                    span.id,
+                    crate::stage_timing::stage::INTAKE,
+                    span.action,
+                    0,
+                );
+                crate::stage_timing::record(
+                    &shared,
+                    span.id,
+                    crate::stage_timing::stage::INPUT_MAP,
+                    span.action,
+                    crate::stage_timing::now_us().saturating_sub(span.t0_us),
+                );
+                // Enqueue stamp is separate from the callback receipt above
+                // so the engine QUEUE record is pure inbox wait.
+                let enqueue_us = crate::stage_timing::enqueue_stamp();
+                (span.id, span.t0_us, enqueue_us)
+            })
+            .unwrap_or((0, 0, 0));
+        let _ = inbox.send_control(EngineJob::InputAction {
+            action,
+            trace_id,
+            intake_us,
+            enqueue_us,
+        });
     }
     InputExit::Done
 }

@@ -398,7 +398,16 @@ pub(crate) fn cg_owner_inventory(
 /// admission (no second join); this wrapper drops those handles on the
 /// calling owner thread for plain-data callers.
 pub fn read_app_window_facts(pid: u32) -> Result<NativeReadOutcome, String> {
-    read_app_window_facts_with_cg(pid, cg_window_list_basic())
+    if !crate::stage_timing::enabled() {
+        return read_app_window_facts_with_cg(pid, cg_window_list_basic());
+    }
+    let cg_start = crate::stage_timing::now_us();
+    let cg_result = cg_window_list_basic();
+    crate::stage_timing::add_cg(crate::stage_timing::now_us().saturating_sub(cg_start), 1);
+    let ax_start = crate::stage_timing::now_us();
+    let outcome = read_app_window_facts_with_cg(pid, cg_result);
+    crate::stage_timing::add_ax_read(crate::stage_timing::now_us().saturating_sub(ax_start), 1);
+    outcome
 }
 
 /// Owner-thread retaining read: the EXACT `AxElement` handles enumerated
@@ -412,7 +421,16 @@ pub fn read_app_window_facts(pid: u32) -> Result<NativeReadOutcome, String> {
 pub fn read_app_window_facts_retaining(
     pid: u32,
 ) -> Result<(NativeReadOutcome, Vec<(u32, AxElement)>), String> {
-    read_app_window_facts_with_cg_retaining(pid, cg_window_list_basic())
+    if !crate::stage_timing::enabled() {
+        return read_app_window_facts_with_cg_retaining(pid, cg_window_list_basic());
+    }
+    let cg_start = crate::stage_timing::now_us();
+    let cg_result = cg_window_list_basic();
+    crate::stage_timing::add_cg(crate::stage_timing::now_us().saturating_sub(cg_start), 1);
+    let ax_start = crate::stage_timing::now_us();
+    let outcome = read_app_window_facts_with_cg_retaining(pid, cg_result);
+    crate::stage_timing::add_ax_read(crate::stage_timing::now_us().saturating_sub(ax_start), 1);
+    outcome
 }
 
 /// Injectable CG seam for the oracle: production passes the fresh full

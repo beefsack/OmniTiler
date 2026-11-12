@@ -41,6 +41,7 @@ pub mod desktop_shortcuts;
 #[cfg(test)]
 mod desktop_shortcuts_tests;
 pub mod dev_selection;
+pub mod diag_cause;
 pub mod dock_swipe_select;
 #[cfg(test)]
 mod dock_swipe_select_tests;
@@ -131,6 +132,7 @@ pub mod space_switch_probe;
 #[cfg(test)]
 mod space_switch_probe_tests;
 pub mod spaces;
+pub mod stage_timing;
 pub mod symbolic_hotkeys;
 pub mod synth;
 pub mod textedit_post;

@@ -504,6 +504,11 @@ impl WorldSession {
         self.coverage_gap = false;
     }
 
+    /// Read the current coverage gap for diagnostics (no mutation).
+    pub(crate) fn coverage_gap(&self) -> bool {
+        self.coverage_gap
+    }
+
     fn take_view_attempts(&mut self) -> Vec<ViewAttempt> {
         std::mem::take(&mut self.pending_views)
             .into_values()

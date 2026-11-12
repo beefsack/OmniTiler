@@ -1213,9 +1213,9 @@ mod native {
             core_generation: &str,
             highlight: &crate::pager_highlight::PagerHighlightStyle,
             accent: Option<crate::active_border::SystemAccent>,
-        ) {
+        ) -> bool {
             if !self.driver.needs_tick(revision, observations, accent) {
-                return;
+                return false;
             }
             self.driver.note_core_generation(core_generation);
             let trailing: Option<(
@@ -1364,9 +1364,10 @@ mod native {
             ) {
                 crate::workspace_indicator::DriverApply::Applied(generation) => {
                     self.push_native(generation, revision, trailing, &icons);
+                    true
                 }
                 crate::workspace_indicator::DriverApply::Duplicate
-                | crate::workspace_indicator::DriverApply::Disarmed => {}
+                | crate::workspace_indicator::DriverApply::Disarmed => false,
             }
         }
 
@@ -1976,7 +1977,16 @@ mod native {
             presentation: &presentation,
         };
         let effect = controller.tick_reply(&input);
-        guard.drive(controller, effect, accent, engine_placed);
+        // Change-only submit attribution under the latest publication
+        // (coalesced, never causal per-action render proof): steady-state
+        // `None` ticks drive nothing and emit nothing.
+        if effect != crate::border_runtime::BorderEffect::None {
+            let submit_clock = crate::stage_timing::PhaseClock::start();
+            guard.drive(controller, effect, accent, engine_placed);
+            handle.note_border_submit(submit_clock.elapsed());
+        } else {
+            guard.drive(controller, effect, accent, engine_placed);
+        }
     }
 
     /// Publish the eligibility current context from a snapshot the main
@@ -2882,7 +2892,8 @@ mod native {
                                 snapshot_desires,
                                 snapshot_generation,
                             ) = handle.last_indicator_snapshot();
-                            indicator.tick(
+                            let submit_clock = crate::stage_timing::PhaseClock::start();
+                            let pushed = indicator.tick(
                                 &live.rows,
                                 live.revision,
                                 observations,
@@ -2895,6 +2906,13 @@ mod native {
                                 &request.pager_highlight,
                                 accent,
                             );
+                            // Change-only submit attribution under the latest
+                            // publication (coalesced, never causal per-action
+                            // render proof): duplicates/disarmed ticks push
+                            // nothing and emit nothing.
+                            if pushed {
+                                handle.note_indicator_submit(submit_clock.elapsed());
+                            }
                         }
                     }
                 }
@@ -2976,6 +2994,9 @@ mod native {
             let mut had_terminal = false;
             if let Some(settle) = send_controller.poll() {
                 had_terminal = true;
+                if let Some(report) = send_controller.take_native_report() {
+                    handle.flush_lane_native(settle.target.operation_id(), report);
+                }
                 // Every staged send terminal - verified arrival,
                 // accepted-with-drift, unproven deadline, `Threw`, or proven
                 // refusal - requests one whole-owner reread even at an
@@ -3037,6 +3058,9 @@ mod native {
             // cancelled before binding): feedback-only settlement under the
             // operation identity - no history, no proof, never replayed.
             if let Some(refusal) = send_controller.poll_trailing_refusal() {
+                if let Some(report) = send_controller.take_native_report() {
+                    handle.flush_lane_native(&refusal.operation_id, report);
+                }
                 eprintln!(
                     "tiler-macos send trailing refused setter={:?} complete=true",
                     refusal.setter,
@@ -3061,6 +3085,11 @@ mod native {
             // claim's operation identity.
             if let Some((completion, reaped)) = select_controller.poll() {
                 had_terminal = true;
+                if let Some(op) = completion.operation_id.as_deref()
+                    && let Some(report) = select_controller.take_native_report()
+                {
+                    handle.flush_lane_native(op, report);
+                }
                 // Same whole-owner reread on every staged select terminal
                 // (verified arrival, accepted-with-drift, unproven, `Threw`,
                 // or refusal): the select owner has no verified-arrival

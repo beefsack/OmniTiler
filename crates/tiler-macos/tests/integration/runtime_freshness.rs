@@ -1689,6 +1689,7 @@ fn diagnostic_condition_wait_wakes_without_app_worker() {
             kind: TapKeyKind::KeyDown,
             flags: 0,
             key_code: 0x09,
+            tap_us: 0,
         })
         .expect("send key");
     let (woke, elapsed) = waiter.join().expect("waiter joins");

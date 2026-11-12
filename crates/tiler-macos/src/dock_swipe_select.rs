@@ -963,10 +963,16 @@ pub fn execute_dock_swipe_select(
             ));
         }
         let now = Instant::now();
-        match seams
+        let wait_clock = crate::stage_timing::PhaseClock::start();
+        let waited = seams
             .latch
-            .wait(observed, absolute.saturating_duration_since(now))
-        {
+            .wait(observed, absolute.saturating_duration_since(now));
+        crate::stage_timing::add_wait(
+            crate::stage_timing::WaitKind::SelectLatch,
+            wait_clock.elapsed(),
+            1,
+        );
+        match waited {
             LatchWait::Advanced(next) => {
                 observed = next;
             }

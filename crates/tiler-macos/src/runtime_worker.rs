@@ -100,11 +100,21 @@ fn send_observation_scoped(
     seq: u64,
     snapshot: &ScopedBackendSnapshot,
 ) -> bool {
+    // Host-change intake: poll-result receipt IS intake (no tap or
+    // notification callback exists on this path). One mint off the shared
+    // trace counter plus the receipt stamp; untraced (disabled) when `None`.
+    let (trace_id, intake_us) = crate::stage_timing::mint_observer_trace().unwrap_or((0, 0));
+    // Enqueue stamp immediately before the inbox send so the engine QUEUE
+    // record is pure inbox wait.
+    let enqueue_us = crate::stage_timing::enqueue_stamp();
     let job = EngineJob::ScopedObservation {
         pid,
         generation,
         seq,
         snapshot: snapshot.clone(),
+        trace_id,
+        intake_us,
+        enqueue_us,
     };
     // Bump before enqueue (see `invalidate_clock` in runtime): the engine
     // may dequeue the instant the job lands.
@@ -741,6 +751,18 @@ pub(crate) fn handle_close_focus_command(
                  foreground_proven: bool,
                  arrival: Vec<ArrivalBracket>,
                  attempt_ms: u64| {
+        crate::diag_cause::emit_focus_feedback(
+            pid,
+            cmd.request_id,
+            &close.close_id,
+            close.target.0.as_str(),
+            setter,
+            reason,
+            pre.as_ref().map(|w| w.0.as_str()),
+            post.as_ref().map(|w| w.0.as_str()),
+            foreground_proven,
+            attempt_ms,
+        );
         EngineJob::CloseFocusResult {
             pid,
             generation,
@@ -968,9 +990,32 @@ pub(crate) fn handle_close_focus_command(
                         "dispatched",
                         0,
                     );
+                    // Scope this dispatch's native window: drop any idle
+                    // periodic accumulation so it is never billed to this
+                    // focus attempt.
+                    crate::stage_timing::reset_native_agg();
+                    let focus_clock = crate::stage_timing::PhaseClock::start();
                     let completion = backend.dispatch_focus(cmd);
+                    if crate::stage_timing::enabled() {
+                        crate::stage_timing::record_for(
+                            shared,
+                            pid,
+                            generation,
+                            cmd.request_id,
+                            crate::stage_timing::stage::FOCUS_APPLY,
+                            crate::stage_timing::completion_token(&completion),
+                            focus_clock.elapsed(),
+                        );
+                        crate::stage_timing::flush_native_agg(
+                            shared,
+                            pid,
+                            generation,
+                            cmd.request_id,
+                        );
+                    }
                     let (setter, reason) = close_completion_disposition(&completion);
                     let attempt_ms = close_attempt_ms(&completion);
+                    crate::diag_cause::emit_focus_done(pid, cmd.request_id, &completion);
                     let post =
                         backend
                             .selected_focus_evidence()
@@ -1387,8 +1432,8 @@ pub(crate) fn app_worker_main(
                         };
                         if !proceed {
                             // Deferred-focus skip: the batch below stays queued
-                            // for the next pass, so the drain watermark does not
-                            // move; the mark still proves the send count.
+                            // for the next pass, so the drain watermark does
+                            // not move; the mark still proves the send count.
                             frames.note_drain(WorkerDrainMark::pass(
                                 generation,
                                 drained,
@@ -1406,7 +1451,29 @@ pub(crate) fn app_worker_main(
                             "dispatched",
                             0,
                         );
+                        // Scope this dispatch's native window (see above):
+                        // idle accumulation never bills to this attempt.
+                        crate::stage_timing::reset_native_agg();
+                        let focus_clock = crate::stage_timing::PhaseClock::start();
                         let completion = backend.dispatch_focus(&cmd);
+                        if crate::stage_timing::enabled() {
+                            crate::stage_timing::record_for(
+                                &shared,
+                                pid,
+                                generation,
+                                cmd.request_id,
+                                crate::stage_timing::stage::FOCUS_APPLY,
+                                crate::stage_timing::completion_token(&completion),
+                                focus_clock.elapsed(),
+                            );
+                            crate::stage_timing::flush_native_agg(
+                                &shared,
+                                pid,
+                                generation,
+                                cmd.request_id,
+                            );
+                        }
+                        crate::diag_cause::emit_focus_done(pid, cmd.request_id, &completion);
                         let job = EngineJob::FocusResult {
                             pid,
                             generation,
@@ -1451,6 +1518,9 @@ pub(crate) fn app_worker_main(
             }
             FrameWait::Batch(taken_rev, cmds) => (taken_rev, cmds),
         };
+        // Scope this batch's native window: drop any idle periodic
+        // accumulation so it is never billed to this batch.
+        crate::stage_timing::reset_native_agg();
         // Taking a batch drains everything at or below its revision: older
         // untaken batches are superseded by definition, never actuated later.
         drained = taken_rev;
@@ -1585,7 +1655,19 @@ pub(crate) fn app_worker_main(
                 "dispatched",
                 0,
             );
+            let apply_clock = crate::stage_timing::PhaseClock::start();
             let completion = backend.apply_frame(cmd);
+            if crate::stage_timing::enabled() {
+                crate::stage_timing::record_for(
+                    &shared,
+                    pid,
+                    generation,
+                    cmd.cmd_id,
+                    crate::stage_timing::stage::FRAME_APPLY,
+                    crate::stage_timing::completion_token(&completion),
+                    apply_clock.elapsed(),
+                );
+            }
             let job = EngineJob::AxResult {
                 pid,
                 generation,
@@ -1613,7 +1695,11 @@ pub(crate) fn app_worker_main(
         // batch — consumed even when the batch went partial (the fresh
         // readback IS the partial truth converging, not a retry). Unchanged
         // readbacks are skipped (a native clamp is not replayed endlessly);
-        // failures preserve retained state.
+        // failures preserve retained state. The timer wraps the whole
+        // readback (one aggregate record per batch, never per window: the
+        // backend-internal per-window scan stays unlogged).
+        let observe_clock = crate::stage_timing::PhaseClock::start();
+        let mut readback_ok = true;
         if native_mode {
             match backend.snapshot_scoped() {
                 Ok(snapshot) => {
@@ -1622,6 +1708,7 @@ pub(crate) fn app_worker_main(
                     stage_scoped(&last_scoped, &mut pending_scoped, snapshot);
                 }
                 Err(reason) => {
+                    readback_ok = false;
                     note_observation_failure(&shared, pid, generation, seq + 1, &reason);
                 }
             }
@@ -1632,9 +1719,69 @@ pub(crate) fn app_worker_main(
                     stage_latest(&last, &mut pending, snapshot);
                 }
                 Err(reason) => {
+                    readback_ok = false;
                     note_observation_failure(&shared, pid, generation, seq + 1, &reason);
                 }
             }
+        }
+        if crate::stage_timing::enabled() {
+            let observe_outcome: &'static str = if readback_ok { "snapshot" } else { "failed" };
+            crate::stage_timing::record_for(
+                &shared,
+                pid,
+                generation,
+                cmds.first().map(|cmd| cmd.cmd_id).unwrap_or(0),
+                crate::stage_timing::stage::OBSERVE,
+                observe_outcome,
+                observe_clock.elapsed(),
+            );
+            crate::stage_timing::flush_native_agg(
+                &shared,
+                pid,
+                generation,
+                cmds.first().map(|cmd| cmd.cmd_id).unwrap_or(0),
+            );
+            // Post-batch observed readback total: input-to-post-batch
+            // snapshot-ready per unique parent trace in this batch. The
+            // `AxResult`s above queue before this snapshot, and
+            // redundant-skipped commands emit no `AxResult` at all, so this
+            // endpoint - not the settle total - carries their ready total.
+            // One clock read, no new syscall/read; aggregate emit only.
+            // Dispatch success stays distinct from convergence/paint:
+            // readiness only, never target equality.
+            let readback_outcome: &'static str = if readback_ok { "snapshot" } else { "failed" };
+            let readback_now = crate::stage_timing::now_us();
+            let mut seen_traces: Vec<u64> = Vec::new();
+            for cmd in cmds.iter() {
+                if let Some((trace, t0, _)) =
+                    crate::stage_timing::trace_for_cmd(pid, generation, cmd.cmd_id)
+                    && !seen_traces.contains(&trace)
+                {
+                    seen_traces.push(trace);
+                    crate::stage_timing::record(
+                        &shared,
+                        trace,
+                        crate::stage_timing::stage::READBACK_TOTAL,
+                        readback_outcome,
+                        readback_now.saturating_sub(t0),
+                    );
+                }
+            }
+            let mut traces_csv = String::new();
+            for (index, trace) in seen_traces.iter().enumerate() {
+                if index > 0 {
+                    traces_csv.push(',');
+                }
+                traces_csv.push_str(&trace.to_string());
+            }
+            crate::diag_cause::emit_batch_done(
+                pid,
+                seq,
+                cmds.first().map(|cmd| cmd.cmd_id).unwrap_or(0),
+                cmds.len() as u64,
+                readback_outcome,
+                &traces_csv,
+            );
         }
         if stop.load(Ordering::SeqCst) {
             break;

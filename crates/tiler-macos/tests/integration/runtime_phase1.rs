@@ -877,6 +877,7 @@ fn key(kind: TapKeyKind, key_flags: u64, key_code: u32) -> RawKeyEvent {
         kind,
         flags: key_flags,
         key_code,
+        tap_us: 0,
     }
 }
 

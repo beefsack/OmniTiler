@@ -145,9 +145,13 @@ pub(crate) fn codec_transact(
             })
             .collect(),
     };
+    let mut legs = crate::stage_timing::LegClock::new();
     let report_wire = encode_report_v4(&decoded_report).map_err(|_| "codec-report-encode")?;
+    legs.leg(crate::stage_timing::stage::CODEC_REPORT_ENC);
     let admitted = decode_report_v4(&report_wire).map_err(|_| "codec-report-decode")?;
+    legs.leg(crate::stage_timing::stage::CODEC_REPORT_DEC);
     let outcome = session.engine_mut().handle_report(&admitted.report, &[]).0;
+    legs.leg(crate::stage_timing::stage::CORE);
     // Capability truth at reply decode: the production macOS host declares
     // above/warp/native-sticky false, and the engine gates all three rows
     // on those caps — so an honest reply never carries them and this gate
@@ -163,8 +167,10 @@ pub(crate) fn codec_transact(
                 },
             };
             let reply_wire = encode_reply_v4(&decoded).map_err(|_| "codec-reply-encode")?;
+            legs.leg(crate::stage_timing::stage::CODEC_REPLY_ENC);
             let back =
                 decode_reply_v4_for_host(&reply_wire, &host).map_err(|_| "codec-reply-decode")?;
+            legs.leg(crate::stage_timing::stage::CODEC_REPLY_DEC);
             Ok(WorldOutcome::Accepted(back.reply))
         }
         WorldOutcome::CommandConsumed(reply) => {
@@ -176,8 +182,10 @@ pub(crate) fn codec_transact(
                 },
             };
             let reply_wire = encode_reply_v4(&decoded).map_err(|_| "codec-reply-encode")?;
+            legs.leg(crate::stage_timing::stage::CODEC_REPLY_ENC);
             let back =
                 decode_reply_v4_for_host(&reply_wire, &host).map_err(|_| "codec-reply-decode")?;
+            legs.leg(crate::stage_timing::stage::CODEC_REPLY_DEC);
             Ok(WorldOutcome::CommandConsumed(back.reply))
         }
         WorldOutcome::Duplicate(reply) => {
@@ -189,8 +197,10 @@ pub(crate) fn codec_transact(
                 },
             };
             let reply_wire = encode_reply_v4(&decoded).map_err(|_| "codec-reply-encode")?;
+            legs.leg(crate::stage_timing::stage::CODEC_REPLY_ENC);
             let back =
                 decode_reply_v4_for_host(&reply_wire, &host).map_err(|_| "codec-reply-decode")?;
+            legs.leg(crate::stage_timing::stage::CODEC_REPLY_DEC);
             Ok(WorldOutcome::Duplicate(back.reply))
         }
         WorldOutcome::Rejected { kind, message } => Ok(WorldOutcome::Rejected { kind, message }),
@@ -596,6 +606,7 @@ pub(crate) fn dispatch_gesture_report(
                     pid,
                     generation,
                     seq,
+                    ticket.request_seq,
                 );
                 (
                     DispatchVerdict::Applied {
@@ -680,6 +691,7 @@ pub(crate) fn dispatch_gesture_report(
                     pid,
                     generation,
                     seq,
+                    ticket.request_seq,
                 );
                 (
                     DispatchVerdict::Applied {
@@ -729,8 +741,90 @@ pub(crate) fn dispatch_gesture_report(
     }
 }
 
+/// Stage-timing wrapper around [`dispatch_ticket_inner`]: reuses the
+/// input-installed thread span or mints an engine-side one naming `op`,
+/// then emits one whole-dispatch record plus, for planner-owned
+/// select/send binds, one operation-bind record mapping the numeric
+/// `op-<seq>` back to the trace id for drain-side joins. Disabled costs
+/// flag loads only; behavior is unchanged (the verdict passes through).
 #[allow(clippy::too_many_arguments)]
-fn dispatch_ticket(
+pub(crate) fn dispatch_ticket(
+    session: &mut WorldSession,
+    retained: &mut RetainedCore,
+    shared: &Arc<Mutex<Shared>>,
+    inbox: &Arc<Inbox>,
+    focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
+    focus_capacity: usize,
+    dispatch: DispatchContext,
+    closed: Vec<WindowId>,
+    ticket: RequestTicket,
+    gesture: Option<GestureIngress>,
+    command_is_select: bool,
+    retry_allowed: bool,
+    op: &'static str,
+    pid: u32,
+    generation: u64,
+    seq: u64,
+) -> DispatchVerdict {
+    let traced = crate::stage_timing::ensure_span(op);
+    let span = traced.as_ref().map(|held| held.0);
+    let clock = crate::stage_timing::PhaseClock::start();
+    let verdict = dispatch_ticket_inner(
+        session,
+        retained,
+        shared,
+        inbox,
+        focus_queue,
+        focus_capacity,
+        dispatch,
+        closed,
+        ticket,
+        gesture,
+        command_is_select,
+        retry_allowed,
+        op,
+        pid,
+        generation,
+        seq,
+    );
+    if let Some(span) = span {
+        let (outcome, bind) = match &verdict {
+            DispatchVerdict::Applied { select_operation } => (
+                crate::stage_timing::outcome::APPLIED,
+                select_operation.as_deref(),
+            ),
+            DispatchVerdict::Duplicate => (crate::stage_timing::outcome::DUPLICATE, None),
+            DispatchVerdict::Refused {
+                select_operation, ..
+            } => (
+                crate::stage_timing::outcome::REFUSED,
+                select_operation.as_deref(),
+            ),
+            DispatchVerdict::NoReport => (crate::stage_timing::outcome::NO_REPORT, None),
+        };
+        crate::stage_timing::record(
+            shared,
+            span.id,
+            crate::stage_timing::stage::DISPATCH,
+            outcome,
+            clock.elapsed(),
+        );
+        if let Some(op_seq) = bind.and_then(crate::stage_timing::parse_op_seq) {
+            crate::stage_timing::record(
+                shared,
+                span.id,
+                crate::stage_timing::stage::OP_BIND,
+                span.action,
+                op_seq,
+            );
+            crate::stage_timing::note_op(op_seq, span.id, span.t0_us);
+        }
+    }
+    verdict
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_ticket_inner(
     session: &mut WorldSession,
     retained: &mut RetainedCore,
     shared: &Arc<Mutex<Shared>>,
@@ -756,6 +850,7 @@ fn dispatch_ticket(
     let select_operation: Option<String> = command_is_select
         .then(|| ticket.command_seq.map(command_operation_id))
         .flatten();
+    let report_clock = crate::stage_timing::PhaseClock::start();
     let Some(report) = build_dispatch_report(
         session,
         retained,
@@ -782,6 +877,78 @@ fn dispatch_ticket(
         );
         return DispatchVerdict::NoReport;
     };
+    if crate::diag_cause::enabled() {
+        let (unreadable_domains, skipped_outputs) = match &dispatch {
+            DispatchContext::Native(ctx) => (
+                ctx.domains.iter().filter(|d| !d.readable).count() as u64,
+                ctx.skipped.len() as u64,
+            ),
+            DispatchContext::Synthetic => (0, 0),
+        };
+        let apps: Vec<(u32, bool, &str, u64)> = retained
+            .apps
+            .iter()
+            .map(|(app_pid, app)| {
+                (
+                    *app_pid,
+                    app.roster_incomplete,
+                    app.roster_cause.as_str(),
+                    app.roster.len() as u64,
+                )
+            })
+            .collect();
+        crate::diag_cause::emit_report_diag(
+            shared,
+            pid,
+            generation,
+            ticket.observation_seq,
+            report.focused_global.is_empty(),
+            report.foreground_known,
+            report.inventory_complete,
+            unreadable_domains,
+            skipped_outputs,
+            &apps,
+        );
+        crate::diag_cause::emit_close(
+            shared,
+            pid,
+            generation,
+            ticket.observation_seq,
+            crate::diag_cause::close_stage::REPORT_SENT,
+        );
+        crate::diag_cause::emit_close_report(
+            seq,
+            ticket.observation_seq,
+            ticket.request_seq,
+            crate::stage_timing::current_id().unwrap_or(0),
+            pid,
+            generation,
+        );
+        eprintln!(
+            "tiler-diag stage=report stamp_us={} dispatch={} obs={} req={} known={} foreground={} inventory_complete={} gap={}",
+            crate::stage_timing::now_us(),
+            seq,
+            ticket.observation_seq,
+            ticket.request_seq,
+            u8::from(report.foreground_known),
+            if report.focused_global.is_empty() {
+                "-"
+            } else {
+                crate::diag_cause::diag_id(&report.focused_global)
+            },
+            u8::from(report.inventory_complete),
+            u8::from(session.coverage_gap()),
+        );
+    }
+    if let Some(span) = crate::stage_timing::with_current(|held| *held) {
+        crate::stage_timing::record(
+            shared,
+            span.id,
+            crate::stage_timing::stage::REPORT,
+            span.action,
+            report_clock.elapsed(),
+        );
+    }
     // One core transaction per dispatch through the genuine v4 byte codec
     // (bounded 4 MiB request AND reply inside the codec; staged overflow
     // rejects without mutation; codec failure refuses explicitly, never a
@@ -789,6 +956,11 @@ fn dispatch_ticket(
     let outcome = match codec_transact(session, &report) {
         Ok(outcome) => outcome,
         Err(kind) => {
+            // Flush staged legs even on refusal: the completed legs ran
+            // and later dispatches must not inherit them.
+            if let Some(span) = crate::stage_timing::with_current(|held| *held) {
+                crate::stage_timing::flush_legs(shared, span.id, span.action);
+            }
             session.sequencer().clear_flight();
             count_token(shared, &format!("{op}-rejected-{kind}"));
             emit(shared, pid, generation, seq, "core-reply", kind, 0);
@@ -798,8 +970,12 @@ fn dispatch_ticket(
             };
         }
     };
+    if let Some(span) = crate::stage_timing::with_current(|held| *held) {
+        crate::stage_timing::flush_legs(shared, span.id, span.action);
+    }
     match outcome {
         WorldOutcome::Accepted(reply) => {
+            let accept_clock = crate::stage_timing::PhaseClock::start();
             match session.sequencer().accept_reply(&reply) {
                 ReplyVerdict::Applied(applied) => {
                     if unpersisted_hold(session, &applied) {
@@ -851,6 +1027,16 @@ fn dispatch_ticket(
                             select_operation: bind,
                         };
                     };
+                    if let Some(span) = crate::stage_timing::with_current(|held| *held) {
+                        crate::stage_timing::record(
+                            shared,
+                            span.id,
+                            crate::stage_timing::stage::ACCEPT,
+                            span.action,
+                            accept_clock.elapsed(),
+                        );
+                    }
+                    let publish_clock = crate::stage_timing::PhaseClock::start();
                     consume_world_reply(
                         session,
                         retained,
@@ -866,7 +1052,24 @@ fn dispatch_ticket(
                         pid,
                         generation,
                         seq,
+                        ticket.request_seq,
                     );
+                    if let Some(span) = crate::stage_timing::with_current(|held| *held) {
+                        crate::stage_timing::record(
+                            shared,
+                            span.id,
+                            crate::stage_timing::stage::PUBLISH,
+                            span.action,
+                            publish_clock.elapsed(),
+                        );
+                        // Latest-publication identity for coalesced submit
+                        // attribution (border/indicator submits below join
+                        // through this, never through a per-action render
+                        // claim). Coalesced: a later publication overwrites
+                        // an earlier one before any submit; an obsolete
+                        // publication may be skipped entirely.
+                        crate::stage_timing::note_publish(span.id);
+                    }
                     for id in &report.closed {
                         session.pending_closes.remove(id);
                     }
@@ -989,6 +1192,7 @@ fn dispatch_ticket(
                         pid,
                         generation,
                         seq,
+                        ticket.request_seq,
                     );
                     for id in &report.closed {
                         session.pending_closes.remove(id);
@@ -1516,6 +1720,7 @@ fn consume_world_reply(
     pid: u32,
     generation: u64,
     seq: u64,
+    ticket_request_seq: u64,
 ) {
     // Currently-actuated scopes as (output, LOGICAL workspace) pairs:
     // native current domains translated through the applied reply's
@@ -1585,11 +1790,166 @@ fn consume_world_reply(
     // scope stderr would spam steady state; the send-refusal line carries
     // the held detail on the rejected path instead). Controlled and
     // untouched scopes log nothing.
-    for scope in &reply.scopes {
+    // Diagnostic-only hold identity: the ring scope index alone cannot
+    // identify the domain, so held scopes also log explicit
+    // output/workspace (native binding as bound, logical id as planned)
+    // plus one cover line with the coverage that held them. All from
+    // existing retained/native facts; unmapped reads `unavailable`, never
+    // a guess.
+    if crate::diag_cause::enabled() {
+        let guard = lock_shared(shared);
+        let native_ctx = guard.native_context.clone();
+        drop(guard);
+        let mut unreadable: Vec<String> = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
+        if let Some(ctx) = native_ctx.as_ref() {
+            for d in ctx.domains.iter().filter(|d| !d.readable) {
+                unreadable.push(format!("{}:{}", d.output.0, d.workspace.0));
+            }
+            for s in &ctx.skipped {
+                skipped.push(format!(
+                    "{}:{}",
+                    s.cg_id,
+                    crate::diag_cause::diag_cause(&s.reason)
+                ));
+            }
+        }
+        let unreadable_s = if native_ctx.is_none() {
+            "unavailable".to_owned()
+        } else if unreadable.is_empty() {
+            "none".to_owned()
+        } else {
+            unreadable.join(",")
+        };
+        let skipped_s = if native_ctx.is_none() {
+            "unavailable".to_owned()
+        } else if skipped.is_empty() {
+            "none".to_owned()
+        } else {
+            skipped.join(",")
+        };
+        let mut roster: Vec<String> = Vec::new();
+        let mut members_readable = 0u64;
+        let mut members_unreadable = 0u64;
+        for (app_pid, app) in retained.apps.iter() {
+            if app.roster_incomplete {
+                roster.push(format!(
+                    "{app_pid}:{}:{}",
+                    app.generation,
+                    crate::diag_cause::roster_cause_token(&app.roster_cause)
+                ));
+            }
+            for (wid, entry) in app.roster.iter().filter(|(_, e)| e.observed.is_none()) {
+                members_unreadable += 1;
+                let id = crate::runtime_types::window_id(*app_pid, *wid);
+                let why = entry
+                    .excluded
+                    .as_ref()
+                    .map(|r| r.log_token())
+                    .unwrap_or("unreadable");
+                let home = retained
+                    .window_domains
+                    .get(&id)
+                    .map(|key| format!("{}:{}", key.output.0, key.workspace.0))
+                    .unwrap_or_else(|| "unavailable".to_owned());
+                roster.push(format!("{id}:{why} gen={} home={home}", app.generation));
+            }
+            members_readable += app
+                .roster
+                .iter()
+                .filter(|(_, e)| e.observed.is_some())
+                .count() as u64;
+        }
+        if roster.len() > 24 {
+            let extra = roster.len() - 24;
+            roster.truncate(24);
+            roster.push(format!("+{extra}-more"));
+        }
+        let roster_s = if roster.is_empty() {
+            "complete".to_owned()
+        } else {
+            roster.join(",")
+        };
+        let foreground = retained
+            .observed_focus
+            .as_ref()
+            .map(|w| w.0.as_str())
+            .unwrap_or("unavailable");
+        crate::diag_cause::emit_hold_cover(
+            &unreadable_s,
+            &skipped_s,
+            &roster_s,
+            reply.based_on_observation_seq,
+            seq,
+            ticket_request_seq,
+            session.coverage_gap(),
+            foreground,
+            members_readable,
+            members_unreadable,
+        );
+    }
+    for (index, scope) in reply.scopes.iter().enumerate() {
         if let Some(reason) = scope.authority.hold_reason() {
             emit(shared, pid, generation, seq, "scope", hold_token(reason), 0);
         }
+        let authority = match scope.authority.hold_reason() {
+            Some(reason) => hold_token(reason),
+            None => match scope.authority {
+                ScopeAuthority::Controlled => "controlled",
+                ScopeAuthority::Untouched => "untouched",
+                ScopeAuthority::Hold(_) => "held-unknown",
+            },
+        };
+        crate::diag_cause::emit_reply_scope(shared, pid, generation, seq, authority, index as u64);
+        if crate::diag_cause::enabled() && scope.authority.hold_reason().is_some() {
+            let (out, ws) = match &scope.scope {
+                tiler_core::world_report::AuthorityScope::Output(output) => {
+                    (output.0.clone(), "unavailable".to_owned())
+                }
+                tiler_core::world_report::AuthorityScope::Workspace { output, workspace } => {
+                    (output.0.clone(), workspace.0.clone())
+                }
+            };
+            let (native, logical) = match &scope.scope {
+                tiler_core::world_report::AuthorityScope::Output(output) => (
+                    "unavailable".to_owned(),
+                    reply
+                        .outputs
+                        .iter()
+                        .find(|row| row.output == *output)
+                        .and_then(|row| row.logical_view.clone())
+                        .unwrap_or_else(|| "unavailable".to_owned()),
+                ),
+                tiler_core::world_report::AuthorityScope::Workspace { output, workspace } => (
+                    reply
+                        .workspaces
+                        .iter()
+                        .find(|row| row.output == *output && row.id == workspace.0)
+                        .and_then(|row| row.native_binding.clone())
+                        .unwrap_or_else(|| "unavailable".to_owned()),
+                    workspace.0.clone(),
+                ),
+            };
+            crate::diag_cause::emit_hold_scope(
+                index as u64,
+                &out,
+                &ws,
+                &native,
+                &logical,
+                authority,
+                reply.based_on_observation_seq,
+                seq,
+            );
+        }
     }
+    crate::diag_cause::emit_close(
+        shared,
+        pid,
+        generation,
+        seq,
+        crate::diag_cause::close_stage::REPLY_APPLIED,
+    );
+    crate::diag_cause::emit_close_reply(seq, reply.based_on_observation_seq, ticket_request_seq);
     // Plan-truth snapshot (current scopes only, matching the legacy merged
     // emission): every row carrying geometry — effective frame preferred,
     // allocation fallback (overlays keep plan truth without writes).
@@ -1757,6 +2117,12 @@ fn emit_world_frames(
     generation: u64,
     seq: u64,
 ) {
+    crate::diag_cause::emit_batch_queued(
+        frames.len() as u64,
+        frame_ops.len() as u64,
+        overlay_skipped,
+        seq,
+    );
     let frame_op_by_window: BTreeMap<&str, &str> = frame_ops
         .iter()
         .map(|(window, operation)| (window.as_str(), operation.as_str()))
@@ -1825,6 +2191,21 @@ fn emit_world_frames(
             topology_revision,
             domain: retained.window_domains.get(window).cloned(),
         });
+        // Stage timing binds this worker `cmd_id` (per-app counter, with
+        // the owning `pid`) back to the dispatch trace id so worker apply
+        // records join without new plumbing.
+        if let Some(span) = crate::stage_timing::with_current(|held| *held) {
+            crate::stage_timing::record_for(
+                shared,
+                wpid,
+                app_generation,
+                cmd_id,
+                crate::stage_timing::stage::FRAME_BIND,
+                "frame",
+                span.id,
+            );
+            crate::stage_timing::note_cmd(wpid, app_generation, cmd_id, span.id, span.t0_us);
+        }
     }
     let mut emitted = 0u64;
     let mut coalesced = 0u64;
@@ -2685,21 +3066,48 @@ fn retire_selection_focus_exact(shared: &Arc<Mutex<Shared>>, retired: &DeferredS
 
 /// Remove exactly one outbox row by queued command identity: a stopped
 /// owner unwinds only the row it just pushed, never another operation's
-/// row via a blind pop.
+/// row via a blind pop. The match is the full triple
+/// (`request_id`, `window`, `close_id`): the numeric id alone collides
+/// across the selection and close lanes, so the core close id names the
+/// exact row.
 fn remove_focus_request_exact(
     queue: &mut Vec<FocusRequest>,
     request_id: u64,
     window: &str,
+    close_id: &str,
 ) -> bool {
-    if let Some(pos) = queue
-        .iter()
-        .position(|row| row.request_id == request_id && row.window == window)
-    {
+    if let Some(pos) = queue.iter().position(|row| {
+        row.request_id == request_id && row.window == window && row.close_id == close_id
+    }) {
         queue.remove(pos);
         true
     } else {
         false
     }
+}
+
+/// Retire every outbox row for a terminal owner completion: the terminal
+/// `CloseFocusResult` (staged or stale-rejected alike) ends the command, so
+/// no row naming its queued identity may keep occupying the bounded outbox.
+/// The match is the full triple (`request_id`, `window`, `close_id`): the
+/// numeric id alone collides across the selection lane (core command seq)
+/// and the close lane (local focus seq), so a purged row's late terminal
+/// result must never retire a live replacement row that reused the number.
+/// Remove-all (not first-only): deferral recovery can re-queue the same
+/// command identity twice, and both rows die with the single terminal
+/// result. Feedback itself never rides the queue (it stages through
+/// `pending_close_feedback`), so a taken-but-still-pending row removed here
+/// loses nothing the core still needs; the result-handler removal for an
+/// already-purged row is simply a no-op.
+pub(crate) fn retire_focus_request_exact(
+    focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
+    request_id: u64,
+    window: &str,
+    close_id: &str,
+) {
+    lock_focus(focus_queue).retain(|row| {
+        !(row.request_id == request_id && row.window == window && row.close_id == close_id)
+    });
 }
 
 /// Release one deferred selection focus after the native selection proved
@@ -2866,6 +3274,7 @@ pub(crate) fn release_selection_focus_after_arrival(
         pid: fpid,
         generation: app_generation,
         request_id: deferred.command_seq,
+        close_id: deferred.focus_id.clone(),
         wid: fwid,
         window: deferred.window.0.clone(),
         dispatched: true,
@@ -2911,6 +3320,14 @@ pub(crate) fn release_selection_focus_after_arrival(
             emit(shared, 0, 0, 0, "focus", "dropped-full", 1);
             return SelectionFocusRelease::Dropped;
         }
+        // Latest-only per app: the slot holds one command per app, so an
+        // older same-pid row is dead (its untaken command was overwritten by
+        // this release) or dying (taken, its feedback rides the staged row,
+        // never the queue, so the result-handler retirement for a purged row
+        // is a harmless no-op). Purge after the strict capacity fence, so a
+        // genuinely full outbox still spends into backpressure: only the
+        // admitted replacement compacts its own superseded rows.
+        queue.retain(|row| row.pid != fpid);
         queue.push(request);
     }
     {
@@ -2965,6 +3382,34 @@ pub(crate) fn release_selection_focus_after_arrival(
         };
         if slot.set_latest(cmd).is_some() {
             lock_shared(shared).diagnostics.focus_dispatched += 1;
+            // Join through the shared op map under the completion identity:
+            // this release runs on the main thread (tile settle poll, or the
+            // engine immediate-release path), so the engine dispatch span is
+            // never reliably installed here - the op map carries the original
+            // intake origin (trace plus `t0_us`), never a follow-up span. A
+            // current-span fallback covers only the map-miss path.
+            let joined = crate::stage_timing::parse_op_seq(op)
+                .and_then(crate::stage_timing::trace_for_op)
+                .map(|(trace, t0_us, _)| (trace, t0_us))
+                .or_else(|| crate::stage_timing::with_current(|held| (held.id, held.t0_us)));
+            if let Some((trace, t0_us)) = joined {
+                crate::stage_timing::record_for(
+                    shared,
+                    fpid,
+                    app_generation,
+                    deferred.command_seq,
+                    crate::stage_timing::stage::FOCUS_BIND,
+                    "focus",
+                    trace,
+                );
+                crate::stage_timing::note_focus(
+                    fpid,
+                    app_generation,
+                    deferred.command_seq,
+                    trace,
+                    t0_us,
+                );
+            }
         } else {
             // Ownership lost after queueing: the worker is gone, so the
             // intent is terminal — unwind exactly the row just pushed
@@ -2975,6 +3420,7 @@ pub(crate) fn release_selection_focus_after_arrival(
                 &mut lock_focus(focus_queue),
                 deferred.command_seq,
                 &deferred.window.0,
+                &deferred.focus_id,
             );
             retire_selection_focus_exact(shared, &deferred);
             lock_shared(shared).diagnostics.focus_dropped_full += 1;
@@ -3061,10 +3507,58 @@ fn dispatch_close_focus(
             // completion can never actuate old work.
             drop_selection_focus_locked(shared, "null-superseded");
             emit(shared, pid, generation, seq, "close-focus", "absent", 0);
+            crate::diag_cause::emit_focus_diag(
+                shared,
+                0,
+                0,
+                seq,
+                crate::diag_cause::kind::FOCUS_CLOSE,
+                "envelope-absent",
+                false,
+                false,
+                false,
+            );
+            crate::diag_cause::emit_focus_line(
+                "unavailable",
+                FocusRequestCause::PositiveClose,
+                "unavailable",
+                None,
+                false,
+                seq,
+                "envelope-absent",
+            );
             return;
         }
         CloseEnvelope::Stale => {
             emit(shared, pid, generation, seq, "close-focus", "stale", 0);
+            let (id, cause, target) = match reply.focus_request.as_ref() {
+                Some(req) => (req.id.as_str(), req.cause, req.target.0.as_str()),
+                None => (
+                    "unavailable",
+                    FocusRequestCause::PositiveClose,
+                    "unavailable",
+                ),
+            };
+            crate::diag_cause::emit_focus_diag(
+                shared,
+                0,
+                0,
+                seq,
+                crate::diag_cause::kind::FOCUS_CLOSE,
+                "envelope-stale",
+                false,
+                false,
+                false,
+            );
+            crate::diag_cause::emit_focus_line(
+                id,
+                cause,
+                target,
+                retained.observed_focus.as_ref().map(|w| w.0.as_str()),
+                retained.observed_focus_known,
+                seq,
+                "envelope-stale",
+            );
             return;
         }
         CloseEnvelope::DuplicateSpent => {
@@ -3076,11 +3570,40 @@ fn dispatch_close_focus(
             // releases exactly once. Anything else stays deferred.
             reevaluate_selection_release(session, retained, shared, focus_queue, reply);
             emit(shared, pid, generation, seq, "close-focus", "duplicate", 0);
+            let (id, cause, target) = match reply.focus_request.as_ref() {
+                Some(req) => (req.id.as_str(), req.cause, req.target.0.as_str()),
+                None => (
+                    "unavailable",
+                    FocusRequestCause::PositiveClose,
+                    "unavailable",
+                ),
+            };
+            crate::diag_cause::emit_focus_diag(
+                shared,
+                0,
+                0,
+                seq,
+                crate::diag_cause::kind::FOCUS_CLOSE,
+                "envelope-duplicate-spent",
+                retained.observed_focus.is_some(),
+                retained.observed_focus_known,
+                false,
+            );
+            crate::diag_cause::emit_focus_line(
+                id,
+                cause,
+                target,
+                retained.observed_focus.as_ref().map(|w| w.0.as_str()),
+                retained.observed_focus_known,
+                seq,
+                "envelope-duplicate-spent",
+            );
             return;
         }
         CloseEnvelope::Fresh => {}
     }
     let req = reply.focus_request.as_ref().expect("Fresh implies Some");
+    let target_str = req.target.0.clone();
     // Selection-backed explicit requests defer: bind the arrival-bound
     // intent from the frozen `afterShown` projection (the parent transfer
     // may already have settled), spend the envelope once, publish the
@@ -3111,6 +3634,39 @@ fn dispatch_close_focus(
         match refusal {
             None => {
                 emit(shared, pid, generation, seq, "close-focus", "deferred", 1);
+                {
+                    let (tpid, _) = parse_window_id(&target_str).unwrap_or((0, 0));
+                    let observed = retained.observed_focus.clone();
+                    let is_target = observed.as_ref() == Some(&req.target);
+                    crate::diag_cause::emit_focus_diag(
+                        shared,
+                        tpid,
+                        0,
+                        seq,
+                        crate::diag_cause::focus_cause_kind(req.cause),
+                        if immediate_ready {
+                            "deferred-selection-ready"
+                        } else {
+                            "deferred-selection-pending"
+                        },
+                        observed.is_some(),
+                        retained.observed_focus_known,
+                        is_target,
+                    );
+                    crate::diag_cause::emit_focus_line(
+                        &req.id,
+                        req.cause,
+                        &target_str,
+                        observed.as_ref().map(|w| w.0.as_str()),
+                        retained.observed_focus_known,
+                        seq,
+                        if immediate_ready {
+                            "deferred-selection-ready"
+                        } else {
+                            "deferred-selection-pending"
+                        },
+                    );
+                }
                 if immediate_ready {
                     let (expected_sid, frontmost) = {
                         let guard = lock_shared(shared);
@@ -3134,6 +3690,30 @@ fn dispatch_close_focus(
                 }
             }
             Some(reason) => {
+                {
+                    let (tpid, _) = parse_window_id(&target_str).unwrap_or((0, 0));
+                    let observed = retained.observed_focus.clone();
+                    crate::diag_cause::emit_focus_diag(
+                        shared,
+                        tpid,
+                        0,
+                        seq,
+                        crate::diag_cause::focus_cause_kind(req.cause),
+                        crate::diag_cause::deferred_refusal_outcome(reason),
+                        observed.is_some(),
+                        retained.observed_focus_known,
+                        observed.as_ref() == Some(&req.target),
+                    );
+                    crate::diag_cause::emit_focus_line(
+                        &req.id,
+                        req.cause,
+                        &target_str,
+                        observed.as_ref().map(|w| w.0.as_str()),
+                        retained.observed_focus_known,
+                        seq,
+                        crate::diag_cause::deferred_refusal_outcome(reason),
+                    );
+                }
                 session.stage_close_feedback(FocusFeedback {
                     id: req.id.clone(),
                     target: req.target.clone(),
@@ -3182,9 +3762,36 @@ fn dispatch_close_focus(
             core_generation: core_gen.clone(),
         }),
     );
-    let target_str = req.target.0.clone();
     let fallback_pre = retained.observed_focus.clone();
     let fallback_known = retained.observed_focus_known;
+    // Diagnostic-only route record: one ring line per exit below with the
+    // exact predicate token, the request cause, the target app identity (0
+    // when unparsed/unknown), and the retained observed-focus evidence
+    // bits (present/known/equals-target). No fresh reads; the exact
+    // (pid, wid) target rides the staged feedback row each exit stages.
+    let diag =
+        |shared: &Arc<Mutex<Shared>>, outcome: &'static str, target_pid: u32, app_gen: u64| {
+            crate::diag_cause::emit_focus_diag(
+                shared,
+                target_pid,
+                app_gen,
+                seq,
+                crate::diag_cause::focus_cause_kind(req.cause),
+                outcome,
+                fallback_pre.is_some(),
+                fallback_known,
+                fallback_pre.as_ref() == Some(&req.target),
+            );
+            crate::diag_cause::emit_focus_line(
+                &req.id,
+                req.cause,
+                &target_str,
+                fallback_pre.as_ref().map(|w| w.0.as_str()),
+                fallback_known,
+                seq,
+                outcome,
+            );
+        };
     // Zero-setter satisfied: focus already names the target.
     if fallback_pre.as_ref() == Some(&req.target) {
         session.sequencer().spend_close(&req.id);
@@ -3201,34 +3808,70 @@ fn dispatch_close_focus(
             attempt_ms: 0,
         });
         emit(shared, pid, generation, seq, "close-focus", "satisfied", 0);
+        {
+            let (tpid, _) = parse_window_id(&target_str).unwrap_or((0, 0));
+            diag(shared, "already-satisfied", tpid, 0);
+        }
         return;
     }
     // No-call helper: spends once, stages one raw row, counts the drop.
-    let no_call =
-        |session: &mut WorldSession, shared: &Arc<Mutex<Shared>>, reason: VisibilityReason| {
-            session.sequencer().spend_close(&req.id);
-            session.stage_close_feedback(FocusFeedback {
-                id: req.id.clone(),
-                target: req.target.clone(),
-                revision: req.issued_revision,
-                setter: VisibilitySetter::NotCalled,
-                reason,
-                pre: fallback_pre.clone(),
-                post: None,
-                foreground_proven: false,
-                arrival: Vec::new(),
-                attempt_ms: 0,
-            });
-            lock_shared(shared).diagnostics.focus_dropped_full += 1;
-            emit(shared, pid, generation, seq, "close-focus", "no-call", 1);
-        };
+    let no_call = |session: &mut WorldSession,
+                   shared: &Arc<Mutex<Shared>>,
+                   reason: VisibilityReason,
+                   outcome: &'static str,
+                   target_pid: u32,
+                   app_gen: u64| {
+        session.sequencer().spend_close(&req.id);
+        session.stage_close_feedback(FocusFeedback {
+            id: req.id.clone(),
+            target: req.target.clone(),
+            revision: req.issued_revision,
+            setter: VisibilitySetter::NotCalled,
+            reason,
+            pre: fallback_pre.clone(),
+            post: None,
+            foreground_proven: false,
+            arrival: Vec::new(),
+            attempt_ms: 0,
+        });
+        lock_shared(shared).diagnostics.focus_dropped_full += 1;
+        emit(shared, pid, generation, seq, "close-focus", "no-call", 1);
+        diag(shared, outcome, target_pid, app_gen);
+    };
     // Frozen-target fences over retained truth plus the live native plan.
+    // The request names core-logical workspaces while native retained
+    // domains and the native context are native-keyed, so resolve through
+    // this reply's live `native_binding` row (the same live-lookup pattern
+    // as `current` in `consume_world_reply`). Synthetic skeletons have no
+    // native context, so their logical keys compare verbatim; an unmapped
+    // native request keeps the logical id and refuses below: no durable
+    // host table, never a guess.
     let domain = DomainKey {
         output: req.output.clone(),
-        workspace: WorkspaceId(req.workspace.clone()),
+        workspace: WorkspaceId(
+            lock_shared(shared)
+                .native_context
+                .is_some()
+                .then(|| {
+                    reply
+                        .workspaces
+                        .iter()
+                        .find(|row| row.output == req.output && row.id == req.workspace)
+                        .and_then(|row| row.native_binding.clone())
+                })
+                .flatten()
+                .unwrap_or_else(|| req.workspace.clone()),
+        ),
     };
     let Some((fpid, fwid)) = parse_window_id(&target_str) else {
-        no_call(session, shared, VisibilityReason::IdentityStale);
+        no_call(
+            session,
+            shared,
+            VisibilityReason::IdentityStale,
+            "no-call-parse-identity-stale",
+            0,
+            0,
+        );
         return;
     };
     let (app_generation, focus_slot, native_mode): (Option<u64>, Option<Arc<FocusSlot>>, bool) = {
@@ -3244,15 +3887,36 @@ fn dispatch_close_focus(
         )
     };
     let Some(app_generation) = app_generation else {
-        no_call(session, shared, VisibilityReason::IdentityStale);
+        no_call(
+            session,
+            shared,
+            VisibilityReason::IdentityStale,
+            "no-call-app-identity-stale",
+            fpid,
+            0,
+        );
         return;
     };
     if retained.window_domains.get(&target_str) != Some(&domain) {
-        no_call(session, shared, VisibilityReason::IdentityStale);
+        no_call(
+            session,
+            shared,
+            VisibilityReason::IdentityStale,
+            "no-call-home-identity-stale",
+            fpid,
+            app_generation,
+        );
         return;
     }
     if !current.contains(&(req.output.0.clone(), req.workspace.clone())) {
-        no_call(session, shared, VisibilityReason::Unreadable);
+        no_call(
+            session,
+            shared,
+            VisibilityReason::Unreadable,
+            "no-call-scope-unreadable",
+            fpid,
+            app_generation,
+        );
         return;
     }
     // Shown/current native leg when a live context exists (synthetic
@@ -3264,24 +3928,45 @@ fn dispatch_close_focus(
             let row = ctx
                 .domains
                 .iter()
-                .find(|d| d.output == req.output && d.workspace.0 == req.workspace);
+                .find(|d| d.output == req.output && d.workspace == domain.workspace);
             match row {
                 Some(d) if d.current && d.readable && ctx.revision == topology_revision => {}
                 Some(_) => {
                     drop(guard);
-                    no_call(session, shared, VisibilityReason::Unreadable);
+                    no_call(
+                        session,
+                        shared,
+                        VisibilityReason::Unreadable,
+                        "no-call-native-unreadable",
+                        fpid,
+                        app_generation,
+                    );
                     return;
                 }
                 None => {
                     drop(guard);
-                    no_call(session, shared, VisibilityReason::IdentityStale);
+                    no_call(
+                        session,
+                        shared,
+                        VisibilityReason::IdentityStale,
+                        "no-call-native-missing-identity-stale",
+                        fpid,
+                        app_generation,
+                    );
                     return;
                 }
             }
         }
     }
     if retained.minimized.contains_key(&target_str) {
-        no_call(session, shared, VisibilityReason::ShowBlocked);
+        no_call(
+            session,
+            shared,
+            VisibilityReason::ShowBlocked,
+            "no-call-minimized-show-blocked",
+            fpid,
+            app_generation,
+        );
         return;
     }
     let roster_row = retained
@@ -3289,21 +3974,49 @@ fn dispatch_close_focus(
         .get(&fpid)
         .and_then(|app| app.roster.get(&fwid));
     let Some(entry) = roster_row else {
-        no_call(session, shared, VisibilityReason::IdentityStale);
+        no_call(
+            session,
+            shared,
+            VisibilityReason::IdentityStale,
+            "no-call-roster-missing-identity-stale",
+            fpid,
+            app_generation,
+        );
         return;
     };
     if entry.minimized_meta || entry.hidden_meta {
-        no_call(session, shared, VisibilityReason::ShowBlocked);
+        no_call(
+            session,
+            shared,
+            VisibilityReason::ShowBlocked,
+            "no-call-roster-meta-show-blocked",
+            fpid,
+            app_generation,
+        );
         return;
     }
     match entry.excluded {
         Some(crate::classifier::ExcludeReason::Minimized)
         | Some(crate::classifier::ExcludeReason::HiddenApp) => {
-            no_call(session, shared, VisibilityReason::ShowBlocked);
+            no_call(
+                session,
+                shared,
+                VisibilityReason::ShowBlocked,
+                "no-call-excluded-show-blocked",
+                fpid,
+                app_generation,
+            );
             return;
         }
         Some(_) => {
-            no_call(session, shared, VisibilityReason::Unsupported);
+            no_call(
+                session,
+                shared,
+                VisibilityReason::Unsupported,
+                "no-call-excluded-unsupported",
+                fpid,
+                app_generation,
+            );
             return;
         }
         None => {}
@@ -3322,18 +4035,39 @@ fn dispatch_close_focus(
             })
         });
     if sibling_fullscreen {
-        no_call(session, shared, VisibilityReason::Fullscreen);
+        no_call(
+            session,
+            shared,
+            VisibilityReason::Fullscreen,
+            "no-call-fullscreen",
+            fpid,
+            app_generation,
+        );
         return;
     }
     // Game/overlay defers to the core pre-publish gate (no adapter-side
     // game fact exists); unknown foreground never dispatches blind.
     if retained.observed_focus.is_none() && !retained.observed_focus_known {
-        no_call(session, shared, VisibilityReason::FocusUnproven);
+        no_call(
+            session,
+            shared,
+            VisibilityReason::FocusUnproven,
+            "no-call-focus-unproven",
+            fpid,
+            app_generation,
+        );
         return;
     }
     // Outbox full and ownership-lost legs spend into no-call, never retry.
     if lock_focus(focus_queue).len() >= focus_capacity {
-        no_call(session, shared, VisibilityReason::Superseded);
+        no_call(
+            session,
+            shared,
+            VisibilityReason::Superseded,
+            "no-call-outbox-full-superseded",
+            fpid,
+            app_generation,
+        );
         return;
     }
     let topology_revision = lock_shared(shared).topology_revision;
@@ -3351,7 +4085,7 @@ fn dispatch_close_focus(
         domain,
         generation: app_generation,
         topology_revision,
-        fallback_pre,
+        fallback_pre: fallback_pre.clone(),
         fallback_known,
         expected_sid: None,
         proven_stamp: None,
@@ -3367,6 +4101,7 @@ fn dispatch_close_focus(
         pid: fpid,
         generation: app_generation,
         request_id,
+        close_id: req.id.clone(),
         wid: fwid,
         window: target_str.clone(),
         dispatched: true,
@@ -3399,6 +4134,12 @@ fn dispatch_close_focus(
             });
             lock_shared(shared).diagnostics.focus_dropped_full += 1;
             emit(shared, pid, generation, seq, "close-focus", "no-call", 1);
+            diag(
+                shared,
+                "no-call-outbox-full-reserved-superseded",
+                fpid,
+                app_generation,
+            );
             return;
         }
         match focus_slot {
@@ -3408,16 +4149,43 @@ fn dispatch_close_focus(
                     generation: app_generation,
                     request_id,
                     wid: fwid,
-                    window: target_str,
+                    window: target_str.clone(),
                     revision: topology_revision,
                     route: session.focus_route(),
                     expect_prior: None,
                     close: Some(binding),
                 };
                 if slot.set_latest(cmd).is_some() {
+                    // Latest-only per app: purge superseded same-pid rows
+                    // before recording the replacement (same rationale as the
+                    // selection-release lane: taken rows lose nothing, their
+                    // feedback rides the staged row; the terminal retirement
+                    // for a purged row is a no-op). Runs after both capacity
+                    // fences, so a genuinely full outbox still spends into
+                    // backpressure above.
+                    lock_focus(focus_queue).retain(|row| row.pid != fpid);
                     lock_focus(focus_queue).push(request);
                     lock_shared(shared).diagnostics.focus_dispatched += 1;
                     emit(shared, pid, generation, seq, "close-focus", "dispatched", 1);
+                    diag(shared, "dispatched-native", fpid, app_generation);
+                    if let Some(span) = crate::stage_timing::with_current(|held| *held) {
+                        crate::stage_timing::record_for(
+                            shared,
+                            fpid,
+                            app_generation,
+                            request_id,
+                            crate::stage_timing::stage::FOCUS_BIND,
+                            "focus",
+                            span.id,
+                        );
+                        crate::stage_timing::note_focus(
+                            fpid,
+                            app_generation,
+                            request_id,
+                            span.id,
+                            span.t0_us,
+                        );
+                    }
                 } else {
                     session.stage_close_feedback(FocusFeedback {
                         id: req.id.clone(),
@@ -3433,6 +4201,7 @@ fn dispatch_close_focus(
                     });
                     lock_shared(shared).diagnostics.focus_dropped_full += 1;
                     emit(shared, pid, generation, seq, "close-focus", "no-call", 1);
+                    diag(shared, "slot-stopped-identity-stale", fpid, app_generation);
                 }
             }
             None => {
@@ -3450,6 +4219,7 @@ fn dispatch_close_focus(
                 });
                 lock_shared(shared).diagnostics.focus_dropped_full += 1;
                 emit(shared, pid, generation, seq, "close-focus", "no-call", 1);
+                diag(shared, "slot-missing-identity-stale", fpid, app_generation);
             }
         }
     } else {
@@ -3471,12 +4241,19 @@ fn dispatch_close_focus(
                 });
                 lock_shared(shared).diagnostics.focus_dropped_full += 1;
                 emit(shared, pid, generation, seq, "close-focus", "no-call", 1);
+                diag(
+                    shared,
+                    "no-call-outbox-full-synthetic-superseded",
+                    fpid,
+                    app_generation,
+                );
                 return;
             }
             queue.push(request);
         }
         lock_shared(shared).diagnostics.focus_dispatched += 1;
         emit(shared, pid, generation, seq, "close-focus", "dispatched", 1);
+        diag(shared, "dispatched-synthetic", fpid, app_generation);
     }
 }
 
@@ -4680,8 +5457,8 @@ mod tests {
         );
         assert_eq!(
             lock_focus(&focus_queue).len(),
-            1,
-            "completion queues nothing more"
+            0,
+            "terminal completion retires its outbox row, queues nothing more"
         );
         assert!(slot.take().is_none(), "completion sets no new slot command");
     }
@@ -5162,8 +5939,8 @@ mod tests {
         );
         assert_eq!(
             lock_focus(&focus_queue).len(),
-            1,
-            "completion queues nothing more"
+            0,
+            "terminal completion retires its outbox row, queues nothing more"
         );
     }
 
@@ -5665,7 +6442,11 @@ mod tests {
             &reply,
             None,
         );
-        assert_eq!(lock_focus(&focus_queue).len(), 1, "no replay");
+        assert_eq!(
+            lock_focus(&focus_queue).len(),
+            0,
+            "no replay: the retired row stays retired across duplicate consume"
+        );
         assert!(
             slot.take().is_none(),
             "duplicate consume sets no slot command"
@@ -5869,6 +6650,59 @@ mod tests {
             "at-most-once: no replay"
         );
         assert_eq!(lock_focus(&focus_queue).len(), 1);
+    }
+
+    #[test]
+    #[ignore]
+    fn deferred_release_binds_focus_join_through_shared_op_map() {
+        // Enabled-only (`TILER_MACOS_STAGE_TIMING=1`): the release runs on
+        // the main thread where no engine dispatch span is ever installed,
+        // so the FOCUS_BIND plus `note_focus` must join through the shared
+        // op map under the completion identity - carrying the original
+        // intake origin (`t0_us`), never a follow-up span. The `note_op`
+        // below stands in for the engine dispatch bind; the release then
+        // proves the FocusResult join (`trace_for_focus` hits with the
+        // dispatch origin).
+        if !crate::stage_timing::enabled() {
+            eprintln!("skipped without TILER_MACOS_STAGE_TIMING=1");
+            return;
+        }
+        let shared = focus_shared();
+        {
+            let ctx = mock_space_context(true);
+            lock_shared(&shared).native_context = Some(Arc::clone(&ctx));
+            lock_shared(&shared).native_cell.store(Some(ctx));
+        }
+        live_focus_app(&shared, CLOSE_PID, CLOSE_GEN);
+        lock_shared(&shared).focus_evidence = Some(crate::runtime_types::FocusEvidence {
+            frontmost_pid: Some(4242),
+            frontmost_bundle: None,
+            ax_focus: None,
+        });
+        let pending = pending_op3();
+        // Simulate the engine dispatch bind: op seq 3 carries the trace id
+        // with its intake origin (the release must reuse both, never a
+        // follow-up span - none is installed on this thread).
+        crate::stage_timing::note_op(3, 777_001, 1_000_000);
+        lock_shared(&shared).selection_focus_pending = Some(pending.clone());
+        publish_pending_epoch(&shared, &pending);
+        stamp_pending_live(&shared);
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        assert_eq!(
+            release_selection_focus_after_arrival(
+                &shared,
+                &focus_queue,
+                Some("op-3"),
+                Some(3),
+                Some(4242)
+            ),
+            SelectionFocusRelease::Released,
+            "verified arrival releases"
+        );
+        let (trace, t0_us, _) = crate::stage_timing::trace_for_focus(CLOSE_PID, CLOSE_GEN, 3)
+            .expect("focus join bound");
+        assert_eq!(trace, 777_001, "bind carries the dispatch trace");
+        assert_eq!(t0_us, 1_000_000, "bind reuses the intake origin");
     }
 
     #[test]
@@ -6509,6 +7343,7 @@ mod tests {
             pid: 9,
             generation: 9,
             request_id: 99,
+            close_id: "focus-99".to_owned(),
             wid: 9,
             window: "9_9".to_owned(),
             dispatched: true,
@@ -7321,7 +8156,11 @@ mod tests {
         assert_eq!(stamp.obs, fresh_obs);
         assert_eq!(stamp.context_generation, fresh_gen);
         assert!(pending.owner_queued);
-        assert_eq!(lock_focus(&focus_queue).len(), queue_before + 1);
+        // Latest-only recovery replaces the deferred row instead of
+        // duplicating it: the re-release purges the same-pid superseded row
+        // before recording the replacement, so the count is unchanged and
+        // the single terminal completion retires exactly that row.
+        assert_eq!(lock_focus(&focus_queue).len(), queue_before);
         let recovered_cmd = slot.take().expect("recovery sets one slot command");
         let recovered_close = recovered_cmd.close.clone().expect("unified route");
         let mut genuine = FakeCloseBackend {
@@ -7641,6 +8480,7 @@ mod tests {
                 None,
                 "select",
                 "accepted",
+                0,
                 0,
                 0,
                 0,
@@ -8109,6 +8949,7 @@ mod tests {
                 0,
                 0,
                 0,
+                0,
             );
         };
         let controlled = workarea_reply(true);
@@ -8394,6 +9235,7 @@ mod tests {
             CLOSE_PID,
             CLOSE_GEN,
             1,
+            0,
         );
     }
 
@@ -8801,6 +9643,7 @@ mod tests {
                 pid: CLOSE_PID,
                 generation: CLOSE_GEN,
                 request_id: u64::from(i),
+                close_id: format!("close-focus-{i}"),
                 wid: 100 + i,
                 window: format!("{CLOSE_PID}_{}", 100 + i),
                 dispatched: true,
@@ -8889,6 +9732,85 @@ mod tests {
             session2.peek_close_feedback().expect("first wins").id,
             "close-focus-10"
         );
+    }
+
+    #[test]
+    fn close_same_pid_purge_keeps_replacement_and_stale_retire_is_noop() {
+        // Cross-lane numeric collision: the selection lane mints the queued
+        // numeric id from the core command seq while the close lane mints it
+        // from a local focus seq, so both lanes count 1,2,3... on the same
+        // window. The same-pid purge must keep the replacement row, and a
+        // late terminal result for the purged row must not retire the live
+        // replacement that reused the number. The full triple
+        // (request_id, window, close_id) names the exact row.
+        use crate::world_dispatch::retire_focus_request_exact;
+        let shared = focus_shared();
+        live_focus_app(&shared, CLOSE_PID, CLOSE_GEN);
+        let mut session = focus_session();
+        let mut retained = close_retained(9, Some(close_target(7)), true);
+        retained.focus_seq = 4;
+        let focus_queue = Arc::new(Mutex::new(vec![FocusRequest {
+            pid: CLOSE_PID,
+            generation: CLOSE_GEN,
+            request_id: 5,
+            close_id: "focus-5".to_owned(),
+            wid: 9,
+            window: format!("{CLOSE_PID}_9"),
+            dispatched: true,
+            verified: false,
+            topology_revision: 9,
+        }]));
+        let reply = close_reply_for(&session, "close-focus-9", 7, 9);
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &reply,
+            None,
+        );
+        {
+            let queued = lock_focus(&focus_queue);
+            assert_eq!(queued.len(), 1, "purge keeps only the replacement");
+            assert_eq!(queued[0].request_id, 5);
+            assert_eq!(queued[0].close_id, "close-focus-9");
+        }
+        // Stale retire for the purged foreign-namespace row is a no-op.
+        retire_focus_request_exact(&focus_queue, 5, &format!("{CLOSE_PID}_9"), "focus-5");
+        assert_eq!(
+            lock_focus(&focus_queue).len(),
+            1,
+            "stale close id must not retire the replacement"
+        );
+        // Exact retire for the replacement removes it.
+        retire_focus_request_exact(&focus_queue, 5, &format!("{CLOSE_PID}_9"), "close-focus-9");
+        assert!(lock_focus(&focus_queue).is_empty());
+        // Direct single-remove collision check: a wrong close id survives.
+        lock_focus(&focus_queue).push(FocusRequest {
+            pid: CLOSE_PID,
+            generation: CLOSE_GEN,
+            request_id: 5,
+            close_id: "focus-X".to_owned(),
+            wid: 9,
+            window: format!("{CLOSE_PID}_9"),
+            dispatched: true,
+            verified: false,
+            topology_revision: 9,
+        });
+        assert!(!remove_focus_request_exact(
+            &mut lock_focus(&focus_queue),
+            5,
+            &format!("{CLOSE_PID}_9"),
+            "other-close",
+        ));
+        assert_eq!(lock_focus(&focus_queue).len(), 1);
+        assert!(remove_focus_request_exact(
+            &mut lock_focus(&focus_queue),
+            5,
+            &format!("{CLOSE_PID}_9"),
+            "focus-X",
+        ));
+        assert!(lock_focus(&focus_queue).is_empty());
     }
 
     #[test]

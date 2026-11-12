@@ -912,6 +912,9 @@ pub struct SendEffectHandoff {
     /// full post-order. Never a fabricated before-echo or empty after-order.
     /// Keyed by creation operation id for dedup/redelivery.
     pending_creations: Mutex<Vec<crate::workspace_select::PendingCreation>>,
+    /// Single-take send-lane timing report (same overwrite semantics as the
+    /// select lane's slot).
+    native_report: Mutex<Option<crate::stage_timing::LaneNativeReport>>,
 }
 
 impl SendEffectHandoff {
@@ -1231,6 +1234,24 @@ impl SendEffectHandoff {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .len()
+    }
+
+    /// Store one lane timing report (overwrites any unpolled one: a
+    /// stale-dropped completion's report is replaced by the next job).
+    pub(crate) fn store_native_report(&self, report: crate::stage_timing::LaneNativeReport) {
+        *self
+            .native_report
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = Some(report);
+    }
+
+    /// Take the staged lane timing report (`None` when the owner has not
+    /// stored one since the last take).
+    pub(crate) fn take_native_report(&self) -> Option<crate::stage_timing::LaneNativeReport> {
+        self.native_report
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take()
     }
 }
 
@@ -1698,6 +1719,54 @@ mod tests {
             before + 1,
             "stale finish pokes nothing"
         );
+    }
+
+    #[test]
+    fn report_stored_before_finish_is_visible_with_completion() {
+        // Seam lock for the managed-send owner threads (pinned and trailing
+        // arms): the lane report stores BEFORE `finish` stages the
+        // completion, because the main thread polls the completion first - a
+        // completion staged before its report would let a prompt poll
+        // observe the settle with no report stored yet (the lane split would
+        // drop silently for that action). The owner thread below follows the
+        // production order; the main thread polls in a tight loop and
+        // requires the report on every observed completion.
+        use std::sync::Arc;
+        let lane = Arc::new(SendEffectHandoff::new());
+        for _ in 0..8 {
+            let pinned = target();
+            lane.submit(pinned.clone()).expect("submits");
+            lane.take_for_owner().expect("owner takes");
+            let owner = Arc::clone(&lane);
+            let owner_pinned = pinned.clone();
+            let done = std::thread::spawn(move || {
+                owner.store_native_report(crate::stage_timing::LaneNativeReport {
+                    summary: crate::stage_timing::take_native_agg(),
+                    exec_us: 7,
+                    kind: "send-drag",
+                });
+                assert!(
+                    owner.finish(completion_for(
+                        &owner_pinned,
+                        FrameSetter::Accepted,
+                        SendEffectOutcome::Applied
+                    )),
+                    "matching finish stages"
+                );
+            });
+            let completion = loop {
+                if let Some(done) = lane.poll_completion_for(&pinned) {
+                    break done;
+                }
+                std::thread::yield_now();
+            };
+            done.join().expect("owner joins");
+            assert_eq!(completion.outcome, SendEffectOutcome::Applied);
+            assert!(
+                lane.take_native_report().is_some(),
+                "report stored before finish is visible with the completion"
+            );
+        }
     }
 
     #[test]

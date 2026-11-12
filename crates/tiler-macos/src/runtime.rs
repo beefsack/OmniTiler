@@ -1156,6 +1156,11 @@ impl RuntimeHandle {
                 cg_alive: Vec::new(),
                 revision: obs.revision,
             },
+            // Manual submit path: untraced (no poll-receipt stamp mints
+            // here; the worker poll path above owns intake correlation).
+            trace_id: 0,
+            intake_us: 0,
+            enqueue_us: 0,
         };
         // Bump before enqueue (see `invalidate_clock`): the engine may
         // dequeue the instant the job lands.
@@ -1181,7 +1186,27 @@ impl RuntimeHandle {
         }
         // Bump before enqueue (see `invalidate_clock`).
         invalidate_clock(&self.shared);
-        if self.inbox.send_control(EngineJob::InputAction { action }) {
+        let (trace_id, intake_us, enqueue_us) = crate::stage_timing::mint(&action)
+            .map(|span| {
+                crate::stage_timing::record(
+                    &self.shared,
+                    span.id,
+                    crate::stage_timing::stage::INTAKE,
+                    span.action,
+                    0,
+                );
+                // Enqueue stamp is separate from receipt so the engine QUEUE
+                // record is pure inbox wait.
+                let enqueue_us = crate::stage_timing::enqueue_stamp();
+                (span.id, span.t0_us, enqueue_us)
+            })
+            .unwrap_or((0, 0, 0));
+        if self.inbox.send_control(EngineJob::InputAction {
+            action,
+            trace_id,
+            intake_us,
+            enqueue_us,
+        }) {
             SubmitOutcome::Accepted
         } else {
             SubmitOutcome::AdmissionClosed
@@ -1212,11 +1237,27 @@ impl RuntimeHandle {
         }
         // Bump before enqueue (see `invalidate_clock`).
         invalidate_clock(&self.shared);
+        let (trace_id, intake_us, enqueue_us) = crate::stage_timing::mint(&action)
+            .map(|span| {
+                crate::stage_timing::record(
+                    &self.shared,
+                    span.id,
+                    crate::stage_timing::stage::INTAKE,
+                    span.action,
+                    0,
+                );
+                let enqueue_us = crate::stage_timing::enqueue_stamp();
+                (span.id, span.t0_us, enqueue_us)
+            })
+            .unwrap_or((0, 0, 0));
         if self.inbox.send_control(EngineJob::IndicatorSelect {
             action,
             expected_sid,
             ui_generation,
             topology_revision,
+            trace_id,
+            intake_us,
+            enqueue_us,
         }) {
             SubmitOutcome::Accepted
         } else {
@@ -1235,8 +1276,25 @@ impl RuntimeHandle {
         }
         // Bump before enqueue (see `invalidate_clock`).
         invalidate_clock(&self.shared);
+        let toggle = InputSemanticAction::ToggleFloat;
+        let (trace_id, intake_us, enqueue_us) = crate::stage_timing::mint(&toggle)
+            .map(|span| {
+                crate::stage_timing::record(
+                    &self.shared,
+                    span.id,
+                    crate::stage_timing::stage::INTAKE,
+                    span.action,
+                    0,
+                );
+                let enqueue_us = crate::stage_timing::enqueue_stamp();
+                (span.id, span.t0_us, enqueue_us)
+            })
+            .unwrap_or((0, 0, 0));
         if self.inbox.send_control(EngineJob::InputAction {
-            action: InputSemanticAction::ToggleFloat,
+            action: toggle,
+            trace_id,
+            intake_us,
+            enqueue_us,
         }) {
             SubmitOutcome::Accepted
         } else {

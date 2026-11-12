@@ -1168,6 +1168,15 @@ impl LiveSendController {
             .unwrap_or(false)
     }
 
+    /// Take the staged send-lane timing report (`None` when the owner has
+    /// not stored one since the last take). Call after each polled
+    /// completion or refusal and flush it under the operation identity.
+    pub(crate) fn take_native_report(&self) -> Option<crate::stage_timing::LaneNativeReport> {
+        self.thread
+            .as_ref()
+            .and_then(|thread| thread.handoff().take_native_report())
+    }
+
     /// Nonblocking poll for a trailing request's proof-less completion
     /// (preparation refused or was cancelled before binding): feedback-only
     /// settlement under the request's operation identity - no target to
