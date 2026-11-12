@@ -307,14 +307,16 @@ open -n --env TILER_MACOS_STAGE_TIMING=1 --stdout target/macos/responsiveness-ma
 - Narrow alternative: replace `--unscoped` with `--scope com.apple.TextEdit`;
   the scope covers every TextEdit document. Do not run both commands. Confirm
   `tilestarted` before physical actions and note its PID. Use `--seconds`
-  1..=120 for these finite captures; 300 refuses at startup and its diagnostic
-  lands in stderr, not necessarily stdout. Inspect both files if startup is
-  missing. Timing is cached for the process; omit `--env` on a later fresh
-  launch to return to default off.
+  1..=120 for these finite captures; the rejected value 300 refused at startup
+  with its diagnostic in stderr, not necessarily stdout. Inspect both files
+  if startup is missing. Timing is cached for the process; omit `--env` on a
+  later fresh launch to return to default off.
 - Run A below uses `tile-a`. After clean shutdown, repeat the launch with both
   output names changed to `tile-b`, then `tile-c`, each with `--seconds 120`.
-  Never overlap runs or overwrite an earlier capture. Inspect each terminal
-  outcome before starting the next run.
+  Use fresh stdout and stderr paths for every launch, including retries and
+  preflight: observed `open` behavior appends to existing files, and a rerun's
+  stderr was appended to the previous run's file. Never overlap runs or reuse
+  an earlier capture path. Inspect each terminal outcome before the next run.
 
 | Run | Elapsed | Physical action script (default Ctrl modifier; use configured equivalent if changed) |
 | --- | --- | --- |

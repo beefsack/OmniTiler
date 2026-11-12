@@ -119,6 +119,17 @@ selected route; Dock injection and SIP reduction are out of scope.
   deadline. It cannot observe the app's exit status: inspect the JSON outcome,
   not the wrapper status alone. After rebuilding, require `ax_trusted:true`
   through this route before AX effects; a lost grant is a stop condition.
+- Use fresh `--stdout` and `--stderr` file paths for every `open` launch.
+  Observed behavior: `open` appends to existing files; a rerun's stderr was
+  appended to the previous run's file, mixing captures.
+- Duration limits: `tile --seconds` accepts scoped `1..=120`, or unscoped
+  `0..=120` with `0` meaning unbounded
+  ([validation](../crates/tiler-macos/src/tile.rs#L223-L249),
+  `MAX_TILE_SECONDS = MAX_PROBE_SECONDS`). General bounded probes use `1..=120`
+  ([config](../crates/tiler-macos/src/config.rs#L100-L107)); the separate
+  `MAX_TAP_SECONDS = 30` limits `validate_intercept` to `1..=30`
+  ([input](../crates/tiler-macos/src/input.rs#L108-L114)). Split longer bounded
+  captures into several runs; do not substitute an unbounded run.
 
 ## Recovery Ladder
 
@@ -195,6 +206,7 @@ experiment.
   probe budget. Ctrl+C stops this launch wrapper, not the LaunchServices child;
   wait for its bounded teardown before starting another probe. Inspect terminal
   JSON rather than inferring success from wrapper exit status.
+- Working latency-measurement route: [user-run stage-timing captures](changes/macos-responsiveness-investigation.md#user-run-bounded-captures) with `TILER_MACOS_STAGE_TIMING=1`.
 - Current [physical procedure](changes/archive/macos-dogfood-hardening.md#user-run-physical-script)
   covers timeout recovery, manual Space transfers and the same-application
   focus/gap/logging dogfood recheck. Its Carbon delivery step is retired: the
