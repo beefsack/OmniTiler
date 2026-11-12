@@ -52,6 +52,26 @@ Mechanical API checks use `git show <pin>:<path>` and `git grep <pattern>
   applying only the latest. Native acceptance remains separate.
   [Adoption record](../changes/kde-retained-close-focus.md).
 
+- Unified retained `focusRequest` adoption is verified offline; native acceptance
+  remains open:
+  the strict reader and bounded retained consumer replace both old focus paths.
+  All four causes have genuine skipped-publication producer/codec/consumer
+  proofs, including feedback and target-observation settlement from the same
+  latest-only consumer. Core now owns the formerly adapter-only admission
+  guards; explicit focus/send-follow retain their exemption. Frozen selection
+  dependencies gate unstarted requests, independently of the current ticket or
+  parent transfer. The producer also forwards the captured native cursor-hit
+  identity through the normative `cursorHit` lane, omitting unknown hits.
+  Active KDE bytes and stage5 full/s2 were genuinely re-recorded; historical
+  families remain unchanged. Final offline suite: 1,283 passed, zero failed;
+  typecheck and independent source review pass. Selection readiness and
+  already-target arrival regressions are repaired. The user-approved empty-cursor
+  rule restores implicit sticky-off after restart from genuine live/bound observed
+  foreground, without automatic admission or canonical-memory/session changes.
+  Logical cursor and retained-request authority still win. Core/protocol/service
+  build, strict clippy, format and 3,336 tests pass; native acceptance stays open.
+  [Current evidence and remaining work](../changes/retained-focus-requests.md#kde-integration-state-2026-11-12).
+
 - Physical output metadata: capture scripting `manufacturer`, `model` and
   `serialNumber` as neutral facts, normalizing native empty strings to
   null only at the KDE boundary; preserve other strings, including literal

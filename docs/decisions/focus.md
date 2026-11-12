@@ -7,7 +7,7 @@
 - Why: one cross-platform rule replaces KDE adapter guards; follows D01 and Gaming Compatibility.
 - Rejected: KDE-only adapter guards; moving only D01 fence.
 - Assumes / revisit if: hosts report maximize/fullscreen truthfully; Windows maximize reporting and Windows/macOS current behavior unchecked.
-- Status: active, 2026-10-30; generalized to one retained request for every cause 2026-11-11 (approved, not yet implemented)
+- Status: active, 2026-10-30; generalized retained request implemented in core/protocol; coordinated adapter adoption and native acceptance incomplete
 - Evidence: [review R5, F10](../changes/core-interface-review.md); [design](../changes/retained-focus-requests.md).
 
 ### Workspace active-window memory
@@ -24,6 +24,14 @@
 - Assumes / revisit if: existing binding gates remain sufficient.
 - Status: active, 2026-10-28
 - Evidence: [record](../changes/windows-workspace-return-focus.md#command-owned-memory-outcome-2026-10-28).
+
+### Empty execution subject
+- Decision (user 2026-11-12): when the execution cursor is empty and no pending retained focus request owns the subject, an implicit command uses the host-reported foreground only if core knows it as a live, bound window of the current generation. Unknown, unbound or stale-generation foreground cannot authorize the command; unresolved subjects refuse `focus-unknown` through the existing command path. Stale-generation ingress is rejected before execution.
+- The existing single execution-subject owner resolves this read-only. It never overrides or outlives a logical focus decision or a pending retained request, changes neither canonical focus memory nor session eligibility, and mints no focus request. Automatic-focus withholding remains spent, not retried.
+- Why: explicit no-target commands still act on a genuinely focused restored sticky or guard-withheld window when no logical subject exists, without restoring forbidden automatic activation.
+- Boundary: a nonempty logical cursor still wins over different observed foreground. This does not resolve the separate macOS suppressed-admission question where core already has a subject.
+- Status: active, 2026-11-12; offline core/KDE verification; native acceptance pending.
+- Evidence: [implementation and discriminators](../changes/retained-focus-requests.md#empty-cursor-command-subject-2026-11-12).
 
 ### Cross-output directional focus
 - Decision: crossing output boundary selects a destination linked member nearest the crossed edge, not destination MRU; shared-core policy on all adapters, no setting. Candidates include nested leaves touching the canonical projected entry edge; most recently focused wins. Without history, greatest overlap against source perpendicular span, then DFS child order. Never use observed frames. Fullscreen and maximized destination members are eligible and retain their overlay state; they rank by retained allocation. Eligibility/safety gates are unchanged. Destination internal tiled last-active then focus stack newest-first; only currently linked/homed candidates; stale closed/floated/moved entries miss. Admission/convergence seed history. Preserve workspace-return lifetime slot.

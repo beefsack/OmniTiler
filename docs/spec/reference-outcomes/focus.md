@@ -78,6 +78,10 @@ assertions are never evidence.
 - Variant hook: provisional/TBD (no suitable existing hook; do not reuse
   V-FLOAT-FOCUS, which covers tile/float layers, not tile-tile ties).
 
+| Geometric-versus-order discriminator | Minimal action sequence | Evidence / unsupported outcome |
+| --- | --- | --- |
+| Unequal perpendicular siblings | Given zero gaps, no reserved area, `H[V[A,B],C*]`, height 800, A allocated top 200 and B remaining 600; record both A,B,C and B,A,C histories in fresh fixtures. Focus left; observe first-child A, nearer-center B, or history-sensitive result | Core first-child selects A (`crates/tiler-core/src/directional.rs:1199-1205`, inspected `7a6d6e12`). COSMIC `epoch-1.11.0`, `src/shell/layout/tiling/mod.rs:2022-2061`, compares geometric distances, with C's left-edge point at y=399 and candidate centers y=100/500, implying B under these allocated rectangles. Exact native rectangles/result TBD. Other references' unequal-share variant outcomes TBD; do not infer them from the original equal-half cells |
+
 ### R-FOC-02: directional focus at a single-output edge
 
 - Given (all profiles): `H[A*,B]`, single output, no adjacent output.
@@ -90,9 +94,17 @@ assertions are never evidence.
   fallback. Independent of move edge policy (R-MOV-05/R4).
 - Then COSMIC: A retained (no local target, no next output).
   `S(S-cos-tilefocus)` + `S(S-cos-focus-fallback)`.
-- Then Hyprland/Dwindle: A retained (no directional target, no monitor
-  fallback on one output, full-size stay covers the spanning case).
-  `S(S-hyp-focus)`.
+- Then Hyprland/Dwindle: the historical A-retained claim is contradicted
+  for the explicit zero-gap/no-reserved equal-half variant by Hyprland
+  `v0.57.2`: shipped `general:no_focus_fallback=false`
+  (`src/config/values/ConfigValues.cpp:181`) permits an opposite-edge search
+  after the directional/monitor miss. Half-width A fails the full-width stay
+  guard; the right-edge strip queried left finds B, implying wrap to B
+  (`src/config/shared/actions/ConfigActions.cpp:488-533`,
+  `src/desktop/state/WindowQuery.cpp:71-93,146-195`). Named
+  `general:no_focus_fallback=true` instead retains A. Exact shipped-gap,
+  reserved-area and native outcomes remain TBD; do not count the historical
+  `S(S-hyp-focus)` stay as a revalidated default vote.
 - Then bspwm: A retained (no west candidate in the unqualified
   selector). `S(S-bsp-flt-focus)`.
 - Then i3: B (wraps within the workspace under the default wrapping
@@ -121,6 +133,10 @@ assertions are never evidence.
   Engine. `S(S-ours-focus)`.
 - Variant hook: provisional/TBD (wrap-policy hook, to discuss; V-R4-DIR
   covers moves, not focus).
+
+| Fallback discriminator | Minimal action sequence | Source-implied result / remaining evidence |
+| --- | --- | --- |
+| Partial width versus spanning; named Hyprland fallback variants | Given one output, no reserved area, zero gaps, eligible ordinary equal halves `H[A*,B]` (height >1); focus left under `general:no_focus_fallback=false`, repeat fresh with true. Separately repeat with sole full-width A | Hyprland `v0.57.2`, `ConfigActions.cpp:488-533` (full path above): false implies B from opposite-edge search; true retains A; sole full-width A stays. Shipped-gap/reserved/native runs TBD. Other references retain the original R-FOC-02 cells; no foreign counterpart to this named Hyprland option inferred |
 
 ### R-FOC-03: next/previous window cycle order
 

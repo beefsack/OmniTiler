@@ -773,6 +773,30 @@ not a retroactive diagnosis.
 | Protected remainder and game safety | Put a retained fullscreen/maximized reserved slot beside normal A; shrink until projection fails; repeat with only protected slots or nonpositive usable area | D7 only safe eligible victims, preserve overlays/fixed overrides, defer gestures, never classify refusal as capacity; impossible protected remainder stays narrowly held | Native safety TBD; no live game probe performed |
 | Apply settings versus repeated full replies | Capacity-float N; change anchor/no-space settings; resend identical observations, including after manual focus/frame changes; separately start a new admission | D10 next-decision only, no reclassification/retry; stable targets/operation identities, no repeated focus/raise/transfer/frame reset. Actual new geometry may repair once | Windows/macOS consumer adoption and native settings pickup TBD |
 
+#### Capacity source recheck (2026-11-12)
+
+- Reuse the minimal action sequences above: exhausted B with larger A and
+  splittable sibling C (line "Largest versus relative versus no-search");
+  independently zero-hint A then N in a positive 1x1 domain with gap 8
+  ("No split anywhere"). These remain synthetic allocation fixtures, not
+  claims that a native output can be set to 1x1. Exact frames/focus/native
+  settlement remain TBD. No new behavioral selection.
+- Latest-stable source-path findings below qualify these existing rows;
+  historical R-MIN-04 evidence keeps its original pins. Absence of a gate on
+  an inspected path is not proof of its absence everywhere in a WM.
+
+| Reference/version | Source evidence for the same allocation problem | Unsettled outcome |
+| --- | --- | --- |
+| COSMIC `epoch-1.11.0` | `src/shell/layout/tiling/mod.rs:407-435,2998-3012,3052-3087`: map to tree, update positions, subtract gaps; no alternate-anchor capacity search or float-result gate on this inspected path | Exact tiny geometry/client configure and settlement TBD; no scrolling inference |
+| Hyprland `v0.57.2`, Dwindle | `src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:83-116,138-150,28-62`: choose opening node, max-hint float diversion, wrap and recursively divide with nonnegative pre-gap boxes | Max-hint float is not zero-hint exhaustion; final post-gap geometry/native outcome TBD |
+| i3 `4.25.1` | `src/render.c:224-250,402-435`: percentage allocation within parent then assign child split rectangles, not a splittable-leaf search | Client/frame sanitization and exact native settlement TBD |
+| sway `1.12` | `sway/tree/arrange.c:54-95,139-180`: squeeze gap budget before fractional division; sub-10 dimensions zero both | Neither OmniTiler's positive-overflow projector nor evidence for capacity floating; exact native settlement TBD |
+
+- No source attribution to these Tier 1 paths is established for the
+  largest/relative/no-search or float/positive-overflow option sets. Existing
+  D2/D3/D10 user decisions remain authoritative. [Decision evidence and
+  options](../changes/c9-product-evidence.md) do not change those selections.
+
 ### KDE automatic fixed-float stacking discriminators
 
 Selected D8 amendment and option A (User 2026-10-17/18); Windows unchanged.
@@ -6803,7 +6827,14 @@ results stay TBD until KDE-tested.
 | Focus A; admit ordinary B while native stays A; skip the issuing publication and two unchanged-baseline publications; apply only the latest; then issue a follow-up implicit command | Approved 2026-11-11: one retained attempt for B; the follow-up implicit command resolves against the execution-time logical cursor, not stale observed A. This supersedes the suppressed-admission expectation in the macOS platform-fit row above, not FIFO semantics ([design](../changes/retained-focus-requests.md)) | Reference-WM and native actuation outcomes TBD; genuine skipped-publication latest-only proof is still required for every cause. No candidate-selection expansion selected |
 | FIFO focus-right then a trailing orientation change in the same batch, contrasted with focus-right followed by the same orientation change in the next batch; repeat each leg with a refused command instead of the orientation change; skip the issuing publication; then issue an implicit-subject command | Approved 2026-11-11: trailing non-focus commands and refused commands without a focus decision never cancel pending focus in any batch; the later implicit subject still reflects the preceding accepted focus choice. Only a newer focus decision, an observed user focus change, or a view change or target loss making the target ineligible supersedes ([design](../changes/retained-focus-requests.md)) | Reference-WM and native outcomes TBD |
 | Positively close B selecting MRU survivor C while an ordinary newcomer N arrives in the same report | Approved 2026-11-11: one retained winner only. Same-report precedence is explicit-command, then automatic-admission, then positive-close, then focus-follows-cursor, so N wins over C ([design](../changes/retained-focus-requests.md)) | Reference-WM and native outcomes TBD |
+| Positively close focused B selecting MRU survivor C while genuinely entering hover target D in the same report; skip the issuing publication; issue an implicit non-focus command | Approved precedence retains C over D; the execution cursor and the later implicit command's subject are C too. Core regression proves the retained id survives and the implicit action affects C, not D ([design](../changes/retained-focus-requests.md)) | Reference-WM and native outcomes TBD |
 | Hover B to pending; move the pointer over the already-pending B and repeat unchanged B reports; settle or refuse B, then move to C and back to B | Approved 2026-11-11: pointer movement over the already-pending target and unchanged reports keep the id and never retry; each fresh qualifying entry after leaving the live target and returning mints a new id. Replaces lifetime ffc-<token> spent identity ([design](../changes/retained-focus-requests.md)) | Reference-WM and native outcomes TBD |
+| Admit tiled N while a different floating/sticky F remains observed foreground; then remove F's floating/sticky state without closing N | Existing automatic-focus guards withhold the newcomer and spend its birth; clearing the veto does not rearm N. Withholding never records N as an accepted focus choice. Explicit focus remains exempt | Reference-WM and native outcomes TBD |
+| Admit sticky S with tiled foreground; then clear S's sticky state without closing it | No automatic request for S, including after clearing sticky; the withheld birth is spent | Reference-WM and native outcomes TBD |
+| Admit ordinary float N carrying maximized; then clear maximize without closing N; contrast a maximized tiled newcomer and explicit focus to the maximized float | Withhold and spend the maximized float's admission; clearing maximize does not rearm it. No blanket floating/maximized veto: ordinary admission floats, maximized tiled newcomers and eligible explicit focus retain their existing authority | Reference-WM and native outcomes TBD |
+| Enter tiled hover target B while different floating/sticky F remains foreground; clear F's state while the pointer stays over B | Withhold automatic hover; the static pointer does not reissue after clearing the veto. A fresh qualifying hover entry retains the existing rearm rule | Reference-WM and native outcomes TBD |
+| Issue eligible admission/hover without native apply; keep foreground identity unchanged but turn it floating/sticky, or turn the pending admission target sticky/maximized-float; restore the old shape | Retained automatic eligibility retires the request before apply; restore does not revive the old id. Explicit requests keep their automatic-focus exemptions. A float/sticky same-report close fallback cannot originate a positive-close request under the existing tiled fallback gate | Reference-WM and native outcomes TBD |
+| Make tiled A sticky; orderly stop/start while A remains genuinely foreground; restore its sticky intent and issue implicit sticky-off without another focus event | Existing required outcome: implicit sticky-off applies to A. User 2026-11-12: the single execution-subject owner uses genuinely observed live/bound/current-generation foreground only with an empty cursor and no pending retained request; no canonical-memory/session change or focus request. Core discriminator and genuine KDE restart journey pass. Unknown/unbound foreground refuses; stale generation rejects before execution; a logical cursor still wins over different observed foreground | Reference-WM/native outcomes remain TBD; the separate macOS suppressed-admission outcome is unchanged |
 
 ## v4 broker connection discriminator
 

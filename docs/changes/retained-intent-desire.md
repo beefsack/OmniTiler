@@ -2,7 +2,7 @@
 
 - Status: proposal awaiting user approval; no implementation or contract amendment yet.
 - Scope: first [C3 conversion](core-v4-review.md#user-decisions-2026-11-12), core/protocol/KDE together; other ports later. No intent-policy change or acknowledged-events lane.
-- Model: unified retained `focusRequest`, approved in `18f904fe` ([decision](../decisions/contract.md#state-centric-contract)), without spend-once accounting: storage replacement is repeatable. The [contract](../porting/world-contract.md#retained-positive-close-focus) still describes implemented `closeFocus`, not that target.
+- Model: unified retained `focusRequest`, approved in `18f904fe` ([decision](../decisions/contract.md#state-centric-contract)), without spend-once accounting: storage replacement is repeatable. Core/protocol implement that [contract](../porting/world-contract.md#one-retained-focus-request) shape; coordinated adapter adoption and verification remain incomplete.
 
 ## Today (source at `f6ccc9f7`)
 

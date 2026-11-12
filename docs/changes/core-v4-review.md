@@ -112,12 +112,11 @@ generations of architecture.
   delivered once.
 - Publication itself mutates core state
   (`assemble_publication_rows(&mut self)`, `world_publish.rs:329`).
-- Proposal:
-  - Split `WorldReply` into `state` (idempotent, latest wins) and `events`
-    (sequence-numbered, acknowledged by a watermark in the next report).
-  - Make intent a level-triggered desired record per window.
-  - Move focus effects to the `closeFocus` retained-request pattern, so one
-    mechanism covers both.
+- [Approved direction (2026-11-12)](#user-decisions-2026-11-12): convert each remaining one-time field to
+  retained latest-wins state, starting with intent as a per-window desired
+  record. Focus uses the unified `focusRequest` retained-request pattern.
+  The earlier `state` plus sequence-numbered, acknowledged `events` proposal
+  was rejected; it is not an implementation direction.
 
 ### C4. Evidence lanes have proliferated
 

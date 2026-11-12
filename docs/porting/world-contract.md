@@ -891,7 +891,8 @@ acceptance or adopt the separate close-focus amendment.
 | `ready,consumed` | bool | no | World readiness; repeated command incorporated, not re-executed. |
 | `scopes` | ScopeStatus[] | no | Every known scope's authority. |
 | `workspaces,outputs,windows` | WorkspaceDesire[], OutputDesire[], WindowDesire[] | no | Full desired snapshot, not a diff. |
-| `transfers,effects` | TransferTarget[], OneShotEffect[] | no | Retained correlations and one-shot work. |
+| `transfers` | TransferTarget[] | no | Retained transfer correlations. |
+| `effects` | empty array | no | No admissible entries or actuation authority; reserved raise/stack shapes are removed. |
 | `focusRequest` | FocusRequest | yes | Required nullable retained request for every cause, independent of effects. |
 | `result` | CommandResult | yes | Issuing-reply-only result. |
 | `gestureSettled` | GestureSettled | yes | Core mutation acknowledgement, not native completion. |
@@ -951,10 +952,6 @@ acceptance or adopt the separate close-focus amendment.
 | | `cmdSeq` | Counter | yes | Command correlation, not parsed operation text. |
 | `TransferTarget` | `op,kind,win,out,ws,follow,held` | Id, TransferKind, WindowId, OutputId, WorkspaceId, bool, bool | win empty except window kind | Existing window/view/migration target shape. |
 | | `cmdSeq` | Counter | yes | Original command sequence, null for commandless work. |
-| `OneShotEffect` | `id,kind,target,rev` | Id, EffectKind, WindowId, Counter | no | Target shape: raise/stack only; focus is authorized only through the retained request (target approved, not yet implemented). |
-| | `cause` | `explicit-command/automatic-admission/focus-follows-cursor` | no | Existing reserved metadata; no active raise/stack producers or focus authority. |
-| | `cmdSeq` | Counter | yes | Existing reserved metadata; no new correlation introduced. |
-| | `awaitShown` | bool | no | Existing reserved metadata, not focus authority; arrival-ready focus uses the retained request's frozen dependencies. |
 
 - V4 `WorkspaceDesire` row uniqueness is keyed by `(out,id)` in both
   reply codecs. Shared mode may repeat one logical id on different outputs;
@@ -975,7 +972,7 @@ acceptance or adopt the separate close-focus amendment.
 | Record | Key | Type | Null/absence | Meaning |
 | --- | --- | --- | --- | --- |
 | `FocusRequest` | `id,target,rev` | Id, WindowId, Counter | no | Opaque request identity, frozen target lifetime and immutable issuing revision. |
-| | `cause` | `explicit-command/automatic-admission/focus-follows-cursor/positive-close` | no | Closed vocabulary, distinct from one-shot effect kinds. |
+| | `cause` | `explicit-command/automatic-admission/focus-follows-cursor/positive-close` | no | Closed focus-request vocabulary. |
 | | `out,ws` | OutputId, WorkspaceId | no | Frozen activation scope; close retains its frozen source domain. |
 | | `cmdSeq` | Counter | yes | Originating explicit command only; null for every other cause. |
 | | `afterShown` | AfterShown | yes | Frozen issuing selection dependencies, defined below. |
@@ -1001,10 +998,11 @@ acceptance or adopt the separate close-focus amendment.
   are not validity requirements. Operation-id prefixes grant no authority.
 
 - Zero or one global request for every cause. This lane is approved
-  2026-11-11 ([design](../changes/retained-focus-requests.md)) and not yet
-  implemented. Current implementation carries `closeFocus` plus ordinary
-  one-shot focus effects until the coordinated migration; that is the
-  implemented wire, not an alternate accepted shape. Explicit-command
+  2026-11-11 ([design and implementation status](../changes/retained-focus-requests.md)).
+  Core and protocol implement this shape; coordinated adapter adoption and
+  verification remain incomplete. `closeFocus` and focus entries in `effects`
+  are rejected, not alternate accepted shapes. Reserved raise/stack entries
+  also reject; `effects` is required empty. Explicit-command
   requests originate from direct/directional focus, remembered selection,
   send-follow and operation focus producers under existing execution-time
   subject gates. Automatic-admission requests originate from the
@@ -1055,14 +1053,28 @@ acceptance or adopt the separate close-focus amendment.
   foreground and per-workspace history. Same-capture admission enters the
   ordering before commands. Within a batch each accepted focus choice advances
   the cursor immediately in FIFO order, even though only the final winner
-  publishes; the final winner follows same-report cause precedence. A new
+  publishes; the final winner follows same-report cause precedence and owns
+  the cursor too. A losing candidate cannot overwrite the published winner:
+  close choosing C while hover enters D retains C as the implicit subject.
+  A new
   implicit command resolves its subject from the cursor before the older
   request is retired for a newer focus decision. A still-live retained request
   preserves its target across unchanged-baseline reports and stale observed
   foreground must not overwrite it. Non-focus commands never retire the
   cursor's pending choice. After refusal or ineligibility, use current eligible
-  observed focus, never the abandoned target; never fabricate native
-  foreground.
+   observed focus, never the abandoned target; never fabricate native
+   foreground.
+- User decision 2026-11-12: only when the execution cursor is empty and no
+  pending retained request owns the subject, an implicit command uses the
+  host-reported foreground if core knows it as a live, bound window of the
+  current generation. Resolve this in the same execution-subject owner without
+  writing canonical focus memory or changing session eligibility, and without
+  minting a focus request. Unknown or unbound foreground remains `focus-unknown`;
+  stale-generation ingress rejects before command execution and cannot supply a
+  subject. This rule never overrides or outlives a logical focus decision or a
+  pending retained request. A nonempty cursor wins over different observed
+  foreground exactly as before; the separate macOS suppressed-admission outcome
+  is not amended. Automatic guard withholding stays spent, not retried.
 - The winning request is frozen once per accepted publication with a
   generation-scoped revision-derived opaque id. Re-emission never changes
   id/target/issuing revision/cause/command correlation/frozen dependencies.
@@ -1083,7 +1095,9 @@ acceptance or adopt the separate close-focus amendment.
   old ticket or reconstruct them from later window rows.
 - Reuse `focusFeedback` by exact opaque `(id,target,rev)` equality, with rev the
   immutable issuing revision, not the later applied publication revision. Latch
-  the first correlated raw row/stamp only. Proven refusal or informative safety
+  the first correlated raw row/stamp only, in the single pending request;
+  no parallel historical-grant settlement ledger runs underneath it.
+  Proven refusal or informative safety
   no-call retires; accepted dispatch without target equality is unproven and
   retains an inert request, never authorizing another call. Current observed
   equality satisfies independently of setter evidence. Feedback for a retired
@@ -1106,8 +1120,8 @@ acceptance or adopt the separate close-focus amendment.
 ### Persistent stacking
 
 - `above` targets use independent StateTarget authority and StateAttempt
-  pre/post evidence, gated by the above capability. OneShotEffect::Stack remains
-  a distinct one-shot action; floating/sticky=true is not write authority.
+  pre/post evidence, gated by the above capability. No one-shot raise/stack
+  action exists; floating/sticky=true is not write authority.
 - Core acquires persistent above for every float: qualified automatic floats,
   explicit float/sticky intent and capacity-fallback floats use one policy.
   Workspace-floating-mode floats use the same rule even with no tiles present;

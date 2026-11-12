@@ -44,8 +44,8 @@
 ## Approved wire direction and retained state
 
 - Replace required nullable `closeFocus` with required nullable `focusRequest`;
-  remove Focus from `effects`. Keep the otherwise unused raise/stack shape
-  reserved, without treating it as an implemented producer. Reject mixed old/new
+  remove Focus from `effects`. The later reconciliation removes the unused
+  raise/stack reserve too; `effects` is required empty. Reject mixed old/new
   focus authority, unknown causes and invalid cross-field combinations [E9].
 
   ```json
@@ -397,6 +397,454 @@
   coverage stay open. C3's approved retained reply work uses the same model;
   it must preserve this lane while converting other items. C1/C2/C5 may move
   retained state, sizing and codec plumbing; C4 may replace evidence carriers.
+
+## Linux verification and core/protocol review (2026-11-12)
+
+- Status: mechanical repairs verified, but acceptance remains blocked. No focus
+  behavior, wire shape or fixture bytes changed in these repairs. The raw-attempt
+  consumer migration and the structural findings below need separately bounded
+  work before this change can be accepted.
+- `cargo build -p tiler-core -p tiler-protocol -p omnitiler --all-targets`,
+  `cargo check -p tiler-core -p tiler-protocol -p omnitiler --all-targets` and
+  `cargo clippy -p tiler-core -p tiler-protocol -p omnitiler --all-targets -- -D warnings`
+  pass after equivalent lint repairs. Two service-test consumers now read the
+  retained request rather than removed focus effects, preserving exact target
+  and FIFO assertions. `cargo fmt --all -- --check` passes after formatting the
+  five core files with focus-cutover drift (16 formatting hunks).
+- `cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture`
+  exits 101: 3,172 passed and 11 failed across the 53 targets reached, including
+  2,139 core library passes and 61 protocol library passes. Cargo stops at
+  `raw_attempt_settlement_v4` (21 passed, 11 failed); subsequent targets and
+  doc tests are not established by this run. The initial run stopped earlier
+  at a stale service assertion (12 passed, one failed in `n5_retained`); after
+  that migration two rapid-input assertions exposed the same obsolete consumer.
+- All 11 remaining Rust failures reject the active visibility scenario replies
+  at strict decoding: retired `closeFocus`, missing `focusRequest`, and old
+  focus effects. Beyond decoding, `VisibilityHostDriver::execute_reply` still
+  accounts for focus via `seen_effects` and `HeldFocus`, with effect-oriented
+  jq oracles. Neither a byte rewrite nor a decode-time shim is a valid repair.
+  No genuine recorder for these two adapter-directed visibility scenarios was
+  found. A genuine producer/encoder recorder plus the roughly 400-line consumer
+  region and affected oracles is a separate bounded migration; retain the
+  visibility, first-feedback, no-retry, supersession and ordering checks.
+- Fixture integrity is also unresolved in the inherited implementation:
+  `05e72b7d` changes 147 files under the frozen `test-fixtures/world-wire/v4`
+  family (manifest, messages and four scenarios). For example, its frozen
+  `reply-observe.json` now carries `focusRequest`. This is not a valid active
+  fixture migration. Recovering the frozen baseline and producing/redirecting
+  current vectors into `v4-active` needs a separate reviewed migration; the
+  mechanical repairs leave all fixture bytes as found.
+- `cargo build --workspace --all-targets` and
+  `cargo check --workspace --all-targets` fail with 19 E0425 diagnostics in
+  macOS fixture tests: macOS-gated frame/zoom helpers are called from ungated
+  tests, introduced before the focus push in `4e275f6a`. Full-workspace strict
+  clippy also stops in macOS code (unused imports/items, test bindings and
+  structural lints, as well as those missing helpers). Individual macOS lint
+  attribution is not fully established; no clean macOS result is claimed.
+- The earlier `rustix` errors are host portability, not a reproduced Linux
+  regression: `float_intent_store` compiles and tests on Linux; rustix 1.1.4
+  excludes `mkfifoat` on Apple targets and uses platform-specific mode types.
+  The FIFO test call and production `st_mode`/`S_IFMT` assumptions predate
+  this push, also recorded in
+  [the earlier macOS workspace limitation](archive/macos-carbon-removal.md#verification).
+  Native macOS and Windows compilation and outcomes remain unverified here.
+- KWin `npm test`: 1,172 passed, 93 failed and 10 cancelled, unchanged before
+  and after the repairs; `npm run typecheck` passes. The current strict reader
+  already supports close-only `closeFocus`, contrary to the historical E18
+  snapshot, but lacks `focusRequest` (`kwin/src/world-report.ts`,
+  `CORE_REPLY_KEYS`). Reader-gate failures are expected until adoption; other
+  producer/apply failures require reclassification after that gate is repaired.
+  These are mocked/offline suites, not native evidence.
+
+### Frozen family recovery (2026-11-12)
+
+- Restored all 147 files changed by `05e72b7d` under
+  `test-fixtures/world-wire/v4` to their exact `7a6d6e12` bytes. Direct
+  verification compared complete path sets and every working-tree blob hash
+  against that baseline: world-wire v4 547/547, stage5 32/32 and stage5-v4
+  52/52 equal, with no missing or extra files. No active vectors changed.
+- Recovery resolves the historical-byte corruption, not current conformance.
+  The active manifest still points all 143 WorldReply witnesses (115 valid,
+  28 reject-wire) at frozen replies. Current reply readers, including
+  `reply_v4_decode.rs`, `close_focus_wire.rs` and `world_codec.rs`, still
+  expect the amended shape from historical paths. They need a separately
+  bounded genuine producer/codec recording into `v4-active` and reader
+  migration, preserving strict negative and round-trip oracles. The existing
+  active recording documentation covers handshakes, not amended replies.
+- No Rust or KWin suite was rerun after this fixture-only restoration. The
+  earlier Linux build/lint results above are inherited evidence; their test
+  counts do not establish the restored tree. Historical reply-reader failures
+  are expected from source inspection but have not been counted. The 11
+  visibility-consumer failures, close/hover regression, state consolidation
+  and reserved-effect removal remain unresolved.
+
+### Active reply schema recording (2026-11-12)
+
+- Active WorldReply coverage now records 115 valid-wire and 28 reject-wire
+  witnesses locally in `v4-active`; none of its 143 reply manifest entries
+  points back at frozen history. Valid witnesses and the three context-only
+  rejects pass through the genuine typed decoder/encoder. Context-free
+  negatives derive from those encoded valid witnesses, retaining exact
+  refusal and counterfactual-repair oracles; the active README explains the
+  automatic-awaitShown multi-field negative.
+- Schema witnesses need codec provenance, not an engine transition for every
+  shape: these tests establish strict decoding, canonical encoding and bounds,
+  not behavior. Behavioral visibility scenarios separately require genuine
+  producer/encoder recording. This avoids rebuilding engine histories for
+  wire-only coverage without weakening behavioral provenance.
+- Reply readers in `reply_v4_decode.rs`, `engine_twins_reply_v4.rs`,
+  `close_focus_wire.rs`, `world_codec.rs` and `target_lanes.rs` now use active
+  replies. Unchanged report fixtures remain historical. Reserved raise/stack
+  witnesses remain pending their coordinated removal.
+- Direct recheck confirms all three frozen families still have equal path
+  sets and bytes at `7a6d6e12` (547/32/52 files). The permitted three-package
+  suite reaches 53 targets: 3,172 passed, 11 failed, stopping at the unchanged
+  visibility-consumer boundary (21 passed, 11 failed). Reply decode/codec
+  targets after that boundary remain unrun. Three-package all-target check
+  and workspace format check pass. These are schema-migration results, not
+  completed retained-focus acceptance.
+
+### Behavioral visibility migration and close/hover correction (2026-11-12)
+
+- Both active visibility scenarios now contain genuine engine-produced,
+  codec-encoded adapter replies. Recording retained their ordered host
+  evidence, refusal, stale-authorization, supersession and no-retry oracles;
+  only genuine ids/revisions, request-lane assertions and modeled geometry
+  changed. The valid-wire fallback-hide edge has a separate typed-codec
+  consumer test because core currently produces only `fallback:false`.
+- The mock visibility consumer now keeps one immutable current request and
+  a retired issuing-revision fence, not an unbounded spent-effect set.
+  Identical retained delivery is inert; same-id tuple corruption and retired
+  requests fail closed. Selection-backed arrival uses frozen `afterShown`
+  members rather than adding later shown rows. A held-callback discriminator
+  proves an extra shown row cannot enlarge that set.
+- The permitted three-package suite now reaches completion: 3,316 passed,
+  zero failed across 66 targets, including all 35 raw-attempt tests. The one
+  newly reached failure was a report fixture read incorrectly redirected by
+  the reply-reader migration; explicitly retaining its unchanged historical
+  report path fixes it. No other newly reached failures remain in that run.
+- Added the close-B/survivor-C/hover-D discriminator before fixing core.
+  Its first full-suite run fails with cursor D versus expected C while the
+  retained request already correctly selects C (core library 2,139 passed,
+  one failed). Publication now records the pending winner rather than its
+  losing hover carrier. The regression skips the issuing reply, then proves
+  an implicit non-focus command affects C and retains the original request
+  id. Cause precedence and supersession are unchanged. The matching minimal
+  action row is in the reference matrix; reference/native outcomes stay TBD.
+- After the correction, the permitted suite passes 3,317 tests with zero
+  failures across 66 targets; workspace format check passes. Duplicate
+  settlement/cursor mechanisms and reserved effects still need removal.
+
+### Pre-reconciliation structural findings and behavior boundary
+
+These findings describe the reviewed baseline; the reconciliation outcome
+below records which mechanisms were subsequently removed.
+
+- One wire authority is present: `pending_focus`; internal Focus carriers are
+  producer inputs, stripped before encoding. However, `world_focus.rs` retains
+  a second historical grant ledger and exact-tuple feedback latch beside
+  `PendingFocus.feedback` in `world_close_focus.rs`. Both run per report.
+  Consolidation must preserve first-row settlement and selection's independent
+  member/visibility completion, rather than add another bespoke lane before C4.
+  Estimate: one moderate core/test migration, including the 1,565-line
+  `world_focus_settlement_tests.rs` module, not a lint-sized repair.
+- `logical_focus_cursor` and `implicit_focus` shadow the same execution subject
+  through paired writes and an older-state fallback. Consolidating them is
+  structural work under Simplicity/C2; audit test-only divergent setups and all
+  command subject readers before removal. No compatibility fallback is needed
+  for the in-place pre-release break.
+- Source tracing exposes a close/hover discrepancy requiring an explicit
+  discriminator: close selects C; a fresh qualifying hover selects D in the
+  same report. `drain_focus_candidates` keeps C under Q2, but forwards D's
+  carrier; `assemble_publication_rows` calls `record_published_focus`, which
+  records D into the cursor again. The wire can therefore request C while the
+  execution cursor names D. This path is source-confirmed, not runtime-proven.
+  A minimal follow-up row is: close focused B with survivor C while entering D;
+  skip the issuing reply; issue an implicit command. Pin both the retained
+  winner and execution subject. Do not silently change cause precedence or
+  supersession while repairing the duplicate recording path.
+- Reserved raise/stack effects still have no producers. Their removal touches
+  shared types, codecs, sizing, adapter matches and tests; retaining them is the
+  earlier design choice, not evidence that their latest-only delivery works.
+  Revisit as a small coordinated contract change under Simplicity/C3, separate
+  from the mechanical repairs. Persistent above remains independent.
+- `afterShown` is a frozen projection of existing neutral selection inputs
+  (lifetime, logical home, desired frame, view/scopes), not native arrival
+  evidence or a macOS Space identity. Keep platform readback/evidence separate.
+  Its 10,000-member/16-per-scope caps and whole-reply bounds remain enforced;
+  no new caps, retry, timer or acknowledgement lane were added.
+- Single `handle_report(report, ordered_commands)` ingress and originating
+  explicit `cmdSeq` are retained. Wire sizing remains the existing C5 debt;
+  large frozen projections also ride existing C2 transactional clones. Neither
+  performance budgeting nor native acceptance is established by unit counts.
+  C3 remains per-field retained latest-wins, never acknowledged events; the
+  intent conversion must preserve this request and its selection-freeze order.
+
+## Reconciliation outcome (2026-11-12)
+
+- Core now has one focus settlement owner (`pending_focus`) and one execution
+  subject (`logical_focus_cursor`). Removed the historical retained-grant
+  ledger, its feedback latch/publication/pruning passes, `implicit_focus`
+  and its older-state fallback. Publication records only the winning pending
+  target. Selection still owns independent member/visibility/terminal
+  obligations; it does not authorize another focus attempt.
+- Retained-slot tests preserve first exact-tuple row/stamp under holds,
+  incomplete inventory and barriers, the conservative verdict table, refusal,
+  terminal no-call, lost feedback and supersession. Historical multi-grant
+  probes were replaced by single-slot pruning coverage; the original-stamp
+  assertion now exercises the actual pending owner. No parallel settlement
+  lane, acknowledgement or sequence tracking was added.
+- No live raise/stack producer or decision requiring those unused kinds was
+  found. Removed their enum/codec cases, sizing witnesses, synthetic positive tests
+  and the macOS unhandled-effect dispatcher. Persistent `above` is unchanged.
+  The shared ephemeral Focus carrier remains an internal producer input;
+  genuine wire replies have required `effects:[]`, with no admissible entries.
+  Removing that empty envelope field is not part of this amendment.
+- Active reply coverage is now 138 local witnesses: 113 valid and 25 reject
+  (22 context-free, three host-context). Retired two positive raise/stack
+  vectors and three reject derivatives of that removed vocabulary. Direct
+  negative tests still reject both retired kinds. Frozen historical vectors
+  remain unchanged; all five retired active vectors were newly recorded,
+  never historical recordings.
+- Latest permitted Rust suite: 3,317 passed, zero failed across 66 targets,
+  including doc tests, with only the unsafe-posture guardrail filtered.
+  One obsolete non-focus-kind test was deleted; a new historical-reply
+  rejection test pins all 115 frozen valid-wire replies. Review also restored
+  exact decode-negative oracles for the retired effect correlation shapes
+  and removed the unreachable old effect encoder. Three-package all-target
+  build, strict clippy
+  (`-D warnings`) and workspace format check pass. macOS dispatch deletion
+  is mechanical and remains unverified on macOS; no Windows code changed.
+- KWin offline tests: 1,193 passed, 72 failed and 10 cancelled (1,275 tests,
+  188 suites); typecheck passes. Six failures directly prove strict-reader
+  rejection, four directly assert removed focus effects, two need active byte
+  re-recording, and 60 have downstream non-application signatures with no
+  `focusRequest` consumer. The latter are class-level attribution, not
+  individual root proof: adoption must rerun them, including the rotation
+  queue case. Ten stage5 children are blocked by the same reader gate.
+  Thus the earlier 66 unattributed failures have categories, not 66 proven
+  independent diagnoses. No independent non-focus regression is established.
+- Durable interface/ownership decisions are in `docs/decisions/contract.md`;
+  the contract describes the empty effects boundary and winning cursor.
+  KDE adoption must update its strict reply reader, retained-request apply/
+  cancellation/accounting and active producer byte/stage5 recordings.
+  macOS must absorb the shared-kind removal and reverify its retained request/
+  arrival journeys. Coordinated adapter compatibility, native acceptance,
+  remaining broader proof-plan coverage and C4 unification remain open.
+- Independent source/fixture review found the single-owner, cursor and
+  precedence invariants preserved. Its missing negative-oracle and stale
+  comment findings were corrected and rechecked. Final build, strict clippy,
+  format and permitted Rust suite all pass after those corrections. The KWin
+  rerun has the same counts and failure-name set as the classified run.
+
+## KDE adoption guard audit (2026-11-12)
+
+- Adoption is blocked before runtime changes: the adapter's focused-float/sticky
+  admission guard has no source-equivalent core gate. In
+  `kwin/src/world-apply.ts:2669-2682`, admission over a different observed
+  floating/sticky foreground is spent without a setter. Core's
+  `take_admission_focus` (`world_model.rs:1359-1536`) does not test that
+  foreground shape, and the pre-publication `validate_pending_focus`
+  (`world_close_focus.rs:567-688`) does not add the missing gate. Its focused-game
+  check is fullscreen-only (`world_cursor.rs:23-33`). The rule is already
+  specified in `docs/decisions/focus.md`; deleting the adapter guard now would
+  remove behavior rather than merely remove duplicated policy.
+- The adapter's target-sticky and ordinary-float-target-maximized arms
+  (`world-apply.ts:2699-2721`) also lack explicit counterparts in those core
+  admission/retained methods. Upstream classification reachability and genuine
+  producer regressions remain unverified; no native outcome or observed failing
+  regression is claimed. Hover already has target floating/sticky/fullscreen
+  gates (`world_cursor.rs:64-68,96-102`), so ordinary admission-float eligibility
+  must not be mistaken for a missing blanket floating veto.
+- The sibling fullscreen/maximized admission fence already exists in core
+  (`world_model.rs:1506-1514`, `world_close_focus.rs:665-676`). Target fullscreen
+  is checked by retained eligibility (`world_close_focus.rs:625-634`). Adapter
+  duplication can be removed while preserving declared last-moment live safety,
+  once the missing-policy boundary is resolved. No adapter prefix authority,
+  precedence, supersession or hover-deduplication mechanism should replace it.
+- This audit changed documentation only. Decoder/consumer adoption, four-cause
+  skipped-publication proofs, active KDE/stage5 recording and failure-by-failure
+  verification have not started. Earlier suite counts above remain earlier
+  evidence, not a verification run of this audit. Native testing remains pending.
+
+### Core guard conformance repair (2026-11-12)
+
+- The audit blocker above is resolved in core under the existing
+  `docs/decisions/focus.md` rules, not a new product choice. Genuine admission
+  producers first demonstrated all three gaps: different floating/sticky
+  foreground, sticky target and maximized ordinary-float target. Four new
+  discriminators failed before repair (core library 2,141 passed, four failed).
+  All three shapes are reachable; no guard was discarded as unreachable.
+- Admission now withholds and spends those births in its existing producer;
+  the single retained validator applies the corresponding automatic eligibility
+  checks. Hover's producer also withholds over a different floating/sticky
+  foreground while advancing its existing hover memory, preventing a static
+  pointer from stealing focus after the veto clears. Explicit focus/send-follow
+  keep their exemption. Positive-close float/sticky fallback remains unreachable
+  through the existing tiled fallback predicate, pinned by producer tests; no
+  redundant close producer gate was added.
+- Thirteen new tests cover origination, retained revalidation, clearing vetoes
+  without rearming, hover, close fallback, explicit exemptions and the maximized
+  tiled control. The old accepted-admission workspace-memory test now observes
+  tiled foreground before admission, preserving its original sticky-memory
+  overwrite/return assertions without assuming forbidden activation over an
+  active sticky. A negative control removing the two hover gates fails exactly
+  the two new hover regressions; the gates were restored afterward.
+- Latest worker-run permitted suite completes: 3,330 passed, zero failed across
+  66 targets, with only the unsafe-posture guardrail filtered. The runner
+  summaries were inspected and aggregated independently. Workspace format check
+  is reported passing. Final build/clippy and independent implementation review
+  remain required after KDE integration. Minimal discriminator rows are in the
+  reference matrix; reference/native outcomes remain TBD.
+- KDE runtime migration is in progress, not accepted. Its first full post-reader/
+  consumer migration run reports 1,229 passed and 45 failed out of 1,274 tests;
+  typecheck passes. Remaining failures need individual attribution, active
+  recording and consumer integration checks. Four-cause latest-only proof and
+  final verification remain pending.
+
+### KDE integration state (2026-11-12)
+
+- The strict KDE reader now requires nullable `focusRequest` with all four
+  causes, explicit command correlation and closed frozen-dependency validation;
+  `effects` must be empty and `closeFocus` rejects. The bounded existing retained
+  consumer/accounting is generalized, not layered: removed the effects focus
+  loop, spent-effect set, close-only path and `af-` policy blocks. Mechanical
+  native homing translates logical scopes through accepted workspace bindings,
+  never native/logical string equality. Frozen members alone supply arrival
+  reads; missing/unreadable readiness defers before spending. Explicit focus
+  keeps its automatic-focus exemptions.
+- Four genuine broker-produced journeys skip the issuing and three unchanged
+  publications, deliver only the latest to a fresh production consumer, and
+  assert one native setter plus inert redelivery. The same consumer's actual
+  feedback and mock-backend target observation pass through production capture/
+  encoding back to core and settle the request. Explicit selection carries its
+  frozen dependencies. Hover uses a native hit-test fact captured and encoded
+  as `cursorHit`, not a patched request or id-prefix inference.
+- Genuine recorders regenerated all 92 stage5 full/s2 artifacts (54/38), with
+  only the permitted exact generation-token normalization, and the KDE active
+  Observe reply through the byte-test generator. Subsequent no-update checks
+  pass: KDE bytes six tests, stage5 34 tests. Complete frozen-family comparisons
+  against `7a6d6e12` remain equal: world-wire v4 547 files, stage5 32,
+  stage5-v4 52 and KDE v4 20. The post-recording permitted Rust suite completes
+  with 3,330 passed, zero failed across 66 targets; its summaries were inspected
+  independently. These are offline results, not native evidence.
+- Final directly run KWin full suite: 1,283 tests, 1,283 passed, zero failed
+  or cancelled; typecheck passes. Migrated synthetic fixtures now carry
+  required bindings and retained requests; wire-only current readers use active
+  replies rather than historical bytes. Genuine FIFO, fixed-tile admission,
+  populated selection and split-edge oracles read the retained lane. Fixed-tile
+  focused-float withholding now asserts core publishes no request and native
+  focus stays unchanged, rather than expecting a deleted adapter guard log.
+- Selection integration repairs pass four targeted genuine journeys. The old
+  missing-witness oracle expected actuation while shown evidence was unreadable,
+  contradicting frozen readiness. Its replacement proves unspent/no-row
+  deferral, identical retained re-publication, later witness/single actuation
+  and complete/proven settlement. A separate genuine new-id/null sequence
+  retires unstarted requests without a setter or row. Already-target feedback
+  now carries its sampled arrival brackets: synchronous own echoes retain zero
+  setters and settle complete/proven rather than dropping independent arrival
+  evidence. No core policy changed in these repairs.
+- Sticky-restart failure before the empty-cursor repair below: the initial commandless capture
+  cannot record foreground `win-a` because it has neither session link nor
+  exception. A subsequent commandless recovery capture does adopt A, but the
+  foreground identity is unchanged, so observation recording does not run again.
+  That capture identifies A as a newcomer; the repaired sticky-target guard
+  withholds its automatic focus. The execution cursor stays empty and the later
+  correctly queued/drained implicit sticky-off refuses `focus-unknown`.
+- Historical source establishes the prior subject route, not an observed-focus
+  fallback: at `7a6d6e12`, the recovery capture's automatic-admission effect fed
+  `world_publish_v4.rs:119` / `world_publish.rs:336` /
+  `world_sends.rs:67-89`, recording `implicit_focus` before the next command.
+  At `632ee7d9`, `world_run_v4.rs:463-470` records that admission into both
+  cursors before commands; `world_close_focus.rs:93-96` resolves cursor first.
+  Neither route required admission retirement. General admission recording was
+  deliberate, but the restored sticky subject depended on admission that the
+  existing automatic sticky guard now forbids. No no-decision observed-foreground
+  fallback was found in the older source.
+- The per-capture distinction is reproduced by temporary current-core probes;
+  the historical route is a source deduction from read-only pinned files, not
+  an old-tree execution. Probes were removed and the current example rebuilt.
+  Initial no-home is transient: the recovery capture's session inventory contains
+  A. Its link-versus-exception form was not captured; no separate persistent
+  session-adoption defect or record requiring a tiled link is established.
+- Existing required outcome remains implicit sticky-off acting on restored
+  foreground A; keeping refusal or weakening the journey is not selected. The
+  user chose the read-only empty-cursor rule below, without reviving forbidden
+  automatic activation. Automatic activation guards do not prohibit factual
+  foreground recording; command-owned recording's no-retry rule is not a blanket
+  prohibition on observation ingestion.
+
+### Empty-cursor command subject (2026-11-12)
+
+- User decision 2026-11-12 is recorded in `docs/decisions/focus.md` and the world
+  contract. The existing `execution_subject` owner uses a known live, bound,
+  current-generation observed foreground only when the logical cursor is empty
+  and no pending retained request owns the subject. It is a read-only resolution:
+  no extra cursor/ledger, canonical-memory or session-eligibility write, or focus
+  request. The nonempty-cursor path is unchanged, including the separate macOS
+  suppressed-admission question.
+- Discriminators were added before the repair. The first permitted suite failed
+  exactly the restored-sticky and guard-withheld positive cases (2,154 core passes,
+  two failures). Six new tests now cover restored sticky-off targeting A;
+  sticky, focused-float withholding and maximized ordinary-float subjects with
+  actual command-target proofs; later host focus on a withheld newcomer without
+  rearming; unknown/unbound/closed foreground; wrong-generation ingress refusing
+  before execution with no subject/state adoption; live pending authority with an
+  empty cursor; and logical B winning over observed A. Wrong-generation transport
+  refusal is distinguished from a current-bound command's `focus-unknown`.
+- The genuine KDE restart journey passes unchanged, including sticky-off drain
+  authority, native setter, command settlement and fresh tiled admission. The
+  temporary initial no-home is not a separate persistent adoption defect.
+
+### Original downstream failure attribution
+
+- All 60 original downstream failures share the strict reader gate: the old
+  `CORE_REPLY_KEYS` required `closeFocus` and rejected the genuine core's
+  `focusRequest`, so replies never reached application. This covers migration
+  engine (3), migration producer (1), spare occupancy (2), clamp lifetime (1),
+  dynamic lifecycle (7), FIFO engine (8), generation rotation (1), fixed tile
+  (4), native homing (4), ordinary frame (1), disconnect (4), producer journeys
+  (16), unequal-output R4 (1) and split-edge (7): 60 total.
+- Confirmation combines pinned reader/control-flow inspection, running the actual
+  baseline and current `parseWorldReply` against the same genuine active-producer
+  reply (baseline refuses, current accepts), and matching every original test
+  name to a passing current result. Original per-test zero-application signatures
+  survive only in the earlier classification, not original runner traces; that
+  portion is indirect evidence, not a per-test old-tree replay. The initial
+  synthetic key-set probe alone was insufficient and was superseded by the
+  actual parser probe.
+- Follow-on oracle migration is separate from that original gate: four FIFO
+  tests, one fixed-tile test and one split-edge test read the retained lane;
+  rotation also uses updated shared reply/hit-test infrastructure. The other
+  53 test bodies are unchanged. Sticky restart subsequently exposed the missing
+  empty-cursor subject under core guard withholding; the decision above repairs
+  that later failure. Missing shown readiness and already-target arrival were
+  likewise later integration failures, not independent causes of the original
+  60. No unrelated non-focus regression remains established.
+
+### Final offline verification and review
+
+- Direct final commands all exit 0 after the last source edit:
+  - `cargo build -p tiler-core -p tiler-protocol -p omnitiler --all-targets`
+  - `cargo clippy -p tiler-core -p tiler-protocol -p omnitiler --all-targets -- -D warnings`
+  - `cargo fmt --all -- --check`
+  - `cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture`:
+    3,336 passed, zero failed across 66 targets; one unsafe-posture test filtered.
+  - KWin `npm run typecheck` and `npm test`: 1,283 passed, zero failed,
+    cancelled or skipped across 189 suites. Runner summaries were read directly.
+- Complete filesystem path sets and every blob equal `7a6d6e12`: frozen
+  world-wire v4 547 files, stage5 32, stage5-v4 52 and KDE v4 20. The cursor rule
+  did not alter active recordings: normal byte/stage5 checks remain green, so
+  no additional recording or hand edit was needed.
+- Independent complete core-guard/cursor/KDE source, test and fixture review has
+  no remaining code findings. Its initial frozen-byte concern compared two
+  commits instead of pin versus worktree; worktree verification withdrew it.
+  Protected-document hunks were inherited, not changes attributed to this work.
+- The first final format check found only new cursor-test formatting drift;
+  mechanical formatting repair and all final gates then passed. Offline KDE
+  adoption is verified. The broader change stays active for coordinated
+  macOS/Windows adoption, native KDE acceptance and other open proof-plan scope;
+  no macOS/Windows runtime acceptance or live KDE result is claimed.
 
 ## Source anchors
 
