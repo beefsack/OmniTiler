@@ -846,6 +846,58 @@ below records which mechanisms were subsequently removed.
   macOS/Windows adoption, native KDE acceptance and other open proof-plan scope;
   no macOS/Windows runtime acceptance or live KDE result is claimed.
 
+### Inventory-hold and pending-subject regressions (2026-11-13)
+
+- The reported hold/clear sequence passes on current core (`a876d659` baseline):
+  complete A-focused inventory -> incomplete inventory with a held source domain
+  and known B foreground -> complete inventory with unchanged B. The cursor
+  remains empty and no request is pending; the existing read-only
+  `execution_subject` fallback resolves B. Separate genuine producer regressions
+  prove focus-right selects C from B and move-right changes B's allocation while
+  retaining B as mover. No production change or additional subject mechanism was
+  needed. This is offline core evidence, not a rerun of the historical macOS
+  capture or native acceptance.
+
+| Genuine sequence | Current outcome and duration | What ends the pending state / refusal |
+| --- | --- | --- |
+| Explicit send of focused A to another workspace with follow; no focus feedback; next observation still A | Explicit request exists on the issuing publication only. Next target-equality observation satisfies it without feedback; a later observed S focus supplies the implicit subject | Target equality on the next observation. Missing feedback alone does not wedge this sequence; native send/arrival success is not established by this test |
+| Pre-close MRU A; close focused B; known live same-domain fallback C; unchanged C with no feedback, then accepted setter with unchanged C readback | Positive-close request keeps the identical tuple, including after accepted-but-unproven feedback. Stable C can retain it without a time bound, but the homed pending A restores the cursor: implicit focus and move act from A, not C, and do not refuse `focus-unknown` | Equality A, a newer observed non-target focus D, or target close retire in new branches. A newer implicit focus decision supersedes. Existing refusal and adopted-view-change tests cover those retirement rules |
+| Known live C while explicit target N remains live in a held domain | Repeated reports retain the request and restore cursor N through `preserve_live_pending_cursor`. Held move refuses `operation-refused`, not `focus-unknown`; after clear, implicit focus acts from N | Clearing the hold restores mutation eligibility; a newer focus decision supersedes. Retention itself has no timeout |
+| Known live C; explicit N issued in a held domain; subsequent reports carry N only in `held_windows`, not live facts | Three successive held reports retain the identical request with empty cursor and no execution subject. Implicit focus-directional and move-directional both refuse `focus-unknown`, despite live bound C. This can continue for as long as N stays held-only and C stays at the issuing baseline; no report-count or time bound retires it | Returning live N restores a subject; in this newcomer sequence automatic admission supersedes the explicit row with a fresh N request. Existing equality, newer observed focus, target loss, refusal, view drift and newer-focus-decision rules can also end pending authority. Merely repeating C or refusing a non-focus command does not |
+
+- The last sequence is an unbounded, state-conditional refusal, not proof of a
+  persistent post-clear failure. `world_run_v4.rs` clears a cursor whose target
+  lacks staged homing; `preserve_live_pending_cursor` cannot restore that target.
+  `execution_subject` deliberately refuses the observed fallback while any
+  request remains pending. `validate_pending_focus` accepts retained homing and
+  exempts explicit requests from automatic hold/readability cancellation. These
+  are the existing single-owner and pending-intent rules; no change was selected.
+- Decision discriminator and unsupported reference/native outcomes are in
+  [the reference matrix](../spec/reference-outcomes.md#inventory-hold-and-pending-execution-subject).
+  Alternatives, with no selected outcome:
+  - Keep pending ownership/refusal while the target is held-only: preserves the
+    requested target and no-retry rule, but stable known foreground does not
+    unblock implicit commands until another settlement/recovery fact arrives.
+  - Resolve an empty cursor from the pending target: preserves logical intent,
+    but an absent/held target still cannot pass existing per-command safety
+    fences; this alone need not make the command actionable.
+  - Use observed foreground while a request is inert: permits a different
+    subject without another focus call, but overrides pending target ownership;
+    lost feedback cannot establish whether an adapter has already spent the id.
+    Existing home/readability/hold/exclusion fences would still apply.
+  - Retire inert intent on a later complete observation with a stable different
+    foreground: releases pending authority, but treats an unchanged issuing
+    baseline as cancellation and abandons delayed explicit intent. It requires
+    a new settlement rule and must distinguish held/incomplete observations.
+- Seven new in-crate tests use genuine report/command producers, never assigned
+  pending requests or cursors. Direct final offline gates pass: three-package
+  all-target build, strict clippy, workspace format check and the permitted Rust
+  suite (3,354 passed, zero failed, one unsafe-posture test filtered). KWin
+  `npm test` passes 1,296 tests with zero failures/cancellations/skips;
+  `npm run typecheck` passes. Complete path sets and blobs equal `7a6d6e12`
+  for frozen world-wire v4 (547), stage5 (32), and stage5-v4 (52). No fixture
+  recordings changed. No macOS/Windows code or live desktop tests changed or ran.
+
 ## Source anchors
 
 - E1: `docs/principles.md:135-171`.

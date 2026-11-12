@@ -11,9 +11,9 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    FocusFeedback, FocusRequestCause, PresentationIngressV4, PresentationRowV4, ScreenReport,
-    VisibilityReason, VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand,
-    WorldReportV4,
+    BatchSettlement, CommandResult, FocusFeedback, FocusRequestCause, PresentationIngressV4,
+    PresentationRowV4, ScreenReport, VisibilityReason, VisibilitySetter, WORLD_CONTRACT_VERSION_V4,
+    WindowFact, WorldCommand, WorldReportV4,
 };
 use crate::world_run_v4::V4RunOutcome;
 
@@ -1690,4 +1690,220 @@ fn ineligible_same_domain_sticky_fallback_mints_no_request() {
         ),
     );
     assert_eq!(closed.focus_request, None);
+}
+
+fn run_batched(
+    engine: &mut WorldEngine,
+    report: &WorldReportV4,
+    queued: &[(u64, WorldCommand)],
+) -> (crate::world_report::WorldReplyV4, Vec<BatchSettlement>) {
+    match engine.handle_report(report, queued) {
+        (V4RunOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("expected accepted batch, got {other:?}"),
+    }
+}
+
+fn four_windows() -> Vec<WindowFact> {
+    vec![
+        fact("win-a", "out-a", 0),
+        fact("win-b", "out-a", 100),
+        fact("win-c", "out-a", 200),
+        fact("win-d", "out-a", 300),
+    ]
+}
+
+fn implicit_focus_dir(direction: &str) -> WorldCommand {
+    WorldCommand::Implicit(Box::new(WorldCommand::FocusDirectional {
+        window: WindowId(String::new()),
+        direction: direction.to_owned(),
+    }))
+}
+
+fn implicit_move_dir(direction: &str) -> WorldCommand {
+    WorldCommand::Implicit(Box::new(WorldCommand::MoveDirectional {
+        window: WindowId(String::new()),
+        direction: direction.to_owned(),
+        same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
+    }))
+}
+
+fn mint_close_a(engine: &mut WorldEngine) -> crate::world_report::FocusRequest {
+    let windows = four_windows();
+    focus_sequence(engine, 1, &windows, &["win-a", "win-b"]);
+    // Survivors in C/A/D order with out-b adjacent right; the observed
+    // leftward probe from A reaches D.
+    let survivors = vec![
+        fact("win-c", "out-a", 0),
+        fact("win-a", "out-a", 100),
+        fact("win-d", "out-a", 200),
+    ];
+    let closed = accepted(
+        engine,
+        &report(3, survivors, vec!["win-b"], "win-c", true, None, None),
+    );
+    closed.focus_request.clone().expect("close retains A")
+}
+
+/// Positive close with a live known non-target fallback: pre-close MRU A,
+/// closing focus B, host fallback C. The freeze keeps A over the live C
+/// baseline; stable C (silent, then accepted-unchanged feedback) retains
+/// the identical row; a directional focus probe then acts from the
+/// preserved cursor A and supersedes to D, while a move probe on a fresh
+/// engine keeps the subject on A.
+#[test]
+fn close_live_non_target_baseline_freezes_a_and_probes_act_from_a() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let issued = mint_close_a(&mut engine);
+    assert_eq!(issued.target.0, "win-a");
+    assert_eq!(issued.cause, FocusRequestCause::PositiveClose);
+    assert_eq!(issued.id, "focus-3");
+    assert_eq!(
+        engine
+            .pending_focus
+            .as_ref()
+            .expect("pending")
+            .baseline_focused,
+        "win-c",
+        "freeze anchors on the live host fallback C"
+    );
+    assert_eq!(
+        engine.execution_subject(),
+        Some(WindowId("win-a".to_owned())),
+        "preserved cursor owns the subject over live C"
+    );
+    let survivors = vec![
+        fact("win-c", "out-a", 0),
+        fact("win-a", "out-a", 100),
+        fact("win-d", "out-a", 200),
+    ];
+    let kept = accepted(
+        &mut engine,
+        &report(4, survivors.clone(), vec![], "win-c", true, None, None),
+    );
+    assert_eq!(kept.focus_request, Some(issued.clone()));
+    let inert = FocusFeedback {
+        id: issued.id.clone(),
+        target: WindowId("win-a".to_owned()),
+        revision: issued.issued_revision,
+        setter: VisibilitySetter::Accepted,
+        reason: VisibilityReason::Empty,
+        pre: Some(WindowId("win-c".to_owned())),
+        post: Some(WindowId("win-c".to_owned())),
+        foreground_proven: false,
+        arrival: Vec::new(),
+        attempt_ms: 7,
+    };
+    let mut with_inert = report(5, survivors.clone(), vec![], "win-c", true, None, None);
+    with_inert.focus_feedback = vec![inert];
+    let kept2 = accepted(&mut engine, &with_inert);
+    assert_eq!(
+        kept2.focus_request,
+        Some(issued.clone()),
+        "accepted-unchanged over live C is inert"
+    );
+    let before: Vec<_> = kept2
+        .windows
+        .iter()
+        .map(|row| (row.lifetime.0.clone(), row.allocation))
+        .collect();
+    // Focus probe first on the pristine layout: the observed leftward
+    // probe from A reaches D.
+    let (after_focus, focus_settlements) = run_batched(
+        &mut engine,
+        &report(6, survivors.clone(), vec![], "win-c", true, None, None),
+        &[(9, implicit_focus_dir("left"))],
+    );
+    assert_eq!(focus_settlements.len(), 1);
+    assert!(
+        !matches!(
+            focus_settlements[0].result,
+            Some(CommandResult::Rejected { .. })
+        ),
+        "focus probe must not reject; got {:?}",
+        focus_settlements[0].result
+    );
+    let next = after_focus.focus_request.clone().expect("new decision");
+    assert_eq!(next.target.0, "win-d", "left of A among C/A/D is D");
+    assert_eq!(next.cause, FocusRequestCause::ExplicitCommand);
+    assert_eq!(next.cmd_seq, Some(9));
+    assert_eq!(next.id, "focus-6");
+    // Move probe on a fresh engine so the focus supersession above cannot
+    // disturb the layout: a leftward move from A changes the tiling and
+    // keeps the subject on the mover A.
+    let mut moved_engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let moved_issued = mint_close_a(&mut moved_engine);
+    assert_eq!(moved_issued.target.0, "win-a");
+    let (after_move, move_settlements) = run_batched(
+        &mut moved_engine,
+        &report(4, survivors.clone(), vec![], "win-c", true, None, None),
+        &[(9, implicit_move_dir("left"))],
+    );
+    assert_eq!(move_settlements.len(), 1);
+    assert!(
+        move_settlements[0].result.is_none(),
+        "tiled move success carries no result; got {:?}",
+        move_settlements[0].result
+    );
+    let after: Vec<_> = after_move
+        .windows
+        .iter()
+        .map(|row| (row.lifetime.0.clone(), row.allocation))
+        .collect();
+    assert_ne!(before, after, "move must change the tiling allocation");
+    assert_eq!(
+        after_move
+            .focus_request
+            .as_ref()
+            .map(|row| row.target.0.clone()),
+        Some("win-a".to_owned()),
+        "move keeps the subject on A; got {:?}",
+        after_move.focus_request
+    );
+}
+
+/// Close retirement branches: target equality, changed user focus, and
+/// target loss. Refusal and view-drift retirement reuse existing
+/// coverage (`correlated_refusal_retires_pending_request`,
+/// `adopted_view_change_supersedes_pending_request`).
+#[test]
+fn close_retirement_equality_changed_focus_target_loss() {
+    let mut equality = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    mint_close_a(&mut equality);
+    let survivors = vec![
+        fact("win-c", "out-a", 0),
+        fact("win-a", "out-a", 100),
+        fact("win-d", "out-a", 200),
+    ];
+    let satisfied = accepted(
+        &mut equality,
+        &report(4, survivors.clone(), vec![], "win-a", true, None, None),
+    );
+    assert_eq!(satisfied.focus_request, None);
+    let mut changed = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    mint_close_a(&mut changed);
+    let superseded = accepted(
+        &mut changed,
+        &report(4, survivors.clone(), vec![], "win-d", true, None, None),
+    );
+    assert_eq!(superseded.focus_request, None);
+    assert_eq!(
+        changed.execution_subject(),
+        Some(WindowId("win-d".to_owned())),
+        "changed user focus owns the subject after retirement"
+    );
+    let mut lost = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    mint_close_a(&mut lost);
+    let retired = accepted(
+        &mut lost,
+        &report(
+            4,
+            vec![fact("win-c", "out-a", 0), fact("win-d", "out-a", 200)],
+            vec!["win-a"],
+            "win-c",
+            true,
+            None,
+            None,
+        ),
+    );
+    assert_eq!(retired.focus_request, None);
 }

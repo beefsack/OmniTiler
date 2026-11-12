@@ -14,9 +14,9 @@ use crate::ids::{CorrelationId, OwnerId};
 use crate::world_engine::{EventIssue, KIND_GENERATION, WorldEngine};
 use crate::world_report::{
     BatchSettlement, CommandRejectKind, CommandResult, FocusFeedback, FocusRequestCause,
-    HeldWindowRow, PresentationIngressV4, PresentationRowV4, RowDiagnosticKind, StateProperty,
-    VisibilityReason, VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand,
-    WorldReplyV4, WorldReportV4,
+    HeldWindowRow, PresentationIngressV4, PresentationRowV4, RowDiagnosticKind, ScopeAuthority,
+    StateProperty, VisibilityReason, VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowFact,
+    WorldCommand, WorldReplyV4, WorldReportV4,
 };
 use crate::world_run_v4::V4RunOutcome;
 use crate::world_v4_support_tests::{fact, screen};
@@ -820,4 +820,544 @@ fn logical_cursor_wins_over_divergent_observed() {
     let next = moved.focus_request.clone().expect("new decision retained");
     assert_eq!(next.target.0, "win-a");
     assert_ne!(next.id, pending.id, "cursor path supersedes with a new id");
+}
+
+fn gap_windows() -> Vec<WindowFact> {
+    vec![
+        fact("win-a", "out-a", 0),
+        fact("win-b", "out-a", 100),
+        fact("win-c", "out-a", 200),
+    ]
+}
+
+fn implicit_move_dir(direction: &str) -> WorldCommand {
+    implicit(WorldCommand::MoveDirectional {
+        window: WindowId(String::new()),
+        direction: direction.to_owned(),
+        same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
+    })
+}
+
+fn scope_hold_any(reply: &WorldReplyV4) -> bool {
+    reply
+        .scopes
+        .iter()
+        .any(|status| matches!(status.authority, ScopeAuthority::Hold(_)))
+}
+
+fn gap_prefix(engine: &mut WorldEngine) -> WorldReplyV4 {
+    engine
+        .handle_report_v4_for_test(&observe(1, gap_windows(), "win-a"))
+        .expect("admission observes");
+    let (_, _) = run_batched(engine, &observe(2, gap_windows(), "win-a"), &[]);
+    let mut gapped = observe(
+        3,
+        vec![fact("win-b", "out-a", 100), fact("win-c", "out-a", 200)],
+        "win-b",
+    );
+    gapped.screens[0].complete = false;
+    gapped.inventory_complete = false;
+    gapped.held_windows = vec![HeldWindowRow {
+        window: WindowId("win-a".to_owned()),
+        ordinal: 0,
+        output: None,
+        fields: Vec::new(),
+        diagnostic: None,
+        kind: RowDiagnosticKind::InvalidFact,
+    }];
+    let (reply, _) = run_batched(engine, &gapped, &[]);
+    assert!(
+        scope_hold_any(&reply),
+        "gap report holds the source domain; got {:?}",
+        reply.scopes
+    );
+    assert!(
+        reply.focus_request.is_none(),
+        "gap mints no request; got {:?}",
+        reply.focus_request
+    );
+    let (recovered, _) = run_batched(engine, &observe(4, gap_windows(), "win-b"), &[]);
+    assert!(
+        !scope_hold_any(&recovered),
+        "recovery clears the hold; got {:?}",
+        recovered.scopes
+    );
+    assert!(
+        recovered.focus_request.is_none(),
+        "recovery mints no request; got {:?}",
+        recovered.focus_request
+    );
+    assert_eq!(
+        engine.logical_focus_cursor, None,
+        "no focus decision ever ran, so the cursor slot stays empty"
+    );
+    assert_eq!(
+        engine.execution_subject(),
+        Some(WindowId("win-b".to_owned())),
+        "recovery subject is observed B"
+    );
+    recovered
+}
+
+/// Gap then focus: incomplete inventory plus a held source domain on a
+/// genuine A -> B native change, then complete unchanged B. The observed
+/// rightward probe from B reaches C.
+#[test]
+fn gap_held_incomplete_then_focus_acts_on_recovered_foreground() {
+    let mut engine = engine();
+    gap_prefix(&mut engine);
+    let (moved, settlements) = run_batched(
+        &mut engine,
+        &observe(5, gap_windows(), "win-b"),
+        &[(7, implicit_focus_dir("right"))],
+    );
+    assert_eq!(settlements.len(), 1);
+    assert_not_rejected(&settlements[0].result, "gap focus probe");
+    let next = moved.focus_request.clone().expect("new decision retained");
+    assert_eq!(next.target.0, "win-c", "observed rightward probe from B");
+    assert_eq!(next.cause, FocusRequestCause::ExplicitCommand);
+    assert_eq!(next.cmd_seq, Some(7));
+    assert_eq!(next.id, "focus-5");
+}
+
+/// Gap then move: same prefix on a fresh engine. The observed rightward
+/// windowed move from B changes the tiling and keeps focus on mover B.
+#[test]
+fn gap_held_incomplete_then_move_acts_on_recovered_foreground() {
+    let mut engine = engine();
+    let recovered = gap_prefix(&mut engine);
+    let before: Vec<_> = recovered
+        .windows
+        .iter()
+        .map(|row| (row.lifetime.0.clone(), row.allocation))
+        .collect();
+    let (reply, settlements) = run_batched(
+        &mut engine,
+        &observe(5, gap_windows(), "win-b"),
+        &[(7, implicit_move_dir("right"))],
+    );
+    assert_eq!(settlements.len(), 1);
+    assert!(
+        settlements[0].result.is_none(),
+        "tiled move success carries no result; got {:?}",
+        settlements[0].result
+    );
+    assert!(
+        reply.focus_request.as_ref().is_some_and(|row| {
+            row.target.0 == "win-b"
+                && row.cause == FocusRequestCause::ExplicitCommand
+                && row.cmd_seq == Some(7)
+                && row.id == "focus-5"
+        }),
+        "move keeps focus on mover B; got {:?}",
+        reply.focus_request
+    );
+    let after: Vec<_> = reply
+        .windows
+        .iter()
+        .map(|row| (row.lifetime.0.clone(), row.allocation))
+        .collect();
+    assert_ne!(before, after, "move must change the tiling allocation");
+    let moved_b = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-b")
+        .expect("win-b row");
+    assert!(
+        before
+            .iter()
+            .any(|(win, alloc)| win == "win-b" && *alloc != moved_b.allocation),
+        "B allocation must change; before {before:?} after {after:?}"
+    );
+}
+
+/// Send-with-follow settles by target equality on the next unchanged
+/// observation (zero-report retention): the follow row lives for the
+/// issuing publication only. A later genuine user focus change then runs
+/// on the new baseline with no row involved.
+#[test]
+fn send_follow_satisfies_at_next_observation_and_changed_focus_runs_new_baseline() {
+    let mut engine = engine();
+    let facts = vec![
+        fact("win-a", "out-a", 0),
+        fact("win-s", "out-a", 100),
+        fact("win-b", "out-a", 200),
+    ];
+    let first = engine
+        .handle_report_v4_for_test(&observe(1, facts.clone(), "win-a"))
+        .expect("admission observes");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    assert!(ring.len() >= 2, "same-output send needs a ring: {ring:?}");
+    let view_a = first
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-a")
+        .and_then(|row| row.logical_view.clone())
+        .expect("logical view");
+    let other = ring
+        .iter()
+        .find(|id| *id != &view_a)
+        .expect("second workspace");
+    let send = WorldCommand::Send {
+        window: WindowId("win-a".to_owned()),
+        target_output: crate::directional::OutputId("out-a".to_owned()),
+        target_workspace: other.clone(),
+        follow: true,
+    };
+    let (sent, _) = run_batched(
+        &mut engine,
+        &report(2, facts.clone(), "win-a", Some(11), Some(send)),
+        &[],
+    );
+    let pending = sent.focus_request.clone().expect("send-follow retains");
+    assert_eq!(pending.target.0, "win-a");
+    assert_eq!(pending.cause, FocusRequestCause::ExplicitCommand);
+    assert_eq!(pending.cmd_seq, Some(11));
+    assert_eq!(pending.id, "focus-2");
+    assert_eq!(pending.issued_revision, 2);
+    assert_eq!(pending.after_shown, None);
+    let satisfied = run_batched(&mut engine, &observe(3, facts.clone(), "win-a"), &[]).0;
+    assert_eq!(
+        satisfied.focus_request, None,
+        "follow satisfies on next unchanged observation; got {:?}",
+        satisfied.focus_request
+    );
+    // Genuine user focus change to win-s, then the observed implicit
+    // right from S reaches B.
+    let (moved, settlements) = run_batched(
+        &mut engine,
+        &observe(4, facts.clone(), "win-s"),
+        &[(12, implicit_focus_dir("right"))],
+    );
+    assert_eq!(settlements.len(), 1);
+    assert_not_rejected(&settlements[0].result, "implicit after change");
+    let next = moved.focus_request.clone().expect("new decision retained");
+    assert_eq!(next.target.0, "win-b", "observed rightward probe from S");
+}
+
+/// Held domain with a live bound baseline: B/C live, native moves B -> C
+/// while the source screen is held, then an explicit focus on newcomer N
+/// in the held domain mints a live row. Repeated held reports keep N
+/// with a restored cursor; a held move refuses with the row retained;
+/// clearing the hold lets a focus probe supersede to C and a windowed
+/// probe act on C.
+#[test]
+fn held_live_baseline_newcomer_restores_cursor_and_probes_act_from_it() {
+    let mut engine = engine();
+    engine
+        .handle_report_v4_for_test(&observe(
+            1,
+            vec![fact("win-b", "out-a", 0), fact("win-c", "out-a", 100)],
+            "win-b",
+        ))
+        .expect("admission observes");
+    assert_eq!(
+        engine.execution_subject(),
+        Some(WindowId("win-b".to_owned()))
+    );
+    let live = vec![
+        fact("win-n", "out-a", 0),
+        fact("win-b", "out-a", 100),
+        fact("win-c", "out-a", 200),
+    ];
+    // Genuine native change B -> C with the source screen held.
+    let mut held_change = observe(
+        2,
+        vec![fact("win-b", "out-a", 100), fact("win-c", "out-a", 200)],
+        "win-c",
+    );
+    held_change.screens[0].complete = false;
+    let (changed, _) = run_batched(&mut engine, &held_change, &[]);
+    assert!(
+        scope_hold_any(&changed),
+        "native change under incomplete screen holds; got {:?}",
+        changed.scopes
+    );
+    assert_eq!(
+        engine.logical_focus_cursor, None,
+        "no focus decision ran, so the cursor slot stays empty"
+    );
+    assert_eq!(
+        engine.execution_subject(),
+        Some(WindowId("win-c".to_owned())),
+        "empty-cursor fallback observes live C under held change"
+    );
+    // Explicit focus on the live held-domain newcomer N mints a row.
+    let mut held_mint = report(3, live.clone(), "win-c", Some(1), Some(focus_cmd("win-n")));
+    held_mint.screens[0].complete = false;
+    let (minted, _) = run_batched(&mut engine, &held_mint, &[]);
+    let pending = minted.focus_request.clone().expect("held explicit retains");
+    assert_eq!(pending.target.0, "win-n");
+    assert_eq!(pending.cause, FocusRequestCause::ExplicitCommand);
+    // The same held baseline with no command keeps N and restores the
+    // cursor to N even while held: the preserve slot has no hold gate.
+    let mut held_same = observe(4, live.clone(), "win-c");
+    held_same.screens[0].complete = false;
+    let (kept, _) = run_batched(&mut engine, &held_same, &[]);
+    assert_eq!(
+        kept.focus_request.clone().map(|row| (row.target, row.id)),
+        Some((WindowId("win-n".to_owned()), pending.id.clone())),
+        "held repeat keeps the identical row; got {:?}",
+        kept.focus_request
+    );
+    assert_eq!(
+        engine.execution_subject(),
+        Some(WindowId("win-n".to_owned())),
+        "live N restores the cursor even while held"
+    );
+    // Held move from N refuses (held source domain fences mutation) and
+    // the live row survives the refusal unchanged.
+    let mut held_move = observe(5, live.clone(), "win-c");
+    held_move.screens[0].complete = false;
+    let (after_move, move_settlements) =
+        run_batched(&mut engine, &held_move, &[(2, implicit_move_dir("right"))]);
+    assert_eq!(move_settlements.len(), 1);
+    assert!(
+        matches!(
+            move_settlements[0].result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused,
+            })
+        ),
+        "held move must refuse operation-refused; got {:?}",
+        move_settlements[0].result
+    );
+    assert_eq!(
+        after_move
+            .focus_request
+            .clone()
+            .map(|row| (row.target, row.id)),
+        Some((WindowId("win-n".to_owned()), pending.id.clone())),
+        "held refusal retains the identical row; got {:?}",
+        after_move.focus_request
+    );
+    // Clear the hold: the observed leftward focus from N reaches C and
+    // supersedes with a fresh id, then a windowed probe acts on C.
+    let (after_focus, focus_settlements) = run_batched(
+        &mut engine,
+        &observe(6, live.clone(), "win-c"),
+        &[(3, implicit_focus_dir("left"))],
+    );
+    assert_eq!(focus_settlements.len(), 1);
+    assert_not_rejected(&focus_settlements[0].result, "cleared focus probe");
+    let next = after_focus.focus_request.clone().expect("new decision");
+    assert_eq!(next.target.0, "win-c", "observed leftward probe from N");
+    assert_eq!(next.cause, FocusRequestCause::ExplicitCommand);
+    assert_ne!(next.id, pending.id, "focus probe supersedes with a new id");
+    let toggle = WorldCommand::Implicit(Box::new(WorldCommand::ToggleMaximize {
+        window: WindowId(String::new()),
+    }));
+    let (_, toggle_settlements) = run_batched(
+        &mut engine,
+        &observe(7, live.clone(), "win-c"),
+        &[(4, toggle)],
+    );
+    assert_eq!(toggle_settlements.len(), 1);
+    assert_maximize_on(
+        &toggle_settlements[0].result,
+        "win-c",
+        "cleared windowed probe",
+    );
+}
+
+/// Held target absent from live windows: explicit N mints while live,
+/// then N survives only as a held row while B/C stay live under a known
+/// C baseline. Unlike the live-N case above (where the preserve slot
+/// restores the cursor because staged homing holds N), here staged
+/// homing lacks N, so repeated held reports keep the identical row with
+/// an empty cursor and no subject; recovery with N live restores N.
+#[test]
+fn held_absent_target_retains_row_with_empty_cursor_until_live_recovery() {
+    let mut engine = engine();
+    engine
+        .handle_report_v4_for_test(&observe(
+            1,
+            vec![fact("win-b", "out-a", 0), fact("win-c", "out-a", 100)],
+            "win-b",
+        ))
+        .expect("admission observes");
+    let live = vec![
+        fact("win-n", "out-a", 0),
+        fact("win-b", "out-a", 100),
+        fact("win-c", "out-a", 200),
+    ];
+    let mut held_change = observe(
+        2,
+        vec![fact("win-b", "out-a", 100), fact("win-c", "out-a", 200)],
+        "win-c",
+    );
+    held_change.screens[0].complete = false;
+    let (changed, _) = run_batched(&mut engine, &held_change, &[]);
+    assert!(
+        scope_hold_any(&changed),
+        "native change under incomplete screen holds; got {:?}",
+        changed.scopes
+    );
+    // Explicit focus on newcomer N mints while N is still live.
+    let mut held_mint = report(3, live.clone(), "win-c", Some(1), Some(focus_cmd("win-n")));
+    held_mint.screens[0].complete = false;
+    let (minted, _) = run_batched(&mut engine, &held_mint, &[]);
+    let pending = minted.focus_request.clone().expect("held explicit retains");
+    assert_eq!(pending.target.0, "win-n");
+    let held_n = || HeldWindowRow {
+        window: WindowId("win-n".to_owned()),
+        ordinal: 0,
+        output: None,
+        fields: Vec::new(),
+        diagnostic: None,
+        kind: RowDiagnosticKind::InvalidFact,
+    };
+    let absent = |seq: u64| {
+        let mut report = observe(
+            4 + seq,
+            vec![fact("win-b", "out-a", 100), fact("win-c", "out-a", 200)],
+            "win-c",
+        );
+        report.screens[0].complete = false;
+        report.held_windows = vec![held_n()];
+        report
+    };
+    // Same held baseline with no command: the identical row survives,
+    // but with staged homing lacking N the preserve slot cannot restore,
+    // so the cursor stays empty and owns no subject.
+    let (kept, _) = run_batched(&mut engine, &absent(0), &[]);
+    assert_eq!(
+        kept.focus_request,
+        Some(pending.clone()),
+        "held repeat keeps the identical row; got {:?}",
+        kept.focus_request
+    );
+    assert_eq!(
+        engine.logical_focus_cursor, None,
+        "absent target cannot restore the cursor slot"
+    );
+    assert_eq!(
+        engine.execution_subject(),
+        None,
+        "live retained row with empty cursor owns no subject"
+    );
+    // Queued implicit focus under the same held baseline refuses with the
+    // row retained, the cursor still empty and no subject.
+    let (still, focus_settlements) =
+        run_batched(&mut engine, &absent(1), &[(2, implicit_focus_dir("left"))]);
+    assert_eq!(focus_settlements.len(), 1);
+    assert!(
+        matches!(
+            focus_settlements[0].result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::FocusUnknown,
+            })
+        ),
+        "held absent-target focus must refuse focus-unknown; got {:?}",
+        focus_settlements[0].result
+    );
+    assert_eq!(
+        still.focus_request,
+        Some(pending.clone()),
+        "focus refusal retains the identical row; got {:?}",
+        still.focus_request
+    );
+    assert_eq!(engine.logical_focus_cursor, None);
+    assert_eq!(engine.execution_subject(), None);
+    // Queued implicit move likewise refuses with the row retained.
+    let (again, move_settlements) =
+        run_batched(&mut engine, &absent(2), &[(3, implicit_move_dir("left"))]);
+    assert_eq!(move_settlements.len(), 1);
+    assert!(
+        matches!(
+            move_settlements[0].result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::FocusUnknown,
+            })
+        ),
+        "held absent-target move must refuse focus-unknown; got {:?}",
+        move_settlements[0].result
+    );
+    assert_eq!(
+        again.focus_request,
+        Some(pending.clone()),
+        "move refusal retains the identical row; got {:?}",
+        again.focus_request
+    );
+    assert_eq!(engine.logical_focus_cursor, None);
+    assert_eq!(engine.execution_subject(), None);
+    // Recovery with N live on the unchanged C baseline: the returning
+    // newcomer re-admits, superseding the explicit row with a fresh
+    // admission row for the same target, and the subject restores to N.
+    let (recovered, _) = run_batched(&mut engine, &observe(7, live.clone(), "win-c"), &[]);
+    let readmitted = recovered.focus_request.clone().expect("recovery retains N");
+    assert_eq!(readmitted.target.0, "win-n");
+    assert_eq!(readmitted.cause, FocusRequestCause::AutomaticAdmission);
+    assert_eq!(readmitted.id, "focus-7");
+    assert_eq!(
+        engine.execution_subject(),
+        Some(WindowId("win-n".to_owned())),
+        "live N restores the subject on recovery"
+    );
+    // The observed leftward probe from N reaches C and supersedes.
+    let (acted, act_settlements) = run_batched(
+        &mut engine,
+        &observe(8, live.clone(), "win-c"),
+        &[(4, implicit_focus_dir("left"))],
+    );
+    assert_eq!(act_settlements.len(), 1);
+    assert_not_rejected(&act_settlements[0].result, "recovery probe");
+    let next = acted.focus_request.clone().expect("new decision");
+    assert_eq!(next.target.0, "win-c", "observed leftward probe from N");
+    // Target equality retires the superseding row.
+    let retired = run_batched(&mut engine, &observe(9, live.clone(), "win-c"), &[]).0;
+    assert_eq!(
+        retired.focus_request, None,
+        "target equality retires; got {:?}",
+        retired.focus_request
+    );
+    // Re-mint N, then closing N retires via target loss.
+    let (reminted, _) = run_batched(
+        &mut engine,
+        &report(10, live.clone(), "win-c", Some(5), Some(focus_cmd("win-n"))),
+        &[],
+    );
+    let pending2 = reminted.focus_request.clone().expect("re-mint retains N");
+    assert_eq!(pending2.target.0, "win-n");
+    let mut close_n = report(
+        11,
+        vec![fact("win-b", "out-a", 100), fact("win-c", "out-a", 200)],
+        "win-c",
+        None,
+        None,
+    );
+    close_n.closed = vec![WindowId("win-n".to_owned())];
+    let closed = run_batched(&mut engine, &close_n, &[]).0;
+    assert_eq!(
+        closed.focus_request, None,
+        "closing the pending target retires; got {:?}",
+        closed.focus_request
+    );
+    // Re-mint N once more, then a genuine user focus change to live B
+    // retires via baseline change and B owns the subject.
+    let (reminted2, _) = run_batched(
+        &mut engine,
+        &report(12, live.clone(), "win-c", Some(6), Some(focus_cmd("win-n"))),
+        &[],
+    );
+    assert_eq!(
+        reminted2.focus_request.clone().expect("re-mint").target.0,
+        "win-n"
+    );
+    let changed_user = run_batched(&mut engine, &observe(13, live.clone(), "win-b"), &[]).0;
+    assert_eq!(
+        changed_user.focus_request, None,
+        "changed user focus retires; got {:?}",
+        changed_user.focus_request
+    );
+    assert_eq!(
+        engine.execution_subject(),
+        Some(WindowId("win-b".to_owned())),
+        "observed B owns the subject after retirement"
+    );
 }

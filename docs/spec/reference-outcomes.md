@@ -19,6 +19,13 @@ New reference-WM findings use latest stable release tags and inline source-versi
 labels under the [reference source policy](../decisions/reference-and-shortcuts.md#reference-outcome-authority).
 Existing citation keys retain historical pins until relied on again; KDE policy is unchanged.
 
+### Inventory hold and pending execution subject
+
+| Minimal action sequence | Current core evidence | Unsupported outcome / decision |
+| --- | --- | --- |
+| Complete inventory, A focused; incomplete inventory holds the domain while known foreground changes to B; complete inventory, unchanged B; implicit directional focus and, on a fresh repeat, directional move | Offline genuine core producers: no pending request, cursor empty, observed fallback resolves B; focus selects B's neighbor and move changes B's allocation. No additional focus call is required to recover the subject | Existing empty-subject decision applies. Reference-WM counterparts and native macOS recovery on current core remain TBD; [core evidence](../changes/retained-focus-requests.md#inventory-hold-and-pending-subject-regressions-2026-11-13) |
+| With known live C, issue explicit focus N while N's domain is held; then report N only as held, keep C unchanged, and repeat implicit directional focus/move; finally restore live N without changing C. Contrast a homed positive-close target with accepted-but-unchanged C feedback | Held-only N retains the identical request with empty cursor; both implicit commands refuse `focus-unknown` for as long as that state repeats. Live N recovery supplies a subject (newcomer admission supersedes in the tested sequence). Homed close target A instead supplies the cursor while its inert request survives | TBD: keep refusal, resolve the pending target subject, permit observed C while inert, or retire inert intent on a later complete stable-C observation. Compare subject identity, refusal/success under unchanged safety fences, request retention and eventual activation when N returns. No new pending/no-retry rule selected; reference/native outcomes TBD |
+
 ### Core platform switch discriminators
 
 - Evidence awaiting separate C6 choices, 2026-11-12; source inspection at

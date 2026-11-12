@@ -1070,6 +1070,17 @@ recipe's exact identities. Held reports queue zero frames and no refocus.
   sending a window to another workspace appeared to kill them permanently.
   The separate raw-log observations below do not establish that permanence
   or a successful native send.
+- Core response (2026-11-13): genuine current-core regressions pass the
+  complete A -> incomplete/held known B -> complete unchanged B sequence.
+  With no pending request, the existing empty-cursor observed-foreground
+  fallback resolves B; implicit focus and move both act from B. No production
+  fix was needed. A separate pending-target-held-only sequence can retain an
+  empty subject and refuse both commands indefinitely while that state repeats;
+  returning live target evidence recovers the subject. Inert positive-close
+  intent with a homed target does not block them, and focused send-follow with
+  missing feedback satisfies on the next target-equality observation. These
+  offline results do not diagnose the final native workspace phase or prove
+  native recovery. [Sequences, limits and undecided options](retained-focus-requests.md#inventory-hold-and-pending-subject-regressions-2026-11-13).
 
 ### Verification and remaining acceptance
 
