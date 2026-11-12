@@ -1027,14 +1027,22 @@ recipe's exact identities. Held reports queue zero frames and no refocus.
   post-clear refusals, including move-directional (4841/4888), through 6510.
   Thus neither continuing CG hold nor the separate focus outbox explains
   these command refusals. The adapter retains and reports the survivor.
-- Source-traced cause: native focus changes from the closing window to the
-  survivor while inventory is held. `tiler-core/src/world_run_v4.rs:364-385`
-  attempts canonical recording only on `prev != current`, then clears stale
-  execution slots when recording fails closed. `world_sends.rs:120-132,175-176`
-  refuses recording in held homes. Subsequent complete same-focus reports
-  skip recording; no pending focus request restores the slots. Implicit
-  execution then refuses at `world_commands.rs:68-74`, using the missing
-  cursor/slot from `world_close_focus.rs:93-97`.
+- Source-traced cause at the capture revision (`632ee7d9` plus adapter changes):
+  native focus changes from the closing window to the survivor while inventory
+  is held. Canonical recording runs only on `prev != current`, fails closed in
+  held homes and clears stale execution slots. Subsequent complete same-focus
+  reports skip recording; no pending focus request restores the slots. Missing
+  execution subject then refuses at `tiler-core/src/world_commands.rs:68-74`.
+  This is a historical trace, not a reproduction on the rebased core.
+- Rechecked source anchors after rebase onto `023bc7ec`: the changed-focus
+  record/clear is now `tiler-core/src/world_run_v4.rs:363-377`; held-home
+  recording fences are `world_sends.rs:109-122,163-164`; the missing-subject
+  refusal remains `world_commands.rs:68-74`. Upstream has consolidated to one
+  cursor and added an observed-live-bound-foreground fallback when no cursor
+  or pending request exists (`world_close_focus.rs:103-130`). That changes the
+  historical missing-slot mechanism. The core owner must check this exact
+  hold/clear sequence and pending-intent regression against that fallback
+  before choosing any further fix; resolution is not established here.
 - Minimal core reproduction to add: complete A-focused two-window report;
   incomplete inventory with known B focus; complete inventory with the same
   B focus; implicit directional focus and move. Expected: B resolves as the
@@ -1053,8 +1061,8 @@ recipe's exact identities. Held reports queue zero frames and no refocus.
   focus-directional or move-directional. On macOS the held interval can last
   about 1 s after a close while the destroyed window remains in the system
   window list. Expected execution subject: B. Actual: every later implicit
-  command refuses `focus-unknown` despite `foregroundKnown=true`, B bound and
-  a complete roster. The mechanism above is a source trace, not an isolated
+  command in the capture refuses `focus-unknown` despite `foregroundKnown=true`,
+  B bound and a complete roster. The mechanism above is a source trace, not an isolated
   core-test reproduction. Restore an absent subject from an eligible complete
   known foreground without overwriting a live pending focus intent; regress
   both unchanged-focus hold/clear and pending-intent cases.
@@ -1134,3 +1142,12 @@ recipe's exact identities. Held reports queue zero frames and no refocus.
 - Counts and key close/open/send/tail lines were directly checked; the
   initial broader log summary was separately reported. These observations
   remain unanalysed and do not resolve the final workspace failure.
+
+### Post-rebase sanity (2026-11-12)
+
+- Rebase onto `023bc7ec` completed without conflicts. Direct offline locked
+  macOS crate build: raw exit 0. Direct macOS library tests: raw exit 0,
+  1602 passed, 0 failed, 3 timing-only ignored. These gates use the rebased
+  source, not the earlier capture binary, and do not reproduce the core
+  hold/clear sequence or prove native acceptance. Integration gaps recorded
+  above remain; no integration rerun or new live test.
