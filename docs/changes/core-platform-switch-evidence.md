@@ -106,6 +106,24 @@
   Evidence review accepts the table with the qualifications above; native
   acceptance is not a blanket PASS.
 
+## Additional scoped follow-up (2026-11-13)
+
+- No fixed-float send or maximize directional leg was repeated. The
+  [capacity/native follow-up](c9-product-evidence.md#native-recovery-correction-and-scoped-follow-up-2026-11-13)
+  records fresh evaluated readiness, bounded minimum sanity, inconclusive settings
+  page inspection, and a new helper-accounting deviation. Its later teardown
+  does not upgrade those lifecycle receipts or the earlier native observations.
+- Pending-target option 2 is NOT RUN: staging an unavailable retained target and
+  a newer report of another bound focused member was not reliable as a light
+  direct leg. Manual acceptance: hold target N unavailable, retain its request,
+  observe known C focused in a newer report, issue an implicit non-focus command,
+  and verify C changes while N's exact request survives; contrast same-batch and
+  unknown-foreground refusals, then recover N. Physical shortcut delivery,
+  enabled hover and removed stored-key behavior remain untested.
+- The [native maximize restart reproduction](retained-intent-desire.md#scoped-native-maximize-restart-reproduction-2026-11-13)
+  is a startup-policy defect candidate, not evidence against the already observed
+  command-route directional-overlay preservation.
+
 ## Historical wiring (citations at the inspected revision)
 
 | Item | Evidence |

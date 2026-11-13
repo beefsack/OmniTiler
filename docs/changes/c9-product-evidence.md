@@ -1,6 +1,6 @@
 # C9 product evidence
 
-- Status: fixed-largest and fixed-float removals implemented and independently reviewed offline. Shared Rust, exporter and KDE TypeScript gates pass; isolated native build passes, with only the known pre-existing recovery-test failure (36/37 native tests pass). Native adoption and unrelated requirement choices remain open.
+- Status: fixed-largest and fixed-float removals implemented and independently reviewed offline. Shared Rust, exporter and KDE TypeScript gates pass; the native recovery fixture correction below closes the isolated native gate (37/37). Native adoption and unrelated requirement choices remain open.
 - Goal: remove both capacity settings and their storage/UI/wire propagation, preserving ordinary-anchor-first then largest-splittable fallback and fixed float on exhaustion. Keep the remaining product evidence for subsequent decisions.
 - Scope: shared policy, settings surfaces, protocol witnesses and offline regressions. Preserve ordinary anchoring, B6 minimum handling, next-decision timing and `noSpace` result provenance. Retire selectable capacity overflow and proven-unreachable accepted-overlap machinery. Missing decision "Why" entries are not backfilled.
 - Acceptance/evidence: ordinary anchor wins when splittable; otherwise largest area descending, child-order DFS then lifetime ID. Removed input reports UnknownField without losing valid siblings; removed stored keys are not adopted. Retired alternate policies and controls disappear. Historical fixture families remain unchanged; active witnesses come from their real producers. Add before/after regression evidence, run shared Rust and KDE checks, and review the complete settings/policy diff. Native outcomes not established by source remain TBD.
@@ -178,6 +178,52 @@
   strict projection/B6, invalid/unrepresentable/protected holds, removed-key
   handling, every overlap-state ingress and fixture semantic stability were
   checked. Native platform consumption remains unverified.
+
+## Native recovery correction and scoped follow-up (2026-11-13)
+
+- `347af034` made the stage5 recorder fulfill eager spare creation through its
+  live desktop inventory and `desktopsChanged`. The extra settled genesis capture
+  advances subsequent full-chain revisions by one (`internalReads` 12 to 13):
+  `stage5-v2/full/dispatch-cover.json` records 6 and `dispatch-cover2.json` records
+  9. The native recovery test still expected 5/8. Corrected only its three exact
+  fence assertions and explanatory comments; fixtures, stale-paint rejection,
+  foreign-instance rejection and malformed-input display-hide/fence retention
+  remain unchanged. This is a stale oracle, not evidence of a recovery defect.
+- Fresh isolated host-matched build via `scripts/nix-host-kwin-build.sh resolve`
+  then `build --source kwin/native-effect --build-dir <fresh-build>
+  --expected-identity <resolved-identity>` passes. In the resolved derivation's
+  development shell, configure with its `KWin_DIR` and `BUILD_TESTING=ON`, build,
+  then run `QT_QPA_PLATFORM=offscreen ctest --test-dir <fresh-test-build>
+  --output-on-failure`: 37/37 pass, versus 36/37 before the assertion correction.
+  No staged or mapped native library was replaced. No Rust or TypeScript suite
+  was required or rerun for this native-test-only correction.
+
+| Scoped Wayland check | Observed evidence and limit |
+| --- | --- |
+| Controller evaluation | Both initial start and restart have current-owner ready/discovered plus accepted dispatch/applied pairs. Clean helper-lifecycle acceptance is incomplete as described below; readiness alone does not establish it. |
+| Complete no-space admission | NOT RUN. Exhausting every splittable leaf with ordinary work-area/gap inputs was not practical as a lightweight direct leg. No `noSpace`, opening-frame preservation or exhaustion-focus result is claimed. |
+| Shrink repair | NOT RUN. No fixture strut/layer-shell or established dev-only work-area/gap input was available without changing display configuration or stored settings. |
+| Minimum-only sanity | Observed two declared minima whose combined heights exceed their column, yet both remain tiled with proportional, disjoint native allocations matching requested frames. This is bounded minimum-versus-capacity sanity, not proof of native clamp settlement or the complete B6/M18 journey. Presentation captures were empty and helper evidence is qualified. |
+| Rebuilt settings page | NOT RUN / inconclusive. An out-of-process offscreen attempt retained private HOME/XDG/KDEHOME, private runtime and D-Bus isolation plus the isolated build's plugin path before launch. Module discovery/page-load and absent controls were not established. No Apply was performed. Passing native KCM tests are not live page adoption. |
+
+- Evidence filenames: `leg1-readiness.txt`, `leg6-readiness.txt`,
+  `leg4-spawn.jsonl`, `leg4-native-3win.json`, `just-dev-stdout.log`,
+  `leg5-isolation-receipt.txt` and `leg5-kcmshell*.log` in the externally retained
+  scoped follow-up bundle. The [restart finding](retained-intent-desire.md#scoped-native-maximize-restart-reproduction-2026-11-13)
+  is separate from capacity admission.
+- Lifecycle evidence is not compliant: the first helper's post-unload named
+  state parsed empty rather than false, but testing continued instead of stopping
+  on the accounting mismatch. Later receipts record false and all five record
+  returned ID 2, not distinct increasing IDs. Numeric-path pre-load collision
+  checks and successful raw load/introspection replies were not retained; generic
+  introspection errors could be mistaken for object absence. Later cleanup does
+  not repair that historical gap. Do not treat these native observations as an
+  unqualified acceptance pass.
+- Trace copies exist for both incarnations before teardown, with saved restart
+  and final `dev-off` output. Subsequent direct read-only checks establish dev
+  DOWN, all five named helpers unloaded, their recorded script object absent,
+  and no fixture, planner, tray, log-follower or input-helper processes. No
+  settings, physical-input or pending-target acceptance follows from that cleanup.
 
 ## Part 1: admission settings (historical two-item decision evidence)
 

@@ -139,6 +139,46 @@
   fixture or tiler processes. The [shared follow-up](core-platform-switch-evidence.md#kde-follow-up-2026-11-13)
   records helper qualifications and remaining physical-input checks.
 
+## Scoped native maximize restart reproduction (2026-11-13)
+
+- Reproduced the prior maximize-loss observation on two fixture windows, not a
+  complete restart acceptance pass. Before restart both exact sentinel/PID/UUID
+  joins have native `maximizeMode:3`, `keepAbove:false` and work-area frames;
+  fixture mode readbacks agree. After a fresh controller/planner start with
+  evaluated readiness, the same UUIDs have `maximizeMode:0`, unchanged false
+  keep-above and side-by-side tiled frames. Fixture geometry agrees; its compact
+  post-restart snapshot omits unknown mode, which alone is not proof of clear.
+- `leg6-store-before.txt` and `leg6-store-after.txt` retain identical lengths and
+  SHA-256 values for intent and native-preimage storage. This establishes storage
+  equality for this sequence, not float-intent restoration: neither survivor was
+  explicitly floated. Native before/after files, fixture snapshots and separate
+  readiness/journal captures are retained as `leg6-*` evidence. Full correlated
+  Describe replies were unavailable (`not-kwin-owner`); there is no complete
+  post-restart presentation pair, so pending-operation settlement is unproved.
+- Likely owner: core startup admission, `world_born.rs:464-502` under
+  `settings_state.rs:74`'s `TileOnLaunch` default. A fresh generation lacks the
+  prior admitted/born sets, so the surviving maximized windows can enter the
+  first-seen born-clear lane. Restart logs show two initially held rows, but do
+  not directly capture the exact unmaximize setter; this is source attribution,
+  not a fully correlated native-write proof.
+- Policy verdict: defect candidate / contract ambiguity, not established expected
+  behavior. [Born-maximized admission](../decisions/window-state.md#born-maximized-policy-and-tile-overlays)
+  clears first-seen maximized admissions by default, but does not explicitly
+  distinguish a new launch from a surviving native overlay after tiler restart.
+  The [overlay decision](../decisions/window-state.md#fullscreen-and-maximize-overlays)
+  explicitly drops only composed maximize on orderly restart; the
+  [intent contract](../decisions/contract.md#intent-ownership-and-persistence)
+  rejects losing intent on restart. The unchanged `v/float/stickyPrior` storage
+  shape alone cannot decide native-overlay survival. A minimal native restart
+  discriminator is [recorded with expected/reference outcomes TBD](../spec/reference-outcomes.md#native-maximize-across-tiler-restart).
+  No product fix or intent-schema change was made.
+- Helper accounting is qualified by the
+  [scoped follow-up](c9-product-evidence.md#native-recovery-correction-and-scoped-follow-up-2026-11-13).
+  Both trace sets were copied before teardown; final output/status receipts and
+  later direct process checks establish dev DOWN and no owned live processes.
+  Native float/above-true restart restoration, full Describe settlement,
+  storage-failure/reconnect and physical acceptance remain open.
+
 ## Wire, fixtures and implementation verification
 
 - In-place strict v4 amendment: no fallback, alias, version bump or second delivery path. Matching core/codecs/KDE change together; later ports must adopt before release acceptance. Frozen `test-fixtures/world-wire/v4`, `test-fixtures/stage5` and existing `test-fixtures/stage5-v4` bytes are immutable.

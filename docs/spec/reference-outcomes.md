@@ -196,6 +196,12 @@ counterpart. Those sources do not prove macOS delivery or the sequences below.
 | With maximize=false, request maximize while the subject's frame authority is unavailable; restore authority without a new command, then press again | User 2026-11-03: refuse via the existing applicable refusal gate, with overlay intent unchanged. No deferred/automatic composition on authority recovery; a fresh press is required. Existing refusal precedent, no new product semantics | Native refusal/recovery delivery TBD; Tier 1 retained-slot sources do not establish unavailable external frame-authority handling |
 | Compose a float; lose readable work area; move directionally; recover without input, then move again. Separately keep geometry readable but constrain the half-snap | **Tentative, user review pending:** unavailable screen/work area or uncomputable half geometry refuses before local clear, retaining the bit with no token or deferred clear. Resolved geometry clears before ordinary constraints; a constrained snap restores the base through one placement token | Offline refusal/recovery and constrained-restore regressions pass. Approved unavailable-authority refusal is the nearest precedent; native proven-clear continuation supports clear-before-constraints, not an external unknown-frame authority model. Exact reference/native outcomes TBD |
 
+### Native maximize across tiler restart
+
+| Minimal action sequence | Observed native outcome | Expected / reference outcome |
+| --- | --- | --- |
+| Admit ordinary tiled A/B, natively maximize both, record exact lifetimes/flags and intent storage; orderly stop/start only the tiler with both alive under tile-on-launch; rejoin native state after fresh evaluated readiness. Contrast keep-maximized-overlay without changing other inputs | KDE fixture-scoped reproduction: both same UUIDs change native maximize mode 3 to 0 and tile, keep-above stays false, storage hashes unchanged. Helper lifecycle and full Describe evidence are incomplete; [evidence and likely core startup owner](../changes/retained-intent-desire.md#scoped-native-maximize-restart-reproduction-2026-11-13) | TBD: does first-seen born admission include already admitted survivors of tiler restart, or must their native overlays survive? Composed-restart drop does not answer this native case. Keep-overlay contrast, exact reference-WM counterparts and other-platform native outcomes TBD; no new policy selected |
+
 ### Native fullscreen entry from maximized
 
 | Minimal action sequence | Tier 1 source evidence | Selected core behavior / native gate |
