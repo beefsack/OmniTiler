@@ -48,8 +48,8 @@
 // byte-equal by the JS subscriber leg); dispatch-a3-b.json is the real
 // crossed-B subscriber render of projection-a3.json. Dispatch bytes come
 // from test-fixtures/stage5-v2 (strict v2): the full chain (P5, P6, cover,
-// preview, cover2, A2, A3, A3-B, preview-B; frozen revs cover=5,
-// cover2=8) and the independent s2 chain (P5, P6, cover, preview, S2).
+// preview, cover2, A2, A3, A3-B, preview-B; frozen revs cover=6,
+// cover2=9) and the independent s2 chain (P5, P6, cover, preview, S2).
 // Full and s2 raw generations differ (legitimate independent chains); each
 // leg stays within one chain, so no stream reset is needed for switching.
 // Identity seams (disclosed): the native facts instance is a fresh random
@@ -811,7 +811,7 @@ int main(int argc, char **argv)
         CHECK(!stub.border);
 
         // First covering capture repaints; the fence advances to the
-        // recorded v2 rev (frozen raw record: cover rev 5).
+        // recorded v2 rev (frozen raw record: cover rev 6).
         const auto cover =
             applyStr(leg, dispatchBytes(dispatchDir, "dispatch-cover.json", inst), "", "0");
         CHECK(cover.apply == KWin::PresentationApply::Accepted);
@@ -819,7 +819,7 @@ int main(int argc, char **argv)
         CHECK(stub.border);
         CHECK(stub.underlay);
         CHECK(leg.router.paint.fence.set);
-        CHECK(leg.router.paint.fence.rev == 5);
+        CHECK(leg.router.paint.fence.rev == 6);
 
         // Return to A: the second activation hides display-only again plus
         // the all-scope bump (published); only the recorded
@@ -845,8 +845,8 @@ int main(int argc, char **argv)
         CHECK(stub.border);
         CHECK(stub.underlay);
         CHECK(leg.router.paint.fence.set);
-        // Frozen raw record: the second covering capture is v2 rev 8.
-        CHECK(leg.router.paint.fence.rev == 8);
+        // Frozen raw record: the second covering capture is v2 rev 9.
+        CHECK(leg.router.paint.fence.rev == 9);
 
         // Error-hide path: malformed clears display-only with a full
         // refresh while the fence survives; a further old A paint still
@@ -855,7 +855,7 @@ int main(int argc, char **argv)
         CHECK(malformed.apply == KWin::PresentationApply::Malformed);
         CHECK(malformed.refresh.border);
         CHECK(leg.router.paint.fence.set);
-        CHECK(leg.router.paint.fence.rev == 8);
+        CHECK(leg.router.paint.fence.rev == 9);
         stub.apply(malformed.refresh, leg.stage->decide(allLiveHost()));
         CHECK(!stub.border);
         const auto afterError = applyStr(leg, dispatchBytes(dispatchDir, "dispatch-p6.json", inst), "", "0");
