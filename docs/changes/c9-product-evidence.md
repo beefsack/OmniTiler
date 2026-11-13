@@ -1,6 +1,6 @@
 # C9 product evidence
 
-- Status: fixed-largest and fixed-float removals implemented and independently reviewed offline. Shared Rust, exporter and KDE TypeScript gates pass; the native recovery fixture correction below closes the isolated native gate (37/37). Requirement batch 1 is decided User 2026-11-13, implemented and independently reviewed with all shared offline gates passing below. Native adoption and 24 requirement choices remain open.
+- Status: fixed-largest and fixed-float removals implemented and independently reviewed offline. Shared Rust, exporter and KDE TypeScript gates pass; the native recovery fixture correction below closes the isolated native gate (37/37). Requirement batch 1 is decided User 2026-11-13, implemented and independently reviewed with all shared offline gates passing below. The scoped KDE batch-1 checks below establish both focus histories, explicit-command recency, closed-candidate fallthrough, swap and adjacent-output entry; hover, history-free fallback and literal single-output coverage remain open. Other native adoption and 24 requirement choices remain open.
 - Goal: remove both capacity settings and their storage/UI/wire propagation, preserving ordinary-anchor-first then largest-splittable fallback and fixed float on exhaustion. Keep the remaining product evidence for subsequent decisions.
 - Scope: shared policy, settings surfaces, protocol witnesses and offline regressions. Preserve ordinary anchoring, B6 minimum handling, next-decision timing and `noSpace` result provenance. Retire selectable capacity overflow and proven-unreachable accepted-overlap machinery. Missing decision "Why" entries are not backfilled.
 - Acceptance/evidence: ordinary anchor wins when splittable; otherwise largest area descending, child-order DFS then lifetime ID. Removed input reports UnknownField without losing valid siblings; removed stored keys are not adopted. Retired alternate policies and controls disappear. Historical fixture families remain unchanged; active witnesses come from their real producers. Add before/after regression evidence, run shared Rust and KDE checks, and review the complete settings/policy diff. Native outcomes not established by source remain TBD.
@@ -411,10 +411,89 @@
   requests discard their cloned mutations. This correction separates accepted
   focus authority; it is not proof of that proposed runtime failure.
 
+## KDE batch-1 native check (2026-11-13)
+
+- Goal: native adoption evidence for `a82747f7`, checked from `7a743b0d`;
+  no implementation changes. Wayland fixtures only, with exact class filtering,
+  on a workspace appended beyond the pre-start roster. Two outputs were present;
+  no display changes were made. Shortcut invocation bypassed physical input, so
+  these results do not establish physical shortcut delivery.
+- Evidence bundle: externally retained KDE batch-1 native evidence. Each step's
+  `*-commands.jsonl` preserves calls, raw replies and exit status;
+  `*-native.json`, `*-fixture.jsonl` and `*-presentation.json` preserve independent
+  native PID/title/UUID/frame joins, fixture observations and core allocations.
+  Journal sources below are in `final-journal.jsonl`; corresponding accepted
+  outcomes are in `saved-planner.log`. Presentation revisions are checkpoints,
+  not pending-operation or settlement proof by themselves.
+- Controller readiness: current-owner `ready` and `discovered`, accepted
+  `src-1-1ikd84j` and matching `observe-applied` revision 1 appear after the
+  pre-start cursor (`readiness-journal.jsonl`, planner log). A separately retained
+  current-owner `QT_CATEGORY=kwin_scripting` check is empty. Every tested fixture
+  joined one-to-one by sentinel title and fixture PID to its native UUID;
+  normal/resizable and test-workspace membership were read back before use.
+  Native custom-tile association was false, consistent with direct geometry;
+  tiled membership claims below come from core controlled allocations.
+
+| Leg | Verdict | Concrete observed evidence and qualification |
+| --- | --- | --- |
+| Fresh `H[V[A,B],C]`, A,B,C then left | PASS | `h1-a/b/c` readbacks establish the sequence and unchanged geometry; `h1-result` revision 14 has native active B, fixture B focused and core foreground B. Command source `src-d-1rp51zj` applies one focus effect at revision 13. |
+| Fresh `H[V[A,B],C]`, B,A,C then left | PASS | All three native UUIDs differ from the first run. `h2-b/a/c` establish B (admission focus), A, C; `h2-result` revision 28 has native/fixture/core focus A. Source `src-r-1khyznd` applies one focus effect at revision 27. The two-window staging order needed a verified swap before B admission. |
+| Explicit-command recency | PASS | From A, directional down reaches B (`explicit-b`, revision 36), right reaches C (`explicit-c`, 38), left returns to B (`explicit-result`, 40), with native active and fixture/core focus agreeing at every checkpoint. Sources `src-z-h7i8u1`, `src-11-1ikpvnx`, `src-13-1r3s5jt` each apply a focus effect. |
+| Accepted-hover recency | NOT RUN | The KDE capture explicitly supplies `focusFollowsCursor: false` (`kwin/src/world-observe.ts`); the script cursor is read-only. No accepted hover was generated or inferred from ordinary focus. Shared offline hover evidence above is not native acceptance. |
+| Close newest candidate, choose next-most-recent | PASS | `close-four` has `H[V[H[B,D],A],C]`; `close-a/d/c` establish A,D,C. After closing D, `close-pruned` revision 49 retains C focused and `H[V[B,A],C]`. Left selects lower A, not stable-first upper B (`close-result`, revision 51; source `src-1e-1xwfii6`, focus effect at 50). D is absent from native and core rosters. |
+| History-free stable-first fallback | NOT RUN | No live history-free candidate subtree was established; admission and observed focus already seed history. The close leg discriminates next-most-recent from stable-first, not the no-history fallback. |
+| REQ-FOC-02 edge stay | PARTIAL | Root `H[A,C]` on the outer-left output: `root-edge-before` revision 53 and `root-focus-edge-result` 55 retain native/fixture/core focus A and identical allocations. Planner source `src-1i-16qd5uk` reports `internal=unchanged`. This proves no-adjacent-output stay with two outputs present, not literal single-output topology. |
+| REQ-MOV-02 in-group swap, mover focus | PASS | `explicit-result` has B below A; move-up source `src-15-swe59r` applies two geometry changes at revision 41. `swap-result` revision 42 swaps their exact prior frames/allocations, leaves C unchanged and retains native/fixture/core focus B. |
+| REQ-MOV-05 move edge no-op | PARTIAL | Correct root `H[A,C]` fixture: `root-focus-edge-result` 55 and `root-move-edge-result` 57 have identical native frames, core allocations/membership and focus A. Source `src-1k-kvqexl` reports `internal=planner-noop`; applied revision 56 has zero geometry/member/focus effects. Literal single-output topology was not exercised. |
+| Adjacent-output entry | PASS | Destination `H[A,E]`: E was most recently focused (`adjacent-e`, 64); C on the source output is then focused (`adjacent-source`, 65). Right enters the destination's left-edge A, not newer non-edge E (`adjacent-result`, 67; source `src-1u-1gc7c0f`, focus effect at 66). Native/fixture/core focus agree and allocations are unchanged. This is one ordinary entry discriminator, not nested-edge ties or overlay coverage. |
+| Incompatible minimum-size observation | PARTIAL | `minimum-hints` accepts both hints; `minimum-observed` independently reads both native minima wider than their respective allocations, yet both remain core-tiled with disjoint matching native frames. Hint-only mutation leaves the presentation at revision 67; a subsequent focus command reaches accepted revision 68 and `minimum-result` 69 retains the same allocations. Saved core logs contain accepted outcomes but no `overconstrained`/`noSpace` diagnostic. This is an observation, not native minimum enforcement, immediate hint pickup or complete B6 acceptance. |
+| Optional hover guards | NOT RUN | No accepted-hover input route was established; no guard acceptance is inferred. |
+
+- Staging/collection deviations: the first read-only helper evaluated but the
+  scratch collector tried to JSON-parse its void `run` reply; its strict cleanup
+  still proved named/object absence before continuing. An activation's journal
+  line arrived after its immediate read: the saved later journal and next native
+  readback established it without repeating activation. Collection was changed
+  to a bounded journal-result wait. A later cumulative journal read exceeded the
+  collector buffer after native/fixture/presentation capture; the buffer was
+  enlarged and later complete capture retained. These are collection failures,
+  not passing product attempts or controller-readiness failures.
+- A first move-left used `H[V[A,B],C]`, not the promised root-edge fixture:
+  `move-edge-result` revision 32 shows the left subgroup changing to horizontal.
+  It is not counted as REQ-MOV-05 evidence. Orientation was restored and the
+  later root-edge check used the independently verified two-leaf fixture above.
+  No product fix was made. The original native desktop was retired by ordinary
+  controller lifecycle churn; cleanup selected a surviving pre-existing desktop,
+  not an invented restoration. The appended test desktop then retired normally.
+- Lifecycle: all 58 nonce-named helpers retain source, plugin, signed load ID,
+  pre-load child roster, exact-object introspection and raw run/unload replies.
+  Each was unloaded before another helper or controller teardown, with strictly
+  parsed plugin false and exact child absence. IDs 1 before controller startup
+  and 2 during its lifetime were reused only after verified absence. Final
+  read-only checks of all 58 names return false; only the untouched pre-existing
+  script object remains (`final-accounting-commands.jsonl`,
+  `final-accounting.json`). No helper survived controller unload.
+- Teardown: fixture shutdown returned successfully, its server/wrapper exited
+  and native windows/socket/private directory were absent. Combined tmpfs dev,
+  planner and tray logs were copied before teardown. `dev-off` unloaded the
+  controller and stopped the planner; the foreground dev wrapper still owned
+  its tray/followers, so its exact verified shell was terminated through its
+  cleanup trap. Final exact-PID checks show all recorded fixture, planner, tray,
+  wrapper and eight follower processes absent. `final-dev-status.txt` is DOWN;
+  `final-ydotoold.txt` is empty. Preloaded native effects were preserved. A final
+  empty-directory removal found the fixture had already removed its directory;
+  no resource remains unresolved. No stored tiler setting was changed.
+- Verdict audit: independent review of saved raw calls, native/fixture/core
+  checkpoints, correlated journals and cleanup receipts confirms all 12 scoped
+  verdicts above and all 58 helper lifecycles, with no unresolved accounting
+  mismatch. No PASS was widened to cover hover, history-free fallback, literal
+  single-output topology or physical input; batch-1 acceptance remains partial.
+
 ## Verification, limits and next decision
 
 - Historical research verification: source reads, exact OPEN-status enumeration, tag-qualified local source inspection and docs diff/whitespace review. Inventory IDs exactly match all 28 OPEN rows; batch sizes are 4/3/4/4/3/4/3/3. New-note relative file links resolve, added matrix target exists, note is ASCII. A broader link check found pre-existing missing `docs/changes/retained-focus-requests.md` targets in the matrix (also present at the inspected base); those unrelated links are unchanged. Research alone claimed no live outcomes or test-suite results; implementation evidence is separate above. Investigation reports were checked against key source spans; over-broad "Tier 1 always tiles" and "COSMIC equals stable-first" claims were rejected.
 - C9 corrections: `core-v4-review.md:267-268` is accurate about absent reference citations, but not an absence of user authority; `:275` correctly counts 28 but incorrectly describes all as already implemented. Absent cycle/preselect/layout/column verbs and the explicitly parked LAY-04 contradict that characterization. Its 183-row total (`:265`) and the spec's draft total are also stale: current enumeration is 184 rows (155 literal NORMATIVE plus qualified-NORMATIVE REQ-OUT-05, 28 OPEN). This is not evidence that the remaining OPEN rows should automatically become normative. Separately, the source recheck contradicts R-FOC-02's historical Hyprland-retain claim in the explicit zero-gap variant; opposite-edge fallback is not a stay rule for a half-width A.
 - Unverified/TBD: exact tiny rectangles/client settlement on every WM; exact latest-tag COSMIC FOC-01 fixture, Hyprland shipped-gap FOC-02 and move reconstruction; native settings pickup/parity, especially Windows report defaults; later batches' latest-source checks. No source result here selects a new default or expands scope.
-- Next action: native adoption of fixed-largest/fixed-float and batch-1 navigation.
+- Next action: remaining native adoption of fixed-largest/fixed-float and the
+  qualified batch-1 gaps above.
   Batches 2-8 retain 24 OPEN rows.
