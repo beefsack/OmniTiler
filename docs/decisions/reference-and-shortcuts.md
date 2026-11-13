@@ -6,6 +6,7 @@
 - Assumes / revisit if: wide existing tables unchanged until separate migration; columns/viewport notation model-qualified. New reference-WM findings use each WM's latest stable release tag, shipped defaults and named variants (currently COSMIC epoch-1.10.0, Hyprland v0.56.2, i3 4.25.1, sway 1.12). Existing development-commit matrix findings stay at their recorded pins; re-check and relabel only when a decision relies on them again. KDE's separate 6.6-floor/latest-stable policy is unchanged. PaperWM.spoon corroboration only.
 - Status: active, 2026-10-06
 - Evidence: [reference outcomes](../spec/reference-outcomes.md).
+- Maintenance: record departures from a Tier 1 majority and assumptions choosing a side of an even Tier 1 split in [Tier 1 divergences](tier1-divergences.md) when the decision is recorded.
 
 ### Reference tiers and defaults
 - Decision: Tier 1 COSMIC, Hyprland, i3, sway decide defaults/settings; Tier 2 awesome, qtile, xmonad support/tie-break only; Tier 3 contextual only. Default COSMIC unless all three other Tier 1 or two plus Tier 2 broadly agree against it. Setting only if alternative has one Tier 1 plus another Tier 1/2. Earlier decisions stand unless revisited; gaming safety and host/capability exceptions unchanged.

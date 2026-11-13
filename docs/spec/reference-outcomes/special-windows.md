@@ -315,12 +315,12 @@ transient (no dialog flag) is a different fixture and is not claimed.
   `satisfiable_minimum_takes_sibling_slack_with_shares_untouched` pins the first
   result; shared report regression pins infeasible hint/drift retention.
   Native reaction and exact client settlement remain TBD.
-- Variant hook: REQ-SPC-05b STOP, still OPEN. Tier 1 inspected paths support
-  retained allocations, but selecting blanket no-reflow would supersede
+- Variant hook: REQ-SPC-05b NORMATIVE (User 2026-11-14): keep the recorded
+  feasible-minimum policy for now (feasible runtime minimum hints
+  redistribute slack from siblings; infeasible remain proportional) per
   [Placement and minimums](../../decisions/layout-and-admission.md#placement-and-minimums).
-  Options: retain the recorded feasible-minimum host adaptation and test its
-  native outcome, or explicitly supersede it to ignore runtime minima while
-  tiled. No behavior change or assumption selected for this row.
+  Known Tier 1 divergence (COSMIC/Hyprland/sway retain tiled allocation; i3
+  hint reaction is floating-only), revisit later; native journey TBD.
 
 ## Q2 fixed-size admission discriminators (2026-10-08)
 

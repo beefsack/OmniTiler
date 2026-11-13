@@ -388,12 +388,15 @@ ancestry claims. Ours cells cite Engine + adapter source at `9241c94`
 - Then PaperWM: no-counterpart for the split-direction preselect (open-position index model, no direction-preselect verb in the registered inventory); C then D insert at selected+1 each under the shipped RIGHT default with ordinary activation. `S(S-pap-ins)` + `S(S-pap-acts)`.
 - Then karousel/Lazy: no-counterpart (column insertion-index model; the Actions/definition inventory lists no split-direction preselect verb, so neither leg has a preselect path; ordinary admission would follow `S(S-kar-ins)` only). `S(S-kar-acts)`.
 - Then paneru: no-counterpart - the `Operation` inventory lists no split-direction preselect verb, so neither leg has a preselect path; ordinary admission would follow the fresh strip index policy. `S(S-pan-cmds)` + `S(S-pan-ins)` + `S(S-pan-fresh)`.
-- Then Ours KDE: TBD (no preselection concept evidenced at `9241c94`; not claimed absent).
-- Then Ours Windows: TBD, same as Ours KDE.
-- Variant hook: V-INS-AXIS. REQ-INS-08 remains OPEN / CANDIDATE: 3/4
-  Tier 1 default-layout counterparts, but one-shot versus persistent scope
-  differs; no semantics, binding or setting selected. Existing post-0.1
-  triage is not superseded. [Options and footprint](../../changes/c9-product-evidence.md#preselected-split-option-sheet).
+- Then Ours KDE: no-counterpart in 0.1 (no preselect verb; deferred
+  beyond 0.1 and retained in backlog, User 2026-11-14).
+- Then Ours Windows: same no-preselect leg as Ours KDE (deferred beyond
+  0.1, User 2026-11-14).
+- Variant hook: V-INS-AXIS. NORMATIVE scope deferral beyond 0.1
+  (REQ-INS-08, User 2026-11-14; retained in backlog). Tier 1 3/4 divergence
+  (Hyprland one-shot vs i3/sway persistent, COSMIC none); no future
+  lifetime or semantics selected. [Decision](../../decisions/layout-and-admission.md#preselected-split-scope);
+  [options and footprint](../../changes/c9-product-evidence.md#preselected-split-option-sheet).
 
 <a id="r-ins-09-burst-of-maps-versus-roster-delivered-together"></a>
 ### R-INS-09: burst of maps versus roster delivered together

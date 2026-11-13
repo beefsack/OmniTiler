@@ -224,15 +224,17 @@ assertions are never evidence.
   (`Operation` lists directional `Focus` plus managed/unmanaged focus
   only). `S(S-pan-cmds)`.
 - Then Ours KDE: no-counterpart (focus plans are directional
-  leaf-or-Edge only; no cycle verb in the inspected inventory).
-  `S(S-ours-focus)`.
+  leaf-or-Edge only; no cycle verb in the inspected inventory; deferred
+  beyond 0.1, User 2026-11-14). `S(S-ours-focus)`.
 - Then Ours Windows: same no-cycle leg as Ours KDE via the shared
-  Engine. `S(S-ours-focus)`.
-- Variant hook: provisional/TBD (cycle-order hook, to discuss).
+  Engine (deferred beyond 0.1, User 2026-11-14). `S(S-ours-focus)`.
+- Variant hook: NORMATIVE scope deferral beyond 0.1 (REQ-FOC-03,
+  User 2026-11-14; COSMIC delegates external switcher). Future cycle order,
+  wrap, float inclusion and chords remain unselected.
 
 | Nested-order discriminator | Minimal action sequence | Source mechanics / remaining evidence |
 | --- | --- | --- |
-| Parent-orientation walk versus creation-order cycle | Single output, ordinary tiled `H[V[A,B*],C]`; create A,B,C in that order, establish history A,C,B; next, then previous without reset | Hyprland `v0.57.2` uses creation order (`WindowQuery.cpp:310-314`, full path above), whereas i3 `4.25.1 src/commands.c:1305-1315` and sway `1.12 sway/commands/focus.c:17-59` derive a direction from B's parent. Exact nested endpoints/native reversibility remain TBD; flat H[A,B,C] alone cannot select general cycle order. COSMIC `epoch-1.11.0` has no counterpart on the inspected action surface. No OmniTiler cycle is selected; see [batch 2](../../changes/c9-product-evidence.md#requirement-batch-2-focus-and-attention-2026-11-13) |
+| Parent-orientation walk versus creation-order cycle | Single output, ordinary tiled `H[V[A,B*],C]`; create A,B,C in that order, establish history A,C,B; next, then previous without reset | Hyprland `v0.57.2` uses creation order (`WindowQuery.cpp:310-314`, full path above), whereas i3 `4.25.1 src/commands.c:1305-1315` and sway `1.12 sway/commands/focus.c:17-59` derive a direction from B's parent. Exact nested endpoints/native reversibility remain TBD; flat H[A,B,C] alone cannot select general cycle order. COSMIC `epoch-1.11.0` has no counterpart on the inspected action surface. OmniTiler defers cycle verbs beyond 0.1 (REQ-FOC-03, User 2026-11-14); see [focus scope](../../decisions/focus.md#cycle-and-container-focus-scope) and [batch 2](../../changes/c9-product-evidence.md#requirement-batch-2-focus-and-attention-2026-11-13) |
 
 ### R-FOC-04: parent/child focus scope
 
@@ -287,9 +289,13 @@ assertions are never evidence.
 - Then paneru: no-counterpart (no parent-focus verb in the `Operation`
   inventory; containers are never focus targets). `S(S-pan-cmds)` +
   `S(S-pan-model)`.
-- Then Ours KDE: no-counterpart (leaf-only focus model: `Focused`
-  leaf or `Edge`; containers are never focus targets).
-  `S(S-ours-focus)`.
+- Then Ours KDE: no-counterpart (leaf-only focus model in 0.1:
+  `Focused` leaf or `Edge`; containers are never focus targets;
+  parent/child container focus deferred beyond 0.1 as important post-0.1
+  work, User 2026-11-14). `S(S-ours-focus)`.
 - Then Ours Windows: same leaf-only leg as Ours KDE via the shared
-  Engine. `S(S-ours-focus)`.
-- Variant hook: provisional/TBD (container-focus hook, to discuss).
+  Engine (deferred beyond 0.1, User 2026-11-14). `S(S-ours-focus)`.
+- Variant hook: NORMATIVE scope deferral beyond 0.1 (REQ-FOC-04,
+  User 2026-11-14; Tier 1 3/4 divergence: COSMIC/i3/sway ship it,
+  Hyprland none; important after 0.1). Future container-selection model
+  remains unselected.

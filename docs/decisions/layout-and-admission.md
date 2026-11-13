@@ -1,11 +1,11 @@
 # Layout and admission
 
 ### Placement and minimums
-- Decision: Default split is long-edge (tall target vertical, wide horizontal), including sends. Minimum hints affect target rectangle/allocation, not alternative-axis/target search. V4 honors feasible minima; infeasible minima retain proportional allocation under core clamp settlement, not adapter-raised extents. No global optimizer or alternative-axis search. User 2026-11-09: KDE M18 uses the v4 proportional-allocation/clamp core-settlement oracle instead of B6 raised-minimum writes and adapter reassertions; all native minimum/origin/convergence journeys remain and M18 stays must-pass. Startup preserves clean/tolerance-valid recursive cuts, otherwise deterministic sequential long-edge seed, no center inference.
+- Decision: Default split is long-edge (tall target vertical, wide horizontal), including sends. Minimum hints affect target rectangle/allocation, not alternative-axis/target search. V4 honors feasible minima; infeasible minima retain proportional allocation under core clamp settlement, not adapter-raised extents. No global optimizer or alternative-axis search. User 2026-11-09: KDE M18 uses the v4 proportional-allocation/clamp core-settlement oracle instead of B6 raised-minimum writes and adapter reassertions; all native minimum/origin/convergence journeys remain and M18 stays must-pass. Startup preserves clean/tolerance-valid recursive cuts, otherwise deterministic sequential long-edge seed, no center inference. User 2026-11-14 (REQ-SPC-05b): keep this recorded feasible-minimum policy for now; feasible runtime minimum hints redistribute slack from siblings while infeasible minima remain proportional. Known Tier 1 divergence (COSMIC/Hyprland/sway retain tiled allocation; i3 hint reaction is floating-only), revisit later; native journey TBD.
 - Why: not recorded.
-- Assumes / revisit if: clean prior 2x2/nested identities retained; no guaranteed balanced 2x2; deliberate deviation from references that ignore minima.
-- Status: active, 2026-11-09
-- Evidence: [Windows placement](../changes/archive/windows-placement-correctness.md), [historical KDE B6](../changes/archive/kde-minimum-origin-placement.md), [core settlement](engine.md#core-derived-native-settlement), [approved KDE acceptance](../changes/kde-v4-acceptance-checklist.md#approved-acceptance-decisions).
+- Assumes / revisit if: clean prior 2x2/nested identities retained; no guaranteed balanced 2x2; deliberate deviation from references that ignore minima. Revisit REQ-SPC-05b later against native journeys and the known Tier 1 no-reflow divergence.
+- Status: active, 2026-11-09; REQ-SPC-05b retained User 2026-11-14 (native journey TBD)
+- Evidence: [Windows placement](../changes/archive/windows-placement-correctness.md), [historical KDE B6](../changes/archive/kde-minimum-origin-placement.md), [core settlement](engine.md#core-derived-native-settlement), [approved KDE acceptance](../changes/kde-v4-acceptance-checklist.md#approved-acceptance-decisions), [R-SPC-05](../spec/reference-outcomes/special-windows.md#r-spc-05-app-owned-resize-and-minimum-hint-change-on-a-tile), [batch 3](../changes/c9-product-evidence.md#requirement-batch-3-admission-and-fullscreen-2026-11-13).
 
 ### Host-settled geometry design timing
 - Decision: defer shared host-settled geometry research/design until after macOS slice 1; bring the design for user approval before slice 3. Approval is still required before any core change; this timing decision does not approve a settlement rule.
@@ -147,11 +147,11 @@
 - Status: active, 2026-10-09.
 - Evidence: [research](../research/workspace-local-layout-selection.md).
 
-### Preselected split candidate
-- Decision: REQ-INS-08 remains OPEN; no preselect command, default chord or persistence setting selected. Existing post-0.1 triage is unchanged.
-- Why: Hyprland/Dwindle, i3 and sway ship applicable split-direction counterparts, but Hyprland defaults one-shot while i3/sway retain a split container; COSMIC only changes existing parents. A majority for availability does not select lifetime or direction/side semantics.
-- Assumes / revisit if: choose scope, lifetime, cancellation and binding before implementation; immediate-parent orientation toggle remains distinct. Exact unsupported/native outcomes stay TBD.
-- Status: unresolved; latest-release evidence rechecked 2026-11-14.
+### Preselected split scope
+- Decision (user 2026-11-14, REQ-INS-08): NORMATIVE scope deferral beyond 0.1; no preselect verb in 0.1, retained in backlog. Known Tier 1 3/4 divergence (Hyprland one-shot vs i3/sway persistent split container, COSMIC none); no future lifetime, side/direction semantics, chord or persistence setting is selected.
+- Why: Hyprland/Dwindle, i3 and sway ship applicable split-direction counterparts, but Hyprland defaults one-shot while i3/sway retain a split container; COSMIC only changes existing parents. A majority for availability does not select lifetime or direction/side semantics, and existing post-0.1 triage is retained.
+- Assumes / revisit if: choose scope, lifetime, cancellation and binding after 0.1 before implementation; immediate-parent orientation toggle remains distinct. Exact unsupported/native outcomes stay TBD.
+- Status: active scope deferral, User 2026-11-14; no runtime change.
 - Evidence: [preselect discriminator](../spec/reference-outcomes/insertion.md#r-ins-08-admission-under-an-explicit-preselected-split-direction), [option sheet](../changes/c9-product-evidence.md#preselected-split-option-sheet).
 
 ### Optional layout verbs scope

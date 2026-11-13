@@ -1,6 +1,6 @@
 # C9 product evidence
 
-- Status: fixed-largest and fixed-float removals implemented and independently reviewed offline. Shared Rust, exporter and KDE TypeScript gates pass; the native recovery fixture correction below closes the isolated native gate (37/37). Requirement batches 1 and 3 record their decisions, implementation and offline review below; batch-1 native acceptance remains partial. Batch 2 retains two focus choices and defers urgency. Batches 4-8 add fourteen normative scope deferrals, leave preselection a CANDIDATE and preserve the existing alternate-layout park, with no runtime change. Five requirement rows remain OPEN; other native adoption remains unproved.
+- Status: fixed-largest and fixed-float removals implemented and independently reviewed offline. Shared Rust, exporter and KDE TypeScript gates pass; the native recovery fixture correction below closes the isolated native gate (37/37). Requirement batches 1 and 3 record their decisions, implementation and offline review below; batch-1 native acceptance remains partial. User 2026-11-14 retains runtime minimum-hint reflow for now and defers focus cycle, container focus and preselection beyond 0.1. Together with the earlier fourteen batches 4-8 scope deferrals, these leave only the alternate-layout park OPEN. Native adoption remains unproved.
 - Goal: remove both capacity settings and their storage/UI/wire propagation, preserving ordinary-anchor-first then largest-splittable fallback and fixed float on exhaustion. Keep the remaining product evidence for subsequent decisions.
 - Scope: shared policy, settings surfaces, protocol witnesses and offline regressions. Preserve ordinary anchoring, B6 minimum handling, next-decision timing and `noSpace` result provenance. Retire selectable capacity overflow and proven-unreachable accepted-overlap machinery. Missing decision "Why" entries are not backfilled.
 - Acceptance/evidence: ordinary anchor wins when splittable; otherwise largest area descending, child-order DFS then lifetime ID. Removed input reports UnknownField without losing valid siblings; removed stored keys are not adopted. Retired alternate policies and controls disappear. Historical fixture families remain unchanged; active witnesses come from their real producers. Add before/after regression evidence, run shared Rust and KDE checks, and review the complete settings/policy diff. Native outcomes not established by source remain TBD.
@@ -280,7 +280,7 @@
 
 ## Part 2: exact OPEN inventory
 
-- **5 requirement rows** have Status `OPEN` in `docs/spec/functional-spec.md` after batches 1-3 and batches 4-8's fourteen scope deferrals; the original inventory below had 28. Count is not every occurrence of OPEN (many normative rows have an open platform cell). The current 184 requirements are 179 NORMATIVE (including qualified REQ-OUT-05), 5 OPEN, 0 PROVISIONAL. The five are FOC-03/04, SPC-05b, INS-08 (CANDIDATE) and LAY-04 (PARKED). Scope deferral selects no future runtime mechanics or native outcome.
+- **1 requirement row** has Status `OPEN` in `docs/spec/functional-spec.md` after the User 2026-11-14 decisions below; the original inventory below had 28. Count is not every occurrence of OPEN (many normative rows have an open platform cell). The current 184 requirements are 183 NORMATIVE (including qualified REQ-OUT-05), 1 OPEN, 0 PROVISIONAL. Only REQ-LAY-04 remains OPEN/PARKED by User 2026-10-09. Scope deferral selects no future runtime mechanics or native outcome.
 - Table: spec citations use `F:` = `docs/spec/functional-spec.md` line. Reference citations use `R/` defined above and are existing revision-bound evidence, **not newly rechecked release evidence**, except the release-qualified batch 1 and 2 entries below. `Choice` means user product selection; `source` means further targeted latest-source work; `live` means user/native testing. "Absent" is bounded to inspected command/model surfaces, not a universal assertion about every adapter.
 - Code key **V**: complete command surfaces `C/world_report.rs:2009-2171` + `C/boundary.rs:41-149` contain no preselect, cycle, container-focus, equalize, rotate/mirror, master, layout-select or column/viewport verbs. **D**: `C/directional.rs:1179-1246` implements leaf directional focus, not viewport/container focus. **T**: absent column model/verbs on V/D; existing per-window sends `C/world_report.rs:2013-2018,2048-2066` do not implement whole-column semantics. These are code absence checks, not acceptance of the feature gap.
 
@@ -290,14 +290,14 @@
 | 1 DECIDED | REQ-FOC-02 / 149 | User 2026-11-13: stay, no wrap/setting | Historical tally is not a revalidated default vote; latest Hyprland explicit zero-gap variant wraps (below) | Existing edge retain confirmed; adjacent-output crossing unchanged; shipped Hyprland geometry/native result TBD |
 | 1 DECIDED | REQ-MOV-02 / 167 | User 2026-11-13: swap, retain mover focus | `R/move.md:47-81`: all Tier 1 swap | Existing R2a `SwapNeighbor` confirmed; latest Hyprland exact geometry TBD |
 | 1 DECIDED | REQ-MOV-05 / 170 | User 2026-11-13: single-output edge no-op | `R/move.md:168-211`: all Tier 1 visually unchanged | Existing no-adjacent-output no-op confirmed; latest Hyprland exact rebuilt geometry TBD |
-| 2 STOP | REQ-FOC-03 / 151 | Need next/previous cycle; which order, wrap, floats? | [Latest release recheck](#requirement-batch-2-focus-and-attention-2026-11-13): COSMIC none, Hyprland creation-order incl floats, i3/sway parent-orientation tiled walk | Substantial synchronized command/shortcut surface; no implementation or selection |
-| 2 STOP | REQ-FOC-04 / 152 | Need parent/child container focus? | [Latest release recheck](#requirement-batch-2-focus-and-attention-2026-11-13): COSMIC/i3/sway group then remembered child; Hyprland none | Leaf-only model would change; no implementation or selection |
+| 2 DEFERRED | REQ-FOC-03 / 151 | User 2026-11-14: no next/previous cycle verb in 0.1 | [Latest release recheck](#requirement-batch-2-focus-and-attention-2026-11-13): COSMIC none, Hyprland creation-order incl floats, i3/sway parent-orientation tiled walk | NORMATIVE scope deferral beyond 0.1; no future order/wrap/float semantics selected |
+| 2 DEFERRED | REQ-FOC-04 / 152 | User 2026-11-14: leaf-only focus in 0.1 | [Latest release recheck](#requirement-batch-2-focus-and-attention-2026-11-13): COSMIC/i3/sway group then remembered child; Hyprland none | NORMATIVE scope deferral beyond 0.1; important after 0.1, no future container-command semantics selected |
 | 2 DEFERRED | REQ-ACT-02 / 461 | Urgency clears on focus or stays? | [Latest release recheck](#requirement-batch-2-focus-and-attention-2026-11-13): COSMIC workspace marker retained, Hyprland/i3/sway per-window clear | NORMATIVE scope deferral beyond 0.1; native behavior unchanged, future product timing unselected |
 | 3 DECIDED | REQ-INS-07b / 138 | Target-local remembered tiled anchor; inactive admission never focuses/switches/replays | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): COSMIC/i3/sway target focus; Hyprland cursor-closest variant | Observed destination supported, no app-rule API added; inactive automatic-focus guard and shared regressions; native rule pickup TBD |
 | 3 DECIDED | REQ-SPC-02 / 497 | Splash and utility float under existing safety/ordinary-focus policy | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): splash 4/4 float, utility 3/4 float | Core type hold removed, KDE candidates widened; ASSUMPTION no type-specific focus exception; native focus/switcher TBD |
 | 3 DECIDED | REQ-SPC-03 / 498 | Ordinary reported facts, not PiP title/app inference | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): ordinary predicates/rules, exact apps TBD | ASSUMPTION no shipped app exception/new subsystem; metadata/fact discriminator; actual app/native TBD |
-| 3 STOP | REQ-SPC-05b / 509 | Retain prior feasible-minimum reallocation or supersede it to match Tier 1 no-reflow? | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): tiled allocations retained in four inspected paths | Earlier Placement and minimums decision honors feasible minima; no new behavior selected or implemented; native journeys TBD |
-| 4 CANDIDATE | REQ-INS-08 / 138 | Need preselected split, one-shot or persistent? | [Batches 4-8](#preselected-split-option-sheet): 3/4 default-layout counterparts, Hyprland one-shot versus i3/sway persistent | OPEN; no implementation/chord/lifetime selected; existing post-0.1 triage unchanged |
+| 3 DECIDED | REQ-SPC-05b / 509 | User 2026-11-14: retain feasible-minimum reallocation for now | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): tiled allocations retained in four inspected paths | NORMATIVE: feasible runtime minima take sibling slack; infeasible remain proportional; known divergence, revisit later; native journeys TBD |
+| 4 DEFERRED | REQ-INS-08 / 138 | User 2026-11-14: no preselection in 0.1 | [Batches 4-8](#preselected-split-option-sheet): 3/4 default-layout counterparts, Hyprland one-shot versus i3/sway persistent | NORMATIVE scope deferral beyond 0.1; keep in backlog, no future chord/lifetime/semantics selected |
 | 4 DEFERRED | REQ-RSZ-04 / 185 | Equalize/balance scope beyond 0.1 | [Latest recheck](#requirement-batches-4-8-absent-verbs-and-scope-2026-11-14): 0/4 default counterparts; optional Hyprland all-column widths distinct | NORMATIVE scope deferral; no runtime change/future semantics selected |
 | 4 DEFERRED | REQ-LAY-02 / 193 | Rotate/mirror scope beyond 0.1 | Latest recheck: COSMIC/i3/sway none; Hyprland immediate-parent only, config/example preserve-split differ | NORMATIVE scope deferral; no runtime change/future transform selected |
 | 4 DEFERRED | REQ-LAY-03 / 194 | Promote-to-master/root scope beyond 0.1 | Latest recheck: only Hyprland root counterpart, master optional | NORMATIVE scope deferral; no runtime change/future semantics selected |
@@ -491,6 +491,9 @@
 
 ## Requirement batch 2: focus and attention (2026-11-13)
 
+- Historical batch record: its two STOP/OPEN focus choices were superseded by
+  the [User 2026-11-14 scope decisions](#user-decisions-2026-11-14).
+
 - Goal: resolve REQ-FOC-03/04 and REQ-ACT-02 against latest stable Tier 1
   sources without inventing native results or reopening earlier behavior.
   Acceptance separates a product scope decision from implementation and native
@@ -580,6 +583,9 @@
   regardless of offline gate results; batch 2 is not fully resolved.
 
 ## Requirement batch 3: admission and fullscreen (2026-11-13)
+
+- Historical batch record: its SPC-05b STOP/OPEN conflict was resolved by the
+  [User 2026-11-14 retention decision](#user-decisions-2026-11-14).
 
 - Goal/acceptance: resolve inactive-destination anchoring, splash/utility and
   app-specific PiP admission, hint-change reaction and fullscreen workspace/
@@ -679,6 +685,9 @@
 
 ## Requirement batches 4-8: absent verbs and scope (2026-11-14)
 
+- Historical batch record: its INS-08 CANDIDATE/OPEN classification was
+  superseded by the [User 2026-11-14 scope decision](#user-decisions-2026-11-14).
+
 - Goal/acceptance: recheck the sixteen remaining absent-verb/scope rows;
   distinguish default-layout features, optional algorithms and shell ownership;
   resolve only authorized scope deferrals and return applicable majority
@@ -765,13 +774,54 @@
   184/179/5/0; `git diff --check` is clean. No runtime acceptance
   claimed; unchanged runtime suites were not rerun for this docs-only pass.
 
+## User decisions 2026-11-14
+
+- Acceptance: synchronize spec statuses/totals, topic decisions and matrix
+  selections; maintain a cited divergence inventory with the reference-policy
+  pointer. Verify requirement enumeration, relative links/anchors, per-row
+  evidence, ASCII and whitespace. Existing records supply the evidence; no new
+  reference-source or native research is needed.
+- [REQ-SPC-05b](../decisions/layout-and-admission.md#placement-and-minimums): keep feasible runtime minimum-hint reflow for now: take slack
+  from siblings when feasible; retain proportional allocation when infeasible.
+  This knowingly departs from the inspected Tier 1 tiled no-reflow paths and
+  may be revisited later. NORMATIVE policy; native journey remains TBD.
+- [REQ-FOC-03](../decisions/focus.md#cycle-and-container-focus-scope): no next/previous cycle verb in 0.1; defer beyond 0.1, consistent
+  with COSMIC's external-switcher delegation but unlike the other three Tier 1
+  WMs. NORMATIVE scope deferral; no future cycle semantics selected.
+- [REQ-FOC-04](../decisions/focus.md#cycle-and-container-focus-scope): leaf-only focus in 0.1; parent/child container focus is deferred
+  beyond 0.1 and important after 0.1. COSMIC/i3/sway provide it; Hyprland does
+  not. NORMATIVE scope deferral, not a future container-command design.
+- [REQ-INS-08](../decisions/layout-and-admission.md#preselected-split-scope): no preselected split in 0.1; defer beyond 0.1 and retain in the
+  backlog. Hyprland's one-shot and i3/sway's persistent variants supply a 3/4
+  feature majority, not shared lifetime semantics. NORMATIVE scope deferral;
+  no future lifetime/semantics selected.
+- Maintain [Tier 1 divergences](../decisions/tier1-divergences.md) for decisions
+  departing from a Tier 1 majority and assumptions choosing a side of an even
+  split. The list uses existing records only, with unknown tallies explicit;
+  minority-only differences that follow the majority are not divergences.
+- Outcome: documentation only; no runtime, protocol, fixture or native outcome
+  changed. Current enumeration: 184 total, 183 NORMATIVE (including qualified
+  REQ-OUT-05), 1 OPEN (REQ-LAY-04), 0 PROVISIONAL. Historical batch counts above
+  describe their respective pre-decision states.
+- Verification: 18 cited divergence rows; independent review and correction
+  recheck leave no findings in the new inventory or four-decision updates.
+  Corrected composed-float origin/date, retired-setting wording and reference
+  links; current capacity tags cite the separate release-qualified recheck,
+  not historical R-MIN-04 pins. All 76 added/new relative links and anchors
+  resolve; all nine changed/new files are ASCII and whitespace-clean.
+- Existing documentation drift, unchanged here: REQ-MIN-04b/f/g still describe
+  retired overlap/default-setting behavior in the functional spec. The active
+  D3/D9/D10 decisions and divergence inventory instead record fixed float,
+  retired overlap projection and removed capacity settings.
+
 ## Verification, limits and next decision
 
 - Historical research verification: source reads, exact OPEN-status enumeration, tag-qualified local source inspection and docs diff/whitespace review. Inventory IDs exactly match all 28 OPEN rows; batch sizes are 4/3/4/4/3/4/3/3. New-note relative file links resolve, added matrix target exists, note is ASCII. A broader link check found pre-existing missing `docs/changes/retained-focus-requests.md` targets in the matrix (also present at the inspected base); those unrelated links are unchanged. Research alone claimed no live outcomes or test-suite results; implementation evidence is separate above. Investigation reports were checked against key source spans; over-broad "Tier 1 always tiles" and "COSMIC equals stable-first" claims were rejected.
-- C9 corrections: `core-v4-review.md:267-268` is accurate about absent reference citations, but not an absence of user authority; `:275` correctly counts 28 but incorrectly describes all as already implemented. Absent cycle/preselect/layout/column verbs and the explicitly parked LAY-04 contradict that characterization. Its 183-row total (`:265`) and the spec's draft total are also stale: current enumeration is 184 rows (155 literal NORMATIVE plus qualified-NORMATIVE REQ-OUT-05, 28 OPEN). This is not evidence that the remaining OPEN rows should automatically become normative. Separately, the source recheck contradicts R-FOC-02's historical Hyprland-retain claim in the explicit zero-gap variant; opposite-edge fallback is not a stay rule for a half-width A.
+- C9 corrections: `core-v4-review.md:267-268` is accurate about absent reference citations, but not an absence of user authority; `:275` correctly counts 28 but incorrectly describes all as already implemented. Absent cycle/preselect/layout/column verbs and the explicitly parked LAY-04 contradict that characterization. Its 183-row total (`:265`) and the spec's draft total were stale: the original C9 enumeration was 184 rows (155 literal NORMATIVE plus qualified-NORMATIVE REQ-OUT-05, 28 OPEN). This was not evidence that those OPEN rows should automatically become normative; subsequent decisions are recorded above. Separately, the source recheck contradicts R-FOC-02's historical Hyprland-retain claim in the explicit zero-gap variant; opposite-edge fallback is not a stay rule for a half-width A.
 - Unverified/TBD: exact tiny rectangles/client settlement on every WM; exact latest-tag COSMIC FOC-01 fixture, Hyprland shipped-gap FOC-02 and move reconstruction; native settings pickup/parity, especially Windows report defaults; exact preselect/transform/native shell journeys and latest external COSMIC switcher UI. Batches 4-8 recheck source availability/bindings, not native acceptance; scope decisions select no future mechanics.
 - Next action: remaining native adoption of fixed-largest/fixed-float and the
   qualified batch-1 gaps above.
-  Batch 2 retains two OPEN focus decisions; SPC-05b retains its earlier-decision
-  conflict; INS-08 remains an OPEN candidate and LAY-04 remains PARKED/OPEN.
-  Fourteen batches 4-8 rows are normative scope deferrals, not runtime gaps.
+  LAY-04 remains PARKED/OPEN by User 2026-10-09 until a genuine second layout.
+  Focus cycle, container focus and preselection are normative post-0.1 scope
+  deferrals; runtime minimum-hint reflow is retained for now. The earlier
+  fourteen batches 4-8 scope deferrals select no future runtime mechanics.
