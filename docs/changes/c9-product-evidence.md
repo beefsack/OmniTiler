@@ -814,6 +814,86 @@
   D3/D9/D10 decisions and divergence inventory instead record fixed float,
   retired overlap projection and removed capacity settings.
 
+## KDE batch-3 native check (2026-11-14)
+
+- Goal: native adoption evidence for `f2ca6d0e`, checked from `c082dbbe`;
+  no implementation changes. Exact-class-scoped Wayland and XWayland fixtures
+  ran on test workspaces appended beyond the existing roster. Two outputs
+  remained present; no display configuration changed. Shortcut invocation is
+  not physical shortcut-delivery evidence.
+- Evidence bundle: externally retained KDE batch-3 native evidence.
+  `*-commands.jsonl` retains raw calls/replies/status; `*-native.json`,
+  `*-fixture.jsonl` and `*-presentation.json` retain native PID/title/UUID/frame
+  joins, fixture observations and core allocations. Native custom-tile
+  association is false; core allocations establish tiled membership.
+- Controller readiness: post-cursor current-owner `ready`, `discovered`,
+  accepted `src-1-1b9vfky` and matching `observe-applied` revision 1 are retained
+  in `readiness-journal.jsonl` and the planner log. The separate current-owner
+  `QT_CATEGORY=kwin_scripting` readiness check is empty.
+
+| Leg | Verdict | Concrete observed evidence and qualification |
+| --- | --- | --- |
+| REQ-INS-07b inactive destination | PASS | `anchor-c` 32 and `ins-rule-before` 40 establish target `H[B,C]` remembering C, with A focused on the other workspace. A disposable exact fixture-class/run-tagged-title XWayland KWin rule applies the target desktop at birth and prevents host activation. `ins-d2-settled` 43 shows `H[B,V[C,D2]]`, native frames matching allocations, A still focused and both output views unchanged; birth source `src-16-1cv24so` applies two geometry effects but no focus/view/member effects. The rule is removed before return. Plain native return selects D2 itself, but `src-19-7z1hej` 45 has no core focus effect, so that observation alone cannot discriminate replay. A fresh D3 birth (`ins-d3-settled`, 52) repeats C anchoring without focus/view transfer. Its first return explicitly selects C in the same native helper evaluation as workspace selection, after rule removal: `ins-d3-no-replay` 54 retains C in native/fixture/core state, D3 remains unfocused, and `src-1i-1l7ei04` applies no focus effect. This proves no core admission-focus replay, not a promise about KWin's independent return-focus choice. |
+| REQ-SPC-02 utility | PASS | `utility` revision 23 joins the XWayland fixture to native `utility:true`, `normalWindow:false`, and a core ordinary float with no allocation. B/C allocations stay unchanged. Native/core readbacks retain C's focus, but `utility-fixture.jsonl` reports the utility focused, so no cross-observer admission-focus agreement is claimed. Explicit native activation succeeds (`utility-focused`, 24), with native/fixture/core focus agreeing. No type-specific automatic-focus or switcher claim. |
+| REQ-SPC-02 splash | NOT RUN | Fixture `x11_window_type` supports only normal/dialog/utility, creation-only; Wayland has no non-normal type route. Missing capability: create a splash-typed fixture. Follow-up: add creation-only X11 splash support with honest unsupported reporting elsewhere and native type/classification coverage. `world-observe-type-source.txt` retains the KDE candidate/type capture paths for utility/toolbar/splash (`kwin/src/world-observe.ts:892-912,1085-1098`); source coverage is not native splash evidence. |
+| REQ-SPC-03 PiP-style ordinary facts | PASS | `pip-label` 25 and settled `pip-above-result` 26 retain a normal resizable "Picture-in-Picture" titled window as core-tiled, including after native `keepAbove:true`. `pip-fixed-result` 27 joins a second normal, keep-above, fixed-size window to native equal min/max extents and `resizeable:false`; it floats without an allocation. Title/topmost alone do not imply float. No actual media app or skip-taskbar coverage; the fixture has no skip-taskbar option. |
+| REQ-MAX-12 fullscreen | PASS | `full-c` 8, `full-away` 11 and `full-return` 12 retain native fullscreen and the same output-covering frame/membership; return restores native/fixture/core C focus. Orientation source `src-d-1nw4v90` is refused `not-tiled` at 13; `full-orientation-result` 14 preserves allocations and native state. Move-left source `src-f-iffpd2` returns `move-refused-fullscreen`, with zero geometry/member/view/focus effects at 15 and unchanged `full-move-result` 16. `full-off-result` 18 and `full-on-result` 20 prove tiled/floating workspace modes off/on while C remains native-fullscreen and focused. Other tiled windows may reflow on re-enable; their layout retention is not claimed. |
+| History-free stable-first fallback | PASS | Three fresh XWayland windows are admitted by a fixture/run-tag-scoped destination rule while A retains focus elsewhere (`history-a`, `history-ab-full`, `history-abc`, `history-settled`, revisions 59-65). The resulting tree is `H[V[hist-a,hist-c],hist-b]`; no accepted report has either left-subtree candidate focused. After rule removal, one native helper selects the workspace and focuses hist-b before the next report (`history-b-focused`, 67). Focus-left source `src-1w-day0s1` applies one focus effect at 68; `history-result` 69 has upper/stable-first hist-a focused in native/fixture/core state, with unchanged allocations. This establishes history-free core entry, not absence of every transient native activation between reports. |
+| Literal single-output batch-1 edge conditions | PARTIAL | All native readbacks report two outputs. No literal single-output topology was staged: removing/disabling an output would require a display configuration change. Earlier outer-edge stay/no-op evidence remains qualified, not widened. |
+| Incompatible minimum-size observation | PARTIAL | `minimum-observed` 29 and `minimum-result` 31 show native minimum widths 1440 against core/native frame widths 1012 for both tiled windows. Focus-left source `src-u-y9bejz` is accepted at 30; the frames remain disjoint and match allocations, while fixture client sizes remain below requested minima. No overlap or refusal was observed geometrically; rendered-content clipping is unobserved. Saved planner logs have accepted outcomes but no overconstrained/noSpace diagnostic. This does not prove minimum enforcement or complete minimum-policy acceptance. |
+
+- Staging: a pre-map X11 `_NET_WM_DESKTOP` hint on an owned hidden D was
+  overwritten/ignored at manage; D landed on the current desktop and focused
+  normally. This did not establish an inactive-birth trial and is not a product
+  failure. The successful route used three disposable KWin rule groups in turn:
+  exact-title D2, fresh exact-title D3, and a run-tag-bounded history-fixture
+  title pattern. Each matched the exact fixture class; `desktopsrule=Apply`
+  supplied the destination and `fsplevel=Extreme` prevented native birth
+  activation for XWayland. No product destination-rule subsystem is claimed.
+  Each rule was removed and KWin reconfigured before selecting its destination.
+  `rules-before.ini`, the three active/removed rule copies, and reconfigure
+  replies retain accounting; final rule bytes equal the preimage.
+- Collection: native readback was sometimes earlier than geometry settlement;
+  only later matching checkpoints establish settlement. Two later read-only
+  helpers encountered journal JSON `MESSAGE:null` for an oversized result;
+  one collector crashed and the next exhausted its bounded result wait. Both
+  still unloaded with exact name/object absence. Adding `journalctl --all`
+  retained complete result strings, and later readbacks completed without
+  repeating a product mutation. A process-tree diagnostic tool was unavailable;
+  the process roster was collected through `ps` instead. No product fix.
+- Lifecycle: all 69 nonce-named helpers retain source, plugin, signed load ID,
+  pre-load child roster, exact-object introspection and raw run/unload replies.
+  Each is unloaded before another helper or controller teardown; final checks
+  of every name return false and only the untouched pre-existing `Script0`
+  remains. IDs 1/2 were reused only after verified absence.
+- Teardown: both fixture shutdowns succeeded and their native windows, servers,
+  sockets and private directories are absent. Combined tmpfs dev, planner and
+  tray logs were copied before teardown. `dev-off` unloaded the controller and
+  stopped the planner; the exact remaining foreground dev shell was terminated
+  through its cleanup trap, removing the tray and eight follower processes.
+  Initial final accounting finds every fixture/planner/tray/dev child absent,
+  with three top-level command wrappers exited but still defunct;
+  `final-wrapper-states.txt` preserves that distinction. A later read-only
+  process check finds all recorded PIDs absent, including those wrappers;
+  `successor-process-absence.txt` retains the empty roster. A repeated exact-name
+  check in `successor-helper-absence.jsonl` confirms all 69 helpers absent.
+  All three rule groups are gone and rule-file bytes still match the preimage.
+  `final-dev-status.txt` is DOWN; `final-ydotoold.txt` and
+  `final-scripting-errors.jsonl` are empty.
+  Preloaded native effects were preserved. Test desktops retired through
+  ordinary controller churn; a surviving original desktop is selected.
+  No stored tiler setting changed.
+- Verdict audit: independent saved-raw-evidence review confirms all eight
+  qualified rows above: five scoped PASS, two PARTIAL and one NOT RUN.
+  No verdict changed. The utility admission-focus observer disagreement is
+  explicitly retained; only the later explicit-focus checkpoint agrees across
+  native, fixture and core observations. The review also confirms 69 helper
+  unloads, fixture cleanup, three removed rule groups, saved logs, dev DOWN and
+  empty `ydotoold` output. It distinguishes the three initially defunct command
+  wrappers from the later empty process roster rather than calling them absent
+  at the earlier checkpoint. No unsupported or overstated qualified verdict
+  remains.
+
 ## Verification, limits and next decision
 
 - Historical research verification: source reads, exact OPEN-status enumeration, tag-qualified local source inspection and docs diff/whitespace review. Inventory IDs exactly match all 28 OPEN rows; batch sizes are 4/3/4/4/3/4/3/3. New-note relative file links resolve, added matrix target exists, note is ASCII. A broader link check found pre-existing missing `docs/changes/retained-focus-requests.md` targets in the matrix (also present at the inspected base); those unrelated links are unchanged. Research alone claimed no live outcomes or test-suite results; implementation evidence is separate above. Investigation reports were checked against key source spans; over-broad "Tier 1 always tiles" and "COSMIC equals stable-first" claims were rejected.
