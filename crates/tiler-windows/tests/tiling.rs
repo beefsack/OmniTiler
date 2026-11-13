@@ -2949,9 +2949,7 @@ fn resize_repeat_tracks_focus_direction_mode_without_key_up_reset() {
 }
 
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::window_policy::{
-    maximized_focus_fence, sticky_toggle_refusal, unfloat_maximize_clear_eligible,
-};
+use tiler_core::window_policy::{sticky_toggle_refusal, unfloat_maximize_clear_eligible};
 use tiler_core::world_directional::{
     FloatFocusCandidate, float_half_snap_rect, half_snap_constraints_ok,
 };
@@ -3201,17 +3199,6 @@ fn float_half_snap_rejects_invalid_input() {
         float_half_snap_rect(rect(0, 0, 2560, 1440), 0, "diagonal"),
         None
     );
-}
-
-// G-06 maximized directional operations (REQ-MAX-08): focus fenced while the
-// focused window is maximized; move proceeds only after an observed clear
-// with the same reference, focus and domain.
-#[test]
-fn maximized_focus_fence_covers_tiles_with_fullscreen_exempt() {
-    assert!(maximized_focus_fence(true, false));
-    assert!(!maximized_focus_fence(true, true));
-    assert!(!maximized_focus_fence(false, false));
-    assert!(!maximized_focus_fence(false, true));
 }
 
 fn size_hints(

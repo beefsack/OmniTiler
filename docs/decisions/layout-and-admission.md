@@ -155,17 +155,17 @@
 - Evidence: [decision and native gate](../changes/kde-dual-output-live.md#whole-target-r4-wrap-decision-2026-10-14).
 
 ### Best-effort admission fallback
-- Decision: Capacity means geometric exhaustion (whole-tree projection cannot give every tile positive extent after gaps), not minimum infeasibility. Try ordinary anchor first. Fallback default chooses largest-splittable-window by plain area descending, child-order DFS then lifetime ID; alternatives closest-splittable-relative (ancestor rings, sibling distance then DFS) and no-search. Require strict and normal hinted projection; minimum-overconstraint does not refuse. Wrap selected leaf old/new equally on plain long edge (square vertical); no short-axis retry, ancestor wrap, rebalance, automatic other workspace/output search or spill.
+- Decision: Capacity means geometric exhaustion (whole-tree projection cannot give every tile positive extent after gaps), not minimum infeasibility. Try ordinary anchor first. Fallback always chooses largest-splittable-window by plain area descending, child-order DFS then lifetime ID; no fallback setting, closest-relative or no-search alternative. Require strict and normal hinted projection; minimum-overconstraint does not refuse. Wrap selected leaf old/new equally on plain long edge (square vertical); no short-axis retry, ancestor wrap, rebalance, automatic other workspace/output search or spill.
 - Why: geometric exhaustion and minimum-overconstraint are different problems. An ordinary sole newcomer with an oversized minimum still tiles; Tier 1 source accounts do not automatically float it merely for that minimum. Minimum infeasibility alone does not make a capacity float.
 - Assumes / revisit if: D1/D2 fallback ordering and geometric splittability above are active; B6 minimum infeasibility remains independent.
-- Status: active, 2026-10-18
-- Evidence: [implementation and live re-check](../changes/archive/best-effort-admission.md), [oversized sole minimum](../spec/reference-outcomes/minimum-size.md#r-min-03-backfill-oversized-sole-minimum-scrolling); re-examined and retained 2026-11-06, exact native frames/client settlement TBD.
+- Status: active, User 2026-11-12 supersedes D2's alternatives and configurable-default wording; ordinary-first, splittability, ranking and minimum semantics remain.
+- Evidence: [fixed-largest removal](../changes/c9-product-evidence.md#fixed-largest-implementation), [implementation and live re-check](../changes/archive/best-effort-admission.md), [oversized sole minimum](../spec/reference-outcomes/minimum-size.md#r-min-03-backfill-oversized-sole-minimum-scrolling); exact native frames/client settlement TBD.
 
 ### Best-effort D3-D4: no-space result and focus
-- Decision: Default no-space result is float; explicit alternative is allow-overlap. Capacity float has no tile slot/frame authority and retains opening frame; eviction retains last live frame. It remains ordinary float for navigation, decoration, movement and explicit tiling; `capacity` origin is diagnostic only, distinct from automatic fixed-size admission. Focus fresh newcomer, whether tiled or floated, never alternate anchor; ordinary activation/game/overlay/gesture/at-most-once fences apply. Repair/eviction never issues focus setter.
+- Decision: Geometric capacity exhaustion always floats; no no-space setting or allow-overlap alternative. Capacity float has no tile slot/frame authority and retains opening frame; eviction retains last live frame. It remains ordinary float for navigation, decoration, movement and explicit tiling; `capacity` origin is diagnostic only, distinct from automatic fixed-size admission. Focus fresh newcomer, whether tiled or floated, never alternate anchor; ordinary activation/game/overlay/gesture/at-most-once fences apply. Repair/eviction never issues focus setter.
 - Why: not recorded.
-- Assumes / revisit if: no-space result changes only through the admission setting below.
-- Status: active, 2026-10-17
+- Assumes / revisit if: minimum-only infeasibility remains B6, not geometric capacity exhaustion.
+- Status: active, User 2026-11-13 supersedes D3's configurable default and overlap alternative; D3 float placement/provenance and all D4 focus rules remain.
 - Evidence: [best-effort admission](../changes/archive/best-effort-admission.md).
 
 ### Best-effort D5: persistence and retry
@@ -186,8 +186,8 @@
 - Decision: Float the shortest newest-first eligible victim prefix until retained projection succeeds, contracting branches by existing survivor-share rules. Ordering is first successful tiled admission and remains for same lifetime across moves/retiles; ties use descending lifetime identity. Clean-fit adoption shares one initial sequence; serial legs retain actual successful order, not ID sort.
 - Why: not recorded.
 - Assumes / revisit if: protect reserved fullscreen/maximized slots, fixed explicit-tile overrides and unsafe/excluded members; defer during gestures. Impossible protected remainder or invalid usable area remains narrowly held. Evictions persist as ordinary floats.
-- Status: active, 2026-10-17
-- Evidence: [best-effort admission](../changes/archive/best-effort-admission.md).
+- Status: active, User 2026-11-13 fixes D7 victim floating rather than selectable overlap retention; ordering, protection, holds and focus rules remain.
+- Evidence: [fixed-float removal](../changes/c9-product-evidence.md#fixed-float-implementation), [best-effort admission](../changes/archive/best-effort-admission.md).
 
 ### Best-effort D8: startup roster
 - Decision: Preserve clean/tolerance-valid minimum-feasible recursive-cut adoption first; otherwise retain spatial `(y,x,h,w)`, focus-last serial seed with stable adapter-order ties and D2/D3 for each leg. Commit complete mixed roster atomically; persisted floats stay floating. Do not claim balanced optimizer or native burst-order parity.
@@ -196,19 +196,19 @@
 - Status: active, 2026-10-17
 - Evidence: [best-effort admission](../changes/archive/best-effort-admission.md).
 
-### Best-effort D9: overlap projection
-- Decision: Overlap-only projection uses each group's effective axis extent `max(assigned, gap*(children-1)+children)` with existing reserve-one/share rounding, recursively. Preserve assigned origin and cross extent; parent slots do not grow, branches may overlap/overflow. Apply B6 afterward, flag capacity overflow separately, leave strict projection unchanged, hold unrepresentable targets.
+### Best-effort D9: retired capacity-overlap projection
+- Decision: Retire positive-overflow capacity projection and accepted-overlap marks with the D3 overlap alternative. No remaining producer or persisted/imported accepted-overlap mark requires retention. Admission, startup, sends and retained operation projections use strict geometry; D7 repairs exhausted retained trees by floating eligible victims. Invalid bounds, unrepresentable targets and impossible protected remainders still hold narrowly; never fabricate native rectangles. B6 minimum settlement and ordinary native/frame overlaps are not this retired policy.
 - Why: not recorded.
-- Assumes / revisit if: numeric geometry/navigation goldens precede implementation; no strict-projection fallback.
-- Status: active, 2026-10-17
-- Evidence: [best-effort admission](../changes/archive/best-effort-admission.md).
+- Assumes / revisit if: any future imported capacity allocation needs an explicit contract, not implicit overlap authority.
+- Status: retired, User 2026-11-13 supersedes D9's capacity-overlap allocation and retention, preserving strict projection, minimum handling and safety holds.
+- Evidence: [fixed-float route audit](../changes/c9-product-evidence.md#fixed-float-implementation).
 
 ### Best-effort D10: settings
-- Decision: Two global shared-catalog enums under Tiling & Workspaces > Admission: `admission.anchor-fallback` / KDE `anchorFallback`; `admission.no-space` / KDE `noSpaceResult`. Apply affects subsequent admissions and actual capacity decisions only, not reflow, retry or reclassification merely on Apply. Native validity and saved/requested/confirmed state remain separate.
+- Decision: Anchor fallback and no-space behavior are fixed by D2/D3, not exposed in storage, controls or settings messages. Removed `anchorFallback` and `noSpaceResult` inputs follow unknown-field handling without adopting values or discarding valid siblings; KDE leaves removed stored keys untouched, Windows ignores them on load and omits them on save. Settings Apply alone causes no capacity reflow, retry or reclassification; subsequent admissions and actual changed-bounds/gaps capacity decisions use the fixed policies. Native validity and saved/requested/confirmed state remain separate.
 - Why: not recorded.
 - Assumes / revisit if: no additional Apply side effects.
-- Status: active, 2026-10-17
-- Evidence: [best-effort admission](../changes/archive/best-effort-admission.md).
+- Status: active, User 2026-11-13 additionally supersedes D10's no-space-setting exposure and overlap retention; next-decision timing, ordinary anchoring, fixed-largest fallback and minimum semantics remain.
+- Evidence: [fixed-float removal](../changes/c9-product-evidence.md#fixed-float-implementation), [fixed-largest removal](../changes/c9-product-evidence.md#fixed-largest-implementation), [best-effort admission](../changes/archive/best-effort-admission.md).
 
 ### Best-effort Windows capability boundary
 - Decision: Windows explicit output-send and R4 capacity-float transfers refuse `float-no-remap`, preserving source Engine/membership until remap rule approved; this is host capability gate, not shared selection change and not change to whole-workspace migration remaps.

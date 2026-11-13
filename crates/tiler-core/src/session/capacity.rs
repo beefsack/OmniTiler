@@ -7,26 +7,21 @@
 //! the parent session module.
 //!
 //! Contents:
-//! - [`super::Session`] policy accessors (`anchor-fallback`, `no-space`)
-//!   with next-decision-only timing (D10): setters never touch topology,
-//!   membership, focus, revision, or classifications.
-//! - Diagnostic capacity-float origin accessors (D4, distinct from the
-//!   fixed-size `automatic_fixed` marker) and first-successful-tiled-
-//!   admission order accessors (D7 victim order).
+//! - Cursor-first fresh placement accessors and capacity-float origin
+//!   accessors (D4, distinct from the fixed-size `automatic_fixed` marker)
+//!   and first-successful-tiled-admission order accessors (D7 victim order).
 //! - Pure per-leg admission selection ([`select_admission_target`]) and
 //!   D7 retained-tree repair ([`Session::repair_infeasible_domain`]).
-//! - Overlap-gated projection ([`project_domain_geometry`]) so accepted
-//!   overlap trees stay publishable until a real capacity decision.
+//! - Strict domain projection ([`project_domain_geometry`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::admission::{
-    AnchorFallback, NoSpaceResult, closest_relative_order, dfs_leaves, rank_largest_candidates,
-    split_candidate_at, tree_admits_candidate,
+    dfs_leaves, rank_largest_candidates, split_candidate_at, tree_admits_candidate,
 };
 use crate::directional::{Axis, Node, NodeId, WindowId, WindowLink};
-use crate::geometry::{Rect, project, project_overlap};
-use crate::size_hints::{WindowSizeHints, project_overlap_with_hints, project_with_hints};
+use crate::geometry::{Rect, project};
+use crate::size_hints::{WindowSizeHints, project_with_hints};
 
 use super::{DesiredGeometry, DomainKey, OutputDomain};
 
@@ -46,12 +41,10 @@ pub(super) struct AdmissionTarget {
 /// hinted projection with a positive rectangle for every tiled lifetime;
 /// `overconstrained` minimum flags alone never disqualify (D1, B6 kept).
 /// Fallback shapes wrap the candidate leaf old/new with equal shares on
-/// its long edge (square ties vertical). `NoSearch` and an empty
-/// candidate list mean policy exhaustion, never a tiling impossibility
-/// proof.
+/// its long edge (square ties vertical). An empty candidate list means
+/// policy exhaustion, never a tiling impossibility proof.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn select_admission_target(
-    policy: AnchorFallback,
     tree: Option<&Node>,
     bounds: Rect,
     gap: i32,
@@ -76,31 +69,19 @@ pub(super) fn select_admission_target(
         // failure is invalid bounds, not search evidence.
         return Err(());
     };
-    if policy == AnchorFallback::NoSearch {
+    let Ok(projected) = project(tree, bounds, gap) else {
         return Err(());
-    }
-    let order: Vec<NodeId> = match policy {
-        AnchorFallback::LargestSplittable => {
-            let Ok(projected) = project(tree, bounds, gap) else {
-                return Err(());
-            };
-            let areas: BTreeMap<NodeId, i64> = projected
-                .iter()
-                .map(|leaf| {
-                    (
-                        leaf.leaf.clone(),
-                        i64::from(leaf.rect.w) * i64::from(leaf.rect.h),
-                    )
-                })
-                .collect();
-            rank_largest_candidates(&areas, &dfs_leaves(tree), leaf_to_window)
-        }
-        AnchorFallback::ClosestRelative => match ordinary_anchor {
-            Some(anchor) => closest_relative_order(tree, anchor),
-            None => dfs_leaves(tree),
-        },
-        AnchorFallback::NoSearch => return Err(()),
     };
+    let areas: BTreeMap<NodeId, i64> = projected
+        .iter()
+        .map(|leaf| {
+            (
+                leaf.leaf.clone(),
+                i64::from(leaf.rect.w) * i64::from(leaf.rect.h),
+            )
+        })
+        .collect();
+    let order = rank_largest_candidates(&areas, &dfs_leaves(tree), leaf_to_window);
     for anchor in order {
         if Some(&anchor) == ordinary_anchor {
             continue;
@@ -126,35 +107,6 @@ pub(super) fn select_admission_target(
 }
 
 impl super::Session {
-    /// D2 anchor fallback for subsequent capacity decisions only (D10).
-    /// Largest-splittable default.
-    #[must_use]
-    pub fn anchor_fallback(&self) -> AnchorFallback {
-        self.anchor_fallback
-    }
-
-    /// Select the D2 anchor fallback for subsequent admissions only.
-    /// Never touches topology, membership, focus, revision, or existing
-    /// classifications (D10: no reflow or retry on Apply).
-    pub fn set_anchor_fallback(&mut self, fallback: AnchorFallback) {
-        self.anchor_fallback = fallback;
-    }
-
-    /// D3 no-space result for subsequent capacity decisions only (D10).
-    /// Float default.
-    #[must_use]
-    pub fn no_space_result(&self) -> NoSpaceResult {
-        self.no_space
-    }
-
-    /// Select the D3 no-space result for subsequent admission or actual
-    /// capacity-repair decisions only. Never touches topology, membership,
-    /// focus, revision, or existing classifications: retained overlap
-    /// allocations stay valid until a real capacity decision (D10).
-    pub fn set_no_space_result(&mut self, result: NoSpaceResult) {
-        self.no_space = result;
-    }
-
     /// Cursor-first fresh placement for subsequent fresh admissions only.
     /// Cursor-output/last-focused default (COSMIC).
     #[must_use]
@@ -184,7 +136,7 @@ impl super::Session {
     }
 
     /// Whether a window floats with diagnostic capacity origin (D4):
-    /// no split was available and the no-space setting selected float.
+    /// no split was available and capacity exhaustion floated it.
     /// Functionally an ordinary float; distinct from automatic fixed.
     #[must_use]
     pub fn is_capacity_float(&self, window: &WindowId) -> bool {
@@ -222,12 +174,6 @@ impl super::Session {
         self.admission_counter = self.admission_counter.max(next);
     }
 
-    /// Whether a domain's retained tree was accepted via overlap (D9).
-    #[must_use]
-    pub fn overlap_accepted(&self, key: &DomainKey) -> bool {
-        self.overlap_accepted.contains(key)
-    }
-
     /// Whether the staged pending plan capacity-floats `window` (explicit
     /// unfloat no-space report input for the float route).
     #[must_use]
@@ -239,8 +185,7 @@ impl super::Session {
 
     /// Drop capacity bookkeeping for windows no longer in membership.
     /// Close and identity replacement clear origin and order (D5); moves
-    /// and re-tiles for the same lifetime preserve them. Overlap marks
-    /// drop with their domain.
+    /// and re-tiles for the same lifetime preserve them.
     pub(super) fn prune_capacity_state(&mut self) {
         self.capacity_floats
             .retain(|id| self.windows.contains_key(id) || self.exceptions.contains_key(id));
@@ -249,39 +194,12 @@ impl super::Session {
                 || self.exceptions.contains_key(id)
                 || self.minimized_slots.contains_key(id)
         });
-        self.overlap_accepted
-            .retain(|key| self.trees.contains_key(key));
-        self.refresh_overlap_marks();
-    }
-
-    /// Drop overlap-accepted marks whose trees now project strictly or
-    /// are gone: only genuinely overflowing retained allocations keep
-    /// the mark, so a later strict success never shelters a changed
-    /// tree from the next real capacity decision.
-    pub(super) fn refresh_overlap_marks(&mut self) {
-        let keys: Vec<DomainKey> = self.overlap_accepted.iter().cloned().collect();
-        for key in keys {
-            let strict = match (
-                self.domains.iter().find(|d| d.key() == key),
-                self.trees.get(&key).cloned().flatten(),
-            ) {
-                (Some(domain), Some(tree)) => {
-                    crate::geometry::project(&tree, domain.bounds, domain.gap).is_ok()
-                }
-                _ => false,
-            };
-            if strict {
-                self.overlap_accepted.remove(&key);
-            }
-        }
-        self.overlap_accepted
-            .retain(|key| self.trees.contains_key(key));
     }
 
     /// Repair one retained domain whose tree no longer projects (D7).
     ///
-    /// Float mode evicts the shortest newest-first eligible victim
-    /// prefix (first-successful-tiled-admission order, untracked oldest,
+    /// Evicts the shortest newest-first eligible victim prefix
+    /// (first-successful-tiled-admission order, untracked oldest,
     /// identity descending for ties) until the retained tree
     /// projects strictly, contracting survivor branches with the
     /// existing removal rules. Protected windows never evict: explicit
@@ -289,8 +207,6 @@ impl super::Session {
     /// (adapter-observed overlays, unsafe or excluded members). Evicted
     /// windows keep their last live frame (`live_frames`, else retained
     /// geometry, else none) and record diagnostic capacity origin.
-    /// Overlap mode (D9) instead retains links when the positive
-    /// overflow projector succeeds, with no eviction.
     ///
     /// Repair updates only internal tiled focus bookkeeping (a surviving
     /// prior MRU when the focused leaf evicts, else none): it issues no
@@ -301,9 +217,7 @@ impl super::Session {
     /// (`false`, no mutation).
     ///
     /// `geometry_changed` marks a real capacity-repair trigger (changed
-    /// bounds/gaps re-evaluate under the currently selected setting).
-    /// With unchanged geometry an accepted overlap mark shelters the
-    /// tree with no reflow, so a bare settings Apply never evicts.
+    /// bounds/gaps re-evaluate).
     pub fn repair_infeasible_domain(
         &mut self,
         key: &DomainKey,
@@ -331,14 +245,12 @@ impl super::Session {
         let focused = (self.focused_domain.clone(), self.focused_leaf.clone());
         let mut repair = DomainRepair {
             policy: self.policy.clone(),
-            no_space: self.no_space,
             domains: self.domains.clone(),
             trees: self.trees.clone(),
             windows: self.windows.clone(),
             exceptions: self.exceptions.clone(),
             retained: self.retained_float_geometry.clone(),
             capacity: self.capacity_floats.clone(),
-            overlap: self.overlap_accepted.clone(),
             fixed_override: self.fixed_tile_override.clone(),
             admission_order: self.admission_order.clone(),
         };
@@ -368,7 +280,6 @@ impl super::Session {
         self.exceptions = repair.exceptions;
         self.retained_float_geometry = repair.retained;
         self.capacity_floats = repair.capacity;
-        self.overlap_accepted = repair.overlap;
         self.focused_domain = focus.0;
         self.focused_leaf = focus.1;
         self.focus_stack = self.updated_focus_stack(
@@ -396,14 +307,12 @@ impl super::Session {
 /// floated victim) with no native effect.
 pub(super) struct DomainRepair {
     pub policy: std::sync::Arc<dyn crate::policy::LayoutPolicy>,
-    pub no_space: NoSpaceResult,
     pub domains: Vec<OutputDomain>,
     pub trees: BTreeMap<DomainKey, Option<Node>>,
     pub windows: BTreeMap<WindowId, WindowLink>,
     pub exceptions: BTreeMap<WindowId, super::ExceptionRecord>,
     pub retained: BTreeMap<WindowId, Rect>,
     pub capacity: BTreeSet<WindowId>,
-    pub overlap: BTreeSet<DomainKey>,
     pub fixed_override: BTreeSet<WindowId>,
     pub admission_order: BTreeMap<WindowId, u64>,
 }
@@ -411,12 +320,6 @@ pub(super) struct DomainRepair {
 impl DomainRepair {
     /// Repair one domain in the working maps. `None` is a narrow truthful
     /// hold; the caller discards the working maps on `None`.
-    ///
-    /// `geometry_changed` distinguishes a real capacity-repair trigger
-    /// (changed bounds/gaps re-evaluate under the currently selected
-    /// setting) from projection retention (an unchanged tree keeps its
-    /// accepted overlap mark with no reflow, so Apply alone never
-    /// evicts). D10 governs settings timing, not geometry triggers.
     #[allow(clippy::too_many_arguments)]
     pub fn repair(
         &mut self,
@@ -424,7 +327,7 @@ impl DomainRepair {
         hints: &BTreeMap<WindowId, WindowSizeHints>,
         protected: &BTreeSet<WindowId>,
         live_frames: &BTreeMap<WindowId, Rect>,
-        geometry_changed: bool,
+        _geometry_changed: bool,
         focus_stack: &[NodeId],
         focused: &(Option<DomainKey>, Option<NodeId>),
     ) -> Option<(Option<DomainKey>, Option<NodeId>)> {
@@ -436,33 +339,9 @@ impl DomainRepair {
             return Some(focused.clone());
         };
         if domain_projects(&domain, &tree, &self.windows, key, hints) {
-            self.overlap.remove(key);
             return Some(focused.clone());
         }
-        if self.no_space == NoSpaceResult::AllowOverlap
-            && domain_projects_overlap(&domain, &tree, &self.windows, key, hints)
-        {
-            self.overlap.insert(key.clone());
-            return Some(focused.clone());
-        }
-        if !geometry_changed
-            && self.overlap.contains(key)
-            && domain_projects_overlap(&domain, &tree, &self.windows, key, hints)
-        {
-            // Unchanged geometry only: a retained overlap allocation
-            // stays valid until a real capacity decision, even under
-            // the float setting (D10: Apply alone never reflows). A
-            // real bounds/gap change re-evaluates under the currently
-            // selected setting instead, so the mark never shelters a
-            // changed tree from newest-first float repair.
-            return Some(focused.clone());
-        }
-        if self.no_space == NoSpaceResult::AllowOverlap {
-            // Overlap mode without a projecting overlap tree is a
-            // truthful hold, never a float eviction (D9).
-            return None;
-        }
-        // Float mode: evict the shortest newest-first eligible prefix
+        // Evict the shortest newest-first eligible prefix
         // (untracked lifetimes last, treated as oldest).
         let mut members: Vec<(Option<u64>, WindowId)> = self
             .windows
@@ -533,7 +412,6 @@ impl DomainRepair {
         if !projects {
             return None;
         }
-        self.overlap.remove(key);
         // Surviving-MRU focus only; never a floated victim, no native set.
         let (mut focus_domain, mut focus_leaf) = focused.clone();
         if !focus_resolves_in(&focus_domain, &focus_leaf, &self.trees, &self.windows) {
@@ -610,35 +488,6 @@ pub(super) fn domain_projects(
         && project_with_hints(tree, domain.bounds, domain.gap, &resolve).is_ok()
 }
 
-/// Overlap projectability of one domain tree with hints (D9).
-pub(super) fn domain_projects_overlap(
-    domain: &OutputDomain,
-    tree: &Node,
-    windows: &BTreeMap<WindowId, WindowLink>,
-    key: &DomainKey,
-    hints: &BTreeMap<WindowId, WindowSizeHints>,
-) -> bool {
-    let leaf_to_window: BTreeMap<&NodeId, &WindowId> = windows
-        .values()
-        .filter(|l| l.output == key.output && l.workspace == key.workspace)
-        .map(|l| (&l.leaf, &l.window))
-        .collect();
-    if leaf_to_window.len() != super::collect_leaves(tree).len() {
-        return false;
-    }
-    if project_overlap(tree, domain.bounds, domain.gap).is_err() {
-        return false;
-    }
-    let resolve = |leaf: &NodeId| {
-        leaf_to_window
-            .get(leaf)
-            .and_then(|window| hints.get(*window))
-            .copied()
-            .unwrap_or_else(WindowSizeHints::none)
-    };
-    project_overlap_with_hints(tree, domain.bounds, domain.gap, &resolve).is_ok()
-}
-
 /// One planned admission leg: the fresh leaf id, the ordinary-anchor
 /// post-insertion tree, and the selected target (ordinary, D2 fallback,
 /// or policy exhaustion). Shared by single admission and observation
@@ -665,7 +514,6 @@ pub(super) struct PlannedLeg {
 pub(super) fn plan_admission_leg(
     policy: &dyn crate::policy::LayoutPolicy,
     alloc: &super::GroupAllocator,
-    anchor_fallback: AnchorFallback,
     current: Option<Node>,
     bounds: Rect,
     gap: i32,
@@ -713,7 +561,6 @@ pub(super) fn plan_admission_leg(
     let mut oracle_links = leaf_links.clone();
     oracle_links.insert(leaf_id.clone(), window.clone());
     let selected = select_admission_target(
-        anchor_fallback,
         current.as_ref(),
         bounds,
         gap,
@@ -732,11 +579,8 @@ pub(super) fn plan_admission_leg(
     }
 }
 
-/// Project one domain tree, gating overlap: strict first; overlap only
-/// when `allow_overlap` (D9 decision) or the domain was overlap-accepted
-/// (retained allocations stay valid after switching to float until a
-/// real capacity decision). Returns `None` for invalid topology or
-/// unprojectable geometry under the gate.
+/// Project one domain tree strictly. Returns `None` for invalid topology
+/// or unprojectable geometry.
 #[must_use]
 pub fn project_domain_geometry(
     domain: &OutputDomain,
@@ -744,7 +588,6 @@ pub fn project_domain_geometry(
     windows: &BTreeMap<WindowId, WindowLink>,
     key: &DomainKey,
     hints: &BTreeMap<WindowId, WindowSizeHints>,
-    allow_overlap: bool,
 ) -> Option<Vec<DesiredGeometry>> {
     if let Ok(strict) =
         super::project_output_geometry(Some(domain), Some(tree), windows, key, hints)
@@ -752,17 +595,12 @@ pub fn project_domain_geometry(
     {
         return Some(strict);
     }
-    if !allow_overlap {
-        return None;
-    }
-    project_domain_overlap(domain, tree, windows, key, hints)
+    None
 }
 
-/// Project affected domains, gating overlap per domain: strict first;
-/// overlap only when `allow(key)` (D9 decision or retained
-/// overlap-accepted mark). Returns `None` for unknown domains or
-/// unprojectable geometry under the gate. Sorted like the strict
-/// affected projector so call sites stay byte-identical on success.
+/// Project affected domains strictly. Returns `None` for unknown domains
+/// or unprojectable geometry. Sorted like the strict affected projector so
+/// call sites stay byte-identical on success.
 #[must_use]
 pub fn project_affected_gated(
     domains: &[OutputDomain],
@@ -770,7 +608,6 @@ pub fn project_affected_gated(
     windows: &BTreeMap<WindowId, WindowLink>,
     affected: &[DomainKey],
     hints: &BTreeMap<WindowId, WindowSizeHints>,
-    allow: &dyn Fn(&DomainKey) -> bool,
 ) -> Option<Vec<DesiredGeometry>> {
     let mut out = Vec::new();
     for key in affected {
@@ -778,7 +615,7 @@ pub fn project_affected_gated(
         let tree = trees.get(key).cloned().flatten();
         let projected = match tree.as_ref() {
             None => Vec::new(),
-            Some(tree) => project_domain_geometry(domain, tree, windows, key, hints, allow(key))?,
+            Some(tree) => project_domain_geometry(domain, tree, windows, key, hints)?,
         };
         out.extend(projected);
     }
@@ -789,49 +626,6 @@ pub fn project_affected_gated(
             .then(a.workspace.0.cmp(&b.workspace.0))
             .then(a.leaf.0.cmp(&b.leaf.0))
     });
-    Some(out)
-}
-
-/// Overlap projection of one domain tree with B6 minimum flags (D9).
-/// Positive overflowing leaf rectangles; `capacity_overflow` is a
-/// projector-level diagnostic and does not ride [`DesiredGeometry`].
-pub(super) fn project_domain_overlap(
-    domain: &OutputDomain,
-    tree: &Node,
-    windows: &BTreeMap<WindowId, WindowLink>,
-    key: &DomainKey,
-    hints: &BTreeMap<WindowId, WindowSizeHints>,
-) -> Option<Vec<DesiredGeometry>> {
-    let leaf_to_window: BTreeMap<&NodeId, &WindowId> = windows
-        .values()
-        .filter(|l| l.output == key.output && l.workspace == key.workspace)
-        .map(|l| (&l.leaf, &l.window))
-        .collect();
-    let resolve = |leaf: &NodeId| {
-        leaf_to_window
-            .get(leaf)
-            .and_then(|window| hints.get(*window))
-            .copied()
-            .unwrap_or_else(WindowSizeHints::none)
-    };
-    let hinted = project_overlap_with_hints(tree, domain.bounds, domain.gap, &resolve).ok()?;
-    let over: BTreeSet<&NodeId> = hinted.overconstrained.iter().collect();
-    let mut out = Vec::with_capacity(hinted.leaves.len());
-    for leaf in hinted.leaves {
-        let window = leaf_to_window.get(&leaf.leaf)?;
-        if leaf.rect.w <= 0 || leaf.rect.h <= 0 {
-            return None;
-        }
-        out.push(DesiredGeometry {
-            window: (*window).clone(),
-            leaf: leaf.leaf.clone(),
-            output: key.output.clone(),
-            workspace: key.workspace.clone(),
-            rect: leaf.rect,
-            overconstrained: over.contains(&leaf.leaf),
-            client_clamped: false,
-        });
-    }
     Some(out)
 }
 

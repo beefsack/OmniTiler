@@ -1,8 +1,8 @@
 //! Best-effort admission regression tests (D1-D10, selected 2026-10-17).
 //!
 //! Core Session/Engine admission plus geometric repair: ordinary anchor
-//! first, D2 fallback ranking (largest area with DFS ties, closest rings,
-//! no-search), D3 float/overlap, B6 preservation, diagnostic capacity
+//! first, D2 fallback ranking (largest area with DFS ties, closest rings),
+//! D3 capacity float, B6 preservation, diagnostic capacity
 //! origin, admission-sequence victim order, D7 repair with protections,
 //! startup mixed rosters, replay/close/explicit-retry stability, and no
 //! settings reflow. KDE/protocol runtime integration lives in the next
@@ -10,12 +10,11 @@
 //! Suite layout (parent holds every shared helper; children hold only tests):
 //! - `session_policy`: D2/D3/D7 session policy, fallback ranking, reflow-freeness.
 //! - `engine_admission`: engine seeds, newcomer projection, float parity/persistence.
-//! - `cross_output_send`: R4/send cross-output exhaustion, overlap, drag agreement.
+//! - `cross_output_send`: R4/send cross-output exhaustion, drag agreement.
 //! - `send_float_order`: send-float results and admission-order stability.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::admission::{AnchorFallback, NoSpaceResult};
 use crate::contract::{
     AckOutcome, AdapterAck, LifecycleCapabilities, LifecyclePostObservation, Observation,
 };

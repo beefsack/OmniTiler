@@ -191,11 +191,6 @@ fn shared_fixture_matches_windows_classify() {
                 // share-policy commit. Covered by core's own fixture tests.
                 continue;
             }
-            "focus_fence" => {
-                // No public Windows API: core-owned since the
-                // share-policy commit. Covered by core's own fixture tests.
-                continue;
-            }
             "born_hold" => {
                 // No public Windows API: core-owned since the
                 // share-policy commit. Covered by core's own fixture tests.

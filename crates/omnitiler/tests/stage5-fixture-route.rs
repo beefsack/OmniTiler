@@ -42,7 +42,12 @@
 use omnitiler::world_service::WorldService;
 
 const ADAPTER: &str = "kwin-stage5-v4";
-const GEN: &str = "gen-stage5-v4-active";
+
+fn recorded_gen(chain: &str) -> String {
+    let manifest: serde_json::Value =
+        serde_json::from_str(&read_fixture(chain, "manifest.json")).expect("manifest is JSON");
+    manifest["gen"].as_str().expect("manifest gen").to_owned()
+}
 
 fn read_fixture(chain: &str, name: &str) -> String {
     std::fs::read_to_string(format!(
@@ -64,7 +69,7 @@ struct Step {
     hold_barrier: bool,
 }
 
-fn discovered(chain: &str) -> (WorldService, String) {
+fn discovered(chain: &str, rec_gen: &str) -> (WorldService, String) {
     let service = WorldService::new();
     // Actual recorded handshake bytes, verbatim (no generation inside).
     let handshake = read_fixture(chain, "discovery-handshake.request.json");
@@ -79,7 +84,8 @@ fn discovered(chain: &str) -> (WorldService, String) {
     let generation = discovery["gen"].as_str().expect("gen").to_owned();
     // Actual recorded settings bytes with only the live generation
     // substituted in.
-    let settings = read_fixture(chain, "discovery-settings.request.json").replace(GEN, &generation);
+    let settings =
+        read_fixture(chain, "discovery-settings.request.json").replace(rec_gen, &generation);
     let settings_reply: serde_json::Value =
         serde_json::from_str(&service.discover(&settings).expect("settings route"))
             .expect("settings reply is JSON");
@@ -162,13 +168,14 @@ fn clock_settle_ms(chain: &str, replay: &[(&str, String)]) -> u64 {
 /// source, and watermark, with ready set.
 fn feed_raw(
     service: &WorldService,
+    rec_gen: &str,
     generation: &str,
     envelope_name: &str,
     recorded: &str,
 ) -> serde_json::Value {
     let recorded_value: serde_json::Value =
         serde_json::from_str(recorded).expect("envelope is JSON");
-    let live = recorded.replace(GEN, generation);
+    let live = recorded.replace(rec_gen, generation);
     let reply: serde_json::Value =
         serde_json::from_str(&service.evaluate_capture(&live).expect("in-band"))
             .expect("capture reply is JSON");
@@ -194,6 +201,7 @@ fn feed_raw(
 fn read_step(
     service: &WorldService,
     chain: &str,
+    rec_gen: &str,
     generation: &str,
     step: &Step,
     last_envelope: &str,
@@ -209,7 +217,7 @@ fn read_step(
         .read_presentation(&format!("{{\"v\":4,\"req\":\"{req}\"}}"))
         .expect("in-band");
     assert_eq!(
-        body.replace(generation, GEN),
+        body.replace(generation, rec_gen),
         recorded,
         "{}: served projection must equal the recorded broker bytes",
         step.projection
@@ -311,7 +319,8 @@ fn run_chain(chain: &str, genesis: &[&str], steps: &[Step], post_discovery_delay
     }
     let settle = clock_settle_ms(chain, &replay);
     assert_creation_receipt_margin(chain, &replay);
-    let (service, generation) = discovered(chain);
+    let rec_gen = recorded_gen(chain);
+    let (service, generation) = discovered(chain, &rec_gen);
     if post_discovery_delay_ms > 0 {
         std::thread::sleep(std::time::Duration::from_millis(post_discovery_delay_ms));
     }
@@ -320,7 +329,7 @@ fn run_chain(chain: &str, genesis: &[&str], steps: &[Step], post_discovery_delay
     // handshake reset and this feed.
     {
         let entry: &(&str, String) = &replay[cursor];
-        feed_raw(&service, &generation, entry.0, &entry.1);
+        feed_raw(&service, &rec_gen, &generation, entry.0, &entry.1);
         cursor += 1;
     }
     // Settle one bounded sleep past the maximum recorded attempt stamp so
@@ -329,18 +338,18 @@ fn run_chain(chain: &str, genesis: &[&str], steps: &[Step], post_discovery_delay
     std::thread::sleep(std::time::Duration::from_millis(settle));
     for _ in 1..genesis.len() {
         let entry: &(&str, String) = &replay[cursor];
-        feed_raw(&service, &generation, entry.0, &entry.1);
+        feed_raw(&service, &rec_gen, &generation, entry.0, &entry.1);
         cursor += 1;
     }
     for step in steps {
         let mut last = "";
         for _ in step.envelopes {
             let entry: &(&str, String) = &replay[cursor];
-            feed_raw(&service, &generation, entry.0, &entry.1);
+            feed_raw(&service, &rec_gen, &generation, entry.0, &entry.1);
             last = entry.0;
             cursor += 1;
         }
-        read_step(&service, chain, &generation, step, last);
+        read_step(&service, chain, &rec_gen, &generation, step, last);
     }
 }
 
@@ -607,7 +616,7 @@ fn stage5_fixture_frozen_v4_shape_rejects() {
     // The envelope rejection is proven past discovery on the live active
     // route, so a generation mismatch cannot mask the shape verdict: the
     // frozen bytes ride the serving generation and still refuse.
-    let (service, generation) = discovered("full");
+    let (service, generation) = discovered("full", &recorded_gen("full"));
     let frozen_envelope =
         std::fs::read_to_string("../../test-fixtures/stage5-v4/full/envelope-p5-0.json")
             .expect("frozen stage5-v4 envelope is checked in");

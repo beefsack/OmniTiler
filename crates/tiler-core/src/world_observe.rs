@@ -493,6 +493,8 @@ impl WorldEngine {
             presentation_v4: self.staged.presentation_v4.clone(),
             renderer_input: self.staged.renderer_input.clone(),
             effective_windows: effective,
+            revision: self.staged.revision,
+            batch_focus_issued: self.staged.batch_focus_issued,
             ..StagedReport::default()
         };
         let effective = restaged.effective_windows.clone();

@@ -55,7 +55,7 @@
     },
     {
       "id": "settings-defaults",
-      "file": "../v4/messages/settings-defaults.json",
+      "file": "messages/settings-defaults.json",
       "family": "Settings",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -67,7 +67,7 @@
     },
     {
       "id": "settings-alternatives",
-      "file": "../v4/messages/settings-alternatives.json",
+      "file": "messages/settings-alternatives.json",
       "family": "Settings",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -79,7 +79,7 @@
     },
     {
       "id": "settings-third-arms",
-      "file": "../v4/messages/settings-third-arms.json",
+      "file": "messages/settings-third-arms.json",
       "family": "Settings",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -104,7 +104,7 @@
     },
     {
       "id": "settings-invalid-fields",
-      "file": "../v4/messages/settings-invalid-fields.json",
+      "file": "messages/settings-invalid-fields.json",
       "family": "Settings",
       "direction": "adapter-to-core",
       "expectation": "accepted-with-field-diagnostics",
@@ -153,7 +153,7 @@
     },
     {
       "id": "settings-restart-only",
-      "file": "../v4/messages/settings-restart-only.json",
+      "file": "messages/settings-restart-only.json",
       "family": "Settings",
       "direction": "adapter-to-core",
       "expectation": "accepted-with-field-diagnostics",
@@ -6882,15 +6882,6 @@
       "both-axes-fixed",
       "either-axis-fixed"
     ],
-    "Settings.anchorFallback": [
-      "largest-splittable-window",
-      "closest-splittable-relative",
-      "no-search"
-    ],
-    "Settings.noSpaceResult": [
-      "float",
-      "allow-overlap"
-    ],
     "Settings.refill": [
       "last-remaining-workspace",
       "most-recently-used-workspace"
@@ -8958,50 +8949,6 @@
             "fixture": "settings-third-arms",
             "pointer": "/values/predicate",
             "value": "either-axis-fixed"
-          }
-        ]
-      },
-      "Settings.anchorFallback": {
-        "largest-splittable-window": [
-          {
-            "fixture": "settings-defaults",
-            "pointer": "/values/anchorFallback",
-            "value": "largest-splittable-window"
-          }
-        ],
-        "closest-splittable-relative": [
-          {
-            "fixture": "settings-alternatives",
-            "pointer": "/values/anchorFallback",
-            "value": "closest-splittable-relative"
-          }
-        ],
-        "no-search": [
-          {
-            "fixture": "settings-third-arms",
-            "pointer": "/values/anchorFallback",
-            "value": "no-search"
-          }
-        ]
-      },
-      "Settings.noSpaceResult": {
-        "float": [
-          {
-            "fixture": "settings-defaults",
-            "pointer": "/values/noSpaceResult",
-            "value": "float"
-          }
-        ],
-        "allow-overlap": [
-          {
-            "fixture": "settings-alternatives",
-            "pointer": "/values/noSpaceResult",
-            "value": "allow-overlap"
-          },
-          {
-            "fixture": "settings-third-arms",
-            "pointer": "/values/noSpaceResult",
-            "value": "allow-overlap"
           }
         ]
       },

@@ -60,6 +60,12 @@ impl WorldEngine {
             }
             true
         } else {
+            // Never let a stale prior cursor survive when a command focus
+            // failed to record canonically, while preserving an already
+            // matching target (e.g. a repeated Focus(N) while N is held).
+            if self.logical_focus_cursor.as_ref() != Some(window) {
+                self.logical_focus_cursor = None;
+            }
             false
         }
     }

@@ -1,15 +1,15 @@
 #![forbid(unsafe_code)]
-//! G-06 maximized directional focus fence + G-D2 maximized workspace-send
-//! carry (portable, headless).
+//! Shared maximized directional focus local-skip/cross semantics + G-D2
+//! maximized workspace-send carry (portable, headless).
 //!
-//! Drives the real `session::Session` focus/send APIs plus one real
-//! `engine::Engine` focus request. G-06: with the Linux-route
-//! `maximized_focus_fence` opt-in on, directional focus with a maximized
-//! (non-fullscreen) focused subject refuses as `Unchanged` with no plan and
-//! no pending; fullscreen keeps its enter/leave behavior and the default
-//! (Windows) route is unchanged. G-D2: a maximized tiled mover sends to
-//! another workspace through the ordinary transfer with its leaf preserved
-//! and follow/stay focus intact (no unmaximize/remaximize in core).
+//! Drives the real `session::Session` focus/send APIs plus real
+//! `engine::Engine` focus requests. A maximized (non-fullscreen) focused
+//! subject skips same-output candidates (`propose_focus` refuses as
+//! `Unchanged` with no plan and no pending) and crosses to the adjacent
+//! output when one exists; fullscreen keeps its enter/leave behavior.
+//! G-D2: a maximized tiled mover sends to another workspace through the
+//! ordinary transfer with its leaf preserved and follow/stay focus intact
+//! (no unmaximize/remaximize in core).
 
 use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
 use crate::contract::{
@@ -109,9 +109,7 @@ fn fullscreen_maximized_flag(base: &ObservedWindow) -> ObservedWindow {
 }
 fn linux_session(domains: Vec<OutputDomain>) -> Session {
     let mut s = Session::new(owner(), generation(), 0, 7, domains).expect("session");
-    // Linux route: fixed-size admission plus the G-06 focus fence.
     s.set_fixed_size_admission(true);
-    s.set_maximized_focus_fence(true);
     s
 }
 fn admit(s: &mut Session, w: &str, o: &str, ws: &str, c: &str) {
@@ -182,19 +180,7 @@ fn two_tile() -> (Session, DomainKey) {
 }
 
 #[test]
-fn fence_defaults_off_preserving_the_windows_route() {
-    let engine = Engine::new();
-    assert!(!engine.fixed_size_admission(), "fixed opt-in defaults off");
-    assert!(
-        !engine.maximized_focus_fence(),
-        "G-06 fence defaults off: Windows carriers keep exact current behavior"
-    );
-    let s = Session::new(owner(), generation(), 0, 7, vec![dom("out-1", "ws-1")]).expect("s");
-    assert!(!s.maximized_focus_fence(), "session fence defaults off");
-}
-
-#[test]
-fn fence_on_refuses_maximized_local_focus_with_no_pending() {
+fn maximized_local_focus_skips_sibling_with_no_pending() {
     let (mut s, domain) = two_tile();
     let focused = focused_window(&s, &domain);
     let mut flags = BTreeMap::new();
@@ -212,14 +198,14 @@ fn fence_on_refuses_maximized_local_focus_with_no_pending() {
             &corr("corr-g06-focus"),
             &FocusCapabilities::full(),
         )
-        .expect_err("maximized focus must fence");
+        .expect_err("maximized focus must skip same-output siblings");
     assert_eq!(err, ProposeError::Refused(RefusalKind::Unchanged));
-    assert!(!s.has_pending(), "fence stages no pending");
-    assert!(!s.has_pending_desired(), "fence stages no desired state");
+    assert!(!s.has_pending(), "skip stages no pending");
+    assert!(!s.has_pending_desired(), "skip stages no desired state");
 }
 
 #[test]
-fn fence_on_fullscreen_skips_local_sibling_while_ordinary_focus_plans() {
+fn fullscreen_skips_local_sibling_while_ordinary_focus_plans() {
     let (mut s, domain) = two_tile();
     let focused = focused_window(&s, &domain);
     // Fullscreen (even with maximize also set) skips same-output siblings
@@ -243,9 +229,9 @@ fn fence_on_fullscreen_skips_local_sibling_while_ordinary_focus_plans() {
         )
         .expect_err("fullscreen focus skips the local sibling");
     assert_eq!(err, ProposeError::Refused(RefusalKind::Unchanged));
-    assert!(!s.has_pending(), "fence stages no pending");
-    assert!(!s.has_pending_desired(), "fence stages no desired state");
-    // Ordinary focus still plans under the fence.
+    assert!(!s.has_pending(), "skip stages no pending");
+    assert!(!s.has_pending_desired(), "skip stages no desired state");
+    // Ordinary focus still plans.
     let o1 = obs(&s, &BTreeMap::new());
     s.propose_focus(
         &domain,
@@ -259,12 +245,10 @@ fn fence_on_fullscreen_skips_local_sibling_while_ordinary_focus_plans() {
 }
 
 #[test]
-fn fence_off_plans_maximized_focus_preserving_windows_behavior() {
-    // Fence off with fixed admission on: the maximized observation binds
-    // and focus plans exactly as before (Windows route unchanged).
+fn default_session_skips_maximized_local_focus() {
+    // Shared maximized local-skip semantics apply without any opt-in flag.
     let mut s = Session::new(owner(), generation(), 0, 7, vec![dom("out-1", "ws-1")]).expect("s");
     s.set_fixed_size_admission(true);
-    assert!(!s.maximized_focus_fence());
     admit(&mut s, "win-1", "out-1", "ws-1", "corr-admit-1");
     admit(&mut s, "win-2", "out-1", "ws-1", "corr-admit-2");
     let domain = key("out-1", "ws-1");
@@ -275,62 +259,102 @@ fn fence_off_plans_maximized_focus_preserving_windows_behavior() {
         maximized_flag(&tiled(&focused.0, "out-1", "ws-1")),
     );
     let o0 = obs(&s, &flags);
-    s.propose_focus(
-        &domain,
-        &focused,
-        Direction::Left,
-        &o0,
-        &corr("corr-g06-off"),
-        &FocusCapabilities::full(),
-    )
-    .expect("fence off plans maximized focus as before");
-}
-
-#[test]
-fn fence_on_refuses_maximized_cross_output_focus() {
-    let mut s = linux_session(vec![
-        dom_adjacent("out-1", "ws-1", Direction::Right, "out-2"),
-        dom_adjacent("out-2", "ws-1", Direction::Left, "out-1"),
-    ]);
-    admit(&mut s, "win-t", "out-2", "ws-1", "corr-admit-t");
-    admit(&mut s, "win-a", "out-1", "ws-1", "corr-admit-a");
-    let source = key("out-1", "ws-1");
-    assert_eq!(focused_window(&s, &source).0, "win-a");
-    // Maximized subject fences the cross-output leg (no plan, no pending).
-    let mut flags = BTreeMap::new();
-    flags.insert(
-        "win-a".to_owned(),
-        maximized_flag(&tiled("win-a", "out-1", "ws-1")),
-    );
-    let o1 = obs(&s, &flags);
     let err = s
-        .propose_cross_output_focus(
-            &source,
-            &WindowId("win-a".to_owned()),
-            Direction::Right,
-            &o1,
-            &corr("corr-g06-cross"),
+        .propose_focus(
+            &domain,
+            &focused,
+            Direction::Left,
+            &o0,
+            &corr("corr-g06-off"),
             &FocusCapabilities::full(),
         )
-        .expect_err("maximized cross-output focus must fence");
+        .expect_err("default session skips maximized local focus");
     assert_eq!(err, ProposeError::Refused(RefusalKind::Unchanged));
-    assert!(!s.has_pending(), "fence stages no pending");
-    // Control: ordinary cross-output focus plans (sole source leaf at the
-    // root edge crosses to the remembered target leaf).
-    let o0 = obs(&s, &BTreeMap::new());
-    s.propose_cross_output_focus(
-        &source,
-        &WindowId("win-a".to_owned()),
-        Direction::Right,
-        &o0,
-        &corr("corr-g06-cross-plain"),
-        &FocusCapabilities::full(),
-    )
-    .expect("ordinary cross-output focus plans");
 }
 
 #[test]
-fn fence_on_leaves_maximized_move_untouched_for_the_adapter_clear() {
+fn maximized_cross_output_focus_crosses_and_ordinary_crosses() {
+    for (dir, opp) in [
+        (Direction::Right, Direction::Left),
+        (Direction::Up, Direction::Down),
+        (Direction::Down, Direction::Up),
+    ] {
+        let setup = || {
+            let mut out_2 = dom_adjacent("out-2", "ws-1", opp, "out-1");
+            out_2.bounds.y = match dir {
+                Direction::Up => -600,
+                Direction::Down => 600,
+                _ => 0,
+            };
+            let mut s = linux_session(vec![dom_adjacent("out-1", "ws-1", dir, "out-2"), out_2]);
+            admit(&mut s, "win-t", "out-2", "ws-1", "corr-admit-t");
+            admit(&mut s, "win-a", "out-1", "ws-1", "corr-admit-a");
+            let source = key("out-1", "ws-1");
+            assert_eq!(focused_window(&s, &source).0, "win-a");
+            (s, source)
+        };
+        let (mut s, source) = setup();
+        let mut flags = BTreeMap::new();
+        flags.insert(
+            "win-a".to_owned(),
+            maximized_flag(&tiled("win-a", "out-1", "ws-1")),
+        );
+        let o1 = obs(&s, &flags);
+        let max_plan = s
+            .propose_cross_output_focus(
+                &source,
+                &WindowId("win-a".to_owned()),
+                dir,
+                &o1,
+                &corr("corr-g06-cross"),
+                &FocusCapabilities::full(),
+            )
+            .expect("maximized subject crosses to adjacent output");
+        assert_eq!(max_plan.desired_focus_domain, key("out-2", "ws-1"));
+        // Control: ordinary cross-output focus crosses horizontally (`Right`),
+        // while vertical ordinary cross-output focus stays `Unchanged` with
+        // no pending state.
+        let (mut s_plain, source_plain) = setup();
+        let o0 = obs(&s_plain, &BTreeMap::new());
+        match dir {
+            Direction::Right => {
+                let plain_plan = s_plain
+                    .propose_cross_output_focus(
+                        &source_plain,
+                        &WindowId("win-a".to_owned()),
+                        dir,
+                        &o0,
+                        &corr("corr-g06-cross-plain"),
+                        &FocusCapabilities::full(),
+                    )
+                    .expect("ordinary cross-output focus plans");
+                assert_eq!(plain_plan.desired_focus_domain, key("out-2", "ws-1"));
+            }
+            Direction::Up | Direction::Down => {
+                let err = s_plain
+                    .propose_cross_output_focus(
+                        &source_plain,
+                        &WindowId("win-a".to_owned()),
+                        dir,
+                        &o0,
+                        &corr("corr-g06-cross-plain"),
+                        &FocusCapabilities::full(),
+                    )
+                    .expect_err("vertical ordinary cross-output focus refuses unchanged");
+                assert_eq!(err, ProposeError::Refused(RefusalKind::Unchanged));
+                assert!(!s_plain.has_pending(), "refusal stages no pending");
+                assert!(
+                    !s_plain.has_pending_desired(),
+                    "refusal stages no desired state"
+                );
+            }
+            Direction::Left => unreachable!("test only covers Right/Up/Down"),
+        }
+    }
+}
+
+#[test]
+fn maximized_move_plans_untouched_for_the_adapter_clear() {
     // The Engine never clears maximize itself: a maximized mover still
     // plans structurally, so the KDE adapter's unmaximize-first leg lands
     // on the ordinary move once settlement is observed clear.
@@ -351,8 +375,202 @@ fn fence_on_leaves_maximized_move_untouched_for_the_adapter_clear() {
             &corr("corr-g06-move"),
             &Capabilities::full(),
         )
-        .expect("move still plans under the focus-only fence")
+        .expect("move still plans with shared maximized focus semantics")
         .expect_moved("tiled move");
+}
+
+// ---- Nov 1 rule (2026-11-01): a maximized origin skips same-output
+// candidates, crosses to the adjacent output in the requested direction,
+// else stays. Shared with the native and composed maximize routes; the
+// cross leg preserves the destination overlay. ----
+
+fn plain_session(domains: Vec<OutputDomain>) -> Session {
+    let mut s = Session::new(owner(), generation(), 0, 7, domains).expect("session");
+    s.set_fixed_size_admission(true);
+    s
+}
+
+/// Two tiles with no fence profile: focused win-2 with win-1 to the left.
+fn unfenced_two_tile() -> (Session, DomainKey) {
+    let mut s = plain_session(vec![dom("out-1", "ws-1")]);
+    admit(&mut s, "win-1", "out-1", "ws-1", "corr-admit-1");
+    admit(&mut s, "win-2", "out-1", "ws-1", "corr-admit-2");
+    let domain = key("out-1", "ws-1");
+    assert_eq!(focused_window(&s, &domain).0, "win-2");
+    (s, domain)
+}
+
+#[test]
+fn nov1_maximized_local_focus_skips_sibling_all_directions() {
+    let (mut s, domain) = unfenced_two_tile();
+    let focused = focused_window(&s, &domain);
+    let mut flags = BTreeMap::new();
+    flags.insert(
+        focused.0.clone(),
+        maximized_flag(&tiled(&focused.0, "out-1", "ws-1")),
+    );
+    let o0 = obs(&s, &flags);
+    // A local sibling waits in Left; Up/Down/Right have no local target
+    // either. Every direction must refuse as `Unchanged` (no plan, no
+    // pending) so the caller continues to the adjacent output or stays.
+    for direction in [
+        Direction::Left,
+        Direction::Right,
+        Direction::Up,
+        Direction::Down,
+    ] {
+        let err = s
+            .propose_focus(
+                &domain,
+                &focused,
+                direction,
+                &o0,
+                &corr("corr-nov1-focus"),
+                &FocusCapabilities::full(),
+            )
+            .expect_err("maximized focus must skip same-output siblings");
+        assert_eq!(err, ProposeError::Refused(RefusalKind::Unchanged));
+        assert!(!s.has_pending(), "skip stages no pending");
+        assert!(!s.has_pending_desired(), "skip stages no desired state");
+    }
+}
+
+#[test]
+fn nov1_maximized_crosses_to_adjacent_despite_local_sibling() {
+    for (dir, opp) in [
+        (Direction::Right, Direction::Left),
+        (Direction::Up, Direction::Down),
+        (Direction::Down, Direction::Up),
+    ] {
+        let mut out_2 = dom_adjacent("out-2", "ws-1", opp, "out-1");
+        out_2.bounds.y = match dir {
+            Direction::Up => -600,
+            Direction::Down => 600,
+            _ => 0,
+        };
+        let mut s = plain_session(vec![dom_adjacent("out-1", "ws-1", dir, "out-2"), out_2]);
+        admit(&mut s, "win-t", "out-2", "ws-1", "corr-admit-t");
+        admit(&mut s, "win-a", "out-1", "ws-1", "corr-admit-a");
+        admit(&mut s, "win-b", "out-1", "ws-1", "corr-admit-b");
+        let source = key("out-1", "ws-1");
+        // Move logical focus onto win-a so a same-output sibling (win-b)
+        // waits on the output.
+        let plain = obs(&s, &BTreeMap::new());
+        let plan = s
+            .propose_focus(
+                &source,
+                &WindowId("win-b".to_owned()),
+                Direction::Left,
+                &plain,
+                &corr("corr-nov1-seed"),
+                &FocusCapabilities::full(),
+            )
+            .expect("seed focus plans");
+        let base = s.accepted_revision();
+        s.acknowledge(&AdapterAck::new(
+            corr("corr-nov1-seed"),
+            owner(),
+            generation(),
+            base,
+            AckOutcome::Accepted,
+        ))
+        .expect("ack");
+        s.verify_focus(&crate::contract::FocusPostObservation::new(
+            crate::contract::Observation::new(owner(), generation(), base, 200),
+            corr("corr-nov1-seed"),
+            true,
+            plan.dispatch.preconditions.clone(),
+            plan.dispatch.operation.clone(),
+        ))
+        .expect("commit");
+        assert_eq!(focused_window(&s, &source).0, "win-a");
+        // Maximized win-a pressing dir must skip win-b and cross to win-t
+        // even though the local edge is not exhausted.
+        let mut flags = BTreeMap::new();
+        flags.insert(
+            "win-a".to_owned(),
+            maximized_flag(&tiled("win-a", "out-1", "ws-1")),
+        );
+        let o1 = obs(&s, &flags);
+        let err = s
+            .propose_focus(
+                &source,
+                &WindowId("win-a".to_owned()),
+                dir,
+                &o1,
+                &corr("corr-nov1-local-skip"),
+                &FocusCapabilities::full(),
+            )
+            .expect_err("maximized local focus skips sibling");
+        assert_eq!(err, ProposeError::Refused(RefusalKind::Unchanged));
+        let plan = s
+            .propose_cross_output_focus(
+                &source,
+                &WindowId("win-a".to_owned()),
+                dir,
+                &o1,
+                &corr("corr-nov1-cross"),
+                &FocusCapabilities::full(),
+            )
+            .expect("maximized subject crosses despite the local sibling");
+        assert_eq!(plan.desired_focus_domain, key("out-2", "ws-1"));
+    }
+}
+
+#[test]
+fn nov1_maximized_single_output_cross_stays() {
+    let (mut s, domain) = unfenced_two_tile();
+    let focused = focused_window(&s, &domain);
+    let mut flags = BTreeMap::new();
+    flags.insert(
+        focused.0.clone(),
+        maximized_flag(&tiled(&focused.0, "out-1", "ws-1")),
+    );
+    let o0 = obs(&s, &flags);
+    let err = s
+        .propose_cross_output_focus(
+            &domain,
+            &focused,
+            Direction::Right,
+            &o0,
+            &corr("corr-nov1-single"),
+            &FocusCapabilities::full(),
+        )
+        .expect_err("no adjacent output stays");
+    assert_eq!(err, ProposeError::Refused(RefusalKind::Unchanged));
+    assert!(!s.has_pending(), "stay stages no pending");
+}
+
+#[test]
+fn nov1_maximized_no_vertical_neighbor_cross_stays() {
+    let mut s = plain_session(vec![
+        dom_adjacent("out-1", "ws-1", Direction::Right, "out-2"),
+        dom_adjacent("out-2", "ws-1", Direction::Left, "out-1"),
+    ]);
+    admit(&mut s, "win-t", "out-2", "ws-1", "corr-admit-t");
+    admit(&mut s, "win-a", "out-1", "ws-1", "corr-admit-a");
+    let source = key("out-1", "ws-1");
+    assert_eq!(focused_window(&s, &source).0, "win-a");
+    let mut flags = BTreeMap::new();
+    flags.insert(
+        "win-a".to_owned(),
+        maximized_flag(&tiled("win-a", "out-1", "ws-1")),
+    );
+    let o1 = obs(&s, &flags);
+    for dir in [Direction::Up, Direction::Down] {
+        let err = s
+            .propose_cross_output_focus(
+                &source,
+                &WindowId("win-a".to_owned()),
+                dir,
+                &o1,
+                &corr("corr-nov1-vertical"),
+                &FocusCapabilities::full(),
+            )
+            .expect_err("no vertical neighbor stays");
+        assert_eq!(err, ProposeError::Refused(RefusalKind::Unchanged));
+        assert!(!s.has_pending(), "stay stages no pending");
+    }
 }
 
 /// Occupied-target session focused on win-2 (win-t waits on ws-b).
@@ -487,8 +705,8 @@ fn maximized_mover_stay_falls_back_to_source_mru() {
     );
 }
 
-// ---- Real-Engine request: Linux-route opt-ins propagate and the focus
-// fence refuses through `Engine::handle`. ----
+// ---- Real-Engine request: shared maximized local-skip semantics and
+// fullscreen local-skip behave consistently through `Engine::handle`. ----
 
 fn engine_window(id: &str, x: i32, maximized: bool) -> EngineWindow {
     EngineWindow {
@@ -543,13 +761,10 @@ fn focus_event(
     }
 }
 
-fn seed_engine(fence: bool) -> Engine {
+fn seed_engine(fixed_size_admission: bool) -> Engine {
     let mut engine = Engine::new();
     engine.sync_binding(&owner(), &generation());
-    // Linux route: fixed admission plus the G-06 fence. Windows carriers
-    // use `Engine::new` defaults (both off).
-    engine.set_fixed_size_admission(true);
-    engine.set_maximized_focus_fence(fence);
+    engine.set_fixed_size_admission(fixed_size_admission);
     // Seed two side-by-side tiles focused on win-2 via reconcile.
     let seed = focus_event(
         vec![
@@ -572,7 +787,7 @@ fn seed_engine(fence: bool) -> Engine {
 }
 
 #[test]
-fn engine_fence_on_refuses_maximized_focus_through_handle() {
+fn engine_skips_maximized_local_focus_through_handle() {
     let mut engine = seed_engine(true);
     let event = focus_event(
         vec![
@@ -585,32 +800,17 @@ fn engine_fence_on_refuses_maximized_focus_through_handle() {
     );
     match engine.handle(&event) {
         CoreReply::Rejected { kind, .. } => {
-            assert_eq!(kind, "unchanged", "fence refuses as unchanged")
+            assert_eq!(
+                kind, "unchanged",
+                "maximized local skip refuses as unchanged"
+            )
         }
-        other => panic!("maximized focus must fence, got {other:?}"),
+        other => panic!("maximized local focus must skip, got {other:?}"),
     }
 }
 
 #[test]
-fn engine_fence_off_plans_maximized_focus_preserving_windows_behavior() {
-    let mut engine = seed_engine(false);
-    let event = focus_event(
-        vec![
-            engine_window("win-1", 0, false),
-            engine_window("win-2", 200, true),
-        ],
-        "win-2",
-        "corr-g06-engine-off",
-        7,
-    );
-    match engine.handle(&event) {
-        CoreReply::FocusDirectional(_) => {}
-        other => panic!("fence off must plan maximized focus as before, got {other:?}"),
-    }
-}
-
-#[test]
-fn engine_fence_on_fullscreen_skips_local_while_ordinary_plans() {
+fn engine_fullscreen_skips_local_while_ordinary_plans() {
     let mut engine = seed_engine(true);
     let ordinary = focus_event(
         vec![
@@ -623,7 +823,7 @@ fn engine_fence_on_fullscreen_skips_local_while_ordinary_plans() {
     );
     match engine.handle(&ordinary) {
         CoreReply::FocusDirectional(_) => {}
-        other => panic!("ordinary focus must plan under the fence, got {other:?}"),
+        other => panic!("ordinary focus must plan, got {other:?}"),
     }
     // Fullscreen skips the local sibling (R-MAX-02): the local request
     // refuses as unchanged; the cross leg continues instead.

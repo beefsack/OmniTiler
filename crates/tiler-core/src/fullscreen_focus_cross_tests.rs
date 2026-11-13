@@ -274,6 +274,111 @@ fn non_fullscreen_control_still_plans_local_sibling() {
     .expect("ordinary focus still plans the local sibling");
 }
 
+fn maximized_flag(base: &ObservedWindow) -> ObservedWindow {
+    let mut entry = base.clone();
+    entry.maximized = true;
+    entry
+}
+
+#[test]
+fn maximized_tiled_subject_propose_focus_refuses_unchanged_all_directions() {
+    // Nov 1 rule (2026-11-01): the maximized origin skips same-output
+    // siblings in every direction with no fence profile. This session
+    // carries no fence opt-in, so the refusal must come from the shared
+    // rule itself.
+    let (mut s, domain) = two_tile();
+    let focused = focused_window(&s, &domain);
+    let mut flags = BTreeMap::new();
+    flags.insert(
+        focused.0.clone(),
+        maximized_flag(&tiled(&focused.0, "out-1", "ws-1")),
+    );
+    let o0 = obs(&s, &flags);
+    for direction in [
+        Direction::Left,
+        Direction::Right,
+        Direction::Up,
+        Direction::Down,
+    ] {
+        let err = s
+            .propose_focus(
+                &domain,
+                &focused,
+                direction,
+                &o0,
+                &corr("corr-nov1-focus"),
+                &FocusCapabilities::full(),
+            )
+            .expect_err("maximized focus must skip same-output siblings");
+        assert_eq!(err, ProposeError::Refused(RefusalKind::Unchanged));
+        assert!(!s.has_pending(), "skip stages no pending");
+        assert!(!s.has_pending_desired(), "skip stages no desired state");
+    }
+}
+
+#[test]
+fn maximized_tiled_subject_crosses_to_adjacent_output() {
+    // Nov 1 rule: like the fullscreen subject above, the maximized subject
+    // skips the local-exhaustion gate and crosses despite the sibling.
+    for (dir, opp) in [
+        (Direction::Right, Direction::Left),
+        (Direction::Up, Direction::Down),
+        (Direction::Down, Direction::Up),
+    ] {
+        let mut out_2 = dom_adjacent("out-2", "ws-1", opp, "out-1");
+        out_2.bounds.y = match dir {
+            Direction::Up => -600,
+            Direction::Down => 600,
+            _ => 0,
+        };
+        let mut s = Session::new(
+            owner(),
+            generation(),
+            0,
+            7,
+            vec![dom_adjacent("out-1", "ws-1", dir, "out-2"), out_2],
+        )
+        .expect("s");
+        s.set_fixed_size_admission(true);
+        admit(&mut s, "win-t", "out-2", "ws-1", "corr-admit-t");
+        admit(&mut s, "win-a", "out-1", "ws-1", "corr-admit-a");
+        admit(&mut s, "win-b", "out-1", "ws-1", "corr-admit-b");
+        let source = key("out-1", "ws-1");
+        assert_eq!(focused_window(&s, &source).0, "win-b");
+        let plain = obs(&s, &BTreeMap::new());
+        let plan = s
+            .propose_focus(
+                &source,
+                &WindowId("win-b".to_owned()),
+                Direction::Left,
+                &plain,
+                &corr("corr-nov1-seed"),
+                &FocusCapabilities::full(),
+            )
+            .expect("seed focus plans");
+        commit_focus(&mut s, &plan, "corr-nov1-seed");
+        assert_eq!(focused_window(&s, &source).0, "win-a");
+        // Maximized win-a pressing dir must skip win-b and cross to win-t.
+        let mut flags = BTreeMap::new();
+        flags.insert(
+            "win-a".to_owned(),
+            maximized_flag(&tiled("win-a", "out-1", "ws-1")),
+        );
+        let o1 = obs(&s, &flags);
+        let plan = s
+            .propose_cross_output_focus(
+                &source,
+                &WindowId("win-a".to_owned()),
+                dir,
+                &o1,
+                &corr("corr-nov1-cross"),
+                &FocusCapabilities::full(),
+            )
+            .expect("maximized subject crosses despite the local sibling");
+        assert_eq!(plan.desired_focus_domain, key("out-2", "ws-1"));
+    }
+}
+
 #[test]
 fn fullscreen_tiled_subject_crosses_to_adjacent_output() {
     let mut s = two_output();
@@ -396,11 +501,10 @@ fn vertical_fullscreen_cross_refuses() {
 }
 
 #[test]
-fn both_flags_follow_fullscreen_not_maximized_fence() {
-    // Maximized (non-fullscreen) fences; fullscreen (even with maximize
-    // also set) follows the R-MAX-02 cross rule instead.
+fn both_flags_follow_fullscreen_local_skip_and_cross() {
+    // Fullscreen (even with maximize also set) follows the R-MAX-02
+    // skip-local and cross rule.
     let mut s = two_output();
-    s.set_maximized_focus_fence(true);
     admit(&mut s, "win-t", "out-2", "ws-1", "corr-admit-t");
     admit(&mut s, "win-a", "out-1", "ws-1", "corr-admit-a");
     admit(&mut s, "win-b", "out-1", "ws-1", "corr-admit-b");
@@ -435,8 +539,7 @@ fn both_flags_follow_fullscreen_not_maximized_fence() {
         )
         .expect_err("both flags must not take the local sibling");
     assert_eq!(err, ProposeError::Refused(RefusalKind::Unchanged));
-    // ...while the cross leg proceeds (a maximized non-fullscreen subject
-    // would fence here instead).
+    // ...while the cross leg proceeds.
     let plan = s
         .propose_cross_output_focus(
             &source,
@@ -688,6 +791,35 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_re
 
 fn two_screens() -> Vec<ScreenReport> {
     vec![screen("out-a", 0), screen("out-b", 800)]
+}
+
+fn screens_in(dir: &str) -> Vec<ScreenReport> {
+    let mut out_b = screen("out-b", 800);
+    let (x, y) = match dir {
+        "right" => (800, 0),
+        "up" => (0, -600),
+        "down" => (0, 600),
+        other => panic!("unexpected direction {other}"),
+    };
+    out_b.full_rect = Some(wrect(x, y, 800, 600));
+    out_b.work_area = Some(wrect(x, y, 800, 560));
+    vec![screen("out-a", 0), out_b]
+}
+
+fn target_xy(dir: &str) -> (i32, i32) {
+    match dir {
+        "right" => (900, 0),
+        "up" => (100, -500),
+        "down" => (100, 700),
+        other => panic!("unexpected direction {other}"),
+    }
+}
+
+fn fact_at(window: &str, output: &str, x: i32, y: i32) -> WindowFact {
+    WindowFact {
+        rect: Some(wrect(x, y, 40, 90)),
+        ..fact(window, output, x)
+    }
 }
 
 fn one_screen() -> Vec<ScreenReport> {
@@ -1199,4 +1331,453 @@ fn world_explicit_focus_by_window_works_under_fullscreen() {
         ),
     );
     expect_explicit_focus(&reply, "win-b", 11, 2);
+}
+
+// ---- Nov 1 rule (2026-11-01), native maximize route: a maximized origin
+// skips same-output siblings and continues to the adjacent output in the
+// requested direction; without one, focus stays. Destination overlays are
+// eligible and preserved. ----
+
+fn maximized_fact(window: &str, output: &str, x: i32) -> WindowFact {
+    WindowFact {
+        maximized: Some(true),
+        ..fact(window, output, x)
+    }
+}
+
+fn maximized_float_fact(window: &str, output: &str, x: i32, y: i32) -> WindowFact {
+    WindowFact {
+        maximized: Some(true),
+        ..float_fact(window, output, x, y)
+    }
+}
+
+#[test]
+fn world_native_maximized_tiled_skips_sibling_and_crosses_output() {
+    for dir in ["right", "up", "down"] {
+        let screens = screens_in(dir);
+        let (tx, ty) = target_xy(dir);
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+        accepted(
+            &mut engine,
+            &report(
+                1,
+                screens.clone(),
+                vec![
+                    fact("win-a", "out-a", 0),
+                    fact("win-b", "out-a", 200),
+                    fact_at("win-c", "out-b", tx, ty),
+                ],
+                "win-a",
+                None,
+                None,
+            ),
+        );
+        // Maximized win-a pressing dir must skip win-b and cross to win-c.
+        let reply = accepted(
+            &mut engine,
+            &report(
+                2,
+                screens,
+                vec![
+                    maximized_fact("win-a", "out-a", 0),
+                    fact("win-b", "out-a", 200),
+                    fact_at("win-c", "out-b", tx, ty),
+                ],
+                "win-a",
+                Some(11),
+                Some(WorldCommand::FocusDirectional {
+                    window: WindowId("win-a".to_owned()),
+                    direction: dir.to_owned(),
+                }),
+            ),
+        );
+        expect_explicit_focus(&reply, "win-c", 11, 2);
+    }
+}
+
+#[test]
+fn world_native_maximized_tiled_single_output_stays_unchanged() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            one_screen(),
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 200)],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    let key = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+    let outcome = engine
+        .handle_report(
+            &report(
+                2,
+                one_screen(),
+                vec![
+                    maximized_fact("win-a", "out-a", 0),
+                    fact("win-b", "out-a", 200),
+                ],
+                "win-a",
+                Some(11),
+                Some(WorldCommand::FocusDirectional {
+                    window: WindowId("win-a".to_owned()),
+                    direction: "right".to_owned(),
+                }),
+            ),
+            &[],
+        )
+        .0;
+    let reply = match outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        WorldOutcome::Rejected { kind, .. } => {
+            assert_eq!(
+                kind, "unchanged",
+                "single-output maximized refuses as unchanged, not {kind}"
+            );
+            assert_eq!(
+                session_focused(&engine, &key),
+                Some(WindowId("win-a".to_owned())),
+                "single-output maximized retains focus"
+            );
+            return;
+        }
+        other => panic!("unexpected outcome: {other:?}"),
+    };
+    assert!(
+        reply.focus_request.is_none(),
+        "no focus request without an adjacent output, got {:?}",
+        reply.focus_request
+    );
+    assert_eq!(
+        session_focused(&engine, &key),
+        Some(WindowId("win-a".to_owned())),
+        "single-output maximized retains focus"
+    );
+}
+
+#[test]
+fn world_native_maximized_tiled_no_vertical_neighbor_retains() {
+    for dir in ["up", "down"] {
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+        accepted(
+            &mut engine,
+            &report(
+                1,
+                two_screens(),
+                vec![
+                    fact("win-a", "out-a", 0),
+                    fact("win-b", "out-a", 200),
+                    fact("win-c", "out-b", 900),
+                ],
+                "win-a",
+                None,
+                None,
+            ),
+        );
+        let key = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+        let outcome = engine
+            .handle_report(
+                &report(
+                    2,
+                    two_screens(),
+                    vec![
+                        maximized_fact("win-a", "out-a", 0),
+                        fact("win-b", "out-a", 200),
+                        fact("win-c", "out-b", 900),
+                    ],
+                    "win-a",
+                    Some(11),
+                    Some(WorldCommand::FocusDirectional {
+                        window: WindowId("win-a".to_owned()),
+                        direction: dir.to_owned(),
+                    }),
+                ),
+                &[],
+            )
+            .0;
+        let reply = match outcome {
+            WorldOutcome::Accepted(reply) => reply,
+            WorldOutcome::Rejected { kind, .. } => {
+                assert_eq!(
+                    kind, "unchanged",
+                    "no-vertical-neighbor maximized refuses as unchanged, not {kind}"
+                );
+                assert_eq!(
+                    session_focused(&engine, &key),
+                    Some(WindowId("win-a".to_owned())),
+                    "no-vertical-neighbor maximized retains focus"
+                );
+                continue;
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+        assert!(
+            reply.focus_request.is_none(),
+            "maximized without vertical neighbor retains, got {:?}",
+            reply.focus_request
+        );
+        assert_eq!(
+            session_focused(&engine, &key),
+            Some(WindowId("win-a".to_owned())),
+            "no-vertical-neighbor maximized retains focus"
+        );
+    }
+}
+
+#[test]
+fn world_native_maximized_cross_preserves_destination_overlay() {
+    for dir in ["right", "up", "down"] {
+        let screens = screens_in(dir);
+        let (tx, ty) = target_xy(dir);
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+        accepted(
+            &mut engine,
+            &report(
+                1,
+                screens.clone(),
+                vec![
+                    fact("win-a", "out-a", 0),
+                    fact("win-b", "out-a", 200),
+                    fact_at("win-c", "out-b", tx, ty),
+                ],
+                "win-a",
+                None,
+                None,
+            ),
+        );
+        // Both ends maximized: the cross must reach the maximized destination
+        // and disturb neither overlay.
+        let reply = accepted(
+            &mut engine,
+            &report(
+                2,
+                screens,
+                vec![
+                    maximized_fact("win-a", "out-a", 0),
+                    fact("win-b", "out-a", 200),
+                    WindowFact {
+                        maximized: Some(true),
+                        ..fact_at("win-c", "out-b", tx, ty)
+                    },
+                ],
+                "win-a",
+                Some(11),
+                Some(WorldCommand::FocusDirectional {
+                    window: WindowId("win-a".to_owned()),
+                    direction: dir.to_owned(),
+                }),
+            ),
+        );
+        expect_explicit_focus(&reply, "win-c", 11, 2);
+        let staged_maximized = |lifetime: &str| {
+            engine
+                .staged
+                .facts
+                .get(&WindowId(lifetime.to_owned()))
+                .and_then(|fact| fact.maximized)
+        };
+        assert_eq!(
+            staged_maximized("win-a"),
+            Some(true),
+            "source overlay preserved ({dir})"
+        );
+        assert_eq!(
+            staged_maximized("win-c"),
+            Some(true),
+            "destination overlay preserved ({dir})"
+        );
+    }
+}
+
+// Float-origin maximized focus below is an explicitly requested ASSUMPTION
+// for later reversal: ordinary floats stay local, while a maximized float
+// origin skips the lattice and crosses (or retains) like the tiled rule.
+// These cases are isolated here so the assumption can be revisited alone.
+
+#[test]
+fn world_native_maximized_float_skips_lattice_and_crosses_remembered() {
+    for (dir, (sx, sy), (lx, ly)) in [
+        ("right", (100, 100), (320, 100)),
+        ("up", (100, 220), (100, 0)),
+        ("down", (100, 100), (100, 320)),
+    ] {
+        let screens = screens_in(dir);
+        let (tx, ty) = target_xy(dir);
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+        accepted(
+            &mut engine,
+            &report(
+                1,
+                screens.clone(),
+                vec![
+                    float_fact("win-sub", "out-a", sx, sy),
+                    float_fact("win-local", "out-a", lx, ly),
+                    fact_at("win-t", "out-b", tx, ty),
+                ],
+                "win-sub",
+                None,
+                None,
+            ),
+        );
+        // Establish the remembered tiled target on out-b, then return explicit
+        // focus to the float subject.
+        accepted(
+            &mut engine,
+            &report(
+                2,
+                screens.clone(),
+                vec![
+                    float_fact("win-sub", "out-a", sx, sy),
+                    float_fact("win-local", "out-a", lx, ly),
+                    fact_at("win-t", "out-b", tx, ty),
+                ],
+                "win-t",
+                Some(11),
+                Some(WorldCommand::Focus {
+                    window: WindowId("win-t".to_owned()),
+                    direction: dir.to_owned(),
+                }),
+            ),
+        );
+        accepted(
+            &mut engine,
+            &report(
+                3,
+                screens.clone(),
+                vec![
+                    float_fact("win-sub", "out-a", sx, sy),
+                    float_fact("win-local", "out-a", lx, ly),
+                    fact_at("win-t", "out-b", tx, ty),
+                ],
+                "win-sub",
+                Some(12),
+                Some(WorldCommand::Focus {
+                    window: WindowId("win-sub".to_owned()),
+                    direction: dir.to_owned(),
+                }),
+            ),
+        );
+        // Maximized float subject pressing dir must skip win-local and cross
+        // to the remembered win-t.
+        let reply = accepted(
+            &mut engine,
+            &report(
+                4,
+                screens,
+                vec![
+                    maximized_float_fact("win-sub", "out-a", sx, sy),
+                    float_fact("win-local", "out-a", lx, ly),
+                    fact_at("win-t", "out-b", tx, ty),
+                ],
+                "win-sub",
+                Some(13),
+                Some(WorldCommand::FocusDirectional {
+                    window: WindowId("win-sub".to_owned()),
+                    direction: dir.to_owned(),
+                }),
+            ),
+        );
+        expect_explicit_focus(&reply, "win-t", 13, 4);
+    }
+}
+
+#[test]
+fn world_native_maximized_float_no_vertical_neighbor_retains() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            two_screens(),
+            vec![
+                float_fact("win-sub", "out-a", 100, 220),
+                float_fact("win-above", "out-a", 100, 0),
+                fact("win-t", "out-b", 900),
+            ],
+            "win-sub",
+            None,
+            None,
+        ),
+    );
+    // A same-output float waits above and a horizontal neighbor exists, but
+    // with no vertical adjacent output pressing Up must retain without dispatch.
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            two_screens(),
+            vec![
+                maximized_float_fact("win-sub", "out-a", 100, 220),
+                float_fact("win-above", "out-a", 100, 0),
+                fact("win-t", "out-b", 900),
+            ],
+            "win-sub",
+            Some(11),
+            Some(WorldCommand::FocusDirectional {
+                window: WindowId("win-sub".to_owned()),
+                direction: "up".to_owned(),
+            }),
+        ),
+    );
+    let outcome = reply.command_result.as_ref().map(|result| match result {
+        crate::world_report::CommandResult::Directional { outcome, .. } => outcome.as_str(),
+        _ => "other",
+    });
+    assert_eq!(outcome, Some("focus-float-retained"));
+    assert!(
+        reply.focus_request.is_none(),
+        "maximized float without vertical neighbor retains, got {:?}",
+        reply.focus_request
+    );
+}
+
+#[test]
+fn world_native_maximized_float_single_output_retains() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            one_screen(),
+            vec![
+                float_fact("win-sub", "out-a", 100, 100),
+                float_fact("win-east", "out-a", 300, 100),
+            ],
+            "win-sub",
+            None,
+            None,
+        ),
+    );
+    // A same-output float waits right, but with no adjacent output the
+    // maximized subject must retain without dispatch.
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            one_screen(),
+            vec![
+                maximized_float_fact("win-sub", "out-a", 100, 100),
+                float_fact("win-east", "out-a", 300, 100),
+            ],
+            "win-sub",
+            Some(11),
+            Some(WorldCommand::FocusDirectional {
+                window: WindowId("win-sub".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    let outcome = reply.command_result.as_ref().map(|result| match result {
+        crate::world_report::CommandResult::Directional { outcome, .. } => outcome.as_str(),
+        _ => "other",
+    });
+    assert_eq!(outcome, Some("focus-float-retained"));
+    assert!(
+        reply.focus_request.is_none(),
+        "single-output maximized float retains, got {:?}",
+        reply.focus_request
+    );
 }

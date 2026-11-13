@@ -520,8 +520,6 @@ const SETTINGS_ORDER: &[&str] = &[
     "sameAxis",
     "bornMaximized",
     "predicate",
-    "anchorFallback",
-    "noSpaceResult",
     "refill",
     "switchTarget",
     "freshPlacement",

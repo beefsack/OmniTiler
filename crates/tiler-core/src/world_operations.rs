@@ -451,10 +451,10 @@ impl WorldEngine {
     ///
     /// World-owned stage-5 lattice runs first: sticky subjects route in
     /// the displayed view, automatic floats and floating workspaces refuse,
-    /// maximized subjects fence, and float origins resolve candidates and
-    /// targets in core (miss retains, hit emits the explicit focus
-    /// effect). Tiled subjects fall through to the pair/local path
-    /// unchanged.
+    /// fullscreen and maximized origins skip the lattice and cross (or
+    /// retain), and other float origins resolve candidates and targets in
+    /// core (miss retains, hit emits the explicit focus effect). Tiled
+    /// subjects fall through to the pair/local path unchanged.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn focus_directional(
         &mut self,
@@ -551,26 +551,19 @@ impl WorldEngine {
         // without one (or on vertical) they retain with no staging, like a
         // lattice miss. Tiled subjects fall through unchanged.
         let fullscreen_subject = source_row.fullscreen;
-        // Core-composed maximize overlay (world-owned bit, no native
-        // state): a composed subject skips same-output siblings like the
-        // native overlay. Float/sticky subjects refuse exactly like a
-        // native maximized subject; tiled subjects continue to the
-        // adjacent output below, never the local leg. Fullscreen subjects
-        // keep their existing R-MAX-02 path. Native caps/maximize=true is
-        // unaffected: the bit is only ever set on the composed route.
+        // Nov 1 rule: a maximized float/sticky subject (native fact or
+        // core-composed overlay bit) skips same-output siblings like the
+        // native tiled overlay. Maximized float/sticky subjects fall
+        // through to the adjacent-output cross leg below across all four
+        // directions; without an adjacent output they retain with no
+        // staging, like a lattice miss. Ordinary (non-maximized) floats
+        // keep the lattice. Native caps/maximize=true is unaffected: the
+        // bit is only ever set on the composed route.
         let composed_overlay = !self.capabilities().is_some_and(|caps| caps.maximize)
             && self.composed_maximized.contains(window);
-        if composed_overlay && !fullscreen_subject && (source_row.floating || source_row.sticky) {
-            self.command_result = Some(CommandResult::Directional {
-                outcome: DirectionalOutcome::FocusRefusedMaximize,
-                target: None,
-                rect: None,
-                cause: None,
-            });
-            self.note_command(command_seq);
-            return CommandApplied::NoEffect;
-        }
-        if (source_row.floating || source_row.sticky) && !fullscreen_subject {
+        let maximized_subject = !fullscreen_subject && (source_row.maximized || composed_overlay);
+        let float_subject = source_row.floating || source_row.sticky;
+        if float_subject && !fullscreen_subject && !maximized_subject {
             let mut staged: Vec<EngineWindow> = Vec::new();
             for domain in &self.staged.domains {
                 staged.extend(domain.windows.iter().cloned());
@@ -611,27 +604,42 @@ impl WorldEngine {
                 self.state_revision + 1,
             ));
         }
-        // KDE focus policy: only left/right may cross. Up/down always run
-        // local, so a vertical strict edge never diverts focus. When a
-        // strict target exists, run the cross pair and return its result
-        // directly (including refusal): old KDE crossForDirection was true
-        // for strict adjacency irrespective of held/unreadable targets and
-        // the cross operation refused. No silent relabel as local success.
-        let cross_target = matches!(direction_parsed, Direction::Left | Direction::Right)
-            .then(|| self.core_topology_target(&source_key.output, direction_parsed))
-            .flatten();
+        // KDE focus policy: ordinary and fullscreen subjects only cross
+        // left/right (up/down run local, so a vertical strict edge never
+        // diverts focus), while maximized (non-fullscreen) subjects may
+        // cross in all four directions. When a strict target exists, run
+        // the cross pair and return its result directly (including
+        // refusal): old KDE crossForDirection was true for strict adjacency
+        // irrespective of held/unreadable targets and the cross operation
+        // refused. No silent relabel as local success.
+        let cross_target = (maximized_subject
+            || matches!(direction_parsed, Direction::Left | Direction::Right))
+        .then(|| self.core_topology_target(&source_key.output, direction_parsed))
+        .flatten();
         if composed_overlay {
-            // Composed tiled subject: same-output siblings never win, so
-            // the local leg is bypassed entirely. With an adjacent output
-            // the target is selected at world level through the shared
-            // entry-edge ranking (memory-aware, like the session cross
-            // leg) and applied as a best-effort explicit focus effect with
-            // the canonical slot advanced; the session commits nothing, so
-            // no native or Engine mutation rides along. Without one (or on
-            // vertical) refuse with the unchanged session vocabulary, like
-            // a session Unchanged verdict. Safety/arrival/hold gates above
-            // are unchanged, and no native clear is minted.
+            // Composed maximized subject (tiled or float/sticky): same-output
+            // siblings never win, so the local leg is bypassed entirely across
+            // all four directions. With an adjacent output, float/sticky
+            // subjects select the target domain's remembered leaf while tiled
+            // subjects use the shared entry-edge ranking (memory-aware, like
+            // the session cross leg), applied as a best-effort explicit focus
+            // effect with the canonical slot advanced; the session commits
+            // nothing, so no native or Engine mutation rides along. Without an
+            // adjacent output or eligible target, float/sticky subjects retain
+            // with FocusFloatRetained (no-target) and tiled subjects refuse
+            // with the unchanged session vocabulary. Safety/arrival/hold gates
+            // above are unchanged, and no native clear is minted.
             let Some(target_output) = cross_target else {
+                if float_subject {
+                    self.command_result = Some(CommandResult::Directional {
+                        outcome: DirectionalOutcome::FocusFloatRetained,
+                        target: None,
+                        rect: None,
+                        cause: Some("no-target".to_owned()),
+                    });
+                    self.note_command(command_seq);
+                    return CommandApplied::NoEffect;
+                }
                 return CommandApplied::Rejected {
                     kind: RefusalKind::Unchanged.as_str(),
                     message: RefusalKind::Unchanged.message(),
@@ -664,30 +672,44 @@ impl WorldEngine {
                 .engine
                 .session(&target_key)
                 .and_then(|session| {
-                    let usable = crate::geometry::inset_bounds(
-                        source_staged.bounds,
-                        source_staged.outer_gap,
-                    )
-                    .ok()?;
-                    let source_perp = match direction_parsed {
-                        Direction::Left | Direction::Right => {
-                            (usable.y, usable.y.checked_add(usable.h)?)
-                        }
-                        Direction::Up | Direction::Down => {
-                            (usable.x, usable.x.checked_add(usable.w)?)
-                        }
+                    let leaf = if float_subject {
+                        session.remembered_leaf(&target_key)?
+                    } else {
+                        let usable = crate::geometry::inset_bounds(
+                            source_staged.bounds,
+                            source_staged.outer_gap,
+                        )
+                        .ok()?;
+                        let source_perp = match direction_parsed {
+                            Direction::Left | Direction::Right => {
+                                (usable.y, usable.y.checked_add(usable.h)?)
+                            }
+                            Direction::Up | Direction::Down => {
+                                (usable.x, usable.x.checked_add(usable.w)?)
+                            }
+                        };
+                        session.select_cross_output_edge_target(
+                            &target_key,
+                            direction_parsed,
+                            source_perp,
+                        )?
                     };
-                    let leaf = session.select_cross_output_edge_target(
-                        &target_key,
-                        direction_parsed,
-                        source_perp,
-                    )?;
                     session.focused_window_for(&leaf, &target_key)
                 })
                 .filter(|window| self.staged.homing.get(window).as_ref() == Some(&&target_key))
                 .filter(|window| by_id.get(window).is_some_and(|row| !row.floating))
                 .filter(|window| !self.is_exception_window_any(window));
             let Some(target_window) = selected else {
+                if float_subject {
+                    self.command_result = Some(CommandResult::Directional {
+                        outcome: DirectionalOutcome::FocusFloatRetained,
+                        target: None,
+                        rect: None,
+                        cause: Some("no-target".to_owned()),
+                    });
+                    self.note_command(command_seq);
+                    return CommandApplied::NoEffect;
+                }
                 return CommandApplied::Rejected {
                     kind: RefusalKind::Unchanged.as_str(),
                     message: RefusalKind::Unchanged.message(),
@@ -702,10 +724,9 @@ impl WorldEngine {
             ));
         }
         if cross_target.is_some() {
-            // R-MAX-02: the cross command carries the float origin exactly
-            // when the subject floats (only fullscreen floats reach here;
+            // The cross command carries the float origin exactly when the
+            // subject floats (only fullscreen/maximized floats reach here;
             // the lattice above returns for every other float).
-            let float_subject = source_row.floating || source_row.sticky;
             let command = CoreCommand::Focus {
                 window: window.0.clone(),
                 direction: direction.to_owned(),
@@ -723,11 +744,12 @@ impl WorldEngine {
                 held_scopes,
             );
         }
-        // R-MAX-02: a fullscreen float with no adjacent output (or on
-        // vertical) retains with no staging, like a lattice miss. Tiled
-        // subjects (fullscreen or not) run the local leg unchanged: the
-        // Session fullscreen rule refuses there, non-fullscreen plans.
-        if fullscreen_subject && (source_row.floating || source_row.sticky) {
+        // A fullscreen float (with no adjacent output or on vertical) or a
+        // maximized float with no adjacent output retains with no staging,
+        // like a lattice miss. Tiled subjects (fullscreen, maximized or
+        // not) run the local leg unchanged: the Session overlay rule
+        // refuses there, non-overlay plans.
+        if (fullscreen_subject || maximized_subject) && float_subject {
             self.command_result = Some(CommandResult::Directional {
                 outcome: DirectionalOutcome::FocusFloatRetained,
                 target: None,

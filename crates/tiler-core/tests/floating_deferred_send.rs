@@ -13,9 +13,9 @@
 //! memory follows with no rehoming step. The operation carries
 //! window plus source/target identities with NO leaf (never
 //! fabricated). Sticky movers (plain or combo) keep refusing as
-//! `NotTiled`, as do both-overlays-at-once and automatic-fixed movers
-//! (the Windows `fixed_send_admission` opt-in lifts the automatic
-//! refusal only); tiled sends still plan `MoveTiled`.
+//! `NotTiled`, as do both-overlays-at-once movers; automatic-fixed movers
+//! carry exactly like intentional floats on every platform. Tiled sends
+//! still plan `MoveTiled`.
 
 use std::collections::BTreeMap;
 
@@ -619,15 +619,15 @@ fn maximized_combo_follow_carries_deferred() {
 }
 
 #[test]
-fn automatic_fixed_float_send_refuses_not_tiled() {
-    // Classifier-origin automatic floats are not ordinary intentional
-    // floats: the observed-signal half refuses here, while the
-    // retained-marker half is pinned by
-    // `pair_send_split_preserves_automatic_and_override` in the
-    // fixed-size suite (exception observations never carry the
-    // marker, so eligibility reads the retained set too).
+fn automatic_fixed_float_send_plans_move_deferred() {
+    // Automatic-origin floats carry exactly like intentional floats: the
+    // observed-signal half is eligible here (the retained-marker half is
+    // pinned by `pair_send_split_preserves_automatic_and_override` in the
+    // fixed-size suite), and the workspace send plans slotless
+    // MoveDeferred with no mover allocation.
     let mut s = float_fixture();
     let source = key("out-1", "ws-a");
+    let target = key("out-1", "ws-b");
     let mut windows = live_observation(&s).windows;
     windows
         .iter_mut()
@@ -635,23 +635,33 @@ fn automatic_fixed_float_send_refuses_not_tiled() {
         .expect("mover observed")
         .fixed_auto = true;
     assert!(
-        !s.deferred_send_eligible(&WindowId("win-f".to_owned()), &source, &windows),
-        "automatic mover is not eligible"
+        s.deferred_send_eligible(&WindowId("win-f".to_owned()), &source, &windows),
+        "automatic mover is eligible"
     );
-    let err = s
+    let plan = s
         .propose(
             &SessionCommand::MoveToWorkspace {
                 window: WindowId("win-f".to_owned()),
-                target_output: OutputId("out-1".to_owned()),
-                target_workspace: WorkspaceId("ws-b".to_owned()),
+                target_output: target.output.clone(),
+                target_workspace: target.workspace.clone(),
                 follow: true,
             },
             &obs(&s, windows),
             &corr("corr-float-automatic"),
             &LifecycleCapabilities::full(),
         )
-        .expect_err("automatic send must refuse");
-    assert_eq!(err.kind(), "not-tiled");
+        .expect("automatic send plans");
+    assert!(
+        matches!(
+            &plan.dispatch.operation,
+            LifecycleOperation::MoveDeferred { .. }
+        ),
+        "automatic send carries the deferred transfer"
+    );
+    assert!(
+        plan.desired_geometry.iter().all(|g| g.window.0 != "win-f"),
+        "slotless mover takes no allocation"
+    );
 }
 
 /// Automatic-float fixture with a real retained classifier mark: the
@@ -679,30 +689,19 @@ fn automatic_fixture() -> Session {
 }
 
 #[test]
-fn automatic_fixed_float_send_admits_with_opt_in() {
-    // Windows workspace-send opt-in: the same automatic mover that
-    // `automatic_fixed_float_send_refuses_not_tiled` refuses carries
-    // slotless MoveDeferred once `fixed_send_admission` is set, with
+fn automatic_fixed_float_send_admits_by_default() {
+    // The automatic mover carries slotless MoveDeferred by default, with
     // flags and floating size preserved verbatim and no tree mutation.
     // The explicit tile win (`fixed_suppress`) still refuses.
     let mut s = automatic_fixture();
     let source = key("out-1", "ws-a");
-    assert!(
-        !s.deferred_send_eligible(
-            &WindowId("win-f".to_owned()),
-            &source,
-            &live_observation(&s).windows,
-        ),
-        "automatic mover ineligible by default"
-    );
-    s.set_fixed_send_admission(true);
     assert!(
         s.deferred_send_eligible(
             &WindowId("win-f".to_owned()),
             &source,
             &live_observation(&s).windows,
         ),
-        "automatic mover eligible with the opt-in"
+        "automatic mover eligible by default"
     );
     let plan = s
         .propose(
@@ -713,10 +712,10 @@ fn automatic_fixed_float_send_admits_with_opt_in() {
                 follow: true,
             },
             &live_observation(&s),
-            &corr("corr-float-automatic-opt-in"),
+            &corr("corr-float-automatic"),
             &LifecycleCapabilities::full(),
         )
-        .expect("automatic send plans with the opt-in");
+        .expect("automatic send plans");
     match &plan.dispatch.operation {
         LifecycleOperation::MoveDeferred { window, .. } => assert_eq!(window.0, "win-f"),
         other => panic!("expected MoveDeferred, got {other:?}"),
@@ -725,9 +724,8 @@ fn automatic_fixed_float_send_admits_with_opt_in() {
         plan.desired_geometry.iter().all(|g| g.window.0 != "win-f"),
         "slotless mover takes no allocation"
     );
-    // The explicit tile win still refuses under the opt-in.
-    let mut s = automatic_fixture();
-    s.set_fixed_send_admission(true);
+    // The explicit tile win still refuses.
+    let s = automatic_fixture();
     let source = key("out-1", "ws-a");
     let mut windows = live_observation(&s).windows;
     windows
@@ -744,12 +742,11 @@ fn automatic_fixed_float_send_admits_with_opt_in() {
 #[test]
 fn automatic_fixed_float_roundtrip_retains_marker_and_frame() {
     // WS1 -> WS2 (follow) -> WS1 (stay) for a retained-mark automatic
-    // float with the opt-in: both legs plan slotless MoveDeferred with no
+    // float: both legs plan slotless MoveDeferred with no
     // wire fixed-size signal, no tree mutation, and no mover allocation;
     // the automatic marker, float flags, frame, and restart memory survive
     // both legs verbatim.
     let mut s = automatic_fixture();
-    s.set_fixed_send_admission(true);
     let source = key("out-1", "ws-a");
     let target = key("out-1", "ws-b");
     let tree_before_a = s.tree_for(&source).cloned();
@@ -1305,39 +1302,79 @@ fn both_overlays_combo_send_refuses() {
 }
 
 #[test]
-fn automatic_combo_send_refuses_not_tiled() {
-    // Automatic-fixed refusal is unchanged for combos: the observed
-    // origin signals refuse even with exactly one overlay.
-    for (name, fixed_auto, fixed_suppress) in [("auto", true, false), ("suppress", false, true)] {
-        let mut s = float_fixture();
-        let source = key("out-1", "ws-a");
-        let mut windows = live_observation(&s).windows;
-        let mover = windows
-            .iter_mut()
-            .find(|w| w.window.0 == "win-f")
-            .expect("mover observed");
-        mover.fullscreen = true;
-        mover.fixed_auto = fixed_auto;
-        mover.fixed_suppress = fixed_suppress;
-        assert!(
-            !s.deferred_send_eligible(&WindowId("win-f".to_owned()), &source, &windows),
-            "automatic {name} combo is not eligible"
-        );
-        let err = s
-            .propose(
-                &SessionCommand::MoveToWorkspace {
-                    window: WindowId("win-f".to_owned()),
-                    target_output: OutputId("out-1".to_owned()),
-                    target_workspace: WorkspaceId("ws-b".to_owned()),
-                    follow: true,
-                },
-                &obs(&s, windows),
-                &corr(&format!("corr-combo-{name}")),
-                &LifecycleCapabilities::full(),
-            )
-            .expect_err("automatic combo send must refuse");
-        assert_eq!(err.kind(), "not-tiled");
-    }
+fn automatic_combo_send_plans_but_suppress_combo_refuses() {
+    // Automatic origin carries for combos too: `fixed_auto` with exactly
+    // one overlay plans slotless MoveDeferred, while the explicit tile win
+    // (`fixed_suppress`) still refuses as `NotTiled`.
+    let mut s = float_fixture();
+    let source = key("out-1", "ws-a");
+    let target = key("out-1", "ws-b");
+    let mut windows = live_observation(&s).windows;
+    windows
+        .iter_mut()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover observed")
+        .fullscreen = true;
+    windows
+        .iter_mut()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover observed")
+        .fixed_auto = true;
+    assert!(
+        s.deferred_send_eligible(&WindowId("win-f".to_owned()), &source, &windows),
+        "automatic combo is eligible"
+    );
+    let plan = s
+        .propose(
+            &SessionCommand::MoveToWorkspace {
+                window: WindowId("win-f".to_owned()),
+                target_output: target.output.clone(),
+                target_workspace: target.workspace.clone(),
+                follow: true,
+            },
+            &obs(&s, windows),
+            &corr("corr-combo-auto"),
+            &LifecycleCapabilities::full(),
+        )
+        .expect("automatic combo send plans");
+    assert!(
+        matches!(
+            &plan.dispatch.operation,
+            LifecycleOperation::MoveDeferred { .. }
+        ),
+        "automatic combo carries the deferred transfer"
+    );
+    assert!(
+        plan.desired_geometry.iter().all(|g| g.window.0 != "win-f"),
+        "slotless mover takes no allocation"
+    );
+    // The explicit tile win still refuses with exactly one overlay.
+    let mut s = float_fixture();
+    let mut windows = live_observation(&s).windows;
+    let mover = windows
+        .iter_mut()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover observed");
+    mover.fullscreen = true;
+    mover.fixed_suppress = true;
+    assert!(
+        !s.deferred_send_eligible(&WindowId("win-f".to_owned()), &source, &windows),
+        "suppressed combo is not eligible"
+    );
+    let err = s
+        .propose(
+            &SessionCommand::MoveToWorkspace {
+                window: WindowId("win-f".to_owned()),
+                target_output: OutputId("out-1".to_owned()),
+                target_workspace: WorkspaceId("ws-b".to_owned()),
+                follow: true,
+            },
+            &obs(&s, windows),
+            &corr("corr-combo-suppress"),
+            &LifecycleCapabilities::full(),
+        )
+        .expect_err("suppressed combo send must refuse");
+    assert_eq!(err.kind(), "not-tiled");
 }
 
 #[test]

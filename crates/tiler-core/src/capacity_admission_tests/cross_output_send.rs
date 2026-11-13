@@ -70,94 +70,16 @@ fn send_refused_when_target_unrepresentable_source_preserved() {
 }
 
 #[test]
-fn send_overlap_admits_and_preserves_follow_stay_and_order() {
-    // Same geometry under allow-overlap: the send overlap-admits at the
-    // ordinary anchor, marks the destination, keeps the mover leaf, and
-    // follow/stay select destination-MRU vs source-MRU without changing
-    // the admission order.
-    for follow in [true, false] {
-        let mut session = Session::new(
-            owner(),
-            generation(),
-            0,
-            7,
-            vec![
-                domain("o", "ws-1", 120, 80, 0),
-                domain("o", "ws-2", 1, 1, 0),
-            ],
-        )
-        .expect("session");
-        session.set_no_space_result(NoSpaceResult::AllowOverlap);
-        admit_and_commit(&mut session, "a", "o", "ws-1", placement(120, 40), "c-1");
-        admit_and_commit(&mut session, "b", "o", "ws-1", placement(120, 40), "c-2");
-        admit_and_commit(&mut session, "d", "o", "ws-2", placement(1, 1), "c-3");
-        let seq_b = session.admission_sequence(&WindowId("b".to_owned()));
-        let mover_leaf = leaf_of(&session, "b");
-        let key1 = DomainKey {
-            output: OutputId("o".to_owned()),
-            workspace: WorkspaceId("ws-1".to_owned()),
-        };
-        let key2 = DomainKey {
-            output: OutputId("o".to_owned()),
-            workspace: WorkspaceId("ws-2".to_owned()),
-        };
-        assert!(session.sync_focus_from_window(&key1, &WindowId("b".to_owned())));
-        let obs = complete_observation(&session, Vec::new());
-        let plan = session
-            .propose(
-                &SessionCommand::MoveToWorkspace {
-                    window: WindowId("b".to_owned()),
-                    target_output: OutputId("o".to_owned()),
-                    target_workspace: WorkspaceId("ws-2".to_owned()),
-                    follow,
-                },
-                &obs,
-                &correlation("s-1"),
-                &LifecycleCapabilities::full(),
-            )
-            .expect("overlap send plans");
-        assert!(
-            plan.desired_geometry
-                .iter()
-                .filter(|g| g.output.0 == "o" && g.workspace.0 == "ws-2")
-                .any(|g| g.window.0 == "b"),
-            "mover has destination geometry"
-        );
-        commit_plan(&mut session, &plan, "s-1");
-        assert!(session.overlap_accepted(&key2), "destination marked");
-        assert_eq!(leaf_of(&session, "b"), mover_leaf, "leaf identity kept");
-        assert_eq!(
-            session.admission_sequence(&WindowId("b".to_owned())),
-            seq_b,
-            "moves never re-sequence"
-        );
-        if follow {
-            assert_eq!(session.focus().0, Some(key2), "follow selects target");
-        } else {
-            assert_eq!(session.focus().0, Some(key1), "stay keeps source");
-        }
-    }
-}
-
-#[test]
 fn r4_exhausted_floats_at_chosen_output_with_no_d2_redirect() {
     // Adjacent outputs: source out-1/ws sole mover m, target out-2/ws 1x1
-    // with t. Under float the exact wrap plans first, proves geometric
-    // exhaustion, and capacity-floats the mover at the CHOSEN output
-    // (MoveToFloat under the explicit output-send intent, follow-only,
-    // untouched frame, no D2 redirect); under overlap it keeps the exact
-    // whole-target wrap with the mark. Both fallback settings agree: R4
-    // never searches.
+    // with t. The exact wrap plans first, proves geometric exhaustion,
+    // and capacity-floats the mover at the CHOSEN output (MoveToFloat
+    // under the explicit output-send intent, follow-only, untouched
+    // frame, no D2 redirect).
     use crate::contract::LifecycleOperation;
     use crate::directional::{Capabilities, Direction};
-    for fallback in [
-        crate::admission::AnchorFallback::LargestSplittable,
-        crate::admission::AnchorFallback::NoSearch,
-    ] {
-        for (no_space, expect_ok) in [
-            (NoSpaceResult::Float, false),
-            (NoSpaceResult::AllowOverlap, true),
-        ] {
+    {
+        {
             let mut d1 = domain("out-1", "ws", 120, 80, 0);
             let mut d2 = domain("out-2", "ws", 1, 1, 0);
             d1.adjacent
@@ -167,8 +89,6 @@ fn r4_exhausted_floats_at_chosen_output_with_no_d2_redirect() {
             let mut session =
                 Session::new(owner(), generation(), 0, 7, vec![d1.clone(), d2.clone()])
                     .expect("session");
-            session.set_anchor_fallback(fallback);
-            session.set_no_space_result(no_space);
             let m_plan =
                 admit_and_commit(&mut session, "m", "out-1", "ws", placement(120, 40), "c-1");
             let _frame_m = m_plan
@@ -200,35 +120,7 @@ fn r4_exhausted_floats_at_chosen_output_with_no_d2_redirect() {
                 &correlation("m-1"),
                 &Capabilities::full(),
             );
-            if expect_ok {
-                let plan = outcome
-                    .expect("overlap R4 plans")
-                    .expect_moved("tiled wrap");
-                assert!(
-                    plan.desired_geometry.iter().any(|g| g.window.0 == "m"),
-                    "mover projects at the chosen output"
-                );
-                // Exact wrap: the target tree still contains the mover leaf
-                // plus the prior occupant (no redirect elsewhere).
-                let snapshot = &plan.desired_snapshot;
-                let target_view = snapshot
-                    .domains
-                    .iter()
-                    .find(|d| d.output.0 == "out-2")
-                    .expect("target view");
-                let tree = target_view.tree.clone().expect("target tree");
-                fn leaves(node: &Node) -> Vec<String> {
-                    match node {
-                        Node::Leaf { id } => vec![id.0.clone()],
-                        Node::Group { children, .. } => children.iter().flat_map(leaves).collect(),
-                    }
-                }
-                assert!(
-                    leaves(&tree).contains(&mover_leaf.0),
-                    "wrap keeps the mover leaf in the target"
-                );
-                let _ = target_key;
-            } else {
+            {
                 let plan = outcome
                     .expect("float R4 stages the capacity fallback")
                     .capacity_float()
@@ -320,7 +212,6 @@ fn r4_exhausted_floats_at_chosen_output_with_no_d2_redirect() {
                     (Some(target_key.clone()), Some(t_leaf.clone())),
                     "committed follow stays on the target bookkeeping"
                 );
-                let _ = fallback;
             }
         }
     }
@@ -518,126 +409,6 @@ fn r4_float_withdrawn_before_ack_preserves_source() {
     );
     assert!(session.exception_observed().is_empty());
     assert!(!session.is_capacity_float(&WindowId("m".to_owned())));
-}
-
-#[test]
-fn overlap_focus_and_resize_keep_working_with_truthful_hold() {
-    // Overlap-accept tiny with a, b; switch back to float (mark retained).
-    // Directional focus and keyboard resize still project through the
-    // gate; an unknown-domain focus still refuses.
-    use crate::contract::{FocusCapabilities, ResizeCapabilities};
-    use crate::directional::Direction;
-    let mut session = Session::new(
-        owner(),
-        generation(),
-        0,
-        7,
-        vec![domain("tiny", "ws", 1, 1, 0)],
-    )
-    .expect("session");
-    session.set_no_space_result(NoSpaceResult::AllowOverlap);
-    admit_and_commit(&mut session, "a", "tiny", "ws", placement(1, 1), "c-1");
-    admit_and_commit(&mut session, "b", "tiny", "ws", placement(1, 1), "c-2");
-    let key = DomainKey {
-        output: OutputId("tiny".to_owned()),
-        workspace: WorkspaceId("ws".to_owned()),
-    };
-    assert!(session.overlap_accepted(&key));
-    session.set_no_space_result(NoSpaceResult::Float);
-    assert!(session.overlap_accepted(&key), "retained after switch");
-    let obs = complete_observation(&session, Vec::new());
-    let focused = session
-        .focus()
-        .1
-        .and_then(|leaf| {
-            session
-                .snapshot()
-                .windows
-                .iter()
-                .find(|l| l.leaf == leaf)
-                .map(|l| l.window.clone())
-        })
-        .expect("tiled focus");
-    let other = if focused.0 == "a" {
-        WindowId("b".to_owned())
-    } else {
-        WindowId("a".to_owned())
-    };
-    let _ = &other;
-    let mut focus_plan = None;
-    let mut focus_direction = Direction::Right;
-    for direction in [
-        Direction::Right,
-        Direction::Left,
-        Direction::Down,
-        Direction::Up,
-    ] {
-        match session.propose_focus(
-            &key,
-            &focused,
-            direction,
-            &obs,
-            &correlation("f-1"),
-            &FocusCapabilities::full(),
-        ) {
-            Ok(plan) => {
-                focus_plan = Some(plan);
-                focus_direction = direction;
-                break;
-            }
-            Err(crate::session::ProposeError::Refused(crate::session::RefusalKind::Unchanged))
-            | Err(crate::session::ProposeError::Refused(
-                crate::session::RefusalKind::PlannerNoop,
-            )) => continue,
-            Err(other) => panic!("focus works on accepted overlap: {other:?}"),
-        }
-    }
-    let focus_plan = focus_plan.expect("some direction focuses on overlap");
-    assert!(!focus_plan.desired_geometry.is_empty());
-    let direction = focus_direction;
-    // Focus stages pending; withdraw it before the resize leg so each
-    // call site is validated independently.
-    session
-        .cancel_unacked_pending(&correlation("f-1"), focus_plan.dispatch.base_revision)
-        .expect("focus pending withdraws");
-    // Resize shares on the overlap domain projects (or refuses Unchanged
-    // when the step is a noop), never MalformedTopology.
-    let resize = session.propose_resize(
-        &key,
-        &focused,
-        Direction::Right,
-        crate::contract::ResizeMode::Outwards,
-        0,
-        &obs,
-        &correlation("r-1"),
-        &ResizeCapabilities::full(),
-    );
-    match resize {
-        Ok(plan) => assert!(!plan.desired_geometry.is_empty()),
-        Err(crate::session::ProposeError::Refused(kind)) => assert!(
-            kind != crate::session::RefusalKind::MalformedTopology,
-            "overlap resize never holds unrepresentable: {kind:?}"
-        ),
-        Err(other) => panic!("unexpected resize error: {other:?}"),
-    }
-    // Unknown domain still refuses.
-    let unknown = DomainKey {
-        output: OutputId("nope".to_owned()),
-        workspace: WorkspaceId("ws".to_owned()),
-    };
-    assert!(matches!(
-        session.propose_focus(
-            &unknown,
-            &other,
-            direction,
-            &obs,
-            &correlation("f-2"),
-            &FocusCapabilities::full(),
-        ),
-        Err(crate::session::ProposeError::Refused(
-            crate::session::RefusalKind::UnknownDomain
-        ))
-    ));
 }
 
 #[test]

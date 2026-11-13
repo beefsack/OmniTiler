@@ -282,15 +282,13 @@ impl super::super::Session {
             _ => vec![domain.clone()],
         };
         // R4 preserves the exact whole-target directional wrap (no D2
-        // redirect). D3 at the chosen output only: strict first, overlap
-        // through the D9 gate (setting or retained mark). Under the default
-        // float result a successfully planned wrap that still fails
+        // redirect). D3 at the chosen output only: a planned wrap that fails
         // projection falls back to the shared capacity-float send below
         // (proven geometric exhaustion only, never a redirect); otherwise
         // an honest refuse with no guessed float or offscreen success.
         // Refusal stages nothing, so native focus/MRU stay as the follow
-        // proof. Other moves use the same gate so accepted overlap domains
-        // keep working; unrepresentable geometry holds truthfully.
+        // proof. Other moves use the same strict gate; unrepresentable
+        // geometry holds truthfully.
         let hints = hints_from_observed(&session_observation.windows);
         let desired_geometry = match crate::session::capacity::project_affected_gated(
             &self.domains,
@@ -298,10 +296,6 @@ impl super::super::Session {
             &desired_windows,
             &affected,
             &hints,
-            &|key| {
-                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(key)
-            },
         ) {
             Some(geometry) => geometry,
             None => {
@@ -319,35 +313,6 @@ impl super::super::Session {
         // positive rectangle.
         if !geometry_covers_affected(&desired_geometry, &desired_windows, &affected) {
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
-        }
-        // Overlap bookkeeping: domains that only overlap-project gain (or
-        // keep) the mark; domains that project strictly clear it. The
-        // mover lifetime keeps its admission number.
-        let mut desired_overlap = self.overlap_accepted.clone();
-        for key in &affected {
-            match desired_trees.get(key).cloned().flatten() {
-                None => {
-                    desired_overlap.remove(key);
-                }
-                Some(tree) => {
-                    let Some(domain) = self.domains.iter().find(|d| &d.key() == key) else {
-                        return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
-                    };
-                    if project_output_geometry(
-                        Some(domain),
-                        Some(&tree),
-                        &desired_windows,
-                        key,
-                        &hints,
-                    )
-                    .is_ok()
-                    {
-                        desired_overlap.remove(key);
-                    } else {
-                        desired_overlap.insert(key.clone());
-                    }
-                }
-            }
         }
         let dispatch = match self.reconciler.propose(
             &plan,
@@ -383,7 +348,6 @@ impl super::super::Session {
             capacity_floats: self.capacity_floats.clone(),
             admission_order: self.admission_order.clone(),
             admission_counter: self.admission_counter,
-            overlap_accepted: desired_overlap,
         });
         // Trace-only authoritative tree evidence for cross-output moves
         // (R4 whole-target wraps): before/after ordered shapes for both
@@ -479,9 +443,6 @@ impl super::super::Session {
         else {
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
         };
-        if self.no_space != crate::admission::NoSpaceResult::Float {
-            return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
-        }
         let target_key = DomainKey {
             output: target_output.clone(),
             workspace: target_workspace.clone(),
@@ -558,7 +519,6 @@ impl super::super::Session {
                     self.capacity_floats = desired.capacity_floats;
                     self.admission_order = desired.admission_order;
                     self.admission_counter = desired.admission_counter;
-                    self.overlap_accepted = desired.overlap_accepted;
                     self.prune_fixed_size_state();
                     self.prune_capacity_state();
                     self.accepted_fingerprint = commit.fingerprint;

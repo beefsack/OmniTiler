@@ -341,8 +341,6 @@ fn t2_staged_decline_leaves_committed_world_unchanged() {
                 fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
                 migration_source_refill:
                     tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-                anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-                no_space_result: tiler_core::admission::NoSpaceResult::default(),
                 born_maximized: tiler_core::born_maximized::BornMaximized::default(),
                 switch_target: tiler_core::cursor_targeting::SwitchTarget::Cursor,
                 fresh_placement: tiler_core::cursor_targeting::FreshPlacement::CursorOutputMru,
@@ -495,8 +493,6 @@ fn t2_supported_and_floating_movers_adopt_once() {
                     fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
                     migration_source_refill:
                         tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-                    anchor_fallback: tiler_core::admission::AnchorFallback::default(),
-                    no_space_result: tiler_core::admission::NoSpaceResult::default(),
                     born_maximized: tiler_core::born_maximized::BornMaximized::default(),
                     switch_target: tiler_core::cursor_targeting::SwitchTarget::Cursor,
                     fresh_placement: tiler_core::cursor_targeting::FreshPlacement::CursorOutputMru,

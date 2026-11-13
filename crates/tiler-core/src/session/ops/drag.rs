@@ -149,10 +149,6 @@ impl super::super::Session {
             &self.windows,
             std::slice::from_ref(&key),
             &hints_from_observed(&session_observation.windows),
-            &|key| {
-                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(key)
-            },
         )
         .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         let Some(source_rect) = geometry
@@ -323,10 +319,6 @@ impl super::super::Session {
             // Gated so preview and finish share the same D3 overlap gate;
             // beyond overlap the preview refuses (no faked float preview).
             &hints_from_observed(observed),
-            &|key| {
-                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(key)
-            },
         )
         .ok_or({
             self.preview_stage = Some(DRAG_PREVIEW_STAGE_PROJECTION);
@@ -513,10 +505,6 @@ impl super::super::Session {
             &self.windows,
             std::slice::from_ref(&capture.domain),
             &hints_from_observed(&session_observation.windows),
-            &|key| {
-                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(key)
-            },
         ) {
             Some(geometry) => geometry,
             None => {
@@ -587,7 +575,6 @@ impl super::super::Session {
             capacity_floats: self.capacity_floats.clone(),
             admission_order: self.admission_order.clone(),
             admission_counter: self.admission_counter,
-            overlap_accepted: self.overlap_accepted.clone(),
         });
         self.drag = None;
         Ok(DragRelease::Planned(Box::new(SessionDragPlan {
@@ -806,10 +793,6 @@ impl super::super::Session {
             },
             std::slice::from_ref(dest),
             &hints_from_observed(&session_observation.windows),
-            &|key| {
-                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(key)
-            },
         )
         .ok_or({
             self.preview_stage = Some(DRAG_PREVIEW_STAGE_PROJECTION);
@@ -954,10 +937,6 @@ impl super::super::Session {
             &desired_windows,
             &affected,
             &hints_from_observed(&session_observation.windows),
-            &|key| {
-                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(key)
-            },
         ) {
             Some(geometry) => geometry,
             None => {
@@ -1028,7 +1007,6 @@ impl super::super::Session {
             capacity_floats: self.capacity_floats.clone(),
             admission_order: self.admission_order.clone(),
             admission_counter: self.admission_counter,
-            overlap_accepted: self.overlap_accepted.clone(),
         });
         self.drag = None;
         Ok(DragRelease::Planned(Box::new(SessionDragPlan {
@@ -1050,8 +1028,6 @@ impl super::super::Session {
             .find(|d| d.key() == capture.domain)
             .and_then(|domain| {
                 let tree = self.trees.get(&capture.domain).cloned().flatten();
-                let allow = self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(&capture.domain);
                 crate::session::capacity::project_domain_geometry(
                     domain,
                     &tree?,
@@ -1060,7 +1036,6 @@ impl super::super::Session {
                     // Snap-back reflects accepted state (no observation in
                     // scope): hints stay empty, exactly as before.
                     &BTreeMap::new(),
-                    allow,
                 )
             })
             .and_then(|geometry| {

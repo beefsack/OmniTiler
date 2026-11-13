@@ -2189,7 +2189,7 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
     );
     assert_eq!(
         outcome_str(&reply.command_result),
-        Some("focus-refused-maximize")
+        Some("focus-float-retained")
     );
     assert!(
         engine.retained_clears.is_empty(),

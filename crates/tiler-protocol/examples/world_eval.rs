@@ -18,17 +18,17 @@ use std::io::{BufRead, Write};
 
 use tiler_protocol::connection_protocol::route_connection_request;
 use tiler_protocol::world_protocol::{
-    DecodedReplyV4, ReplyWireOptionals, WorldEngine, WorldEngineConfig, WorldOutcome,
-    decode_request, encode_error, encode_reply,
+    DecodedReplyV4, ReplyWireOptionals, WorldEngine, WorldOutcome, decode_request, encode_error,
+    encode_reply,
 };
 
 fn generation_seed() -> String {
     "world-eval-0".to_owned()
 }
 
-fn ensure_engine(engine: &mut Option<WorldEngine>, config: &WorldEngineConfig, seed: &str) {
+fn ensure_engine(engine: &mut Option<WorldEngine>, seed: &str) {
     if engine.is_none() {
-        *engine = Some(WorldEngine::new_with_config(seed, *config).expect("evaluator seed parses"));
+        *engine = Some(WorldEngine::new(seed).expect("evaluator seed parses"));
     }
 }
 
@@ -64,18 +64,8 @@ fn submit_report(engine: &mut WorldEngine, body: &str, generation: &str) -> Stri
 }
 
 fn main() {
-    // Test-only platform selection (never a user setting): carriers may
-    // enable the fixed-send admission at construction; unset keeps the
-    // default disjoint model every existing fixture assumes.
-    let fixed_send = std::env::var_os("WORLD_EVAL_FIXED_SEND").is_some_and(|v| v == "1");
-    let config = if fixed_send {
-        WorldEngineConfig {
-            fixed_send_admission: true,
-            ..WorldEngineConfig::default()
-        }
-    } else {
-        WorldEngineConfig::default()
-    };
+    // Every carrier sends automatic fixed-size floats; the evaluator runs
+    // the shared default every fixture assumes.
     let seed = generation_seed();
     let mut engine: Option<WorldEngine> = None;
     let stdin = std::io::stdin();
@@ -89,7 +79,7 @@ fn main() {
         if line.trim().is_empty() {
             continue;
         }
-        ensure_engine(&mut engine, &config, &seed);
+        ensure_engine(&mut engine, &seed);
         let generation = serving_generation(&engine, &seed);
         let reply = (|| {
             let envelope: serde_json::Value = serde_json::from_str(&line).ok()?;

@@ -12,7 +12,9 @@
 //! refusals byte-identical.
 
 use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
-use crate::contract::{AckOutcome, AdapterAck, LifecycleCapabilities, Observation};
+use crate::contract::{
+    AckOutcome, AdapterAck, LifecycleCapabilities, LifecycleOperation, Observation,
+};
 use crate::directional::{Node, OutputId, WindowId, WorkspaceId};
 use crate::engine::Engine;
 use crate::geometry::Rect;
@@ -2427,7 +2429,8 @@ fn fixed_session_at(output: &str, workspace: &str) -> Session {
 /// and win-sup (fixed, explicitly untilled with a retained override);
 /// target holds win-t. Pairing unions the marks, the workspace send
 /// carries the suppressed mover, and the split partitions every mark
-/// with membership. A refused automatic send stages nothing.
+/// with membership. An admitted automatic send keeps its mark and stages
+/// no mover allocation.
 #[test]
 fn pair_send_split_preserves_automatic_and_override() {
     let dom_a = dom_pair("out-1", "ws-a");
@@ -2668,13 +2671,14 @@ fn pair_send_split_preserves_automatic_and_override() {
         !target_rt.is_automatic_fixed_float(&auto) && !target_rt.has_fixed_tile_override(&sup),
         "target gains no foreign marks"
     );
-    // An automatic float is no send mover: the refusal stages nothing.
+    // An automatic float is a send mover: the transfer plans slotless
+    // MoveDeferred with no mover allocation, keeping the automatic mark.
     let mut pair = Session::paired_from_canonical_for_send(
         &source,
         Some(&target),
         vec![dom_a.clone(), dom_b.clone()],
     )
-    .expect("pair for refusal");
+    .expect("pair for automatic send");
     let base = pair.accepted_revision();
     let mut observed: Vec<ObservedWindow> = pair
         .snapshot()
@@ -2696,26 +2700,41 @@ fn pair_send_split_preserves_automatic_and_override() {
         })
         .collect();
     observed.extend(pair.exception_observed());
-    match pair.propose(
-        &SessionCommand::MoveToWorkspace {
-            window: auto.clone(),
-            target_output: OutputId("out-1".to_owned()),
-            target_workspace: WorkspaceId("ws-b".to_owned()),
-            follow: true,
-        },
-        &observation_fp(base, 320, observed),
-        &correlation("pair-refuse-auto"),
-        &LifecycleCapabilities::full(),
-    ) {
-        Err(ProposeError::Refused(RefusalKind::NotTiled)) => {}
-        other => panic!("automatic send must refuse NotTiled, got {other:?}"),
+    let plan = pair
+        .propose(
+            &SessionCommand::MoveToWorkspace {
+                window: auto.clone(),
+                target_output: OutputId("out-1".to_owned()),
+                target_workspace: WorkspaceId("ws-b".to_owned()),
+                follow: true,
+            },
+            &observation_fp(base, 320, observed),
+            &correlation("pair-send-auto"),
+            &LifecycleCapabilities::full(),
+        )
+        .expect("automatic send proposes");
+    match &plan.dispatch.operation {
+        LifecycleOperation::MoveDeferred { window, .. } => assert_eq!(window, &auto),
+        other => panic!("automatic send must plan MoveDeferred, got {other:?}"),
     }
     assert!(
-        pair.is_automatic_fixed_float(&auto),
-        "refusal keeps automatic"
+        plan.desired_geometry.iter().all(|g| g.window != auto),
+        "slotless mover takes no allocation"
     );
-    // The suppressed tile win sends: the mover lands tiled on the target
-    // with its override, while the automatic sibling never moves.
+    assert!(
+        pair.is_automatic_fixed_float(&auto),
+        "proposal keeps automatic"
+    );
+    // The suppressed tile win sends: rebuild the pair first (the admitted
+    // automatic proposal above staged pending), then the mover lands tiled
+    // on the target with its override, while the automatic sibling never
+    // moves.
+    let mut pair = Session::paired_from_canonical_for_send(
+        &source,
+        Some(&target),
+        vec![dom_a.clone(), dom_b.clone()],
+    )
+    .expect("pair for suppressed send");
     let base = pair.accepted_revision();
     let mut observed: Vec<ObservedWindow> = pair
         .snapshot()

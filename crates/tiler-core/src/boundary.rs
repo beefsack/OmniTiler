@@ -804,48 +804,13 @@ pub(crate) fn project_retained_tiled_geometry(
             .copied()
             .unwrap_or_else(crate::size_hints::WindowSizeHints::none)
     };
-    // Strict first; overlap only through the D9 gate: the no-space
-    // setting selects it, or the domain was overlap-accepted (retained
-    // allocations stay publishable after switching to float until a
-    // real capacity decision). Anything else keeps the truthful hold.
-    enum Projected {
-        Strict(Vec<crate::geometry::ProjectedLeaf>, BTreeSet<String>),
-        Overlap(Vec<crate::geometry::ProjectedLeaf>, BTreeSet<String>),
-    }
-    let projected: Projected =
-        match crate::size_hints::project_with_hints(&tree, bounds, gap, &resolve) {
-            Ok(hinted) => Projected::Strict(
-                hinted.leaves,
-                hinted
-                    .overconstrained
-                    .iter()
-                    .map(|id| id.0.clone())
-                    .collect(),
-            ),
-            Err(_) => {
-                let allowed = session.no_space_result()
-                    == crate::admission::NoSpaceResult::AllowOverlap
-                    || session.overlap_accepted(domain_key);
-                if !allowed {
-                    return None;
-                }
-                let hinted =
-                    crate::size_hints::project_overlap_with_hints(&tree, bounds, gap, &resolve)
-                        .ok()?;
-                Projected::Overlap(
-                    hinted.leaves,
-                    hinted
-                        .overconstrained
-                        .iter()
-                        .map(|id| id.0.clone())
-                        .collect(),
-                )
-            }
-        };
-    let (leaves, over) = match projected {
-        Projected::Strict(leaves, over) => (leaves, over),
-        Projected::Overlap(leaves, over) => (leaves, over),
-    };
+    let hinted = crate::size_hints::project_with_hints(&tree, bounds, gap, &resolve).ok()?;
+    let leaves = hinted.leaves;
+    let over: BTreeSet<String> = hinted
+        .overconstrained
+        .iter()
+        .map(|id| id.0.clone())
+        .collect();
     // Observed layout-driven rectangles by window id for clamp assessment.
     let mut observed_rects: BTreeMap<&str, &Rect> = BTreeMap::new();
     for entry in observed {

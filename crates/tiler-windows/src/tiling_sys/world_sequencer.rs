@@ -5,8 +5,8 @@
 //! typed [`WorldReport`](tiler_core::world_report::WorldReport) envelope from
 //! the accepted source-first [`capture_world`](super::world_capture::capture_world)
 //! pieces and sequences it through the real [`WorldEngine`](tiler_core::world_engine::WorldEngine)
-//! with the Windows constructor profile (`fixed_send_admission` on, core
-//! maximized focus fence off). The runtime world owner uses this envelope
+//! via the single shared [`WorldEngine::new`](tiler_core::world_engine::WorldEngine::new)
+//! constructor. The runtime world owner uses this envelope
 //! for observation and command dispatch; native actuation remains outside
 //! the sequencer. No JSON transport, polling, or timers.
 //!
@@ -59,7 +59,7 @@
 //! - Generation reset requires an explicit NEW identity (same or malformed
 //!   resets are side-effect-free no-ops) and clears sequencer
 //!   flight/ordering/desired/command/raw-attempt state, rebuilding the engine
-//!   under the Windows profile. Counters restart because the core namespaces
+//!   via the shared constructor. Counters restart because the core namespaces
 //!   ordering per generation; they still never wrap within one. Native
 //!   lifetime/close facts are untouched: the owner is not mutably reachable
 //!   here. Old arbitrary replies cannot reset: only this call changes the
@@ -71,21 +71,11 @@ use std::collections::BTreeMap;
 #[cfg(test)]
 use std::collections::BTreeSet;
 use tiler_core::ids::{GenerationId, OwnerId};
-use tiler_core::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
+use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
     ClearAttempt, FrameAttempt, MemberAttempt, ScreenView, ViewAttempt, WORLD_CONTRACT_VERSION,
     WorldCommand, WorldReply, WorldReport,
 };
-
-/// Windows carrier profile for the future world engine: automatic
-/// fixed-float sends admitted (D16), core maximized directional-focus fence
-/// off (native adapter fences remain owner-side).
-const fn windows_engine_config() -> WorldEngineConfig {
-    WorldEngineConfig {
-        fixed_send_admission: true,
-        maximized_focus_fence: false,
-    }
-}
 
 /// Product owner identity carried on every sequenced report.
 const WINDOWS_OWNER: &str = "tiler-windows";
@@ -202,14 +192,14 @@ pub(super) struct WorldSequencer {
 
 impl WorldSequencer {
     /// Authenticated bootstrap: binds the explicit adapter/core identities
-    /// and constructs the Windows-profile engine. `None` on any malformed
+    /// and constructs the shared engine. `None` on any malformed
     /// identity. The first full observation is immediately dirty; readiness
     /// arrives with the first applied acknowledgement.
     #[must_use]
     pub(super) fn bootstrap(adapter_incarnation: &str, core_generation: &str) -> Option<Self> {
         OwnerId::parse(adapter_incarnation)?;
         GenerationId::parse(core_generation)?;
-        let engine = WorldEngine::new_with_config(core_generation, windows_engine_config())?;
+        let engine = WorldEngine::new(core_generation)?;
         Some(Self {
             adapter_incarnation: adapter_incarnation.to_owned(),
             core_generation: core_generation.to_owned(),
@@ -376,8 +366,6 @@ impl WorldSequencer {
             native: Vec::new(),
             fixed_size_predicate: captured.fixed_size_predicate,
             migration_source_refill: captured.migration_source_refill,
-            anchor_fallback: Default::default(),
-            no_space_result: Default::default(),
             born_maximized: captured.born_maximized,
             switch_target: captured.switch_target,
             fresh_placement: captured.fresh_placement,
@@ -614,7 +602,7 @@ impl WorldSequencer {
 
     /// Generation reset under an explicit NEW identity: clears sequencer
     /// flight/ordering/desired/command state plus pending raw attempts, and
-    /// rebuilds the engine under the Windows profile. Attempt maps clear
+    /// rebuilds the shared engine. Attempt maps clear
     /// because command sequences restart: a stale entry would collide with a
     /// reused operation identity under the fresh generation. Counters
     /// restart because the core namespaces ordering per generation; they
@@ -629,8 +617,7 @@ impl WorldSequencer {
         if core_generation == self.core_generation {
             return false;
         }
-        let Some(engine) = WorldEngine::new_with_config(core_generation, windows_engine_config())
-        else {
+        let Some(engine) = WorldEngine::new(core_generation) else {
             return false;
         };
         self.engine = engine;

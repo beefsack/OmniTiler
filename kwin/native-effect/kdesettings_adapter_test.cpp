@@ -128,7 +128,7 @@ void descriptorTablesMatchNativeContract()
 {
     using namespace OmnitilerKdeSettings;
     CHECK(kKdeTabCount == 4);
-    CHECK(kKdeExposedFieldCount == 16);
+    CHECK(kKdeExposedFieldCount == 14);
     CHECK(kKdeNativePanelCount == 11);
     const QStringList wantedTabs = {
         QStringLiteral("tiling-workspaces"),
@@ -153,8 +153,6 @@ void descriptorTablesMatchNativeContract()
         QStringLiteral("sameAxisMove"),
         QStringLiteral("fixedSizePredicate"),
         QStringLiteral("bornMaximized"),
-        QStringLiteral("anchorFallback"),
-        QStringLiteral("noSpaceResult"),
         QStringLiteral("migrationSourceRefill"),
         QStringLiteral("innerGap"),
         QStringLiteral("outerGap"),
@@ -165,13 +163,11 @@ void descriptorTablesMatchNativeContract()
     CHECK(defaults.value(QStringLiteral("sameAxisMove")).toString() == QStringLiteral("group-with-neighbor"));
     CHECK(defaults.value(QStringLiteral("fixedSizePredicate")).toString() == QStringLiteral("both-axes-fixed"));
     CHECK(defaults.value(QStringLiteral("bornMaximized")).toString() == QStringLiteral("tile-on-launch"));
-    CHECK(defaults.value(QStringLiteral("anchorFallback")).toString() == QStringLiteral("largest-splittable-window"));
-    CHECK(defaults.value(QStringLiteral("noSpaceResult")).toString() == QStringLiteral("float"));
     CHECK(defaults.value(QStringLiteral("migrationSourceRefill")).toString()
           == QStringLiteral("last-remaining-workspace"));
     CHECK(defaults.value(QStringLiteral("innerGap")).toInt() == 8);
     CHECK(defaults.value(QStringLiteral("outerGap")).toInt() == 8);
-    CHECK(sizeof(kKdeFields) / sizeof(kKdeFields[0]) == 16);
+    CHECK(sizeof(kKdeFields) / sizeof(kKdeFields[0]) == 14);
     for (const auto &field : kKdeFields) {
         CHECK(KWin::KdeSettingsAdapter::findFieldById(field.field_id) == &field);
         CHECK(!QString::fromUtf8(field.key).isEmpty());
@@ -490,25 +486,21 @@ void crossTabDraftApplyDefaultsCancelAndExactKeys()
     module.load();
     QComboBox *mode = combo(module, "workspaceModeCombo");
     QComboBox *axis = combo(module, "sameAxisMoveCombo");
-    QComboBox *anchor = combo(module, "anchorFallbackCombo");
-    QComboBox *noSpace = combo(module, "noSpaceResultCombo");
+    CHECK(combo(module, "anchorFallbackCombo") == nullptr);
+    CHECK(combo(module, "noSpaceResultCombo") == nullptr);
     QSpinBox *inner = gapSpin(module, "innerGapSpinBox");
     QDoubleSpinBox *borderWidth =
         module.widget()->findChild<QDoubleSpinBox *>(QStringLiteral("kcfg_BorderWidth"));
     CHECK(mode != nullptr);
     CHECK(axis != nullptr);
-    CHECK(anchor != nullptr);
-    CHECK(noSpace != nullptr);
     CHECK(inner != nullptr);
     CHECK(borderWidth != nullptr);
-    if (!mode || !axis || !anchor || !noSpace || !inner || !borderWidth) {
+    if (!mode || !axis || !inner || !borderWidth) {
         return;
     }
     // Tolerant load: invalid gap shows the catalog default, valid enum stays.
     CHECK(inner->value() == 8);
     CHECK(axis->currentData().toString() == QStringLiteral("swap-with-neighbor"));
-    CHECK(anchor->currentData().toString() == QStringLiteral("no-search"));
-    CHECK(noSpace->currentData().toString() == QStringLiteral("allow-overlap"));
     // Cross-tab draft: tiling mode + gap plus an Appearance border change.
     const int modeIndex = mode->findData(QStringLiteral("shared"));
     CHECK(modeIndex >= 0);
@@ -516,12 +508,6 @@ void crossTabDraftApplyDefaultsCancelAndExactKeys()
     const int axisIndex = axis->findData(QStringLiteral("group-with-neighbor"));
     CHECK(axisIndex >= 0);
     axis->setCurrentIndex(axisIndex);
-    const int anchorIndex = anchor->findData(QStringLiteral("largest-splittable-window"));
-    CHECK(anchorIndex >= 0);
-    anchor->setCurrentIndex(anchorIndex);
-    const int noSpaceIndex = noSpace->findData(QStringLiteral("float"));
-    CHECK(noSpaceIndex >= 0);
-    noSpace->setCurrentIndex(noSpaceIndex);
     inner->setValue(12);
     const double borderTarget = (borderWidth->value() == 7.5) ? 6.5 : 7.5;
     borderWidth->setValue(borderTarget);
@@ -532,11 +518,11 @@ void crossTabDraftApplyDefaultsCancelAndExactKeys()
     // Exact saved keys: changed script keys plus the managed border key.
     CHECK(scriptGroup().readEntry(QStringLiteral("workspaceMode"), QString()) == QStringLiteral("shared"));
     CHECK(scriptGroup().readEntry(QStringLiteral("sameAxisMove"), QString()) == QStringLiteral("group-with-neighbor"));
-    CHECK(scriptGroup().readEntry(QStringLiteral("anchorFallback"), QString()) == QStringLiteral("largest-splittable-window"));
-    CHECK(scriptGroup().readEntry(QStringLiteral("noSpaceResult"), QString()) == QStringLiteral("float"));
     CHECK(scriptGroup().readEntry(QStringLiteral("innerGap"), -1) == 12);
     CHECK(!scriptGroup().hasKey(QStringLiteral("outerGap")));
-    // Untouched keys stay untouched: hidden profile, foreign key, windows.
+    // Untouched keys stay untouched: removed anchorFallback/noSpaceResult, hidden profile, foreign key, windows.
+    CHECK(scriptGroup().readEntry(QStringLiteral("anchorFallback"), QString()) == QStringLiteral("no-search"));
+    CHECK(scriptGroup().readEntry(QStringLiteral("noSpaceResult"), QString()) == QStringLiteral("allow-overlap"));
     CHECK(scriptGroup().readEntry(QStringLiteral("shortcutProfile"), QString()) == QStringLiteral("hyprland"));
     CHECK(scriptGroup().readEntry(QStringLiteral("tilingAlgorithm"), QString()) == QStringLiteral("columns"));
     CHECK(windowsGroup().readEntry(QStringLiteral("ElectricBorderTiling"), false));
@@ -544,12 +530,10 @@ void crossTabDraftApplyDefaultsCancelAndExactKeys()
     CHECK(module.effectCalls == 1);
     CHECK(!module.needsSave());
     // Defaults restores catalog values across tabs; a follow-up save
-    // persists exactly those keys.
+    // persists exactly those keys without touching removed anchorFallback/noSpaceResult.
     module.defaults();
     CHECK(mode->currentData().toString() == QStringLiteral("per-output-local"));
     CHECK(axis->currentData().toString() == QStringLiteral("group-with-neighbor"));
-    CHECK(anchor->currentData().toString() == QStringLiteral("largest-splittable-window"));
-    CHECK(noSpace->currentData().toString() == QStringLiteral("float"));
     CHECK(inner->value() == 8);
     module.save();
     CHECK(scriptGroup().readEntry(QStringLiteral("workspaceMode"), QString())
@@ -557,6 +541,8 @@ void crossTabDraftApplyDefaultsCancelAndExactKeys()
     CHECK(scriptGroup().readEntry(QStringLiteral("sameAxisMove"), QString())
           == QStringLiteral("group-with-neighbor"));
     CHECK(scriptGroup().readEntry(QStringLiteral("innerGap"), -1) == 8);
+    CHECK(scriptGroup().readEntry(QStringLiteral("anchorFallback"), QString()) == QStringLiteral("no-search"));
+    CHECK(scriptGroup().readEntry(QStringLiteral("noSpaceResult"), QString()) == QStringLiteral("allow-overlap"));
     CHECK(scriptGroup().readEntry(QStringLiteral("shortcutProfile"), QString()) == QStringLiteral("hyprland"));
     // Cancel (load) discards an unapplied draft without persisting.
     mode->setCurrentIndex(mode->findData(QStringLiteral("shared")));

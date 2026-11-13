@@ -641,8 +641,6 @@ struct PendingDesired {
     /// same transactional staging as above.
     admission_order: BTreeMap<WindowId, u64>,
     admission_counter: u64,
-    /// Desired overlap-accepted domains: same transactional staging.
-    overlap_accepted: BTreeSet<DomainKey>,
 }
 
 /// Transient drag capture: source identity plus the accepted
@@ -778,23 +776,6 @@ pub struct Session {
     /// windows. Admission-only: changing it never reclassifies retained
     /// windows, only subsequent admissions.
     fixed_predicate: crate::size_hints::FixedSizePredicate,
-    /// Opt-in G-06 maximized directional focus fence (REQ-MAX-08). Off by
-    /// default so Windows carriers keep exact current behavior; the Linux
-    /// planner route enables it. When on, directional focus with a
-    /// maximized (non-fullscreen) focused subject refuses as `Unchanged`
-    /// with no plan and no pending. Cloned verbatim like `fixed_admission`.
-    maximized_focus_fence: bool,
-    /// Opt-in deferred send for automatic fixed-size floats (Windows
-    /// workspace sends). Off by default so KDE/macOS carriers keep exact
-    /// current behavior; the Windows route enables it. When on, the
-    /// automatic-origin signals (`fixed_auto` observation flag and the
-    /// retained `automatic_fixed` marker) no longer refuse the slotless
-    /// deferred transfer: automatic floats send like intentional floats
-    /// with flags and floating size preserved verbatim and no geometry
-    /// writes. Sticky, dual overlays, exited movers, and explicit tile
-    /// wins (`fixed_suppress`) still refuse. Cloned verbatim like
-    /// `fixed_admission`.
-    fixed_send_admission: bool,
     /// Classifier-created automatic fixed floats (membership only, D8).
     /// Intentional floats (toggle-float, sticky) never land here (D6).
     automatic_fixed: BTreeSet<WindowId>,
@@ -802,12 +783,6 @@ pub struct Session {
     /// live client (D3). Cleared when the window leaves membership, so a
     /// removed/replaced native reference with a reused id classifies again.
     fixed_tile_override: BTreeSet<WindowId>,
-    /// Best-effort admission policy (D2/D3, selected 2026-10-17): anchor
-    /// fallback and no-space result for subsequent capacity decisions only.
-    /// Changing either never reflows, retries, or reclassifies retained
-    /// state (D10).
-    anchor_fallback: crate::admission::AnchorFallback,
-    no_space: crate::admission::NoSpaceResult,
     /// Cursor-first fresh placement (2026-10-20) for subsequent fresh
     /// admissions only: which output a truly new lifetime admits into
     /// and which anchor it splits. Never moves existing members or
@@ -828,11 +803,6 @@ pub struct Session {
     /// across moves and re-tiles for the same lifetime; cleared on close.
     admission_order: BTreeMap<WindowId, u64>,
     admission_counter: u64,
-    /// Domains whose retained tree was accepted via overlap projection
-    /// (D9). Such allocations stay projectable until a real capacity
-    /// decision replaces them, even after switching the no-space setting
-    /// back to float.
-    overlap_accepted: BTreeSet<DomainKey>,
     /// D23 minimize restore slots (REQ-MNZ-01/02/03, option (b)): one stored
     /// old slot per minimized tiled window, keyed by window id. Session-runtime
     /// only: seeded empty, never persisted, dropped on owner restart with the
@@ -954,18 +924,13 @@ impl Session {
             retained_float_geometry: BTreeMap::new(),
             fixed_admission: false,
             fixed_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-            maximized_focus_fence: false,
-            fixed_send_admission: false,
             automatic_fixed: BTreeSet::new(),
             fixed_tile_override: BTreeSet::new(),
-            anchor_fallback: crate::admission::AnchorFallback::default(),
-            no_space: crate::admission::NoSpaceResult::default(),
             fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
             fresh_cursor: None,
             capacity_floats: BTreeSet::new(),
             admission_order: BTreeMap::new(),
             admission_counter: 0,
-            overlap_accepted: BTreeSet::new(),
             minimized_slots: BTreeMap::new(),
             canonical_pair_target_restore: BTreeMap::new(),
             group_alloc: GroupAllocator::new(),
@@ -1353,12 +1318,8 @@ impl Session {
         // re-adoption never loses an explicit user tile win (D3).
         pair.fixed_admission = source.fixed_admission;
         pair.fixed_predicate = source.fixed_predicate;
-        pair.maximized_focus_fence = source.maximized_focus_fence;
-        pair.fixed_send_admission = source.fixed_send_admission;
         pair.automatic_fixed = source.automatic_fixed.clone();
         pair.fixed_tile_override = source.fixed_tile_override.clone();
-        pair.anchor_fallback = source.anchor_fallback;
-        pair.no_space = source.no_space;
         pair.fresh_placement = source.fresh_placement;
         pair.fresh_cursor = source.fresh_cursor;
         pair.capacity_floats = source.capacity_floats.clone();
@@ -1366,7 +1327,6 @@ impl Session {
         pair.admission_counter = source
             .admission_counter
             .max(target.map(|t| t.admission_counter).unwrap_or(0));
-        pair.overlap_accepted = source.overlap_accepted.clone();
         if let Some(target) = target {
             pair.automatic_fixed
                 .extend(target.automatic_fixed.iter().cloned());
@@ -1379,8 +1339,6 @@ impl Session {
                     pair.admission_order.insert(id.clone(), *seq);
                 }
             }
-            pair.overlap_accepted
-                .extend(target.overlap_accepted.iter().cloned());
         }
         // D23 minimize slots ride the pair verbatim (source slots keep
         // their node ids, target slots were remapped above). Stale slots
@@ -1582,10 +1540,6 @@ impl Session {
         target.fixed_admission = self.fixed_admission;
         source.fixed_predicate = self.fixed_predicate;
         target.fixed_predicate = self.fixed_predicate;
-        source.maximized_focus_fence = self.maximized_focus_fence;
-        target.maximized_focus_fence = self.maximized_focus_fence;
-        source.fixed_send_admission = self.fixed_send_admission;
-        target.fixed_send_admission = self.fixed_send_admission;
         for id in &self.automatic_fixed {
             if source.windows.contains_key(id) || source.exceptions.contains_key(id) {
                 source.automatic_fixed.insert(id.clone());
@@ -1607,11 +1561,6 @@ impl Session {
         // Capacity policy rides both outputs; per-window capacity origin
         // and admission order partition with membership like the fixed
         // marks (orphans stay with the source so the union round-trips).
-        // Overlap acceptance partitions by domain homing.
-        source.anchor_fallback = self.anchor_fallback;
-        target.anchor_fallback = self.anchor_fallback;
-        source.no_space = self.no_space;
-        target.no_space = self.no_space;
         source.fresh_placement = self.fresh_placement;
         target.fresh_placement = self.fresh_placement;
         source.fresh_cursor = self.fresh_cursor;
@@ -1640,13 +1589,6 @@ impl Session {
                 target.admission_order.insert(id.clone(), *seq);
             } else {
                 source.admission_order.insert(id.clone(), *seq);
-            }
-        }
-        for key in &self.overlap_accepted {
-            if key == &source_key {
-                source.overlap_accepted.insert(key.clone());
-            } else if key == &target_key {
-                target.overlap_accepted.insert(key.clone());
             }
         }
         remap_optional_tree(
@@ -1949,7 +1891,6 @@ impl Session {
                     self.capacity_floats = desired.capacity_floats;
                     self.admission_order = desired.admission_order;
                     self.admission_counter = desired.admission_counter;
-                    self.overlap_accepted = desired.overlap_accepted;
                     // A removed window drops its fixed-size bookkeeping so
                     // a reused id classifies again (D3).
                     self.prune_fixed_size_state();

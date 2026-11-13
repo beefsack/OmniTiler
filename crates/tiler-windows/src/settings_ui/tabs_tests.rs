@@ -190,14 +190,14 @@ fn group_titles_come_from_metadata_and_admission_is_unambiguous() {
         // Production derivation agrees with the stored owning tab.
         assert!(group_tab(*key).is_some(), "{key:?}");
     }
-    // The four admission groups share one section id but read
+    // The two admission groups share one section id but read
     // distinctly through their field labels.
     let admissions: Vec<String> = GROUPS
         .iter()
         .filter(|(key, _, _, _, _)| matches!(key, GroupKey::SectionField("tiling.admission", _)))
         .map(|(key, _, _, _, _)| group_title(*key))
         .collect();
-    assert_eq!(admissions.len(), 4);
+    assert_eq!(admissions.len(), 2);
     assert_ne!(admissions[0], admissions[1]);
     for title in &admissions {
         assert!(title.starts_with("Admission: "), "{title}");
@@ -489,7 +489,7 @@ fn note_edits_scroll_instead_of_clipping() {
     // `LABEL_RECTS` order (the migration timing note is gone: its radios
     // ride the workspaces group and the catalog plus adoption logs carry
     // the timing truth).
-    for index in [0, 1, 4, 5, 6, 7, 11, 14, 15, 16] {
+    for index in [0, 1, 4, 5, 6, 9, 12, 13, 14] {
         assert_eq!(label_class(index), "STATIC", "{index}");
     }
 }

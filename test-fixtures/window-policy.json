@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Core window-policy baselines: overlay/toggle precedence, B9 unfloat, G-06 focus fence, born-fullscreen hold, admission clear, slot rules, safety, ordered geometry/focus classification and D5 first exit. Core tests run every case; crates/tiler-windows/tests/tiling.rs runs ordered classification through production native-fact normalization. Geometry orders safety before fullscreen, maximized and no_activate; focus ignores overlays. Native setters and exit paths are not exercised. KDE annotations are source-read historical comparisons, not current live acceptance. Overlaid members refuse fresh geometry writes while reserved allocations persist; keep-maximized admission can reserve a slot. Null refusal permits the route.",
+  "description": "Core window-policy baselines: overlay/toggle precedence, B9 unfloat, born-fullscreen hold, admission clear, slot rules, safety, ordered geometry/focus classification and D5 first exit. Core tests run every case; crates/tiler-windows/tests/tiling.rs runs ordered classification through production native-fact normalization. Geometry orders safety before fullscreen, maximized and no_activate; focus ignores overlays. Native setters and exit paths are not exercised. KDE annotations are source-read historical comparisons, not current live acceptance. Overlaid members refuse fresh geometry writes while reserved allocations persist; keep-maximized admission can reserve a slot. Null refusal permits the route.",
   "cases": [
     { "name": "overlay-neither-proceeds", "gate": "overlay_refusal", "fullscreen": false, "maximized": false, "refusal": null },
     { "name": "overlay-maximized-only", "gate": "overlay_refusal", "fullscreen": false, "maximized": true, "refusal": "maximize" },
@@ -18,9 +18,6 @@
     { "name": "b9-sticky-origin-refuses", "gate": "unfloat_lane", "fullscreen": false, "maximized": true, "is_float": true, "is_sticky_origin": true, "eligible": false },
     { "name": "b9-tiled-target-keeps-admission-path", "gate": "unfloat_lane", "fullscreen": false, "maximized": true, "is_float": false, "is_sticky_origin": false, "eligible": false },
     { "name": "b9-non-maximized-float-keeps-admission-path", "gate": "unfloat_lane", "fullscreen": false, "maximized": false, "is_float": true, "is_sticky_origin": false, "eligible": false },
-    { "name": "g06-maximized-fences-directional-focus", "gate": "focus_fence", "fullscreen": false, "maximized": true, "fenced": true, "kde": "plan-adapter.ts:2809-2814,2847-2849" },
-    { "name": "g06-fullscreen-exempt-from-focus-fence", "gate": "focus_fence", "fullscreen": true, "maximized": true, "fenced": false },
-    { "name": "g06-normal-focus-proceeds", "gate": "focus_fence", "fullscreen": false, "maximized": false, "fenced": false },
     { "name": "born-hold-first-seen-fullscreen", "gate": "born_hold", "fullscreen": true, "known_slot": false, "seen_nonfullscreen": false, "hold": true, "kde": "plan-adapter.ts:3055-3108 withInitialFullscreenHold" },
     { "name": "born-hold-slotted-is-managed-overlay", "gate": "born_hold", "fullscreen": true, "known_slot": true, "seen_nonfullscreen": false, "hold": false },
     { "name": "born-hold-seen-normal-never-born-again", "gate": "born_hold", "fullscreen": true, "known_slot": false, "seen_nonfullscreen": true, "hold": false },

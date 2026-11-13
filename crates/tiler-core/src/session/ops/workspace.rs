@@ -280,10 +280,9 @@ impl super::super::Session {
         // ordinary anchor consults the D2 fallback within the destination
         // domain (never a redirect). Every candidate must pass whole-tree
         // strict plus hinted projection (the mover's own hints ride along:
-        // `target_links` includes the mover leaf). D3 overlap-admits at
-        // the ordinary anchor under `allow-overlap`, else capacity-floats
-        // the mover slotless at the destination under the default float
-        // result (no tile slot, exact current frame, diagnostic origin).
+        // `target_links` includes the mover leaf). Exhaustion capacity-floats
+        // the mover slotless at the destination (no tile slot, exact current
+        // frame, diagnostic origin).
         let hints = hints_from_observed(&session_observation.windows);
         let mut target_links: BTreeMap<NodeId, WindowId> = self
             .windows
@@ -319,16 +318,11 @@ impl super::super::Session {
                     &probe_windows,
                     &[source_key.clone(), target_key.clone()],
                     &hints,
-                    &|key| {
-                        self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                            || self.overlap_accepted.contains(key)
-                    },
                 )
                 .is_some()
             }
         };
         let mut new_target = ordinary_target.clone();
-        let mut overlap_admit = false;
         if !admits(&ordinary_target) {
             // D2: destination-local fallback search only.
             let fallback_anchors: BTreeMap<NodeId, Rect> = match target_tree.as_ref() {
@@ -350,7 +344,6 @@ impl super::super::Session {
                 Some(minted)
             });
             match crate::session::capacity::select_admission_target(
-                self.anchor_fallback,
                 target_tree.as_ref(),
                 target_domain.bounds,
                 target_domain.gap,
@@ -369,56 +362,27 @@ impl super::super::Session {
                     }
                 }
                 Err(()) => {
-                    // D3 at the named destination: overlap-admit at the
-                    // ordinary anchor under `allow-overlap`, else
-                    // capacity-float the mover slotless there under the
-                    // default float result (exact current frame,
+                    // D3 at the named destination: capacity-float the
+                    // mover slotless there (exact current frame,
                     // diagnostic origin, source removal staged
                     // atomically). Only an unrepresentable frame (the
                     // source itself will not project) still refuses with
                     // the source exactly preserved.
-                    if self.no_space == crate::admission::NoSpaceResult::AllowOverlap {
-                        let mut probe_windows = self.windows.clone();
-                        probe_windows.insert(
-                            window.clone(),
-                            WindowLink {
-                                window: window.clone(),
-                                leaf: link.leaf.clone(),
-                                output: target_key.output.clone(),
-                                workspace: target_key.workspace.clone(),
-                            },
-                        );
-                        if crate::session::capacity::project_domain_overlap(
-                            &target_domain,
-                            &ordinary_target,
-                            &probe_windows,
-                            &target_key,
-                            &hints,
-                        )
-                        .is_some()
-                        {
-                            new_target = ordinary_target.clone();
-                            overlap_admit = true;
-                        } else {
-                            return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
-                        }
-                    } else {
-                        return self.stage_send_to_float(
-                            window,
-                            &link.leaf,
-                            &source_key,
-                            new_source.clone(),
-                            &target_key,
-                            &target_domain,
-                            target_leaves,
-                            follow,
-                            allow_cross_output,
-                            mover_live_frame,
-                            session_observation,
-                            correlation_id,
-                            capabilities,
-                        );
-                    }
+                    return self.stage_send_to_float(
+                        window,
+                        &link.leaf,
+                        &source_key,
+                        new_source.clone(),
+                        &target_key,
+                        &target_domain,
+                        target_leaves,
+                        follow,
+                        allow_cross_output,
+                        mover_live_frame,
+                        session_observation,
+                        correlation_id,
+                        capabilities,
+                    );
                 }
             }
         }
@@ -462,9 +426,7 @@ impl super::super::Session {
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
         }
         let affected = vec![source_key.clone(), target_key.clone()];
-        // Gated projection: strict first; retained overlap allocations and
-        // overlap mode project through the D9 gate so sends onto accepted
-        // overlap domains keep working. Unrepresentable geometry holds
+        // Strict domain projection; unrepresentable geometry holds
         // truthfully (refuse, source preserved).
         let desired_geometry = crate::session::capacity::project_affected_gated(
             &self.domains,
@@ -472,27 +434,10 @@ impl super::super::Session {
             &desired_windows,
             &affected,
             &hints,
-            &|key| {
-                overlap_admit && key == &target_key
-                    || self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(key)
-            },
         )
         .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(&desired_geometry, &desired_windows, &affected) {
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
-        }
-        // Overlap bookkeeping: an overlap-admit marks the destination;
-        // a strict success clears a stale mark there. The mover lifetime
-        // keeps its first admission number (moves never re-sequence).
-        let mut desired_overlap = self.overlap_accepted.clone();
-        if overlap_admit {
-            desired_overlap.insert(target_key.clone());
-        } else {
-            desired_overlap.remove(&target_key);
-        }
-        if desired_trees.get(&source_key).cloned().flatten().is_none() {
-            desired_overlap.remove(&source_key);
         }
         let desired_snapshot = self.snapshot_for(&desired_trees, &desired_windows);
         let intent = if allow_cross_output {
@@ -553,7 +498,6 @@ impl super::super::Session {
             capacity_floats: self.capacity_floats.clone(),
             admission_order: self.admission_order.clone(),
             admission_counter: self.admission_counter,
-            overlap_accepted: desired_overlap,
         });
         self.last_send_placement = Some(crate::session::SendPlacementTrace {
             anchor_kind,
@@ -617,13 +561,11 @@ impl super::super::Session {
             .ok_or(ProposeError::Refused(RefusalKind::UnknownDomain))?;
         let source_tree = self.trees.get(source_key).cloned().flatten();
         // A cross-output send still proves the source remaps: an
-        // infeasible source (nothing projects, even overlap-accepted)
+        // infeasible source (strict projection fails)
         // refuses with the source exactly preserved instead of staging
         // a float from broken geometry. Only the frame claim is
         // untouched there, never the transfer itself.
         if allow_cross_output {
-            let allow = self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                || self.overlap_accepted.contains(source_key);
             let Some(tree) = source_tree.as_ref() else {
                 return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
             };
@@ -633,7 +575,6 @@ impl super::super::Session {
                 &self.windows,
                 source_key,
                 &hints,
-                allow,
             )
             .is_none_or(|geometry| !geometry.iter().any(|g| &g.leaf == mover_leaf))
             {
@@ -668,15 +609,12 @@ impl super::super::Session {
             })
             .or_else(|| {
                 let tree = source_tree.as_ref()?;
-                let allow = self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(source_key);
                 crate::session::capacity::project_domain_geometry(
                     &source_domain,
                     tree,
                     &self.windows,
                     source_key,
                     &hints,
-                    allow,
                 )
                 .and_then(|geometry| {
                     geometry
@@ -725,11 +663,7 @@ impl super::super::Session {
         let mut desired_capacity = self.capacity_floats.clone();
         desired_capacity.insert(window.clone());
         // The mover lifetime keeps its first admission number; moves never
-        // re-sequence. An emptied source drops its overlap mark.
-        let mut desired_overlap = self.overlap_accepted.clone();
-        if desired_trees.get(source_key).cloned().flatten().is_none() {
-            desired_overlap.remove(source_key);
-        }
+        // re-sequence.
         // Follow/stay mirror the deferred transfer: follow names the
         // target bookkeeping MRU (native follow addresses the mover ref),
         // stay falls back through the source MRU, never the target.
@@ -770,10 +704,6 @@ impl super::super::Session {
             &desired_windows,
             &affected,
             &hints,
-            &|key| {
-                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(key)
-            },
         )
         .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(&desired_geometry, &desired_windows, &affected) {
@@ -841,7 +771,6 @@ impl super::super::Session {
             capacity_floats: desired_capacity,
             admission_order: self.admission_order.clone(),
             admission_counter: self.admission_counter,
-            overlap_accepted: desired_overlap,
         });
         self.last_send_placement = Some(crate::session::SendPlacementTrace {
             anchor_kind: "capacity-float",
@@ -1010,10 +939,6 @@ impl super::super::Session {
             &desired_windows,
             &affected,
             &hints,
-            &|key| {
-                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(key)
-            },
         )
         .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(&desired_geometry, &desired_windows, &affected) {
@@ -1080,7 +1005,6 @@ impl super::super::Session {
             capacity_floats: self.capacity_floats.clone(),
             admission_order: self.admission_order.clone(),
             admission_counter: self.admission_counter,
-            overlap_accepted: self.overlap_accepted.clone(),
         });
         let target_bounds = self
             .domains

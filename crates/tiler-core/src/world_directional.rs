@@ -108,14 +108,11 @@ pub fn effective_domain(home: &DomainKey, sticky: bool, view: Option<&str>) -> D
     home.clone()
 }
 
-/// Ordered directional lattice shared by focus and move. `is_move`
-/// selects the move vocabulary/fences (fullscreen refusal, maximize
-/// need-clear); focus keeps geometry-free allow on fullscreen and the
-/// maximized fence instead.
-///
 /// Order (adapter parity): automatic-float refusal, floating-workspace
-/// refusal, fullscreen (move only), maximized fence (focus) / need-clear
-/// (move), then float vs tiled routing. Returns `None` when no early
+/// refusal, fullscreen (move only), maximize need-clear (move only), then
+/// float vs tiled routing. Focus never fences on maximize: a maximized
+/// origin skips same-output candidates through the ordinary focus legs
+/// (Nov 1 rule) instead of refusing here. Returns `None` when no early
 /// verdict applies and the caller must continue (float geometry/target
 /// or the tiled engine path).
 pub fn early_verdict(
@@ -151,15 +148,9 @@ pub fn early_verdict(
             cause: None,
         });
     }
-    if subject.maximized && !subject.fullscreen {
-        if is_move {
-            return Some(DirectionalVerdict::NeedClear {
-                window: subject.window.clone(),
-            });
-        }
-        return Some(DirectionalVerdict::Refused {
-            outcome: DirectionalOutcome::FocusRefusedMaximize,
-            cause: None,
+    if is_move && subject.maximized && !subject.fullscreen {
+        return Some(DirectionalVerdict::NeedClear {
+            window: subject.window.clone(),
         });
     }
     None
@@ -448,7 +439,8 @@ pub(crate) mod tests {
     #[test]
     fn ordered_refusal_floating_workspace_fullscreen_maximize() {
         // Floating workspaces refuse both ops; fullscreen refuses move
-        // only; maximized fences focus and needs clear for move.
+        // only; maximized needs clear for move and routes focus through
+        // the ordinary skip/cross legs (Nov 1 rule), never refusing here.
         let tiled = carrier("win-a", "out-a", "ws-1", 0, 0);
         for is_move in [true, false] {
             let verdict = early_verdict(&tiled, crate::world_report::TilingMode::Floating, is_move)
@@ -488,15 +480,10 @@ pub(crate) mod tests {
                 cause: None,
             })
         );
+        // Maximized focus falls through to the skip/cross legs.
         let mut maximized = carrier("win-a", "out-a", "ws-1", 0, 0);
         maximized.maximized = true;
-        assert_eq!(
-            early_verdict(&maximized, crate::world_report::TilingMode::Tiled, false),
-            Some(DirectionalVerdict::Refused {
-                outcome: DirectionalOutcome::FocusRefusedMaximize,
-                cause: None,
-            })
-        );
+        assert!(early_verdict(&maximized, crate::world_report::TilingMode::Tiled, false).is_none());
         assert_eq!(
             early_verdict(&maximized, crate::world_report::TilingMode::Tiled, true),
             Some(DirectionalVerdict::NeedClear {

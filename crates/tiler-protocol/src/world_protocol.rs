@@ -8766,7 +8766,7 @@ pub fn encode_reply(decoded: &DecodedReplyV4) -> Result<String> {
 /// Retained engine surface for the service boundary: the planner service
 /// drives [`WorldEngine`] through this module so only `tiler-protocol` sits
 /// between the service and the core.
-pub use tiler_core::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
+pub use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 
 #[cfg(test)]
 mod tests {

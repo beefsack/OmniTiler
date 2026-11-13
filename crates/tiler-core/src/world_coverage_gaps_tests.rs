@@ -10,7 +10,7 @@ use crate::boundary::CoreCommand;
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
     CommandRejectKind, CommandResult, FrameSetter, HoldReason, MemberAttempt,
     PresentationIngressV4, PresentationRowV4, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority,
@@ -1225,19 +1225,13 @@ fn two_automatic_fixed_newcomers_take_no_focus() {
 
 #[test]
 fn windows_profile_automatic_fixed_withholds_while_ordinary_mints() {
-    // Windows-carrier authorization only: the exact Windows engine profile
-    // from `world_sequencer.rs` (`fixed_send_admission: true`,
-    // `maximized_focus_fence: false`) withholds an adapter-asserted
-    // automatic fixed float (D6/D8 retained-origin shape) while an ordinary
-    // newcomer still mints admission focus. This proves core authorization
-    // under the Windows profile; it does NOT prove adapter actuation or
-    // native behavior.
-    let config = WorldEngineConfig {
-        fixed_send_admission: true,
-        maximized_focus_fence: false,
-    };
+    // Windows-carrier authorization only: the shared world engine profile
+    // used by `world_sequencer.rs` withholds an adapter-asserted automatic
+    // fixed float (D6/D8 retained-origin shape) while an ordinary newcomer
+    // still mints admission focus. This proves core authorization under the
+    // world profile; it does NOT prove adapter actuation or native behavior.
     for case in ["automatic-fixed", "intentional-fixed", "ordinary"] {
-        let mut engine = WorldEngine::new_test_bound_with_config_and_initial_settings(
+        let mut engine = WorldEngine::new_test_bound_with_initial_settings(
             "gen-1",
             "adapter-1",
             crate::connection::HostCapabilities {
@@ -1247,7 +1241,6 @@ fn windows_profile_automatic_fixed_withholds_while_ordinary_mints() {
                 maximize: true,
                 ..Default::default()
             },
-            config,
             Vec::new(),
         )
         .expect("generation");

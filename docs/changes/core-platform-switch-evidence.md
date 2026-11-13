@@ -1,15 +1,112 @@
-# Core platform switches: evidence awaiting user decisions
+# Core platform switches: shared policy implementation
 
-- Status: evidence/options only, 2026-11-12; two separate decisions under
-  [C6](core-v4-review.md#user-decisions-2026-11-12). No new behavior selected.
-- Scope: source/history research at `4c419cee`; no implementation, contract or
-  fixture changes. Native results below are historical reports, not new tests.
+- Status: both removals approved 2026-11-12 under
+  [C6](core-v4-review.md#user-decisions-2026-11-12); implemented offline.
+  Final full gates and independent complete-diff review passed offline. The KDE
+  follow-up below verifies selected command-route native legs; physical input
+  and other-platform acceptance remain pending.
+- Scope: shared send/focus policy, constructor/profile removal and regression
+  coverage. Source/history research below describes `4c419cee`, before removal.
+  Native results below are historical reports, not new tests.
 - Acceptance: trace both switches through callers, distinguish host facts from
   policy, check stable Tier 1 sources, record minimal discriminators and options.
   [Layering](../principles.md#layering) and [Simplicity](../principles.md#simplicity)
   apply. Native delivery and unresolved reference outcomes remain TBD.
 
-## Current wiring (citations at the inspected revision)
+## Implementation outcome
+
+- Automatic fixed-size float sends now use the existing slotless deferred
+  transfer without `fixed_send_admission`. Sticky, explicit tile suppression,
+  dual-overlay and ordinary identity/domain safety refusals remain. The
+  `fixed_size_admission` classification mechanism is unchanged.
+- `maximized_focus_fence` and the separate native world refusal are removed.
+  Native and composed maximized origins skip local candidates and cross in all
+  four directions when an adjacent eligible destination exists, otherwise stay.
+  Composed floats use the existing remembered tiled destination; their inclusion
+  is an assumption, not a separately explicit float answer. See the owning
+  [decision](../decisions/window-state.md#directional-maximize-and-fullscreen-operations).
+- Removed the empty `WorldEngineConfig`, constructor/reset profiles and unused
+  pure fence predicate. Removed its three obsolete `window-policy.json` cases
+  and corresponding test dispatches rather than skipping them. Immutable
+  `world-wire/v4`, `stage5` and `stage5-v4` are untouched. The separate
+  [anchor-setting removal](c9-product-evidence.md#fixed-largest-implementation)
+  refreshes active settings witnesses through their recorders.
+  Historical `focus-refused-maximize` wire vocabulary remains for codec witnesses.
+- Regressions cover automatic send admission with slotless geometry and safety
+  controls; local maximize skip, adjacent-output crossing, no-neighbor stay and
+  destination overlay preservation for native/composed tiled/float origins.
+  Up/Down tests use actual vertical adjacency, not a horizontal-only fixture.
+  Ordinary/fullscreen navigation controls retain their existing behavior.
+- Offline Rust run: `cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture`
+  passed 3378 tests, zero failed, one filtered. Temporarily replaying the retired
+  default automatic-send refusal and native maximized-focus refusal failed eight
+  regressions (one send, seven focus); restoring the exact source hashes returned
+  the implementation to the passing tree. This is a retired-semantics mutation
+  check, not a historical checkout run. Final gates after the anchor-setting
+  removal passed: format, three-package all-target build/clippy, the same Rust
+  command (3377 passed, zero failed/ignored, one filtered), KDE typecheck and
+  1302 tests (zero failures/skips, 191 suites). Independent complete-diff review
+  covered both original partial implementations and their corrections, with no
+  functional findings. Stale explanatory comments were clarified afterward.
+- Native acceptance is not established. KDE must check fixed-float same/cross-
+  output sends and native-maximize local-stay/adjacent-cross behavior with both
+  overlays preserved. macOS must adopt shared fixed-float sends and composed-
+  maximize tiled/float crossing in all directions. Windows must adopt the shared
+  constructor and verify native-maximize crossing while preserving source and
+  destination state. macOS/Windows compilation and native checks are pending.
+
+## KDE follow-up (2026-11-13)
+
+- Fixed a foreground dev-tooling teardown defect: background pipelines retained
+  only their trailing formatter PID, so cleanup could leave upstream log
+  followers alive and block before `dev-off`. Raw FIFOs now connect explicitly
+  tracked follower/formatter processes; cleanup signals and waits for every
+  stage. The hermetic single-PID SIGTERM regression blocks upstream followers
+  and verifies teardown plus process absence. The tooling suite passes 486
+  assertions. Independent review found no blocking issue; the owned-tray FIFO
+  path is inspected, not covered by the new blocking-upstream regression.
+- Fresh fixture-scoped detached startup passes the evaluated-readiness gate:
+  current-owner journal records ready/discovered and matched accepted
+  dispatch/applied rows after the pre-start cursor. All 22 subsequent read-only
+  helpers retain fresh nonces, raw signed-ID replies, source hashes and
+  pre-load collision checks; named-plugin and exact-object absence are verified
+  after each unload and before either controller teardown. No helper failure,
+  retry, collision or carry-over is observed in that run.
+- An earlier follow-up startup evaluated successfully but remains qualified:
+  its helper had an empty nonce, no retained raw load reply and a post-load
+  check mislabeled as pre-load. Helper plugin/object absence before controller
+  unload is retained. It also unnecessarily restored the current desktop and
+  removed its appended desktop; the later run preserves normal lifecycle churn.
+  Successful later accounting does not erase those earlier evidence gaps.
+
+| Check | Result and evidence boundary |
+| --- | --- |
+| Fixed-size automatic float, cross-output send with stay | PASS by command route. A second fixture remains on the source and receives focus; the sent fixture changes output while retaining float classification and native size. |
+| Native-maximized source, leftward cross | PASS by command route. Focus skips a same-output candidate and reaches the other output; the source's maximized frame is preserved. |
+| Native-maximized source, left edge with no neighbor | PASS by command route. Focus and source frame stay unchanged. |
+| Native-maximized source, Up and Down without vertical neighbors | PASS by command route. Focus and source frame stay unchanged in each direction. |
+| Native-maximized source, rightward cross | PASS by command route. Focus crosses; both maximized source and destination overlay frames are preserved. |
+| Physical shortcut delivery | NOT RUN. `invokeShortcut` bypasses xkb; command acceptance is correlated with production outcomes and native readback, not physical input. |
+
+- The native script maximize getter is unavailable in these captures. Fixture
+  mode readback establishes the initial maximized source; subsequent checks join
+  native placement-area frames and production maximize/held facts. The later
+  source has no separate fixture mode snapshot, a narrower evidence boundary
+  than complete native-mode readback at every step.
+- [Largest-fallback admission and native settings build](c9-product-evidence.md#native-build-repair-and-kde-follow-up-2026-11-13)
+  are verified separately. Settings-page/Apply and pending-target option 2 are
+  NOT RUN; [intent restart](retained-intent-desire.md#additional-kde-restart-evidence-2026-11-13)
+  is partial. Earlier same-output send/follow and cross-output follow observations
+  are retained with their original helper-lifecycle qualification, not repeated
+  or upgraded by these legs.
+- Logs were copied before each teardown. The final run omitted saved `dev-off`
+  output and in-directory final status receipts; subsequent independent and
+  direct read-only checks confirm dev DOWN and no fixture, tiler, log-follower
+  or input-helper processes. No product defect is established by these legs.
+  Evidence review accepts the table with the qualifications above; native
+  acceptance is not a blanket PASS.
+
+## Historical wiring (citations at the inspected revision)
 
 | Item | Evidence |
 | --- | --- |
@@ -105,7 +202,7 @@
   `test-fixtures/world-wire/v4-active/messages/handshake-emulated.json:1`.
   Removing both switches also removes the otherwise empty `WorldEngineConfig`
   and its constructor/reset profile plumbing; no automatic-origin facts vanish.
-- Verification: local pinned-source/history inspection; `git diff --check`.
-  No suites or live tests. Unsupported references, native carry/focus and
-  capability truth values stay TBD. Next: obtain the two separate user choices;
-  reconcile the focus choice explicitly with November 1 before implementation.
+- Historical verification: local pinned-source/history inspection and whitespace
+  review only. The options above are research alternatives, not pending product
+  choices: the approved shared removals and implementation are recorded above.
+  Unsupported references and native carry/focus remain TBD.

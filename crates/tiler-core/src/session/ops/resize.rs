@@ -150,10 +150,6 @@ impl super::super::Session {
             &self.windows,
             std::slice::from_ref(domain),
             &hints,
-            &|key| {
-                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(key)
-            },
         )
         .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(
@@ -211,10 +207,6 @@ impl super::super::Session {
             &self.windows,
             std::slice::from_ref(domain),
             &hints_from_observed(&session_observation.windows),
-            &|key| {
-                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(key)
-            },
         )
         .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(
@@ -295,7 +287,6 @@ impl super::super::Session {
             capacity_floats: self.capacity_floats.clone(),
             admission_order: self.admission_order.clone(),
             admission_counter: self.admission_counter,
-            overlap_accepted: self.overlap_accepted.clone(),
         });
         Ok(SessionResizePlan {
             dispatch,
@@ -553,10 +544,6 @@ impl super::super::Session {
             &self.windows,
             std::slice::from_ref(domain),
             &hints_from_observed(&session_observation.windows),
-            &|key| {
-                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(key)
-            },
         )
         .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(
@@ -614,10 +601,6 @@ impl super::super::Session {
             &self.windows,
             std::slice::from_ref(domain),
             &hints_from_observed(&session_observation.windows),
-            &|key| {
-                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(key)
-            },
         )
         .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(
@@ -720,7 +703,6 @@ impl super::super::Session {
             capacity_floats: self.capacity_floats.clone(),
             admission_order: self.admission_order.clone(),
             admission_counter: self.admission_counter,
-            overlap_accepted: self.overlap_accepted.clone(),
         });
         Ok(SessionResizePlan {
             dispatch,
@@ -937,10 +919,6 @@ impl super::super::Session {
             &self.windows,
             std::slice::from_ref(domain),
             &hints_from_observed(&session_observation.windows),
-            &|key| {
-                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(key)
-            },
         )
         .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(
@@ -1000,10 +978,6 @@ impl super::super::Session {
             &self.windows,
             std::slice::from_ref(domain),
             &hints_from_observed(&session_observation.windows),
-            &|key| {
-                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(key)
-            },
         )
         .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(
@@ -1134,7 +1108,6 @@ impl super::super::Session {
             capacity_floats: self.capacity_floats.clone(),
             admission_order: self.admission_order.clone(),
             admission_counter: self.admission_counter,
-            overlap_accepted: self.overlap_accepted.clone(),
         });
         Ok(SessionResizePlan {
             dispatch,

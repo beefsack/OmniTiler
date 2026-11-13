@@ -2,7 +2,7 @@ use crate::boundary::CoreCommand;
 use crate::connection::*;
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
-use crate::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
     PresentationIngressV4, PresentationRowV4, RowDiagnosticLane, ScopeAuthority, ScreenReport,
     WindowFact, WorldCommand, WorldReportV4,
@@ -151,7 +151,7 @@ fn settings_envelope_is_fenced_before_settings_state_mutation() {
     request.adapter = "adapter-1".into();
     let reply = engine.handle_settings(&request).unwrap();
     assert_eq!(reply.status, SettingsStatus::Accepted);
-    assert_eq!(reply.diagnostics.len(), 20);
+    assert_eq!(reply.diagnostics.len(), 18);
 }
 
 #[test]
@@ -455,11 +455,10 @@ fn test_bound_helper_passes_caller_capabilities_through_unmodified() {
         },
     ];
     for caps in cases {
-        let engine = WorldEngine::new_test_bound_with_config_and_initial_settings(
+        let engine = WorldEngine::new_test_bound_with_initial_settings(
             "gen-1",
             "adapter-1",
             caps.clone(),
-            WorldEngineConfig::default(),
             Vec::new(),
         )
         .expect("helper binds with exact caller caps");
@@ -469,6 +468,230 @@ fn test_bound_helper_passes_caller_capabilities_through_unmodified() {
             "helper must not extend caller unavailableFacts"
         );
     }
+}
+
+#[test]
+fn fixed_largest_selection_despite_removed_anchor_fallback_values() {
+    for removed_value in ["no-search", "closest-splittable-relative"] {
+        let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+            "gen-1",
+            "adapter-1",
+            HostCapabilities {
+                native_sticky: true,
+                maximize: true,
+                ..HostCapabilities::default()
+            },
+            vec![
+                (
+                    "anchorFallback".to_owned(),
+                    RawSettingValue::String(removed_value.to_owned()),
+                ),
+                ("outer".to_owned(), RawSettingValue::Number(0.0)),
+                ("gap".to_owned(), RawSettingValue::Number(4.0)),
+            ],
+        )
+        .expect("bound engine");
+
+        let min_hints = Some(crate::size_hints::WindowSizeHints {
+            min_w: Some(50),
+            min_h: Some(30),
+            ..crate::size_hints::WindowSizeHints::none()
+        });
+        let make_win = |id: &str| {
+            let mut f = identity_fact(
+                id,
+                None,
+                Some("synthetic.exe"),
+                Some("foreign-pid"),
+                "Synthetic",
+            );
+            f.hints = min_hints;
+            f
+        };
+        let mut r1 = report(1, true);
+        r1.screens[0].full_rect = Some(Rect {
+            x: 0,
+            y: 0,
+            w: 200,
+            h: 120,
+        });
+        r1.screens[0].work_area = Some(Rect {
+            x: 0,
+            y: 0,
+            w: 200,
+            h: 120,
+        });
+        r1.windows = vec![make_win("win-a"), make_win("win-b"), make_win("win-c")];
+        r1.focused_global = "win-c".to_owned();
+        r1.foreground_known = true;
+        accepted_reply(&mut engine, &r1);
+
+        let mut r2 = r1.clone();
+        r2.observation_seq = 2;
+        r2.request_seq = 2;
+        r2.request_id = "report-2".to_owned();
+        r2.windows.push(make_win("win-d"));
+        let reply = accepted_reply(&mut engine, &r2);
+        let d_row = reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-d")
+            .expect("win-d desire");
+        assert!(
+            !d_row.floating,
+            "removed anchorFallback={removed_value} must still use fixed largest-splittable fallback and tile win-d: {d_row:?}"
+        );
+    }
+}
+
+#[test]
+fn fixed_float_exhaustion_despite_removed_no_space_result_values() {
+    for removed_value in ["float", "allow-overlap"] {
+        let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+            "gen-1",
+            "adapter-1",
+            HostCapabilities {
+                native_sticky: true,
+                maximize: true,
+                ..HostCapabilities::default()
+            },
+            vec![
+                (
+                    "noSpaceResult".to_owned(),
+                    RawSettingValue::String(removed_value.to_owned()),
+                ),
+                ("outer".to_owned(), RawSettingValue::Number(0.0)),
+                ("gap".to_owned(), RawSettingValue::Number(10.0)),
+            ],
+        )
+        .expect("bound engine");
+
+        let make_win = |id: &str| {
+            identity_fact(
+                id,
+                None,
+                Some("synthetic.exe"),
+                Some("foreign-pid"),
+                "Synthetic",
+            )
+        };
+        let mut r1 = report(1, true);
+        r1.screens[0].full_rect = Some(Rect {
+            x: 0,
+            y: 0,
+            w: 22,
+            h: 9,
+        });
+        r1.screens[0].work_area = Some(Rect {
+            x: 0,
+            y: 0,
+            w: 22,
+            h: 9,
+        });
+        r1.windows = vec![make_win("win-a"), make_win("win-b")];
+        r1.focused_global = "win-b".to_owned();
+        r1.foreground_known = true;
+        accepted_reply(&mut engine, &r1);
+
+        let mut r2 = r1.clone();
+        r2.observation_seq = 2;
+        r2.request_seq = 2;
+        r2.request_id = "report-2".to_owned();
+        r2.windows.push(make_win("win-c"));
+        let reply = accepted_reply(&mut engine, &r2);
+        let c_row = reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-c")
+            .expect("win-c desire");
+        assert!(
+            c_row.floating,
+            "removed noSpaceResult={removed_value} must float win-c on exhaustion: {c_row:?}"
+        );
+    }
+}
+
+#[test]
+fn repair_floats_newest_victim_despite_removed_no_space_result_allow_overlap() {
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            native_sticky: true,
+            maximize: true,
+            ..HostCapabilities::default()
+        },
+        vec![
+            (
+                "noSpaceResult".to_owned(),
+                RawSettingValue::String("allow-overlap".to_owned()),
+            ),
+            ("outer".to_owned(), RawSettingValue::Number(0.0)),
+            ("gap".to_owned(), RawSettingValue::Number(10.0)),
+        ],
+    )
+    .expect("bound engine");
+
+    let make_win = |id: &str| {
+        identity_fact(
+            id,
+            None,
+            Some("synthetic.exe"),
+            Some("foreign-pid"),
+            "Synthetic",
+        )
+    };
+    let mut r1 = report(1, true);
+    r1.screens[0].full_rect = Some(Rect {
+        x: 0,
+        y: 0,
+        w: 22,
+        h: 9,
+    });
+    r1.screens[0].work_area = Some(Rect {
+        x: 0,
+        y: 0,
+        w: 22,
+        h: 9,
+    });
+    r1.windows = vec![make_win("win-a"), make_win("win-b")];
+    r1.focused_global = "win-b".to_owned();
+    r1.foreground_known = true;
+    let reply1 = accepted_reply(&mut engine, &r1);
+    assert!(reply1.windows.iter().all(|w| !w.floating));
+
+    let mut r2 = r1.clone();
+    r2.observation_seq = 2;
+    r2.request_seq = 2;
+    r2.request_id = "report-2".to_owned();
+    r2.screens[0].full_rect = Some(Rect {
+        x: 0,
+        y: 0,
+        w: 10,
+        h: 9,
+    });
+    r2.screens[0].work_area = Some(Rect {
+        x: 0,
+        y: 0,
+        w: 10,
+        h: 9,
+    });
+    let reply2 = accepted_reply(&mut engine, &r2);
+    let a_row = reply2
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-a")
+        .expect("win-a desire");
+    let b_row = reply2
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-b")
+        .expect("win-b desire");
+    assert!(!a_row.floating, "older win-a must stay tiled: {a_row:?}");
+    assert!(
+        b_row.floating,
+        "newest victim win-b must float on shrinking repair: {b_row:?}"
+    );
 }
 
 fn accepted_reply(

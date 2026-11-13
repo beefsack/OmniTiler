@@ -149,7 +149,11 @@ pub(crate) fn maybe_push_focus_follows(
         // choice), so a later command in the same batch resolves its
         // implicit subject from post-hover core state. Only the final
         // winner publishes.
-        let _ = engine.record_canonical(&follow.target, held_scopes, false);
+        if !engine.record_canonical(&follow.target, held_scopes, false)
+            && engine.logical_focus_cursor.as_ref() != Some(&follow.target)
+        {
+            engine.logical_focus_cursor = None;
+        }
         effects.push(follow);
     }
 }

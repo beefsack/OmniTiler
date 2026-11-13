@@ -197,6 +197,7 @@ impl WorldEngine {
         let observation = Self::capture_observation_v4(report);
         self.ingest_staged_intent(&observation);
         self.stage_captured_v4(effective, observation);
+        self.staged.revision = issuing_revision;
         // Freeze the positive-close survivor before convergence ingests the
         // host fallback: the retained request records the pre-close MRU
         // winner while later observations stay truthful.
@@ -452,9 +453,18 @@ impl WorldEngine {
         // immediately, so a later implicit subject resolves from core focus,
         // not stale native foreground.
         for effect in &effects {
-            if effect.kind == EffectKind::Focus {
-                let _ = self.record_canonical(&effect.target, &held_scopes, false);
+            if effect.kind == EffectKind::Focus
+                && !self.record_canonical(&effect.target, &held_scopes, false)
+                && self.logical_focus_cursor.as_ref() != Some(&effect.target)
+            {
+                self.logical_focus_cursor = None;
             }
+        }
+        if effects
+            .iter()
+            .any(|effect| effect.kind == EffectKind::Focus)
+        {
+            self.staged.batch_focus_issued = true;
         }
         if consumed {
             // Consumed sequences reconcile only, never re-execute or
@@ -573,6 +583,12 @@ impl WorldEngine {
                 self.note_command(command_seq);
                 let result = Some(CommandResult::Rejected { kind: reject });
                 crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
+                if effects
+                    .iter()
+                    .any(|effect| effect.kind == EffectKind::Focus)
+                {
+                    self.staged.batch_focus_issued = true;
+                }
                 settlements.push(BatchSettlement {
                     seq: command_seq,
                     result: result.clone(),
@@ -618,11 +634,21 @@ impl WorldEngine {
                     self.upsert_ordinary_toggle_float_save(&bookkeeping, &result);
                     if effect.kind == EffectKind::Focus {
                         // Latest explicit focus wins: drop every unissued
-                        // prior Focus (admission or earlier batch).
+                        // prior Focus (admission or earlier batch). Canonical
+                        // command-focus failures clear `logical_focus_cursor`
+                        // inside `record_command_focus`, so non-recording
+                        // focus carriers (send/move) never wipe a valid prior
+                        // cursor.
                         effects.retain(|existing| existing.kind != EffectKind::Focus);
                     }
                     effects.push(effect);
                     crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
+                    if effects
+                        .iter()
+                        .any(|effect| effect.kind == EffectKind::Focus)
+                    {
+                        self.staged.batch_focus_issued = true;
+                    }
                     settlements.push(BatchSettlement {
                         seq: command_seq,
                         result: result.clone(),
@@ -643,6 +669,12 @@ impl WorldEngine {
                     let result = self.command_result.take();
                     self.upsert_ordinary_toggle_float_save(&bookkeeping, &result);
                     crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
+                    if effects
+                        .iter()
+                        .any(|effect| effect.kind == EffectKind::Focus)
+                    {
+                        self.staged.batch_focus_issued = true;
+                    }
                     settlements.push(BatchSettlement {
                         seq: command_seq,
                         result: result.clone(),
@@ -680,6 +712,12 @@ impl WorldEngine {
                         .unwrap_or(CommandRejectKind::OperationRefused);
                     let result = Some(CommandResult::Rejected { kind: typed });
                     crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
+                    if effects
+                        .iter()
+                        .any(|effect| effect.kind == EffectKind::Focus)
+                    {
+                        self.staged.batch_focus_issued = true;
+                    }
                     settlements.push(BatchSettlement {
                         seq: command_seq,
                         result: result.clone(),
@@ -734,6 +772,7 @@ impl WorldEngine {
         // direct command seam (missing entry falls back to staged focus).
         self.batch_base_focus.clear();
         self.batch_command_focus.clear();
+        self.staged.batch_focus_issued = false;
         self.prune_lifetime_state();
         self.note_focused_output();
         self.reconcile_members();

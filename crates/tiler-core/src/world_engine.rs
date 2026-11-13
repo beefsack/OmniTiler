@@ -900,6 +900,13 @@ pub(crate) struct StagedReport {
     pub(crate) homing: BTreeMap<WindowId, DomainKey>,
     /// Carried gesture barrier for the staged run.
     pub(crate) gesture_barrier: bool,
+    /// Issuing revision of the accepted run that staged this report (`0`
+    /// for standalone staging probes outside `run_accepted_v4_batched`).
+    pub(crate) revision: u64,
+    /// True during `run_accepted_v4_batched` once a focus effect was
+    /// emitted for this report before `drain_focus_candidates` updates
+    /// `pending_focus`, preventing same-batch implicit fallback.
+    pub(crate) batch_focus_issued: bool,
 }
 
 /// Explicit typed event identity for command-path event construction.
@@ -1086,7 +1093,6 @@ pub struct WorldEngine {
     pub(crate) core_generation_str: String,
     generation_seed: String,
     connection_number: u64,
-    config: WorldEngineConfig,
     pub(crate) adapter: Option<String>,
     pub(crate) connection_owner: Option<OwnerId>,
     application_identity: Option<ApplicationIdentity>,
@@ -1640,32 +1646,6 @@ pub struct WorldEngine {
     pub(crate) implicit_event_focus: Option<WindowId>,
 }
 
-/// Platform opt-ins for [`WorldEngine`] construction: the only Engine
-/// policy carried at world construction time. `fixed_size_admission` is
-/// always on and is not configurable here; nothing else may be injected.
-/// Presentation-only carrier opt-ins ride explicit [`WorldEngine`] builder
-/// methods instead, never this struct.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WorldEngineConfig {
-    /// Deferred sends for automatic fixed-size floats (Windows workspace
-    /// sends). Off by default; the Windows carrier enables it.
-    pub fixed_send_admission: bool,
-    /// G-06 maximized directional focus fence (REQ-MAX-08). On by default
-    /// (Linux route); the Windows carrier disables it.
-    pub maximized_focus_fence: bool,
-}
-
-impl Default for WorldEngineConfig {
-    /// Exactly the historical [`WorldEngine::new`] semantics: automatic
-    /// fixed-float sends off, maximized focus fence on.
-    fn default() -> Self {
-        Self {
-            fixed_send_admission: false,
-            maximized_focus_fence: true,
-        }
-    }
-}
-
 impl WorldEngine {
     #[doc(hidden)]
     pub fn new_test_bound(generation_seed: &str, adapter: &str) -> Option<Self> {
@@ -1702,26 +1682,9 @@ impl WorldEngine {
         generation_seed: &str,
         adapter: &str,
         capabilities: HostCapabilities,
-        values: Vec<(String, crate::connection::RawSettingValue)>,
-    ) -> Option<Self> {
-        Self::new_test_bound_with_config_and_initial_settings(
-            generation_seed,
-            adapter,
-            capabilities,
-            WorldEngineConfig::default(),
-            values,
-        )
-    }
-
-    #[doc(hidden)]
-    pub fn new_test_bound_with_config_and_initial_settings(
-        generation_seed: &str,
-        adapter: &str,
-        capabilities: HostCapabilities,
-        config: WorldEngineConfig,
         mut values: Vec<(String, crate::connection::RawSettingValue)>,
     ) -> Option<Self> {
-        let mut engine = Self::new_with_config(generation_seed, config)?;
+        let mut engine = Self::new(generation_seed)?;
         // The caller owns availability: the synthetic test identity carries
         // exactly the facts the given capabilities support, and the
         // capabilities pass through unmodified (never silently extended).
@@ -1817,28 +1780,16 @@ impl WorldEngine {
     /// effects, or logical creation tokens across generations.
     #[must_use]
     pub fn new(core_generation: &str) -> Option<Self> {
-        Self::new_with_config(core_generation, WorldEngineConfig::default())
-    }
-
-    /// Fresh backend incarnation with explicit platform opt-ins. `None` on
-    /// a malformed generation token. `Default` is exactly [`WorldEngine::new`].
-    #[must_use]
-    pub fn new_with_config(core_generation: &str, config: WorldEngineConfig) -> Option<Self> {
         let parsed = GenerationId::parse(core_generation)?;
         let mut engine = Engine::new();
         // Fixed-size admission stays enabled for every world carrier.
-        // The default keeps the Linux opt-ins; native carriers can select
-        // their existing send and maximized-focus policies explicitly.
         engine.set_fixed_size_admission(true);
-        engine.set_maximized_focus_fence(config.maximized_focus_fence);
-        engine.set_fixed_send_admission(config.fixed_send_admission);
         Some(Self {
             engine,
             core_generation: parsed,
             core_generation_str: core_generation.to_owned(),
             generation_seed: core_generation.to_owned(),
             connection_number: 0,
-            config,
             adapter: None,
             connection_owner: None,
             application_identity: None,
@@ -2019,7 +1970,7 @@ impl WorldEngine {
                 Some(ProtocolKind::RevisionExhausted),
             );
         }
-        let Some(mut fresh) = Self::new_with_config(&generation, self.config) else {
+        let Some(mut fresh) = Self::new(&generation) else {
             return reply(
                 request.adapter.clone(),
                 request.request.clone(),
@@ -2063,10 +2014,6 @@ impl WorldEngine {
             self.initial_settings_accepted = true;
             self.engine
                 .set_fixed_size_predicate(self.settings.fixed_size_predicate);
-            self.engine
-                .set_anchor_fallback(self.settings.anchor_fallback);
-            self.engine
-                .set_no_space_result(self.settings.no_space_result);
             self.engine
                 .set_fresh_placement(self.settings.fresh_placement);
             self.switch_target = self.settings.switch_target;

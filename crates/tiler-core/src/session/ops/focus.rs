@@ -91,34 +91,17 @@ impl super::super::Session {
         if window != &focused_window {
             return Err(ProposeError::Refused(RefusalKind::FocusMismatch));
         }
-        // G-06 maximized directional focus fence (REQ-MAX-08): with the
-        // Linux-route opt-in on, directional focus is fenced while the
-        // focused tiled window is maximized (no-op `Unchanged`, no plan and
-        // no pending; leave via unmaximize or Alt+Tab). Fullscreen uses
-        // its separate directional focus policy below. Off by default so
-        // Windows carriers keep exact current behavior.
-        if self.maximized_focus_fence
-            && let Some(entry) = session_observation
-                .windows
-                .iter()
-                .find(|w| w.window == focused_window)
-            && entry.maximized
-            && !entry.fullscreen
-        {
-            return Err(ProposeError::Refused(RefusalKind::Unchanged));
-        }
-        // R-MAX-02: a fullscreen focused subject skips all same-output
-        // siblings. Refuse as `Unchanged` in every direction (no plan, no
-        // pending) so the caller continues to the adjacent output
-        // (`Left`/`Right` cross leg) or stays (no adjacent/vertical).
-        // Explicit focus-by-window and workspace switches are unaffected
-        // (they never route here). Maximized (non-fullscreen) keeps its
-        // fence above; fullscreen exempts it and takes this rule instead.
+        // Nov 1 rule (2026-11-01) with R-MAX-02: a maximized or fullscreen
+        // focused subject skips all same-output siblings. Refuse as
+        // `Unchanged` in every direction (no plan, no pending) so the
+        // caller continues to the adjacent output (cross leg) or stays
+        // when no eligible cross leg exists. Explicit focus-by-window and workspace
+        // switches are unaffected (they never route here).
         if let Some(entry) = session_observation
             .windows
             .iter()
             .find(|w| w.window == focused_window)
-            && entry.fullscreen
+            && (entry.maximized || entry.fullscreen)
         {
             return Err(ProposeError::Refused(RefusalKind::Unchanged));
         }
@@ -157,10 +140,6 @@ impl super::super::Session {
             &self.windows,
             std::slice::from_ref(domain),
             &hints,
-            &|key| {
-                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(key)
-            },
         )
         .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(
@@ -225,7 +204,6 @@ impl super::super::Session {
             capacity_floats: self.capacity_floats.clone(),
             admission_order: self.admission_order.clone(),
             admission_counter: self.admission_counter,
-            overlap_accepted: self.overlap_accepted.clone(),
         });
         Ok(SessionFocusPlan {
             dispatch,
@@ -293,11 +271,11 @@ impl super::super::Session {
     /// Fail-closed before any native action or pending: missing adjacency,
     /// ambiguous duplicate output ids, empty target, exceptional target
     /// window, stale/nonreciprocal target links, changed targets, pending,
-    /// divergence, non-Left/Right directions, a non-exhausted local edge
+    /// divergence, a non-exhausted local edge
     /// (local focus wins), or no edge-touching eligible target refuse as [`RefusalKind::Unchanged`]/[`NotTiled`]/
     /// [`PartialObservation`]/[`MalformedTopology`] with no plan and no
-    /// pending. `Up`/`Down` always refuse [`RefusalKind::Unchanged`] (current
-    /// local behavior preserved; no vertical crossing, no workspace cycling).
+    /// pending. `Up`/`Down` cross only for a maximized, non-fullscreen origin;
+    /// ordinary/fullscreen vertical behavior and no workspace cycling remain.
     pub fn propose_cross_output_focus(
         &mut self,
         domain: &DomainKey,
@@ -384,7 +362,11 @@ impl super::super::Session {
         if self.drag.is_some() {
             return Err(ProposeError::PendingExists);
         }
-        if !matches!(direction, Direction::Left | Direction::Right) {
+        let maximized_cross = session_observation
+            .windows
+            .iter()
+            .any(|entry| entry.window == *window && entry.maximized && !entry.fullscreen);
+        if !(maximized_cross || matches!(direction, Direction::Left | Direction::Right)) {
             return Err(ProposeError::Refused(RefusalKind::Unchanged));
         }
         if self.domains.iter().find(|d| &d.key() == domain).is_none() {
@@ -463,15 +445,16 @@ impl super::super::Session {
             if window != &focused_window {
                 return Err(ProposeError::Refused(RefusalKind::FocusMismatch));
             }
-            // R-MAX-02: a fullscreen tiled subject skips the local-edge
-            // gate below: same-output siblings never win, so focus
-            // continues to the adjacent output using the existing
-            // entry-edge ranking. All other validations are preserved.
-            let fullscreen_subject = session_observation
+            // Nov 1 rule with R-MAX-02: a maximized or fullscreen tiled
+            // subject skips the local-edge gate below: same-output siblings
+            // never win, so focus continues to the adjacent output using the
+            // existing entry-edge ranking. All other validations are
+            // preserved.
+            let overlay_subject = session_observation
                 .windows
                 .iter()
-                .any(|entry| entry.window == *window && entry.fullscreen);
-            if !fullscreen_subject {
+                .any(|entry| entry.window == *window && (entry.maximized || entry.fullscreen));
+            if !overlay_subject {
                 // Local focus must be exhausted: any local target wins (no cross).
                 let Some(tree) = self.trees.get(domain).cloned().flatten() else {
                     return Err(ProposeError::Refused(RefusalKind::FocusMismatch));
@@ -487,18 +470,6 @@ impl super::super::Session {
             }
             Some(focused_leaf)
         };
-        // G-06 fence applies to cross-output focus from either origin:
-        // a maximized (non-fullscreen) subject never crosses either.
-        if self.maximized_focus_fence
-            && let Some(entry) = session_observation
-                .windows
-                .iter()
-                .find(|e| e.window == *window)
-            && entry.maximized
-            && !entry.fullscreen
-        {
-            return Err(ProposeError::Refused(RefusalKind::Unchanged));
-        }
         let focused_window = window.clone();
         // Adjacent output in D; exactly one domain must own that output id
         // (ambiguity fails closed).
@@ -561,10 +532,6 @@ impl super::super::Session {
             &self.windows,
             &affected,
             &hints,
-            &|key| {
-                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(key)
-            },
         )
         .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(&desired_geometry, &self.windows, &affected) {
@@ -708,7 +675,6 @@ impl super::super::Session {
             capacity_floats: self.capacity_floats.clone(),
             admission_order: self.admission_order.clone(),
             admission_counter: self.admission_counter,
-            overlap_accepted: self.overlap_accepted.clone(),
         });
         Ok(SessionFocusPlan {
             dispatch,

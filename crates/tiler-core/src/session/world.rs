@@ -504,7 +504,6 @@ impl super::Session {
             .retain(|id| sticky_ids.contains(id));
         stay.capacity_floats.retain(|id| sticky_ids.contains(id));
         stay.admission_order.retain(|id, _| sticky_ids.contains(id));
-        stay.overlap_accepted.remove(&source_key);
         stay.domains[0].id = target.output.clone();
         stay.domains[0].workspace = target.workspace.clone();
         stay.domains[0].bounds = bounds;
@@ -664,8 +663,7 @@ impl super::Session {
     /// send transfer (D28 born-fullscreen carry, option (a); D16 ordinary
     /// intentional-float carry, option (a), no setting; D16 approved
     /// floating+fullscreen / floating+maximized combo carry, 2026-10-13;
-    /// Windows automatic fixed-size carry with the `fixed_send_admission`
-    /// opt-in).
+    /// automatic fixed-size carry on every platform, 2026-11-12).
     ///
     /// The retained record is always the floating-only shape; three
     /// observed shapes carry: the D28 held mover (never floating, still
@@ -674,9 +672,8 @@ impl super::Session {
     /// Sticky, both overlays at once, explicit tile wins
     /// (`fixed_suppress`), and exited movers refuse. Automatic-origin
     /// signals (`fixed_auto` observation flag, retained `automatic_fixed`
-    /// marker) refuse unless the `fixed_send_admission` opt-in is set, in
-    /// which case automatic floats carry exactly like intentional floats.
-    /// Hints never gate; size travels in the retained
+    /// marker) carry exactly like intentional floats: only the explicit
+    /// tile win refuses. Hints never gate; size travels in the retained
     /// record. Overlays ride adapter-native with no geometry write.
     pub fn deferred_send_eligible(
         &self,
@@ -703,36 +700,22 @@ impl super::Session {
         if entry.output != source.output || entry.workspace != source.workspace {
             return false;
         }
-        // Automatic origin lifts only under the Windows send opt-in; the
-        // explicit tile win (`fixed_suppress`) refuses either way. With
-        // the opt-in off every arm keeps its exact prior refusal.
-        // Held born-fullscreen arm (D28): the native send-route shape.
+        // Automatic origin carries exactly like intentional floats; only
+        // the explicit tile win (`fixed_suppress`) refuses. Held
+        // born-fullscreen arm (D28): the native send-route shape.
         if !entry.floating && entry.fullscreen && !entry.maximized && !entry.sticky {
-            if self.fixed_send_admission {
-                return !entry.fixed_suppress;
-            }
-            return !entry.fixed_auto && !entry.fixed_suppress;
+            return !entry.fixed_suppress;
         }
         // Ordinary intentional-float arm (D16): still floating, no
         // overlays. Size travels in the retained record, never in the
         // observation, so no geometry gates here.
         if entry.floating && !entry.fullscreen && !entry.maximized && !entry.sticky {
-            if self.fixed_send_admission {
-                return !entry.fixed_suppress;
-            }
-            return !entry.fixed_auto
-                && !entry.fixed_suppress
-                && !self.automatic_fixed.contains(window);
+            return !entry.fixed_suppress;
         }
         // Approved combo arm (D16, 2026-10-13): still floating with
         // exactly one overlay, never sticky.
         if entry.floating && !entry.sticky && (entry.fullscreen ^ entry.maximized) {
-            if self.fixed_send_admission {
-                return !entry.fixed_suppress;
-            }
-            return !entry.fixed_auto
-                && !entry.fixed_suppress
-                && !self.automatic_fixed.contains(window);
+            return !entry.fixed_suppress;
         }
         false
     }
@@ -816,36 +799,6 @@ impl super::Session {
     /// touches topology, shares, membership, focus, or revision.
     pub fn set_fixed_size_admission(&mut self, enabled: bool) {
         self.fixed_admission = enabled;
-    }
-
-    /// Whether the opt-in G-06 maximized directional focus fence is
-    /// enabled (REQ-MAX-08). Off by default; the Linux planner route
-    /// enables it while Windows keeps exact current behavior.
-    #[must_use]
-    pub fn maximized_focus_fence(&self) -> bool {
-        self.maximized_focus_fence
-    }
-
-    /// Enable or disable the opt-in G-06 maximized directional focus
-    /// fence. Never touches topology, shares, membership, focus, or
-    /// revision.
-    pub fn set_maximized_focus_fence(&mut self, enabled: bool) {
-        self.maximized_focus_fence = enabled;
-    }
-
-    /// Whether the opt-in deferred send for automatic fixed-size floats
-    /// is enabled (Windows workspace sends). Off by default; KDE/macOS
-    /// carriers keep exact current behavior while the Windows route
-    /// enables it.
-    #[must_use]
-    pub fn fixed_send_admission(&self) -> bool {
-        self.fixed_send_admission
-    }
-
-    /// Enable or disable deferred sends for automatic fixed-size floats.
-    /// Never touches topology, shares, membership, focus, or revision.
-    pub fn set_fixed_send_admission(&mut self, enabled: bool) {
-        self.fixed_send_admission = enabled;
     }
 
     /// Current R-SPC-04 D1 fixed-size admission predicate. Both-axes
@@ -1159,15 +1112,12 @@ impl super::Session {
     ) -> Option<NodeId> {
         let domain = self.domains.iter().find(|d| &d.key() == target)?;
         let tree = self.trees.get(target).cloned().flatten()?;
-        let allow_overlap = self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-            || self.overlap_accepted.contains(target);
         let projected = crate::session::capacity::project_domain_geometry(
             domain,
             &tree,
             &self.windows,
             target,
             &BTreeMap::new(),
-            allow_overlap,
         )?;
         let rects: BTreeMap<&NodeId, Rect> = projected
             .iter()
@@ -1825,7 +1775,6 @@ impl super::Session {
         let mut new_capacity = self.capacity_floats.clone();
         let mut new_order = self.admission_order.clone();
         let mut new_counter = self.admission_counter;
-        let mut new_overlap = self.overlap_accepted.clone();
         for entry in &observation.windows {
             let id = &entry.window;
             if entry.floating || new_windows.contains_key(id) || new_exceptions.contains_key(id) {
@@ -1893,7 +1842,6 @@ impl super::Session {
             let leg = super::capacity::plan_admission_leg(
                 self.policy(),
                 &self.group_alloc,
-                self.anchor_fallback,
                 current,
                 domain.bounds,
                 domain.gap,
@@ -1951,51 +1899,6 @@ impl super::Session {
                     new_override.insert(id.clone());
                 }
                 new_capacity.remove(id);
-            } else if self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                && let Some(candidate) = ordinary
-                && let Some(domain) = self.domains.iter().find(|d| d.key() == key)
-            {
-                // Overlap-admit at the ordinary anchor (D9): tiled
-                // membership with positive overflowing geometry.
-                let mut overlap_windows = new_windows.clone();
-                overlap_windows.insert(
-                    id.clone(),
-                    WindowLink {
-                        window: id.clone(),
-                        leaf: leaf_id.clone(),
-                        output: entry.output.clone(),
-                        workspace: entry.workspace.clone(),
-                    },
-                );
-                let Some(_) = super::capacity::project_domain_overlap(
-                    domain,
-                    &candidate,
-                    &overlap_windows,
-                    &key,
-                    &hints_all,
-                ) else {
-                    return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
-                };
-                new_trees.insert(key.clone(), Some(candidate));
-                new_windows = overlap_windows;
-                new_overlap.insert(key.clone());
-                // Same first-successful-tiled-admission sequence as the
-                // strict leg above (overlap-admit is a tiled success).
-                if !new_order.contains_key(id) {
-                    new_order.insert(id.clone(), new_counter);
-                    new_counter = new_counter.saturating_add(1);
-                }
-                adomain = Some(key.clone());
-                aleaf = Some(leaf_id.clone());
-                seeded_order
-                    .entry(key.clone())
-                    .or_default()
-                    .push(leaf_id.clone());
-                if self.fixed_admission && entry.fixed_suppress {
-                    new_automatic.remove(id);
-                    new_override.insert(id.clone());
-                }
-                new_capacity.remove(id);
             } else {
                 // Capacity float (D4): slotless membership with
                 // diagnostic-only origin at the untouched native frame.
@@ -2046,21 +1949,18 @@ impl super::Session {
             let empty_frames: BTreeMap<WindowId, crate::geometry::Rect> = BTreeMap::new();
             let mut repair = super::capacity::DomainRepair {
                 policy: self.policy.clone(),
-                no_space: self.no_space,
                 domains: self.domains.clone(),
                 trees: new_trees.clone(),
                 windows: new_windows.clone(),
                 exceptions: new_exceptions.clone(),
                 retained: new_retained.clone(),
                 capacity: new_capacity.clone(),
-                overlap: new_overlap.clone(),
                 fixed_override: new_override.clone(),
                 admission_order: new_order.clone(),
             };
             for domain in &self.domains {
                 let key = domain.key();
                 if repair.trees.get(&key).cloned().flatten().is_none() {
-                    repair.overlap.remove(&key);
                     continue;
                 }
                 let focus_stack = self.focus_stack.get(&key).cloned().unwrap_or_default();
@@ -2071,9 +1971,8 @@ impl super::Session {
                         &hints_all,
                         &protected,
                         &empty_frames,
-                        // Convergence never changes bounds or gaps: an
-                        // accepted overlap mark shelters here, and real
-                        // capacity decisions happen per leg above.
+                        // Convergence never changes bounds or gaps; capacity
+                        // decisions happen per leg above.
                         false,
                         &focus_stack,
                         &focused,
@@ -2088,7 +1987,6 @@ impl super::Session {
             new_exceptions = repair.exceptions;
             new_retained = repair.retained;
             new_capacity = repair.capacity;
-            new_overlap = repair.overlap;
         }
         // Fresh-seed MRU history (D8): per-leg commits used to push
         // each admitted leaf, so focused-removal fallback (sends,
@@ -2165,7 +2063,6 @@ impl super::Session {
                 || new_exceptions.contains_key(id)
                 || new_minimized.contains_key(id)
         });
-        new_overlap.retain(|key| new_trees.contains_key(key));
         new_minimized.retain(|_, slot| {
             self.domains
                 .iter()
@@ -2180,8 +2077,7 @@ impl super::Session {
             || new_minimized != self.minimized_slots
             || new_capacity != self.capacity_floats
             || new_order != self.admission_order
-            || new_counter != self.admission_counter
-            || new_overlap != self.overlap_accepted;
+            || new_counter != self.admission_counter;
         let fingerprint = observation.observation.fingerprint;
         if changed {
             // Exhaustion guard before the advance: refuse without recording a
@@ -2210,7 +2106,6 @@ impl super::Session {
             self.capacity_floats = new_capacity;
             self.admission_order = new_order;
             self.admission_counter = new_counter;
-            self.overlap_accepted = new_overlap;
             self.accepted_fingerprint = fingerprint;
         }
         self.focused_domain = next_focus_domain;

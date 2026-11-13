@@ -73,7 +73,13 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   [G4](../decisions/engine.md#core-owned-world-and-platform-boundary).
 - Automatic-focus guards are the [core rules](../decisions/focus.md#automatic-focus-guards)
   on every host. Automatic fixed-size float sends are allowed everywhere; host
-  limits must not reintroduce platform policy opt-ins.
+  limits must not reintroduce platform policy opt-ins. No send-admission flag,
+  replacement capability or setting exists. Maximized-origin directional focus
+  skips same-output candidates and crosses to an eligible adjacent output in
+  the requested direction, otherwise stays, on native and core-composed routes;
+  no maximized-focus fence or replacement capability exists. The
+  [composed-float interpretation](../decisions/window-state.md#directional-maximize-and-fullscreen-operations)
+  is explicitly assumed; ordinary float and fullscreen precedence are unchanged.
   [R5](../changes/core-interface-review.md#original-backlog-lines-132-158).
 
 ## Wire conventions and bounds
@@ -271,8 +277,6 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | `sameAxis` | `group-with-neighbor/swap-with-neighbor` | group-with-neighbor | Subsequent move (`move.same-axis`). |
 | `bornMaximized` | `tile-on-launch/keep-maximized-overlay` | tile-on-launch | Subsequent admission (`admission.born-maximized`). |
 | `predicate` | `both-axes-fixed/either-axis-fixed` | both-axes-fixed | Subsequent admissions only; retained classifications unchanged (`admission.fixed-size`). |
-| `anchorFallback` | `largest-splittable-window/closest-splittable-relative/no-search` | largest-splittable-window | Subsequent admission (`admission.anchor-fallback`). |
-| `noSpaceResult` | `float/allow-overlap` | float | Subsequent admission/actual capacity repair, not reflow on apply (`admission.no-space`). |
 | `refill` | `last-remaining-workspace/most-recently-used-workspace` | last-remaining-workspace | Subsequent migration (`migration.refill`). |
 | `switchTarget` | `cursor-output/focused-output` | cursor-output | Subsequent selection (`output.switch-target`). |
 | `freshPlacement` | `cursor-output-last-focused/cursor-output-cursor-closest/focused-output-last-focused` | cursor-output-last-focused | Subsequent admission (`output.fresh-placement`). |
@@ -289,6 +293,18 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   Native colors/theme/artwork are not computational wire settings. Style values
   remain fractional numbers, not integerized ingress echoes. Per-output gaps
   are computed from these logical values, no longer supplied on screen rows.
+- User 2026-11-12 removed `anchorFallback` from Settings: ordinary anchor first,
+  then fixed largest-splittable fallback under [D2](../decisions/layout-and-admission.md#best-effort-admission-fallback).
+  A supplied removed key receives `unknown-field`; its value is not adopted and
+  valid siblings still apply. No replacement setting or compatibility alias.
+- User 2026-11-13 additionally removed `noSpaceResult`: geometric capacity
+  exhaustion always floats under [D3/D7](../decisions/layout-and-admission.md#best-effort-d3-d4-no-space-result-and-focus).
+  Supplied retired values receive `unknown-field` without adoption or loss of
+  valid siblings. There is no compatibility alias or capacity-overlap selection
+  or retained-overlap authority. Ordinary anchoring, fixed-largest fallback and
+  B6 minimum handling remain; Apply alone never reflows, retries or evicts.
+  Subsequent admissions and actual changed-bounds/gaps repairs use fixed float.
+  The `noSpace` result provenance remains distinct from the removed setting.
 
 ### Scale and rounding
 
@@ -1064,15 +1080,22 @@ acceptance or adopt the separate close-focus amendment.
   cursor's pending choice. After refusal or ineligibility, use current eligible
    observed focus, never the abandoned target; never fabricate native
    foreground.
-- User decision 2026-11-12: only when the execution cursor is empty and no
+- User decision 2026-11-12, amended 2026-11-13: when the execution cursor is empty and no
   pending retained request owns the subject, an implicit command uses the
   host-reported foreground if core knows it as a live, bound window of the
   current generation. Resolve this in the same execution-subject owner without
   writing canonical focus memory or changing session eligibility, and without
   minting a focus request. Unknown or unbound foreground remains `focus-unknown`;
   stale-generation ingress rejects before command execution and cannot supply a
-  subject. This rule never overrides or outlives a logical focus decision or a
-  pending retained request. A nonempty cursor wins over different observed
+  subject. The sole pending-request exception: when its target is unavailable,
+  a newer accepted report still showing another live, bound, known window focused
+  permits that observed subject without retiring or changing the request. The
+  request may complete later; an already executed command stays on its resolved
+  window. Same-batch focus decisions cannot use this exception without a newer
+  report. Core compares accepted report order with the request's issuing revision,
+  not elapsed time or an assumed host apply order. Otherwise the rule never
+  overrides or outlives a logical focus decision or a pending retained request.
+  A nonempty cursor wins over different observed
   foreground exactly as before; the separate macOS suppressed-admission outcome
   is not amended. Automatic guard withholding stays spent, not retried.
 - The winning request is frozen once per accepted publication with a

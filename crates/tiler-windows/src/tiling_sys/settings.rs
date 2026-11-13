@@ -590,42 +590,6 @@ pub(super) fn apply_live_settings(
             }),
         );
     }
-    // Best-effort admission D2/D3: adopt for subsequent capacity decisions
-    // only. The core reads them from every report ingress without touching
-    // retained topology or existing tile/float marks (no reflow, no retry).
-    // A change to only these fields returns false, so no rebuild follows.
-    let anchor = settings.core.anchor_fallback_mode();
-    let last_anchor = state
-        .settings_live
-        .as_ref()
-        .map(|live| live.settings.core.anchor_fallback_mode());
-    if last_anchor != Some(anchor) {
-        log_json_at(
-            &log_path,
-            serde_json::json!({
-                "event": "settings-anchor-fallback",
-                "anchor_fallback": anchor.as_wire_str(),
-                "outcome": "adopted",
-                "scope": "subsequent-decisions",
-            }),
-        );
-    }
-    let no_space = settings.core.no_space_result_mode();
-    let last_no_space = state
-        .settings_live
-        .as_ref()
-        .map(|live| live.settings.core.no_space_result_mode());
-    if last_no_space != Some(no_space) {
-        log_json_at(
-            &log_path,
-            serde_json::json!({
-                "event": "settings-no-space",
-                "no_space": no_space.as_wire_str(),
-                "outcome": "adopted",
-                "scope": "subsequent-decisions",
-            }),
-        );
-    }
     // Stage 2c cursor-first targeting: switch target and fresh placement
     // adopt for subsequent selections and fresh admissions only. The core
     // reads both from every report ingress without touching retained views

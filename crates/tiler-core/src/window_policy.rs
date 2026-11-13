@@ -21,9 +21,8 @@
 //!   ([`should_admit_slotless_maximized`], [`should_seed_member_slot`],
 //!   [`born_keep_latch`], [`should_hold_born_fullscreen`]) decide reservation
 //!   without disturbing retained allocations.
-//! - Directional focus commands stay fenced while maximized
-//!   ([`maximized_focus_fence`], fullscreen exempt); the unfloat lane admits
-//!   only ordinary maximized floats ([`unfloat_maximize_clear_eligible`]).
+//! - The unfloat lane admits only ordinary maximized floats
+//!   ([`unfloat_maximize_clear_eligible`]).
 //!
 //! Fixed-size and born-maximized reuse (no new policy): fixed admission is
 //! [`is_fixed_size_with`]; born mode is [`BornMaximized`].
@@ -350,14 +349,6 @@ pub const fn sticky_directional_refusal(is_sticky: bool, is_move: bool) -> Optio
     }
 }
 
-/// G-06 maximized directional focus fence (REQ-MAX-08): directional focus is
-/// fenced while the focused window is maximized (no-op; leave via unmaximize
-/// or Alt+Tab). Fullscreen stays exempt: it carries no geometry write.
-#[must_use]
-pub const fn maximized_focus_fence(maximized: bool, fullscreen: bool) -> bool {
-    maximized && !fullscreen
-}
-
 /// Born-fullscreen hold gate: a first-seen fullscreen window without a
 /// retained tile slot is tracked as a slotless exception until its first
 /// exit, never admitted. A window with a retained slot is a managed overlay
@@ -582,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn sticky_directional_and_focus_fence_truth_tables() {
+    fn sticky_directional_truth_table() {
         for is_sticky in [false, true] {
             for is_move in [false, true] {
                 assert_eq!(
@@ -594,14 +585,6 @@ mod tests {
                     } else {
                         Some("focus-refused-sticky")
                     }
-                );
-            }
-        }
-        for fullscreen in [false, true] {
-            for maximized in [false, true] {
-                assert_eq!(
-                    maximized_focus_fence(maximized, fullscreen),
-                    maximized && !fullscreen
                 );
             }
         }
@@ -1162,17 +1145,6 @@ mod tests {
                             bit("is_float"),
                             bit("is_sticky_origin")
                         ),
-                        expected,
-                        "{name}"
-                    );
-                }
-                "focus_fence" => {
-                    let expected = case
-                        .get("fenced")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or_else(|| panic!("{name} carries `fenced`"));
-                    assert_eq!(
-                        maximized_focus_fence(bit("maximized"), bit("fullscreen")),
                         expected,
                         "{name}"
                     );

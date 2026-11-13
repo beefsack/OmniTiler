@@ -77,6 +77,68 @@
   startup capture rejection, then perform toggle -> one write -> unrelated
   replies with zero extra writes -> restart -> restored float with zero rewrite.
 
+## Native KDE rerun after scoped-hit repair (2026-11-13)
+
+- Baseline `c388285d`; fixture-only Wayland startup now accepts empty and
+  populated captures. See the [focus rerun](retained-focus-requests.md#native-kde-smoke-rerun-after-scoped-hit-repair-2026-11-13)
+  for startup/native joins, routes, latency and remaining focus checks.
+  Evidence filenames below identify the externally retained bundle.
+- Direct storage evidence: B was first floated, then a no-target toggle tiled
+  it (`dev-console.log:869-890`). `check6-S0.json` -> `check6-S1.json`
+  changes exactly B's `float:true` to `float:false`; the correlated store call
+  succeeds. Spawning/closing fixture D causes unrelated accepted publications;
+  S1 and S2 have identical bytes and nanosecond mtime, with no extra intent
+  store write. This establishes save/equality behavior for that leg, not restart.
+- Actual order matters: send-follow and its implicit toggle ran before restart.
+  That toggle floated B again (`dev-console.log:1262-1285`), so the restart
+  imports S3, with B and C both `float:true`, not S1's tiled B. S3 and S4 have
+  equal SHA-256 and nanosecond mtime (`check6-S3/S4-sha.txt` and
+  `check6-S3/S4-mtime.txt`); `planner-devon.log:5,9-20` records store seed,
+  accepted captures and no intent write. Preimage writes are a separate store,
+  not redundant intent writes.
+- The new-generation presentation retains both fixture identities as floating
+  (`check6-restored.txt:1-3`). Fresh readiness is independently present
+  (`check6-readiness2.txt:1-6`); the recovered current-owner journal places the
+  exact sentinel/PID/native-ID joins after restart
+  (`lead-current-pid.journal:1175-1205,1218-1222`). Native homes and float-sized
+  frames agree. Logical workspace labels changed across the new generation;
+  the native desktop identities remained joined, not compared by ordinal.
+- Result: storage equality, import of the latest floating intent and unchanged
+  intent storage across this restart are observed. Full native restart
+  acceptance remains incomplete: the journal records native `above` pending
+  for both fixtures (`lead-current-pid.journal:1208,1211`) without independent
+  above-state readback. The restarted full trace was not captured; its tmpfs
+  copy was also attempted only after shutdown, so the pre-teardown preservation
+  requirement was not met for that leg. Later journal recovery does not undo
+  that evidence gap. No tiled-false restart, storage-failure/reconnect or
+  physical-input acceptance is claimed; no product defect was established.
+- Next isolated check: toggle a joined fixture, verify one durable change and
+  unchanged storage on unrelated accepted replies, restart without intervening
+  intent mutations, then join the same native lifetime and verify restored
+  mode/above state plus zero intent rewrite. Preserve trace logs before each
+  shutdown. The broader change remains open.
+
+## Additional KDE restart evidence (2026-11-13)
+
+- Partial command-route evidence, not complete restart acceptance: toggling a
+  joined fixture to float produces one successful intent write. After controller
+  and planner restart, fresh readiness passes, the same fixture lifetime retains
+  float classification and frame, and independent native `keepAbove` readback is
+  true before and after restart. Both incarnations retain full traces; the new
+  planner seeds the stored records without another logged intent write.
+- Missing evidence: no before/after intent-store bytes or hash comparison, no
+  full `Describe`/fixture snapshot pair across restart, and the restarted trace
+  still contains a pending above-state operation after an earlier stale drop.
+  Native above readback does not prove core settlement or absence of pending
+  operations. The broader storage/lifetime and recovery acceptance remains open.
+- Two other fixtures lose native maximize across restart. Their intent-policy
+  expectation was not established by this leg, so this is an unresolved
+  observation, not a confirmed regression. No product fix followed.
+- Helpers were absent before controller teardown, traces were copied before
+  shutdown, and final read-only status/process checks confirm dev DOWN with no
+  fixture or tiler processes. The [shared follow-up](core-platform-switch-evidence.md#kde-follow-up-2026-11-13)
+  records helper qualifications and remaining physical-input checks.
+
 ## Wire, fixtures and implementation verification
 
 - In-place strict v4 amendment: no fallback, alias, version bump or second delivery path. Matching core/codecs/KDE change together; later ports must adopt before release acceptance. Frozen `test-fixtures/world-wire/v4`, `test-fixtures/stage5` and existing `test-fixtures/stage5-v4` bytes are immutable.

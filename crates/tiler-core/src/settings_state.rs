@@ -7,7 +7,7 @@ use crate::connection::{
 use crate::settings_catalog::{self as catalog, FieldType, SettingValue, Timing, Validity};
 use std::collections::BTreeMap;
 
-const WIRE_FIELDS: [(&str, &str); 20] = [
+const WIRE_FIELDS: [(&str, &str); 18] = [
     ("gap", catalog::FIELD_INNER_GAP),
     ("outer", catalog::FIELD_OUTER_GAP),
     ("defaultTiled", catalog::FIELD_WORKSPACE_DEFAULT_TILED),
@@ -15,8 +15,6 @@ const WIRE_FIELDS: [(&str, &str); 20] = [
     ("sameAxis", catalog::FIELD_SAME_AXIS_MOVE),
     ("bornMaximized", catalog::FIELD_BORN_MAXIMIZED),
     ("predicate", catalog::FIELD_FIXED_SIZE),
-    ("anchorFallback", catalog::FIELD_ANCHOR_FALLBACK),
-    ("noSpaceResult", catalog::FIELD_NO_SPACE),
     ("refill", catalog::FIELD_MIGRATION_REFILL),
     ("switchTarget", catalog::FIELD_SWITCH_TARGET),
     ("freshPlacement", catalog::FIELD_FRESH_PLACEMENT),
@@ -50,8 +48,6 @@ pub struct SettingsState {
     pub same_axis_move: crate::directional::SameAxisMove,
     pub born_maximized: crate::born_maximized::BornMaximized,
     pub fixed_size_predicate: crate::size_hints::FixedSizePredicate,
-    pub anchor_fallback: crate::admission::AnchorFallback,
-    pub no_space_result: crate::admission::NoSpaceResult,
     pub migration_refill: crate::output_selection::MigrationSourceRefill,
     pub switch_target: crate::cursor_targeting::SwitchTarget,
     pub fresh_placement: crate::cursor_targeting::FreshPlacement,
@@ -77,8 +73,6 @@ impl Default for SettingsState {
             same_axis_move: crate::directional::SameAxisMove::GroupWithNeighbor,
             born_maximized: crate::born_maximized::BornMaximized::TileOnLaunch,
             fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-            anchor_fallback: crate::admission::AnchorFallback::LargestSplittable,
-            no_space_result: crate::admission::NoSpaceResult::Float,
             migration_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
             switch_target: crate::cursor_targeting::SwitchTarget::Cursor,
             fresh_placement: crate::cursor_targeting::FreshPlacement::CursorOutputMru,
@@ -231,12 +225,6 @@ impl SettingsState {
         self.fixed_size_predicate =
             crate::size_hints::FixedSizePredicate::parse_wire(token(catalog::FIELD_FIXED_SIZE))
                 .expect("validated policy token");
-        self.anchor_fallback =
-            crate::admission::AnchorFallback::parse_wire(token(catalog::FIELD_ANCHOR_FALLBACK))
-                .expect("validated policy token");
-        self.no_space_result =
-            crate::admission::NoSpaceResult::parse_wire(token(catalog::FIELD_NO_SPACE))
-                .expect("validated policy token");
         self.migration_refill = crate::output_selection::MigrationSourceRefill::parse_wire(token(
             catalog::FIELD_MIGRATION_REFILL,
         ))
@@ -360,13 +348,13 @@ mod tests {
             &req(1, vec![("gap", n(12.0))]),
             &caps(NativeSelectorScope::PerOutput, true),
         );
-        assert_eq!(first.diagnostics.len(), 19);
+        assert_eq!(first.diagnostics.len(), 17);
         assert_eq!(
             state.requested[catalog::FIELD_OUTER_GAP],
             EffectiveSetting::Int(8)
         );
         let second = state.process(&req(2, vec![]), &caps(NativeSelectorScope::PerOutput, true));
-        assert_eq!(second.diagnostics.len(), 20);
+        assert_eq!(second.diagnostics.len(), 18);
         assert!(second.diagnostics.iter().all(|d| d.kind == Kind::Missing));
         assert_eq!(
             state.requested[catalog::FIELD_INNER_GAP],
@@ -432,7 +420,7 @@ mod tests {
         let mut state = SettingsState::default();
         let c = caps(NativeSelectorScope::PerOutput, true);
         let first = state.process(&req(1, vec![]), &c);
-        assert_eq!(first.diagnostics.len(), 20);
+        assert_eq!(first.diagnostics.len(), 18);
         let mut duplicate = req(1, vec![]);
         duplicate.request = "redelivery".into();
         let replay = state.process(&duplicate, &c);
@@ -550,5 +538,65 @@ mod tests {
             state.workspace_mode,
             crate::workspace_scope::WorkspaceMode::GlobalUnique
         );
+    }
+
+    #[test]
+    fn removed_anchor_fallback_is_unknown_field_and_retains_valid_siblings() {
+        for removed_value in ["no-search", "closest-splittable-relative"] {
+            let mut state = SettingsState::default();
+            let reply = state.process(
+                &req(
+                    1,
+                    vec![("anchorFallback", s(removed_value)), ("gap", n(12.0))],
+                ),
+                &caps(NativeSelectorScope::PerOutput, true),
+            );
+            assert_eq!(reply.status, SettingsStatus::Accepted);
+            assert!(
+                reply
+                    .diagnostics
+                    .contains(&diag("anchorFallback", Kind::UnknownField)),
+                "removed anchorFallback ({removed_value}) must report UnknownField: {:?}",
+                reply.diagnostics
+            );
+            assert_eq!(
+                state.requested[catalog::FIELD_INNER_GAP],
+                EffectiveSetting::Int(12)
+            );
+            assert_eq!(
+                state.effective[catalog::FIELD_INNER_GAP],
+                EffectiveSetting::Int(12)
+            );
+        }
+    }
+
+    #[test]
+    fn removed_no_space_result_is_unknown_field_and_retains_valid_siblings() {
+        for removed_value in ["float", "allow-overlap"] {
+            let mut state = SettingsState::default();
+            let reply = state.process(
+                &req(
+                    1,
+                    vec![("noSpaceResult", s(removed_value)), ("gap", n(12.0))],
+                ),
+                &caps(NativeSelectorScope::PerOutput, true),
+            );
+            assert_eq!(reply.status, SettingsStatus::Accepted);
+            assert!(
+                reply
+                    .diagnostics
+                    .contains(&diag("noSpaceResult", Kind::UnknownField)),
+                "removed noSpaceResult ({removed_value}) must report UnknownField: {:?}",
+                reply.diagnostics
+            );
+            assert_eq!(
+                state.requested[catalog::FIELD_INNER_GAP],
+                EffectiveSetting::Int(12)
+            );
+            assert_eq!(
+                state.effective[catalog::FIELD_INNER_GAP],
+                EffectiveSetting::Int(12)
+            );
+        }
     }
 }

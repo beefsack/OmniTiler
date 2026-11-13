@@ -201,11 +201,9 @@ pub struct FieldStorageMap {
     pub storage_key: &'static str,
 }
 
-/// Portable fields with no Windows mapping: none. Both best-effort
-/// admission settings (`admission.anchor-fallback`, `admission.no-space`)
-/// are mapped below and consumed by the legacy Engine since the runtime
-/// adoption; the table stays as the explicit empty partition point so a
-/// future unmapped portable field cannot silently drift.
+/// Portable fields with no Windows mapping: none. The table stays as the
+/// explicit empty partition point so a future unmapped portable field
+/// cannot silently drift.
 pub const WINDOWS_UNSUPPORTED_FIELDS: &[&str] = &[];
 
 /// Portable fields persisted, validated, reported, and actuated with a
@@ -214,8 +212,8 @@ pub const WINDOWS_UNSUPPORTED_FIELDS: &[&str] = &[];
 /// mapping above covers files, staging, and validation for all fields.
 pub const STAGE4_DEFERRED_FIELDS: &[&str] = &[];
 
-/// Every scalar Windows-exposed field mapped exactly once (23 portable plus
-/// 4 Windows-only). Storage keys are the existing schema-v1 nested
+/// Every scalar Windows-exposed field mapped exactly once (21 portable plus
+/// 6 Windows-only). Storage keys are the existing schema-v1 nested
 /// snake_case keys; this table renames nothing.
 pub const WINDOWS_FIELD_MAPPINGS: &[FieldStorageMap] = &[
     FieldStorageMap {
@@ -245,14 +243,6 @@ pub const WINDOWS_FIELD_MAPPINGS: &[FieldStorageMap] = &[
     FieldStorageMap {
         field: "admission.fixed-size",
         storage_key: "core.fixed_size_predicate",
-    },
-    FieldStorageMap {
-        field: "admission.anchor-fallback",
-        storage_key: "core.anchor_fallback",
-    },
-    FieldStorageMap {
-        field: "admission.no-space",
-        storage_key: "core.no_space_result",
     },
     FieldStorageMap {
         field: "migration.refill",
@@ -423,10 +413,6 @@ pub fn windows_field_value(settings: &Settings, field: &str) -> Option<WindowsVa
         "admission.fixed-size" => Some(WindowsValue::Text(
             settings.core.fixed_size_predicate.clone(),
         )),
-        "admission.anchor-fallback" => {
-            Some(WindowsValue::Text(settings.core.anchor_fallback.clone()))
-        }
-        "admission.no-space" => Some(WindowsValue::Text(settings.core.no_space_result.clone())),
         "migration.refill" => Some(WindowsValue::Text(
             settings.core.migration_source_refill.clone(),
         )),
@@ -519,12 +505,6 @@ fn apply_typed(settings: &mut Settings, field: &str, value: &WindowsValue) -> Re
         ("admission.fixed-size", WindowsValue::Text(got)) => {
             settings.core.fixed_size_predicate = got.clone();
         }
-        ("admission.anchor-fallback", WindowsValue::Text(got)) => {
-            settings.core.anchor_fallback = got.clone();
-        }
-        ("admission.no-space", WindowsValue::Text(got)) => {
-            settings.core.no_space_result = got.clone();
-        }
         ("migration.refill", WindowsValue::Text(got)) => {
             settings.core.migration_source_refill = got.clone();
         }
@@ -606,10 +586,6 @@ mod tests {
             "move.same-axis" => WindowsValue::Text("swap-with-neighbor".to_owned()),
             "admission.born-maximized" => WindowsValue::Text("keep-maximized-overlay".to_owned()),
             "admission.fixed-size" => WindowsValue::Text("either-axis-fixed".to_owned()),
-            "admission.anchor-fallback" => {
-                WindowsValue::Text("closest-splittable-relative".to_owned())
-            }
-            "admission.no-space" => WindowsValue::Text("allow-overlap".to_owned()),
             "migration.refill" => WindowsValue::Text("most-recently-used-workspace".to_owned()),
             "output.switch-target" => WindowsValue::Text("focused-output".to_owned()),
             "output.fresh-placement" => {
@@ -638,7 +614,7 @@ mod tests {
 
     #[test]
     fn every_scalar_field_mapped_exactly_once() {
-        assert_eq!(WINDOWS_FIELD_MAPPINGS.len(), 29);
+        assert_eq!(WINDOWS_FIELD_MAPPINGS.len(), 27);
         let mut fields = BTreeSet::new();
         let mut keys = BTreeSet::new();
         for entry in WINDOWS_FIELD_MAPPINGS {

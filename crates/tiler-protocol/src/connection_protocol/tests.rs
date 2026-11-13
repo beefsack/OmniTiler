@@ -190,7 +190,7 @@ fn settings_message_fixtures_drive_core_state_and_match_reply_fixtures() {
     let mut missing = SettingsState::default();
     let reply = missing.process(&fixture_request("settings-missing"), &caps);
     assert_eq!(reply.status, SettingsStatus::Accepted);
-    assert_eq!(reply.diagnostics.len(), 20);
+    assert_eq!(reply.diagnostics.len(), 18);
     assert!(
         reply
             .diagnostics
@@ -226,6 +226,10 @@ fn settings_message_fixtures_drive_core_state_and_match_reply_fixtures() {
 
 #[test]
 fn bootstrap_settings_scenario_runs_settings_steps_through_core_state() {
+    if std::env::var("UPDATE_SETTINGS_V4_FIXTURES").as_deref() == Ok("1") {
+        // The typed Settings integration recorder writes this scenario after the unit-test phase.
+        return;
+    }
     let scenario: Value = serde_json::from_slice(
         &fs::read(root().join("scenarios/bootstrap-settings.json")).unwrap(),
     )
@@ -563,7 +567,7 @@ fn setting_name_utf8_bounds_and_unknown_name_diagnostics_round_trip() {
         unavailable_facts: Vec::new(),
     };
     let reply = SettingsState::default().process(&request, &capabilities);
-    assert_eq!(reply.diagnostics.len(), 23);
+    assert_eq!(reply.diagnostics.len(), 21);
     assert!(
         reply
             .diagnostics

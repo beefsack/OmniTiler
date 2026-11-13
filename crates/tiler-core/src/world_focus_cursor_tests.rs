@@ -9,14 +9,14 @@
 
 use crate::boundary::CoreCommand;
 use crate::connection::{HostCapabilities, RawSettingValue};
-use crate::directional::WindowId;
+use crate::directional::{OutputId, SameAxisMove, WindowId};
 use crate::ids::{CorrelationId, OwnerId};
 use crate::world_engine::{EventIssue, KIND_GENERATION, WorldEngine};
 use crate::world_report::{
     BatchSettlement, CommandRejectKind, CommandResult, FocusFeedback, FocusRequestCause,
     HeldWindowRow, PresentationIngressV4, PresentationRowV4, RowDiagnosticKind, ScopeAuthority,
-    StateProperty, VisibilityReason, VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowFact,
-    WorldCommand, WorldReplyV4, WorldReportV4,
+    SendSource, StateProperty, StateTarget, VisibilityReason, VisibilitySetter,
+    WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 use crate::world_run_v4::V4RunOutcome;
 use crate::world_v4_support_tests::{fact, screen};
@@ -1136,12 +1136,46 @@ fn held_live_baseline_newcomer_restores_cursor_and_probes_act_from_it() {
         "held refusal retains the identical row; got {:?}",
         after_move.focus_request
     );
+    // Repeated Focus(N) on the still-held domain when the cursor is
+    // already Some(N) must preserve the matching cursor so a same-batch
+    // implicit probe resolves subject N (refusing OperationRefused on the
+    // held scope, never FocusUnknown). The new explicit decision supersedes
+    // the earlier request even though its target is unchanged.
+    let mut held_repeat_focus = report(6, live.clone(), "win-c", Some(3), Some(focus_cmd("win-n")));
+    held_repeat_focus.screens[0].complete = false;
+    let (after_repeat, repeat_settlements) = run_batched(
+        &mut engine,
+        &held_repeat_focus,
+        &[(4, implicit_move_dir("right"))],
+    );
+    assert_eq!(repeat_settlements.len(), 2);
+    assert!(
+        matches!(
+            repeat_settlements[1].result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::OperationRefused,
+            })
+        ),
+        "repeated same-target held focus must preserve cursor N so trailing probe refuses operation-refused (not focus-unknown); got {:?}",
+        repeat_settlements[1].result
+    );
+    assert_eq!(
+        engine.logical_focus_cursor,
+        Some(WindowId("win-n".to_owned())),
+        "repeated same-target held focus must keep matching cursor N"
+    );
+    let repeated = after_repeat.focus_request.expect("new explicit decision");
+    assert_eq!(repeated.target.0, "win-n");
+    assert_eq!(repeated.cause, FocusRequestCause::ExplicitCommand);
+    assert_eq!(repeated.cmd_seq, Some(3));
+    assert_eq!(repeated.issued_revision, 6);
+    assert_ne!(repeated.id, pending.id);
     // Clear the hold: the observed leftward focus from N reaches C and
     // supersedes with a fresh id, then a windowed probe acts on C.
     let (after_focus, focus_settlements) = run_batched(
         &mut engine,
-        &observe(6, live.clone(), "win-c"),
-        &[(3, implicit_focus_dir("left"))],
+        &observe(7, live.clone(), "win-c"),
+        &[(5, implicit_focus_dir("left"))],
     );
     assert_eq!(focus_settlements.len(), 1);
     assert_not_rejected(&focus_settlements[0].result, "cleared focus probe");
@@ -1154,8 +1188,8 @@ fn held_live_baseline_newcomer_restores_cursor_and_probes_act_from_it() {
     }));
     let (_, toggle_settlements) = run_batched(
         &mut engine,
-        &observe(7, live.clone(), "win-c"),
-        &[(4, toggle)],
+        &observe(8, live.clone(), "win-c"),
+        &[(6, toggle)],
     );
     assert_eq!(toggle_settlements.len(), 1);
     assert_maximize_on(
@@ -1223,8 +1257,9 @@ fn held_absent_target_retains_row_with_empty_cursor_until_live_recovery() {
         report
     };
     // Same held baseline with no command: the identical row survives,
-    // but with staged homing lacking N the preserve slot cannot restore,
-    // so the cursor stays empty and owns no subject.
+    // and with staged homing lacking N the preserve slot cannot restore,
+    // so the cursor stays empty while this newer report observes live
+    // bound C as the execution subject (option 2).
     let (kept, _) = run_batched(&mut engine, &absent(0), &[]);
     assert_eq!(
         kept.focus_request,
@@ -1238,11 +1273,12 @@ fn held_absent_target_retains_row_with_empty_cursor_until_live_recovery() {
     );
     assert_eq!(
         engine.execution_subject(),
-        None,
-        "live retained row with empty cursor owns no subject"
+        Some(WindowId("win-c".to_owned())),
+        "newer report with unavailable pending target acts on live bound observed C"
     );
-    // Queued implicit focus under the same held baseline refuses with the
-    // row retained, the cursor still empty and no subject.
+    // Queued implicit focus under the same held baseline resolves subject C
+    // and hits the held scope gate (refusing operation-refused, not
+    // focus-unknown) while retaining the identical pending row.
     let (still, focus_settlements) =
         run_batched(&mut engine, &absent(1), &[(2, implicit_focus_dir("left"))]);
     assert_eq!(focus_settlements.len(), 1);
@@ -1250,10 +1286,10 @@ fn held_absent_target_retains_row_with_empty_cursor_until_live_recovery() {
         matches!(
             focus_settlements[0].result,
             Some(CommandResult::Rejected {
-                kind: CommandRejectKind::FocusUnknown,
+                kind: CommandRejectKind::ScopeHeld,
             })
         ),
-        "held absent-target focus must refuse focus-unknown; got {:?}",
+        "held absent-target focus acts on observed C and hits scope hold; got {:?}",
         focus_settlements[0].result
     );
     assert_eq!(
@@ -1263,8 +1299,12 @@ fn held_absent_target_retains_row_with_empty_cursor_until_live_recovery() {
         still.focus_request
     );
     assert_eq!(engine.logical_focus_cursor, None);
-    assert_eq!(engine.execution_subject(), None);
-    // Queued implicit move likewise refuses with the row retained.
+    assert_eq!(
+        engine.execution_subject(),
+        Some(WindowId("win-c".to_owned()))
+    );
+    // Queued implicit move likewise resolves subject C and hits the held
+    // scope gate with the row retained.
     let (again, move_settlements) =
         run_batched(&mut engine, &absent(2), &[(3, implicit_move_dir("left"))]);
     assert_eq!(move_settlements.len(), 1);
@@ -1272,10 +1312,10 @@ fn held_absent_target_retains_row_with_empty_cursor_until_live_recovery() {
         matches!(
             move_settlements[0].result,
             Some(CommandResult::Rejected {
-                kind: CommandRejectKind::FocusUnknown,
+                kind: CommandRejectKind::ScopeHeld,
             })
         ),
-        "held absent-target move must refuse focus-unknown; got {:?}",
+        "held absent-target move acts on observed C and hits scope hold; got {:?}",
         move_settlements[0].result
     );
     assert_eq!(
@@ -1285,7 +1325,10 @@ fn held_absent_target_retains_row_with_empty_cursor_until_live_recovery() {
         again.focus_request
     );
     assert_eq!(engine.logical_focus_cursor, None);
-    assert_eq!(engine.execution_subject(), None);
+    assert_eq!(
+        engine.execution_subject(),
+        Some(WindowId("win-c".to_owned()))
+    );
     // Recovery with N live on the unchanged C baseline: the returning
     // newcomer re-admits, superseding the explicit row with a fresh
     // admission row for the same target, and the subject restores to N.
@@ -1360,4 +1403,851 @@ fn held_absent_target_retains_row_with_empty_cursor_until_live_recovery() {
         Some(WindowId("win-b".to_owned())),
         "observed B owns the subject after retirement"
     );
+}
+
+/// Option 2 across genuine reports and commands:
+/// (a) same-batch implicit command after a held-scope focus mint refuses
+///     focus-unknown (no newer report yet);
+/// (b) newer report with unavailable N and live bound C acts on C with
+///     an actual maximize effect while retaining the exact original N
+///     focus request tuple;
+/// (c) when N later returns live, the subject follows N and an implicit
+///     command acts on N;
+/// (e) when native focus reaches N, target equality satisfies and retires
+///     the pending request and N owns the subject.
+#[test]
+fn unavailable_pending_same_batch_refuses_then_newer_report_acts_on_observed_and_recovers() {
+    let mut engine = engine();
+    let two_screens = || vec![screen("out-a", 0), screen("out-b", 800)];
+    let live = vec![
+        fact("win-b", "out-a", 0),
+        fact("win-c", "out-a", 100),
+        fact("win-n", "out-b", 800),
+        fact("win-h", "out-b", 900),
+    ];
+    let mut r1 = observe(1, live.clone(), "win-c");
+    r1.screens = two_screens();
+    engine
+        .handle_report_v4_for_test(&r1)
+        .expect("admission observes");
+
+    // (a) Report 2: out-b is held via win-h; explicit Focus(win-n) mints
+    // pending_focus for win-n with cursor staying empty (held scope).
+    // A same-batch implicit command has no newer report yet, so it refuses
+    // focus-unknown.
+    let held_h = HeldWindowRow {
+        window: WindowId("win-h".to_owned()),
+        ordinal: 0,
+        output: None,
+        fields: Vec::new(),
+        diagnostic: None,
+        kind: RowDiagnosticKind::InvalidFact,
+    };
+    let mut r2 = report(
+        2,
+        vec![
+            fact("win-b", "out-a", 0),
+            fact("win-c", "out-a", 100),
+            fact("win-n", "out-b", 800),
+        ],
+        "win-c",
+        Some(1),
+        Some(focus_cmd("win-n")),
+    );
+    r2.screens = vec![
+        screen("out-a", 0),
+        crate::world_report::ScreenReport {
+            complete: false,
+            ..screen("out-b", 800)
+        },
+    ];
+    r2.held_windows = vec![held_h.clone()];
+    let toggle = || {
+        implicit(WorldCommand::ToggleMaximize {
+            window: WindowId(String::new()),
+        })
+    };
+    let (minted, same_batch_settlements) = run_batched(&mut engine, &r2, &[(2, toggle())]);
+    assert_eq!(same_batch_settlements.len(), 2);
+    let trailing = same_batch_settlements
+        .iter()
+        .find(|settlement| settlement.seq == 2)
+        .expect("trailing implicit settles");
+    assert!(
+        matches!(
+            trailing.result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::FocusUnknown,
+            })
+        ),
+        "same-batch implicit command after held focus mint must refuse focus-unknown; got {:?}",
+        trailing.result
+    );
+    let pending = minted
+        .focus_request
+        .clone()
+        .expect("held explicit focus retains");
+    assert_eq!(pending.target.0, "win-n");
+    assert_eq!(pending.issued_revision, 2);
+    assert_eq!(pending.cause, FocusRequestCause::ExplicitCommand);
+    assert_eq!(pending.cmd_seq, Some(1));
+    assert_eq!(engine.logical_focus_cursor, None);
+    assert_eq!(
+        engine.execution_subject(),
+        None,
+        "immediately after minting report with no newer report yet, subject remains None"
+    );
+
+    // (b) Report 3 (newer than request revision 2): win-n is now held-only
+    // and unavailable on out-b, while live bound win-c is focused on
+    // complete unheld out-a. Implicit ToggleMaximize acts on win-c AND
+    // retains the exact original pending tuple for win-n.
+    let held_n = HeldWindowRow {
+        window: WindowId("win-n".to_owned()),
+        ordinal: 0,
+        output: None,
+        fields: Vec::new(),
+        diagnostic: None,
+        kind: RowDiagnosticKind::InvalidFact,
+    };
+    let held_h2 = HeldWindowRow {
+        ordinal: 1,
+        ..held_h.clone()
+    };
+    let mut r3 = observe(
+        3,
+        vec![fact("win-b", "out-a", 0), fact("win-c", "out-a", 100)],
+        "win-c",
+    );
+    r3.screens = vec![
+        screen("out-a", 0),
+        crate::world_report::ScreenReport {
+            complete: false,
+            ..screen("out-b", 800)
+        },
+    ];
+    r3.held_windows = vec![held_n, held_h2];
+    let expected_c_maximized = StateTarget {
+        property: StateProperty::Maximized,
+        value: true,
+        authority: ScopeAuthority::Controlled,
+        command_seq: Some(3),
+    };
+    let (acted_c, c_settlements) = run_batched(&mut engine, &r3, &[(3, toggle())]);
+    assert_eq!(c_settlements.len(), 1);
+    assert_maximize_on(
+        &c_settlements[0].result,
+        "win-c",
+        "newer report with unavailable pending N must maximize observed live bound C",
+    );
+    assert_eq!(
+        acted_c.focus_request,
+        Some(pending.clone()),
+        "non-focus command on observed C must keep exact original pending tuple; got {:?}",
+        acted_c.focus_request
+    );
+    assert!(
+        acted_c
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-c")
+            .is_some_and(|row| row.state.contains(&expected_c_maximized)),
+        "acted_c must publish win-c Maximized controlled state with command_seq Some(3); got {:?}",
+        acted_c.windows
+    );
+    assert_eq!(engine.logical_focus_cursor, None);
+    assert_eq!(
+        engine.execution_subject(),
+        Some(WindowId("win-c".to_owned()))
+    );
+
+    // (c) Report 4: N recovers live on out-b (still with native focus on
+    // C). The subject follows N and an implicit maximize acts on N.
+    let mut r4 = observe(4, live.clone(), "win-c");
+    r4.screens = two_screens();
+    let (recovered_n, n_settlements) = run_batched(&mut engine, &r4, &[(4, toggle())]);
+    assert_eq!(n_settlements.len(), 1);
+    assert_maximize_on(
+        &n_settlements[0].result,
+        "win-n",
+        "when pending N returns live, implicit command must act on N",
+    );
+    assert_eq!(
+        engine.execution_subject(),
+        Some(WindowId("win-n".to_owned()))
+    );
+    assert_eq!(
+        recovered_n.focus_request,
+        Some(pending.clone()),
+        "pending N remains active until focus arrives; got {:?}",
+        recovered_n.focus_request
+    );
+    assert!(
+        recovered_n
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-c")
+            .is_some_and(|row| row.state.contains(&expected_c_maximized)),
+        "recovered_n must preserve win-c Maximized controlled state with command_seq Some(3); got {:?}",
+        recovered_n.windows
+    );
+
+    // (e) Report 5: native focus arrives on N -> target equality
+    // satisfies and retires pending_focus, and N owns the subject.
+    let mut r5 = observe(5, live, "win-n");
+    r5.screens = two_screens();
+    r5.presentation = PresentationRowV4::Valid(PresentationIngressV4 {
+        foreground_out: Some(crate::directional::OutputId("out-b".to_owned())),
+        ..ingress("win-n")
+    });
+    let (completed, final_settlements) = run_batched(&mut engine, &r5, &[(5, toggle())]);
+    assert_eq!(completed.focus_request, None, "target equality retires");
+    assert_eq!(
+        engine.execution_subject(),
+        Some(WindowId("win-n".to_owned()))
+    );
+    assert_eq!(final_settlements.len(), 1);
+    assert_maximize_on(
+        &final_settlements[0].result,
+        "win-n",
+        "after normal completion on N, commands continue acting on N",
+    );
+    assert!(
+        completed
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-c")
+            .is_some_and(|row| row.state.contains(&expected_c_maximized)),
+        "completed must preserve win-c Maximized controlled state with command_seq Some(3); got {:?}",
+        completed.windows
+    );
+}
+
+/// Newer accepted report with equal `observation_seq` and strictly higher
+/// `request_seq` still counts as strictly newer than the minting report
+/// (freshness follows accepted report/state revision order, not
+/// `observation_seq` alone).
+#[test]
+fn unavailable_pending_newer_accepted_report_with_equal_observation_seq_acts_on_observed() {
+    let mut engine = engine();
+    let two_screens = || vec![screen("out-a", 0), screen("out-b", 800)];
+    let live = vec![
+        fact("win-b", "out-a", 0),
+        fact("win-c", "out-a", 100),
+        fact("win-n", "out-b", 800),
+        fact("win-h", "out-b", 900),
+    ];
+    let mut r1 = observe(1, live, "win-c");
+    r1.screens = two_screens();
+    engine
+        .handle_report_v4_for_test(&r1)
+        .expect("admission observes");
+
+    let held_row = |id: &str, ordinal: usize| HeldWindowRow {
+        window: WindowId(id.to_owned()),
+        ordinal,
+        output: None,
+        fields: Vec::new(),
+        diagnostic: None,
+        kind: RowDiagnosticKind::InvalidFact,
+    };
+    let mut r2 = report(
+        2,
+        vec![
+            fact("win-b", "out-a", 0),
+            fact("win-c", "out-a", 100),
+            fact("win-n", "out-b", 800),
+        ],
+        "win-c",
+        Some(1),
+        Some(focus_cmd("win-n")),
+    );
+    r2.screens = vec![
+        screen("out-a", 0),
+        crate::world_report::ScreenReport {
+            complete: false,
+            ..screen("out-b", 800)
+        },
+    ];
+    r2.held_windows = vec![held_row("win-h", 0)];
+    let (minted, _) = run_batched(&mut engine, &r2, &[]);
+    let pending = minted.focus_request.clone().expect("pending N retained");
+    assert_eq!(pending.issued_revision, 2);
+
+    // Report 3 keeps observation_seq == 2 (same as r2) while advancing
+    // request_seq to 3 -> accepted at revision 3 > pending.issued_revision (2).
+    let mut r3 = observe(
+        3,
+        vec![fact("win-b", "out-a", 0), fact("win-c", "out-a", 100)],
+        "win-c",
+    );
+    r3.observation_seq = 2;
+    r3.screens = vec![
+        screen("out-a", 0),
+        crate::world_report::ScreenReport {
+            complete: false,
+            ..screen("out-b", 800)
+        },
+    ];
+    r3.held_windows = vec![held_row("win-n", 0), held_row("win-h", 1)];
+    let toggle = implicit(WorldCommand::ToggleMaximize {
+        window: WindowId(String::new()),
+    });
+    let (acted_c, c_settlements) = run_batched(&mut engine, &r3, &[(2, toggle)]);
+    assert_eq!(c_settlements.len(), 1);
+    assert_maximize_on(
+        &c_settlements[0].result,
+        "win-c",
+        "equal observation_seq with higher request_seq is newer report and must act on C",
+    );
+    assert_eq!(acted_c.focus_request, Some(pending));
+    assert!(
+        acted_c
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-c")
+            .is_some_and(|row| row.state.contains(&StateTarget {
+                property: StateProperty::Maximized,
+                value: true,
+                authority: ScopeAuthority::Controlled,
+                command_seq: Some(2),
+            })),
+        "acted_c must publish win-c Maximized controlled state with command_seq Some(2); got {:?}",
+        acted_c.windows
+    );
+}
+
+/// (a) Same-batch refusal also holds when an older unavailable pending
+/// request exists from a prior report and a fresh Focus command in the
+/// current batch leaves the cursor empty: the same-batch implicit command
+/// must refuse focus-unknown rather than falling back via the older row.
+#[test]
+fn same_batch_focus_decision_blocks_fallback_even_with_older_unavailable_pending() {
+    let mut engine = engine();
+    let two_screens = || vec![screen("out-a", 0), screen("out-b", 800)];
+    let mut r1 = observe(
+        1,
+        vec![
+            fact("win-b", "out-a", 0),
+            fact("win-c", "out-a", 100),
+            fact("win-x", "out-b", 800),
+            fact("win-n", "out-b", 900),
+            fact("win-h", "out-b", 950),
+        ],
+        "win-c",
+    );
+    r1.screens = two_screens();
+    engine
+        .handle_report_v4_for_test(&r1)
+        .expect("admission observes");
+
+    let held_row = |id: &str, ordinal: usize| HeldWindowRow {
+        window: WindowId(id.to_owned()),
+        ordinal,
+        output: None,
+        fields: Vec::new(),
+        diagnostic: None,
+        kind: RowDiagnosticKind::InvalidFact,
+    };
+    // Report 2: mint pending_focus on win-x while out-b is held.
+    let mut r2 = report(
+        2,
+        vec![
+            fact("win-b", "out-a", 0),
+            fact("win-c", "out-a", 100),
+            fact("win-x", "out-b", 800),
+            fact("win-n", "out-b", 900),
+        ],
+        "win-c",
+        Some(1),
+        Some(focus_cmd("win-x")),
+    );
+    r2.screens = vec![
+        screen("out-a", 0),
+        crate::world_report::ScreenReport {
+            complete: false,
+            ..screen("out-b", 800)
+        },
+    ];
+    r2.held_windows = vec![held_row("win-h", 0)];
+    let (minted_x, _) = run_batched(&mut engine, &r2, &[]);
+    assert_eq!(
+        minted_x.focus_request.as_ref().map(|r| r.target.0.as_str()),
+        Some("win-x")
+    );
+
+    // Report 3 (newer than win-x): win-x is unavailable, out-b is still
+    // held, and Command 1 explicitly focuses live win-n (leaving cursor
+    // empty because out-b is held). Command 2 (same batch) is Implicit:
+    // must refuse FocusUnknown, never fall back to observed win-c.
+    let mut r3 = report(
+        3,
+        vec![
+            fact("win-b", "out-a", 0),
+            fact("win-c", "out-a", 100),
+            fact("win-n", "out-b", 900),
+        ],
+        "win-c",
+        Some(2),
+        Some(focus_cmd("win-n")),
+    );
+    r3.screens = vec![
+        screen("out-a", 0),
+        crate::world_report::ScreenReport {
+            complete: false,
+            ..screen("out-b", 800)
+        },
+    ];
+    r3.held_windows = vec![held_row("win-x", 0), held_row("win-h", 1)];
+    let toggle = implicit(WorldCommand::ToggleMaximize {
+        window: WindowId(String::new()),
+    });
+    let (minted_n, settlements) = run_batched(&mut engine, &r3, &[(3, toggle)]);
+    assert_eq!(settlements.len(), 2);
+    let trailing = settlements
+        .iter()
+        .find(|settlement| settlement.seq == 3)
+        .expect("trailing implicit settles");
+    assert!(
+        matches!(
+            trailing.result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::FocusUnknown,
+            })
+        ),
+        "same-batch implicit after Focus(win-n) must refuse focus-unknown; got {:?}",
+        trailing.result
+    );
+    assert_eq!(
+        minted_n.focus_request.as_ref().map(|r| r.target.0.as_str()),
+        Some("win-n")
+    );
+    assert_eq!(engine.logical_focus_cursor, None);
+    assert_eq!(engine.execution_subject(), None);
+}
+
+/// (d) Newer report with unavailable pending target and unknown or
+/// unbound/foreign foreground must refuse focus-unknown while keeping
+/// the pending request retained.
+#[test]
+fn unavailable_pending_newer_unknown_or_unbound_foreground_refuses() {
+    let held_row = |id: &str, ordinal: usize| HeldWindowRow {
+        window: WindowId(id.to_owned()),
+        ordinal,
+        output: None,
+        fields: Vec::new(),
+        diagnostic: None,
+        kind: RowDiagnosticKind::InvalidFact,
+    };
+    let toggle = || {
+        implicit(WorldCommand::ToggleMaximize {
+            window: WindowId(String::new()),
+        })
+    };
+
+    // Case 1: unknown empty foreground (foreground_known = false).
+    let mut engine_unknown = engine();
+    let mut u1 = observe(
+        1,
+        vec![
+            fact("win-b", "out-a", 0),
+            fact("win-n", "out-b", 800),
+            fact("win-h", "out-b", 900),
+        ],
+        "win-b",
+    );
+    u1.screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    engine_unknown
+        .handle_report_v4_for_test(&u1)
+        .expect("admission observes");
+    let mut u2 = report(
+        2,
+        vec![fact("win-b", "out-a", 0), fact("win-n", "out-b", 800)],
+        "",
+        Some(1),
+        Some(focus_cmd("win-n")),
+    );
+    u2.foreground_known = false;
+    u2.screens = vec![
+        screen("out-a", 0),
+        crate::world_report::ScreenReport {
+            complete: false,
+            ..screen("out-b", 800)
+        },
+    ];
+    u2.held_windows = vec![held_row("win-h", 0)];
+    let (u_minted, _) = run_batched(&mut engine_unknown, &u2, &[]);
+    let u_pending = u_minted.focus_request.clone().expect("pending N retained");
+    let mut u3 = observe(3, vec![fact("win-b", "out-a", 0)], "");
+    u3.foreground_known = false;
+    u3.screens = vec![
+        screen("out-a", 0),
+        crate::world_report::ScreenReport {
+            complete: false,
+            ..screen("out-b", 800)
+        },
+    ];
+    u3.held_windows = vec![held_row("win-n", 0), held_row("win-h", 1)];
+    let (u_after, u_settlements) = run_batched(&mut engine_unknown, &u3, &[(2, toggle())]);
+    assert_eq!(u_settlements.len(), 1);
+    assert!(
+        matches!(
+            u_settlements[0].result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::FocusUnknown,
+            })
+        ),
+        "unknown foreground must refuse focus-unknown; got {:?}",
+        u_settlements[0].result
+    );
+    assert_eq!(u_after.focus_request, Some(u_pending));
+    assert_eq!(engine_unknown.execution_subject(), None);
+
+    // Case 2: unbound/foreign foreground (not present in windows).
+    let mut engine_foreign = engine();
+    let mut f1 = observe(
+        1,
+        vec![
+            fact("win-b", "out-a", 0),
+            fact("win-n", "out-b", 800),
+            fact("win-h", "out-b", 900),
+        ],
+        "win-foreign",
+    );
+    f1.screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    engine_foreign
+        .handle_report_v4_for_test(&f1)
+        .expect("admission observes");
+    let mut f2 = report(
+        2,
+        vec![fact("win-b", "out-a", 0), fact("win-n", "out-b", 800)],
+        "win-foreign",
+        Some(1),
+        Some(focus_cmd("win-n")),
+    );
+    f2.screens = vec![
+        screen("out-a", 0),
+        crate::world_report::ScreenReport {
+            complete: false,
+            ..screen("out-b", 800)
+        },
+    ];
+    f2.held_windows = vec![held_row("win-h", 0)];
+    let (f_minted, _) = run_batched(&mut engine_foreign, &f2, &[]);
+    let f_pending = f_minted.focus_request.clone().expect("pending N retained");
+    let mut f3 = observe(3, vec![fact("win-b", "out-a", 0)], "win-foreign");
+    f3.screens = vec![
+        screen("out-a", 0),
+        crate::world_report::ScreenReport {
+            complete: false,
+            ..screen("out-b", 800)
+        },
+    ];
+    f3.held_windows = vec![held_row("win-n", 0), held_row("win-h", 1)];
+    let (f_after, f_settlements) = run_batched(&mut engine_foreign, &f3, &[(2, toggle())]);
+    assert_eq!(f_settlements.len(), 1);
+    assert!(
+        matches!(
+            f_settlements[0].result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::FocusUnknown,
+            })
+        ),
+        "unbound/foreign foreground must refuse focus-unknown; got {:?}",
+        f_settlements[0].result
+    );
+    assert_eq!(f_after.focus_request, Some(f_pending));
+    assert_eq!(engine_foreign.execution_subject(), None);
+}
+
+/// Non-`record_command_focus` focus-effect carriers (`settle_send` follow/stay
+/// and `move_directional`) must not wipe a valid prior `logical_focus_cursor`
+/// when returning an `Effect(Focus)` with a different target.
+#[test]
+fn send_follow_effect_preserves_command_focus_cursor() {
+    let toggle = || {
+        implicit(WorldCommand::ToggleMaximize {
+            window: WindowId(String::new()),
+        })
+    };
+    let mut engine_follow = engine();
+    let mut r1 = observe(
+        1,
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+        "win-a",
+    );
+    r1.screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    engine_follow
+        .handle_report_v4_for_test(&r1)
+        .expect("admission observes");
+    let mut r2 = report(
+        2,
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+        "win-a",
+        Some(1),
+        Some(focus_cmd("win-b")),
+    );
+    r2.screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    let send_follow = WorldCommand::SendRelative {
+        window: WindowId("win-a".to_owned()),
+        source: SendSource::Explicit(OutputId("out-a".to_owned())),
+        delta: 1,
+        follow: true,
+    };
+    let (reply_follow, follow_settlements) =
+        run_batched(&mut engine_follow, &r2, &[(2, send_follow), (3, toggle())]);
+    assert_eq!(follow_settlements.len(), 3);
+    assert_not_rejected(&follow_settlements[1].result, "SendRelative(follow=true)");
+    assert_maximize_on(
+        &follow_settlements[2].result,
+        "win-b",
+        "SendRelative(follow=true) effect must not clear prior Focus(win-b) cursor",
+    );
+    assert!(
+        reply_follow
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-b")
+            .is_some_and(|row| row.state.contains(&StateTarget {
+                property: StateProperty::Maximized,
+                value: true,
+                authority: ScopeAuthority::Controlled,
+                command_seq: Some(3),
+            })),
+        "trailing implicit maximize must publish win-b Maximized; got {:?}",
+        reply_follow.windows
+    );
+    assert_eq!(
+        reply_follow
+            .focus_request
+            .as_ref()
+            .map(|req| req.target.0.as_str()),
+        Some("win-a"),
+        "post-batch drain_focus_candidates retains SendRelative's explicit focus winner"
+    );
+    assert_eq!(
+        engine_follow.logical_focus_cursor,
+        Some(WindowId("win-a".to_owned()))
+    );
+}
+
+#[test]
+fn send_stay_effect_preserves_command_focus_cursor() {
+    let toggle = || {
+        implicit(WorldCommand::ToggleMaximize {
+            window: WindowId(String::new()),
+        })
+    };
+    let mut engine_stay = engine();
+    let mut r1_stay = observe(
+        1,
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-c", "out-a", 100),
+            fact("win-b", "out-b", 800),
+        ],
+        "win-a",
+    );
+    r1_stay.screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    engine_stay
+        .handle_report_v4_for_test(&r1_stay)
+        .expect("admission observes");
+    let mut r2_stay = report(
+        2,
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-c", "out-a", 100),
+            fact("win-b", "out-b", 800),
+        ],
+        "win-a",
+        Some(1),
+        Some(focus_cmd("win-b")),
+    );
+    r2_stay.screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    let send_stay = WorldCommand::SendRelative {
+        window: WindowId("win-a".to_owned()),
+        source: SendSource::Explicit(OutputId("out-a".to_owned())),
+        delta: 1,
+        follow: false,
+    };
+    let (reply_stay, stay_settlements) =
+        run_batched(&mut engine_stay, &r2_stay, &[(2, send_stay), (3, toggle())]);
+    assert_eq!(stay_settlements.len(), 3);
+    assert_not_rejected(&stay_settlements[1].result, "SendRelative(follow=false)");
+    assert_maximize_on(
+        &stay_settlements[2].result,
+        "win-b",
+        "SendRelative(follow=false) effect must not clear prior Focus(win-b) cursor",
+    );
+    assert!(
+        reply_stay
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-b")
+            .is_some_and(|row| row.state.contains(&StateTarget {
+                property: StateProperty::Maximized,
+                value: true,
+                authority: ScopeAuthority::Controlled,
+                command_seq: Some(3),
+            })),
+        "trailing implicit maximize must publish win-b Maximized; got {:?}",
+        reply_stay.windows
+    );
+    assert_eq!(
+        reply_stay
+            .focus_request
+            .as_ref()
+            .map(|req| req.target.0.as_str()),
+        Some("win-c"),
+        "post-batch drain_focus_candidates retains SendRelative's source-survivor winner"
+    );
+    assert_eq!(
+        engine_stay.logical_focus_cursor,
+        Some(WindowId("win-c".to_owned()))
+    );
+}
+
+#[test]
+fn move_directional_effect_preserves_command_focus_cursor() {
+    let toggle = || {
+        implicit(WorldCommand::ToggleMaximize {
+            window: WindowId(String::new()),
+        })
+    };
+    let mut engine_move = engine();
+    let mut m1 = observe(
+        1,
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-c", "out-a", 100),
+            fact("win-b", "out-b", 800),
+        ],
+        "win-a",
+    );
+    m1.screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    engine_move
+        .handle_report_v4_for_test(&m1)
+        .expect("admission observes");
+    let mut m2 = report(
+        2,
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-c", "out-a", 100),
+            fact("win-b", "out-b", 800),
+        ],
+        "win-a",
+        Some(1),
+        Some(focus_cmd("win-b")),
+    );
+    m2.screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    let move_cmd = WorldCommand::MoveDirectional {
+        window: WindowId("win-a".to_owned()),
+        direction: "right".to_owned(),
+        same_axis: SameAxisMove::SwapWithNeighbor,
+    };
+    let (reply_move, move_settlements) =
+        run_batched(&mut engine_move, &m2, &[(2, move_cmd), (3, toggle())]);
+    assert_eq!(move_settlements.len(), 3);
+    assert_not_rejected(&move_settlements[1].result, "MoveDirectional");
+    assert_maximize_on(
+        &move_settlements[2].result,
+        "win-b",
+        "MoveDirectional effect must not clear prior Focus(win-b) cursor",
+    );
+    assert!(
+        reply_move
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-b")
+            .is_some_and(|row| row.state.contains(&StateTarget {
+                property: StateProperty::Maximized,
+                value: true,
+                authority: ScopeAuthority::Controlled,
+                command_seq: Some(3),
+            })),
+        "trailing implicit maximize must publish win-b Maximized; got {:?}",
+        reply_move.windows
+    );
+    assert_eq!(
+        reply_move
+            .focus_request
+            .as_ref()
+            .map(|req| req.target.0.as_str()),
+        Some("win-a"),
+        "post-batch drain_focus_candidates retains MoveDirectional's mover focus winner"
+    );
+    assert_eq!(
+        engine_move.logical_focus_cursor,
+        Some(WindowId("win-a".to_owned()))
+    );
+}
+
+/// Failed canonical command focus (`record_command_focus` returning false
+/// because the target scope is held) still clears a valid prior
+/// `logical_focus_cursor`, so a trailing same-batch implicit command refuses
+/// `FocusUnknown` instead of acting on the stale cursor.
+#[test]
+fn failed_record_command_focus_clears_prior_cursor() {
+    let mut engine = engine();
+    let mut r1 = observe(
+        1,
+        vec![
+            fact("win-b", "out-a", 0),
+            fact("win-n", "out-b", 800),
+            fact("win-h", "out-b", 900),
+        ],
+        "win-b",
+    );
+    r1.screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    engine
+        .handle_report_v4_for_test(&r1)
+        .expect("admission observes");
+
+    let mut r2 = report(
+        2,
+        vec![fact("win-b", "out-a", 0), fact("win-n", "out-b", 800)],
+        "win-b",
+        Some(1),
+        Some(focus_cmd("win-b")),
+    );
+    r2.screens = vec![
+        screen("out-a", 0),
+        crate::world_report::ScreenReport {
+            complete: false,
+            ..screen("out-b", 800)
+        },
+    ];
+    r2.held_windows = vec![HeldWindowRow {
+        window: WindowId("win-h".to_owned()),
+        ordinal: 0,
+        output: None,
+        fields: Vec::new(),
+        diagnostic: None,
+        kind: RowDiagnosticKind::InvalidFact,
+    }];
+    let toggle = implicit(WorldCommand::ToggleMaximize {
+        window: WindowId(String::new()),
+    });
+    let (reply, settlements) =
+        run_batched(&mut engine, &r2, &[(2, focus_cmd("win-n")), (3, toggle)]);
+    assert_eq!(settlements.len(), 3);
+    assert!(
+        matches!(
+            settlements[2].result,
+            Some(CommandResult::Rejected {
+                kind: CommandRejectKind::FocusUnknown,
+            })
+        ),
+        "failed record_command_focus must clear prior cursor so trailing implicit refuses; got {:?}",
+        settlements[2].result
+    );
+    assert_eq!(
+        reply
+            .focus_request
+            .as_ref()
+            .map(|req| req.target.0.as_str()),
+        Some("win-n")
+    );
+    assert_eq!(engine.logical_focus_cursor, None);
+    assert_eq!(engine.execution_subject(), None);
 }

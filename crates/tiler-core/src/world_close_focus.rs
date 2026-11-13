@@ -88,27 +88,44 @@ fn focus_feedback_retires(pending: &PendingFocus, row: &FocusFeedback) -> bool {
 impl WorldEngine {
     /// Execution-time subject for the next implicit command: the single
     /// logical cursor when a logical focus decision owns it. When the
-    /// cursor is empty and no retained focus request owns the subject, a
-    /// no-target command acts on the host-reported foreground, provided
-    /// it is a live bound window of the current generation that core
-    /// knows: present as a staged fact, homed this capture, neither
-    /// closed nor excluded. The fallback never overrides or outlives a
-    /// logical focus decision or a pending retained request, changes
+    /// cursor is empty and no focus decision from this report or live
+    /// available pending request owns the subject, a no-target command acts
+    /// on the host-reported foreground, provided it is a live bound window
+    /// of the current generation that core knows: present as a staged fact,
+    /// homed this capture, neither closed nor excluded. When a retained
+    /// focus request is pending on an unavailable target (closed,
+    /// excluded, or unhomed/absent from staged facts) and an accepted
+    /// report strictly newer than the request still shows another live
+    /// bound known window focused, the no-target command acts on that
+    /// observed window while keeping the pending request intact; same-batch
+    /// commands stay refused. The fallback never overrides or outlives a
+    /// logical focus decision or an available pending request, changes
     /// neither canonical focus memory nor session eligibility, mints no
     /// focus request, and never weakens the automatic guards (downstream
     /// dispatch still refuses hidden/held/in-flight subjects on its own
-    /// terms). An unknown, unhomed, or stale foreground still resolves
-    /// to no subject, so execution refuses it as focus-unknown exactly
-    /// as before. Read-only: no state is written here.
+    /// terms). An unknown, unhomed, or stale foreground still resolves to
+    /// no subject, so execution refuses it as focus-unknown exactly as
+    /// before. Read-only: no state is written here.
     pub(crate) fn execution_subject(&self) -> Option<WindowId> {
         if let Some(cursor) = self.logical_focus_cursor.clone() {
             return Some(cursor);
         }
-        // A live retained request owns the subject even while the cursor
-        // slot reads empty: falling back to observed foreground would
-        // override (or outlive) the logical focus decision it carries.
-        if self.pending_focus.is_some() {
+        if self.staged.batch_focus_issued {
             return None;
+        }
+        // A retained request owns the subject while the cursor slot reads
+        // empty, except on a strictly newer accepted report whose pending
+        // target is unavailable (where observed live bound foreground acts
+        // without canceling or overriding the retained request).
+        if let Some(pending) = self.pending_focus.as_ref() {
+            let pending_unavailable = self.staged.closes.contains(&pending.target)
+                || self.staged.excluded.contains(&pending.target)
+                || !self.staged.facts.contains_key(&pending.target)
+                || !self.staged.homing.contains_key(&pending.target);
+            let newer_report = self.staged.revision > pending.issued_revision;
+            if !(pending_unavailable && newer_report) {
+                return None;
+            }
         }
         let observed = self.staged.observation.focused_global.clone();
         if observed.is_empty() {

@@ -1016,6 +1016,125 @@ below records which mechanisms were subsequently removed.
   before resuming admission, explicit focus, positive close, hover, float guard,
   implicit subjects, intent persistence, command latency and send-follow checks.
 
+### Native KDE smoke rerun after scoped-hit repair (2026-11-13)
+
+- Baseline `c388285d`; Wayland fixture-only scope with
+  `just dev trace --scope-class OmniTilerTestWindow`. Startup is no longer
+  blocked. This is partial native evidence, not complete retained-focus
+  acceptance. Command legs used KGlobalAccel `invokeShortcut`, not physical
+  keys; close stimuli used the fixture protocol. Evidence filenames below
+  refer to the externally retained smoke bundle, not repository files.
+- Foreign-cursor witness: `cursor-journal.txt:1-6` reports
+  `hit-class=plasmashell`, `hit-foreign=true`; the timestamped current-owner
+  journal repeats that witness immediately before controller readiness
+  (`lead-current-pid.journal:10-15,149-152`). No pointer movement was injected.
+  The complete current-owner journal has no `cursor-hit-unknown` or
+  `snapshot-invalid`; the separate unfiltered scripting-category query returns
+  no entries. Neither absence alone is feature acceptance.
+
+| Check | Result | Direct evidence and boundary |
+| --- | --- | --- |
+| 1. Startup: empty scope, then fixture application | PASS | `readiness-journal.txt:1-6` has ready/discovered and matched dispatch/applied pairs. `dev-console.log:118-126` explicitly accepts an empty `wins=0/0` capture. Fixture A then has accepted capture, geometry application and matching observation (`:155-184`); `enum1-journal.txt:2-4` joins its sentinel/PID one-to-one to the native window/frame. |
+| 2. Admission through retained focusRequest | FAIL, evidence gate | Newcomer B is focused, but already foreground at capture (`dev-console.log:293-304`, `fx=0`). No retained admission request/feedback tuple was captured. Native map activation and retained-request satisfaction cannot be distinguished. This is not a demonstrated product failure. |
+| 3. Explicit focus | PASS, command route | `dev-console.log:380-393`: command receipt, dispatch, `reason=explicit-command`, `outcome=setter-accepted proven=true`, and native pre/post foreground B -> A. `check3-focused.txt` agrees. Physical shortcut delivery was NOT RUN. |
+| 4. Positive-close focus successor | FAIL, evidence gate | Fixture A closed; B is focused and reflows (`dev-console.log:440-474`, `check4-focused.txt`). B was already foreground at capture, with `fx=0`; no positive-close request/feedback tuple proves retained-request causation. |
+| 5a. Hover focus and guards | NOT RUN | Focus-follows-cursor remained off and the cursor static. Zero hover rows are not a passing hover test. |
+| 5b. Focused-float admission guard | NOT RUN as a valid discriminator | B floated, then C became native foreground before its admission capture. The required captured floating-foreground precondition was not maintained; no core guard failure is established. |
+| 5c. Implicit subject, including a float | PASS, command route | No-target toggle resolves C (`dev-console.log:656-677`, `check5-implicit-state.txt:1-3`); the later no-target toggle resolves floating B (`:869-890`). Directional float control also records `focus-float-retained@no-target` (`:817`), not a focus setter. |
+| 6. Intent persistence over restart | FAIL, full native evidence incomplete | Saved floating intent survives in storage and the new core model, with no rewrite; see the [intent rerun](retained-intent-desire.md#native-kde-rerun-after-scoped-hit-repair-2026-11-13). Post-restart native joins are retained, but native above-state settlement and the full trace are not. |
+| 7. Command latency samples | PASS, measurement only | Five invocation-to-applied samples below; three focus samples include fresh native post-read proof. No physical-key/display latency or performance budget acceptance. |
+| 8. Send-follow then implicit command | PASS, command route | `dev-console.log:1138-1162` records follow transfer and native membership setter/readback. `check8-send-state.txt:1-3` places B in the destination; `:1262-1285` and `check8-implicit-state.txt:1-3` show the following no-target toggle affects B there. The later post-restart native join corroborates the same native home, not immediate send latency. |
+
+- Latency method: wall-clock nanoseconds sampled before launching each
+  `invokeShortcut` call, compared with controller `ev=cmd` and correlated
+  `observe-applied` millisecond timestamps. Includes process/IPC overhead;
+  millisecond quantization and wall-clock limitations apply. Raw sender files
+  and `lead-latency.json` preserve the samples.
+
+| Sample / trace lines in dev-console.log | Invocation -> applied | Receipt -> applied | Effect boundary |
+| --- | --- | --- | --- |
+| L0 focus, 380-393 | 20.6 ms | 18 ms | Setter accepted, fresh native target proven |
+| L1 focus, 735-748 | 18.8 ms | 16 ms | Setter accepted, fresh native target proven |
+| L2 directional retain, 797-817 | 14.1 ms | 12 ms | Intentional no-op, not native-effect latency |
+| L3 focus, 1003-1017 | 20.4 ms | 18 ms | Setter accepted, fresh native target proven |
+| T2 float -> tile, 869-890 | 14.2 ms | 12 ms | Applied boundary only, not geometry settlement |
+
+- The initial sub-5 ms native-focus claims are withdrawn: fixture-poll times
+  were sampled before the read, not after observing the transition. Only the
+  correlated fresh native post-read inside the focus application bounds those
+  three effects by the applied checkpoint; no rendered-frame timing was taken.
+- Evidence limitations: admission/close equality/no-call branches do not emit
+  the retained tuple in normal logs. Source owner for that observability gap is
+  `kwin/src/world-apply.ts:2691-2710,2772-2777`; setter-only logging is at
+  `:2800-2813`. No load-bearing product defect was established or repaired.
+- Restart ran after send-follow and its implicit toggle, not in the requested
+  check order. Restart used the detached lifecycle route, so its full trace was
+  not captured. Initial trace streams were copied before shutdown; the final
+  tmpfs copy occurred after shutdown and contains only the earlier trace. This
+  evidence-preservation gap remains, despite later recovery of the full
+  current-owner journal. The second enumeration helper also lacks a saved run
+  receipt/exit and complete named-plugin receipts, though load/unload and final
+  child-roster evidence survive. No helper was carried across the restart.
+- Teardown: final direct status is DOWN (planner unowned/controller unloaded),
+  no `ydotoold`, fixture process absent, and fixture shutdown reports zero open
+  windows (`lead-final-dev-status.txt:1-8`, `fixture-shutdown.json:1`). No
+  physical-input, complete four-cause focus or full restart-native acceptance
+  is claimed.
+- Remaining manual checks: enable focus-follows-cursor and enter/leave/reenter
+  joined fixture tiles; repeat over/with a focused float. Preserve a floating
+  foreground through newcomer capture or mark the guard precondition unmet.
+  For admission and positive close, retain the request/feedback tuple and
+  distinguish native target equality from a setter. Repeat the isolated
+  persistence leg with native above-state readback and trace retention before
+  both shutdowns. Keep these outcomes open rather than infer them from the
+  command-route successes.
+
+### Unavailable pending-target command subject (2026-11-13)
+
+- User decision (option 2): after a report newer than an unavailable pending
+  focus target's request still shows another live, bound window focused, implicit
+  commands use that observed window. Keep the pending request, which may complete
+  later; same-batch commands still refuse without a newer report. The 2026-11-12
+  empty-subject rule otherwise retains its existing boundaries.
+- Implemented in `WorldEngine::execution_subject`: the cursor must be empty,
+  the pending target absent/unhomed in the staged capture, and the accepted run's
+  revision strictly newer than the request's immutable issuing revision. Staged
+  revision and a transient same-batch focus-decision fence survive classification
+  restaging; they carry no second subject or settlement authority. Equal observation
+  counters on successive accepted reports do not prevent the exception. No adapter,
+  wire shape, fixture, retry or request-settlement change was needed.
+- Three original failing-before regressions establish the newer-report exception
+  and same-batch fence (core: 2,170 passed, three failed). The final suite adds eight
+  tests and extends the existing held-live/held-only regressions: known C receives
+  an actual published maximize target, the exact original N tuple survives recovery,
+  N target equality completes it, and C's command target remains unchanged through
+  that completion. Unknown/unbound foreground refuses. A newer accepted report with
+  unchanged observation counter still resolves C. Existing inventory hold/clear,
+  available-target ownership and no-target regressions remain enabled; only the
+  superseded held-only `focus-unknown` expectation becomes observed C subject plus
+  the unchanged per-command `scope-held` refusal.
+- Independent review caught a same-batch send/move regression in broad stale-cursor
+  clearing. Three failing-before send/move probes reproduced it; clearing now occurs
+  only when canonical command-focus recording actually fails. A matching existing
+  cursor is preserved under a hold, covered by a repeated same-target focus probe.
+  That probe initially expected the old id despite a new explicit decision; its
+  oracle was corrected to require the newer explicit tuple. Neither correction
+  changes existing send/move subject policy. Final review has no unresolved findings.
+- Final sequential offline gates all exit 0:
+  - `cargo fmt --all -- --check`
+  - `cargo build -p tiler-core -p tiler-protocol -p omnitiler --all-targets`
+  - `cargo clippy -p tiler-core -p tiler-protocol -p omnitiler --all-targets -- -D warnings`
+  - `cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture`:
+    3,362 passed, zero failed/ignored across 68 target summaries; one test filtered.
+  - KWin `npm run typecheck`; `npm test`: 1,301 passed across 191 suites,
+    zero failed/cancelled/skipped.
+- The [decision](../decisions/focus.md#unavailable-pending-target-execution-subject),
+  [discriminator](../spec/reference-outcomes.md#inventory-hold-and-pending-execution-subject)
+  and world contract are updated. This completes the offline core exception, not
+  the broader retained-focus adoption. macOS/Windows builds and native behavior
+  remain unverified; no platform-specific code changed. Native KDE/macOS acceptance
+  and the separate suppressed-admission subject question remain open.
+
 ## Source anchors
 
 - E1: `docs/principles.md:135-171`.

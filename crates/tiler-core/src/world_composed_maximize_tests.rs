@@ -2775,51 +2775,160 @@ fn expect_explicit_focus(reply: &crate::world_report::WorldReplyV4, target: &str
     assert_eq!(request.cmd_seq, Some(cmd_seq));
 }
 
-#[test]
-fn composed_tiled_focus_crosses_adjacent_output() {
-    let mut engine = engine();
-    let windows = || {
-        vec![
-            cfact("win-a", "out-a", 0),
-            cfact("win-b", "out-a", 100),
-            cfact("win-c", "out-b", 900),
-        ]
+fn two_screens_dir(dir: &str) -> Vec<crate::world_report::ScreenReport> {
+    let mut out_b = screen("out-b", 800);
+    let (x, y) = match dir {
+        "right" => (800, 0),
+        "up" => (0, -600),
+        "down" => (0, 600),
+        other => panic!("unexpected direction {other}"),
     };
-    accepted(&mut engine, &bootstrap_two(1, windows(), "win-a"));
-    let toggled = accepted(
-        &mut engine,
-        &cmd_two(2, 1, windows(), "win-a", toggle("win-a")),
-    );
-    assert_eq!(maximize_result(&toggled), (true, false, false));
-    assert!(
-        engine
-            .composed_maximized
-            .contains(&WindowId("win-a".to_owned()))
-    );
-    // Same-output sibling win-b waits in the press direction; the composed
-    // subject skips it like the native overlay and continues to out-b.
-    let reply = accepted(
-        &mut engine,
-        &cmd_two(3, 2, windows(), "win-a", focus_dir("win-a", "right")),
-    );
-    expect_explicit_focus(&reply, "win-c", 2);
-    assert!(
-        engine
-            .composed_maximized
-            .contains(&WindowId("win-a".to_owned())),
-        "cross focus retains the bit"
-    );
-    let row = desire(&reply, "win-a");
-    assert_eq!(row.clear_operation, None, "no native clear minted");
-    assert!(row.state.is_empty(), "no native state target");
-    assert!(engine.retained_clears.is_empty());
+    out_b.full_rect = Some(Rect {
+        x,
+        y,
+        w: 800,
+        h: 600,
+    });
+    out_b.work_area = Some(Rect {
+        x,
+        y,
+        w: 800,
+        h: 560,
+    });
+    vec![screen("out-a", 0), out_b]
+}
+
+fn dest_work_area(dir: &str) -> Rect {
+    match dir {
+        "right" => Rect {
+            x: 800,
+            y: 0,
+            w: 800,
+            h: 560,
+        },
+        "up" => Rect {
+            x: 0,
+            y: -600,
+            w: 800,
+            h: 560,
+        },
+        "down" => Rect {
+            x: 0,
+            y: 600,
+            w: 800,
+            h: 560,
+        },
+        other => panic!("unexpected direction {other}"),
+    }
+}
+
+fn target_xy(dir: &str) -> (i32, i32) {
+    match dir {
+        "right" => (900, 0),
+        "up" => (100, -500),
+        "down" => (100, 700),
+        other => panic!("unexpected direction {other}"),
+    }
+}
+
+fn cfact_at(window: &str, output: &str, x: i32, y: i32) -> WindowFact {
+    let mut row = cfact(window, output, x);
+    row.rect = Some(Rect { x, y, w: 40, h: 90 });
+    row
+}
+
+fn cfloat_at(window: &str, output: &str, x: i32, y: i32, w: i32, h: i32) -> WindowFact {
+    let mut row = cfact(window, output, x);
+    row.rect = Some(Rect { x, y, w, h });
+    row.transient = Some(true);
+    row
 }
 
 #[test]
-fn composed_float_focus_refuses_maximize() {
-    // Native parity: `early_verdict` fences a maximized float subject with
-    // `FocusRefusedMaximize` before the float lattice, so the composed
-    // overlay refuses a float/sticky subject the same way.
+fn composed_tiled_focus_crosses_adjacent_output() {
+    for dir in ["right", "up", "down"] {
+        let mut engine = engine();
+        let screens = two_screens_dir(dir);
+        let (tx, ty) = target_xy(dir);
+        let windows = || {
+            vec![
+                cfact("win-a", "out-a", 0),
+                cfact("win-b", "out-a", 100),
+                cfact_at("win-c", "out-b", tx, ty),
+            ]
+        };
+        accepted(
+            &mut engine,
+            &report_full(
+                1,
+                1,
+                screens.clone(),
+                windows(),
+                vec![],
+                "win-a",
+                None,
+                None,
+            ),
+        );
+        let toggled = accepted(
+            &mut engine,
+            &report_full(
+                2,
+                2,
+                screens.clone(),
+                windows(),
+                vec![],
+                "win-a",
+                Some(1),
+                Some(toggle("win-a")),
+            ),
+        );
+        assert_eq!(maximize_result(&toggled), (true, false, false));
+        assert!(
+            engine
+                .composed_maximized
+                .contains(&WindowId("win-a".to_owned()))
+        );
+        // Same-output sibling win-b waits on out-a; the composed subject
+        // skips it like the native overlay and continues to out-b.
+        let reply = accepted(
+            &mut engine,
+            &report_full(
+                3,
+                3,
+                screens,
+                windows(),
+                vec![],
+                "win-a",
+                Some(2),
+                Some(focus_dir("win-a", dir)),
+            ),
+        );
+        expect_explicit_focus(&reply, "win-c", 2);
+        assert!(
+            engine
+                .composed_maximized
+                .contains(&WindowId("win-a".to_owned())),
+            "cross focus retains the bit ({dir})"
+        );
+        let row = desire(&reply, "win-a");
+        assert_eq!(row.effective_frame, Some(work_area()));
+        assert_eq!(row.clear_operation, None, "no native clear minted");
+        assert!(row.state.is_empty(), "no native state target");
+        assert!(engine.retained_clears.is_empty());
+    }
+}
+
+// Float-origin composed-maximize focus below is an explicitly requested
+// ASSUMPTION for later reversal: ordinary floats stay local, while a
+// composed-maximized float origin skips the lattice and crosses (or
+// retains) like the tiled rule. These cases are isolated here so the
+// assumption can be revisited alone.
+
+#[test]
+fn composed_float_focus_single_output_retains() {
+    // A composed-maximized float subject with no adjacent output retains
+    // with no dispatch and no native clear, keeping the owned bit.
     let mut engine = engine();
     let _base = float_compose_on(&mut engine);
     let mut overlay_fact = cfact("win-a", "out-a", 0);
@@ -2834,21 +2943,415 @@ fn composed_float_focus_refuses_maximize() {
             focus_dir("win-a", "right"),
         ),
     );
-    assert_eq!(directional_outcome(&reply), Some("focus-refused-maximize"));
+    assert_eq!(directional_outcome(&reply), Some("focus-float-retained"));
     assert!(focus_effect_targets(&reply).is_empty());
     assert!(
         engine
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
-        "refusal retains the bit"
+        "retain keeps the bit"
     );
 }
 
 #[test]
-fn composed_tiled_focus_vertical_and_single_output_refuse_unchanged() {
-    let mut engine = engine();
+fn composed_float_focus_crosses_to_remembered_target() {
+    // A composed-maximized float subject with an adjacent output skips the
+    // same-output lattice (including a float waiting in dir) and crosses to
+    // the remembered tiled target, keeping the owned bit with no native clear.
+    for (dir, (lx, ly, lw, lh)) in [
+        ("right", (600, 100, 150, 150)),
+        ("up", (300, 10, 150, 100)),
+        ("down", (300, 420, 150, 100)),
+    ] {
+        let mut engine = engine();
+        let screens = two_screens_dir(dir);
+        let (tx, ty) = target_xy(dir);
+        let win_sib = || cfloat_at("win-sib", "out-a", lx, ly, lw, lh);
+        let win_t = || cfact_at("win-t", "out-b", tx, ty);
+        accepted(
+            &mut engine,
+            &report_full(
+                1,
+                1,
+                screens.clone(),
+                vec![cfact("win-a", "out-a", 0), win_sib(), win_t()],
+                vec![],
+                "win-a",
+                None,
+                None,
+            ),
+        );
+        let floated = accepted(
+            &mut engine,
+            &report_full(
+                2,
+                2,
+                screens.clone(),
+                vec![cfact("win-a", "out-a", 0), win_sib(), win_t()],
+                vec![],
+                "win-a",
+                Some(1),
+                Some(toggle_float("win-a")),
+            ),
+        );
+        let float_base = match &floated.command_result {
+            Some(CommandResult::Float { rect, .. }) => rect.expect("float placement"),
+            other => panic!("expected float result, got {other:?}"),
+        };
+        let settled = || {
+            let mut settled_fact = cfact("win-a", "out-a", 0);
+            settled_fact.rect = Some(float_base);
+            vec![settled_fact, win_sib(), win_t()]
+        };
+        accepted(
+            &mut engine,
+            &report_full(
+                3,
+                3,
+                screens.clone(),
+                settled(),
+                vec![],
+                "win-a",
+                None,
+                None,
+            ),
+        );
+        let toggled = accepted(
+            &mut engine,
+            &report_full(
+                4,
+                4,
+                screens.clone(),
+                settled(),
+                vec![],
+                "win-a",
+                Some(2),
+                Some(toggle("win-a")),
+            ),
+        );
+        assert_eq!(maximize_result(&toggled), (true, false, false));
+        assert!(
+            engine
+                .composed_maximized
+                .contains(&WindowId("win-a".to_owned())),
+            "overlay bit set before the cross ({dir})"
+        );
+        // Establish the remembered tiled target on out-b, then return explicit
+        // focus to the float subject. The overlay shows the work area.
+        let overlay = || {
+            let mut overlay_fact = cfact("win-a", "out-a", 0);
+            overlay_fact.rect = Some(work_area());
+            vec![overlay_fact, win_sib(), win_t()]
+        };
+        accepted(
+            &mut engine,
+            &report_full(
+                5,
+                5,
+                screens.clone(),
+                overlay(),
+                vec![],
+                "win-t",
+                Some(3),
+                Some(WorldCommand::Focus {
+                    window: WindowId("win-t".to_owned()),
+                    direction: dir.to_owned(),
+                }),
+            ),
+        );
+        accepted(
+            &mut engine,
+            &report_full(
+                6,
+                6,
+                screens.clone(),
+                overlay(),
+                vec![],
+                "win-a",
+                Some(4),
+                Some(WorldCommand::Focus {
+                    window: WindowId("win-a".to_owned()),
+                    direction: dir.to_owned(),
+                }),
+            ),
+        );
+        let reply = accepted(
+            &mut engine,
+            &report_full(
+                7,
+                7,
+                screens,
+                overlay(),
+                vec![],
+                "win-a",
+                Some(5),
+                Some(focus_dir("win-a", dir)),
+            ),
+        );
+        expect_explicit_focus(&reply, "win-t", 5);
+        assert!(
+            engine
+                .composed_maximized
+                .contains(&WindowId("win-a".to_owned())),
+            "cross focus retains the bit ({dir})"
+        );
+        let row = desire(&reply, "win-a");
+        assert_eq!(row.effective_frame, Some(work_area()));
+        assert_eq!(row.clear_operation, None, "no native clear minted");
+        assert!(row.state.is_empty(), "no native state target");
+        assert!(engine.retained_clears.is_empty());
+    }
+}
+
+#[test]
+fn composed_float_cross_preserves_destination_bit() {
+    // Both ends composed-maximized (float origin -> tiled destination):
+    // skips same-output float sibling, crosses in Right/Up/Down, and
+    // preserves both composed overlay bits and frames.
+    for (dir, (lx, ly, lw, lh)) in [
+        ("right", (600, 100, 150, 150)),
+        ("up", (300, 10, 150, 100)),
+        ("down", (300, 420, 150, 100)),
+    ] {
+        let mut engine = engine();
+        let screens = two_screens_dir(dir);
+        let (tx, ty) = target_xy(dir);
+        let win_sib = || cfloat_at("win-sib", "out-a", lx, ly, lw, lh);
+        let win_t = || cfact_at("win-t", "out-b", tx, ty);
+        accepted(
+            &mut engine,
+            &report_full(
+                1,
+                1,
+                screens.clone(),
+                vec![cfact("win-a", "out-a", 0), win_sib(), win_t()],
+                vec![],
+                "win-t",
+                None,
+                None,
+            ),
+        );
+        let toggled_t = accepted(
+            &mut engine,
+            &report_full(
+                2,
+                2,
+                screens.clone(),
+                vec![cfact("win-a", "out-a", 0), win_sib(), win_t()],
+                vec![],
+                "win-t",
+                Some(1),
+                Some(toggle("win-t")),
+            ),
+        );
+        assert_eq!(maximize_result(&toggled_t), (true, false, false));
+        accepted(
+            &mut engine,
+            &report_full(
+                3,
+                3,
+                screens.clone(),
+                vec![cfact("win-a", "out-a", 0), win_sib(), win_t()],
+                vec![],
+                "win-a",
+                Some(2),
+                Some(WorldCommand::Focus {
+                    window: WindowId("win-a".to_owned()),
+                    direction: dir.to_owned(),
+                }),
+            ),
+        );
+        let floated = accepted(
+            &mut engine,
+            &report_full(
+                4,
+                4,
+                screens.clone(),
+                vec![cfact("win-a", "out-a", 0), win_sib(), win_t()],
+                vec![],
+                "win-a",
+                Some(3),
+                Some(toggle_float("win-a")),
+            ),
+        );
+        let float_base = match &floated.command_result {
+            Some(CommandResult::Float { rect, .. }) => rect.expect("float placement"),
+            other => panic!("expected float result, got {other:?}"),
+        };
+        let settled = || {
+            let mut settled_fact = cfact("win-a", "out-a", 0);
+            settled_fact.rect = Some(float_base);
+            vec![settled_fact, win_sib(), win_t()]
+        };
+        accepted(
+            &mut engine,
+            &report_full(
+                5,
+                5,
+                screens.clone(),
+                settled(),
+                vec![],
+                "win-a",
+                None,
+                None,
+            ),
+        );
+        let toggled_a = accepted(
+            &mut engine,
+            &report_full(
+                6,
+                6,
+                screens.clone(),
+                settled(),
+                vec![],
+                "win-a",
+                Some(4),
+                Some(toggle("win-a")),
+            ),
+        );
+        assert_eq!(maximize_result(&toggled_a), (true, false, false));
+        let mut overlay_fact = cfact("win-a", "out-a", 0);
+        overlay_fact.rect = Some(work_area());
+        let reply = accepted(
+            &mut engine,
+            &report_full(
+                7,
+                7,
+                screens,
+                vec![overlay_fact, win_sib(), win_t()],
+                vec![],
+                "win-a",
+                Some(5),
+                Some(focus_dir("win-a", dir)),
+            ),
+        );
+        expect_explicit_focus(&reply, "win-t", 5);
+        for held in ["win-a", "win-t"] {
+            assert!(
+                engine
+                    .composed_maximized
+                    .contains(&WindowId(held.to_owned())),
+                "{held} bit preserved through float cross ({dir})"
+            );
+        }
+        assert_eq!(desire(&reply, "win-a").effective_frame, Some(work_area()));
+        assert_eq!(
+            desire(&reply, "win-t").effective_frame,
+            Some(dest_work_area(dir))
+        );
+    }
+}
+
+#[test]
+fn composed_tiled_cross_preserves_destination_bit() {
+    // Both ends composed-maximized: the cross must reach the maximized
+    // destination and disturb neither owned bit.
+    for dir in ["right", "up", "down"] {
+        let mut engine = engine();
+        let screens = two_screens_dir(dir);
+        let (tx, ty) = target_xy(dir);
+        let windows = || {
+            vec![
+                cfact("win-a", "out-a", 0),
+                cfact("win-b", "out-a", 100),
+                cfact_at("win-c", "out-b", tx, ty),
+            ]
+        };
+        accepted(
+            &mut engine,
+            &report_full(
+                1,
+                1,
+                screens.clone(),
+                windows(),
+                vec![],
+                "win-c",
+                None,
+                None,
+            ),
+        );
+        let toggled_c = accepted(
+            &mut engine,
+            &report_full(
+                2,
+                2,
+                screens.clone(),
+                windows(),
+                vec![],
+                "win-c",
+                Some(1),
+                Some(toggle("win-c")),
+            ),
+        );
+        assert_eq!(maximize_result(&toggled_c), (true, false, false));
+        // Explicit focus-by-window returns to win-a without touching the bit.
+        accepted(
+            &mut engine,
+            &report_full(
+                3,
+                3,
+                screens.clone(),
+                windows(),
+                vec![],
+                "win-a",
+                Some(2),
+                Some(WorldCommand::Focus {
+                    window: WindowId("win-a".to_owned()),
+                    direction: dir.to_owned(),
+                }),
+            ),
+        );
+        let toggled_a = accepted(
+            &mut engine,
+            &report_full(
+                4,
+                4,
+                screens.clone(),
+                windows(),
+                vec![],
+                "win-a",
+                Some(3),
+                Some(toggle("win-a")),
+            ),
+        );
+        assert_eq!(maximize_result(&toggled_a), (true, false, false));
+        // Same-output sibling win-b waits on out-a; the composed subject skips
+        // it and continues to the maximized win-c.
+        let reply = accepted(
+            &mut engine,
+            &report_full(
+                5,
+                5,
+                screens,
+                windows(),
+                vec![],
+                "win-a",
+                Some(4),
+                Some(focus_dir("win-a", dir)),
+            ),
+        );
+        expect_explicit_focus(&reply, "win-c", 4);
+        for held in ["win-a", "win-c"] {
+            assert!(
+                engine
+                    .composed_maximized
+                    .contains(&WindowId(held.to_owned())),
+                "{held} bit preserved through the cross ({dir})"
+            );
+        }
+        assert_eq!(desire(&reply, "win-a").effective_frame, Some(work_area()));
+        assert_eq!(
+            desire(&reply, "win-c").effective_frame,
+            Some(dest_work_area(dir))
+        );
+    }
+}
+
+#[test]
+fn composed_tiled_focus_no_vertical_neighbor_and_single_output_refuse_unchanged() {
+    let mut single = self::engine();
     accepted(
-        &mut engine,
+        &mut single,
         &bootstrap(
             1,
             vec![cfact("win-a", "out-a", 0), cfact("win-b", "out-a", 100)],
@@ -2856,31 +3359,33 @@ fn composed_tiled_focus_vertical_and_single_output_refuse_unchanged() {
         ),
     );
     let mut _alloc = None;
-    toggle_on(&mut engine, &mut _alloc);
+    toggle_on(&mut single, &mut _alloc);
     let windows = || vec![cfact("win-a", "out-a", 0), cfact("win-b", "out-a", 100)];
-    match engine
-        .handle_report(
-            &cmd(3, 2, windows(), "win-a", focus_dir("win-a", "up")),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            })
-        ),
-        other => panic!("vertical composed focus refuses unchanged, got {other:?}"),
+    for (seq, cmd_seq, dir) in [(3, 2, "up"), (4, 3, "down")] {
+        match single
+            .handle_report(
+                &cmd(seq, cmd_seq, windows(), "win-a", focus_dir("win-a", dir)),
+                &[],
+            )
+            .0
+        {
+            WorldOutcome::Accepted(reply) => assert_eq!(
+                reply.command_result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                })
+            ),
+            other => panic!("no-vertical-neighbor composed focus refuses unchanged, got {other:?}"),
+        }
+        assert!(
+            single
+                .composed_maximized
+                .contains(&WindowId("win-a".to_owned()))
+        );
     }
-    assert!(
-        engine
-            .composed_maximized
-            .contains(&WindowId("win-a".to_owned()))
-    );
-    match engine
+    match single
         .handle_report(
-            &cmd(4, 3, windows(), "win-a", focus_dir("win-a", "right")),
+            &cmd(5, 4, windows(), "win-a", focus_dir("win-a", "right")),
             &[],
         )
         .0
@@ -2894,10 +3399,46 @@ fn composed_tiled_focus_vertical_and_single_output_refuse_unchanged() {
         other => panic!("single-output composed focus refuses unchanged, got {other:?}"),
     }
     assert!(
-        engine
+        single
             .composed_maximized
             .contains(&WindowId("win-a".to_owned()))
     );
+    // Horizontal neighbor present, no vertical neighbor: Up/Down still refuse.
+    let mut horiz = self::engine();
+    let h_windows = || {
+        vec![
+            cfact("win-a", "out-a", 0),
+            cfact("win-b", "out-a", 100),
+            cfact("win-c", "out-b", 900),
+        ]
+    };
+    accepted(&mut horiz, &bootstrap_two(1, h_windows(), "win-a"));
+    accepted(
+        &mut horiz,
+        &cmd_two(2, 1, h_windows(), "win-a", toggle("win-a")),
+    );
+    for (seq, cmd_seq, dir) in [(3, 2, "up"), (4, 3, "down")] {
+        match horiz
+            .handle_report(
+                &cmd_two(seq, cmd_seq, h_windows(), "win-a", focus_dir("win-a", dir)),
+                &[],
+            )
+            .0
+        {
+            WorldOutcome::Accepted(reply) => assert_eq!(
+                reply.command_result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                })
+            ),
+            other => panic!("horizontal-only {dir} composed focus refuses, got {other:?}"),
+        }
+        assert!(
+            horiz
+                .composed_maximized
+                .contains(&WindowId("win-a".to_owned()))
+        );
+    }
 }
 
 #[test]

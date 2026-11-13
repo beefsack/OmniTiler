@@ -101,20 +101,6 @@ pub(crate) struct Engine {
     /// Windows carriers (`Engine::new`) keep exact current behavior; the
     /// Linux planner route enables it.
     fixed_size_admission: bool,
-    /// Opt-in G-06 maximized directional focus fence (REQ-MAX-08). Off by
-    /// default so Windows carriers keep exact current behavior; the Linux
-    /// planner route enables it.
-    maximized_focus_fence: bool,
-    /// Opt-in deferred send for automatic fixed-size floats (Windows
-    /// workspace sends). Off by default so KDE/macOS carriers keep exact
-    /// current behavior; the Windows route enables it.
-    fixed_send_admission: bool,
-    /// Best-effort admission policy (D2/D3, selected 2026-10-17): anchor
-    /// fallback and no-space result for subsequent capacity decisions
-    /// only. Largest-splittable-window and float defaults. Changing
-    /// either never reflows, retries, or reclassifies retained state.
-    anchor_fallback: crate::admission::AnchorFallback,
-    no_space: crate::admission::NoSpaceResult,
     /// Cursor-first fresh placement (2026-10-20) for subsequent fresh
     /// admissions only. Propagates to every retained session on store;
     /// fresh sessions adopt it at creation. Never moves existing members
@@ -456,10 +442,6 @@ impl Default for Engine {
             converged_this_op: false,
             fixed_size_admission: false,
             fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
-            maximized_focus_fence: false,
-            fixed_send_admission: false,
-            anchor_fallback: crate::admission::AnchorFallback::default(),
-            no_space: crate::admission::NoSpaceResult::default(),
             fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
             fresh_cursor: None,
             last_fixed_admission: None,
@@ -656,41 +638,6 @@ impl Engine {
         }
     }
 
-    /// Whether the opt-in G-06 maximized directional focus fence is enabled.
-    #[must_use]
-    #[allow(dead_code)]
-    pub(crate) fn maximized_focus_fence(&self) -> bool {
-        self.maximized_focus_fence
-    }
-
-    /// Enable or disable the opt-in G-06 maximized directional focus fence
-    /// (REQ-MAX-08). Propagates to every retained session on store; fresh
-    /// sessions adopt it at creation. Never touches topology or revision.
-    pub(crate) fn set_maximized_focus_fence(&mut self, enabled: bool) {
-        self.maximized_focus_fence = enabled;
-        for session in self.sessions.values_mut() {
-            session.set_maximized_focus_fence(enabled);
-        }
-    }
-
-    /// Whether deferred sends for automatic fixed-size floats are enabled.
-    #[must_use]
-    #[allow(dead_code)]
-    pub(crate) fn fixed_send_admission(&self) -> bool {
-        self.fixed_send_admission
-    }
-
-    /// Enable or disable deferred sends for automatic fixed-size floats
-    /// (Windows workspace sends). Propagates to every retained session on
-    /// store; fresh sessions adopt it at creation. Never touches topology
-    /// or revision.
-    pub(crate) fn set_fixed_send_admission(&mut self, enabled: bool) {
-        self.fixed_send_admission = enabled;
-        for session in self.sessions.values_mut() {
-            session.set_fixed_send_admission(enabled);
-        }
-    }
-
     /// Current R-SPC-04 D1 fixed-size admission predicate. Both-axes
     /// default (current delivered behavior).
     #[must_use]
@@ -776,43 +723,6 @@ impl Engine {
         self.fixed_size_predicate = predicate;
         for session in self.sessions.values_mut() {
             session.set_fixed_size_predicate(predicate);
-        }
-    }
-
-    /// Current D2 anchor fallback. Largest-splittable default.
-    #[must_use]
-    #[allow(dead_code)]
-    pub(crate) fn anchor_fallback(&self) -> crate::admission::AnchorFallback {
-        self.anchor_fallback
-    }
-
-    /// Select the D2 anchor fallback for subsequent capacity decisions
-    /// only. Propagates to every retained session; fresh sessions adopt
-    /// it at creation. Never touches topology, revision, or existing
-    /// classifications: no reflow or retry on Apply (D10).
-    pub(crate) fn set_anchor_fallback(&mut self, fallback: crate::admission::AnchorFallback) {
-        self.anchor_fallback = fallback;
-        for session in self.sessions.values_mut() {
-            session.set_anchor_fallback(fallback);
-        }
-    }
-
-    /// Current D3 no-space result. Float default.
-    #[must_use]
-    #[allow(dead_code)]
-    pub(crate) fn no_space_result(&self) -> crate::admission::NoSpaceResult {
-        self.no_space
-    }
-
-    /// Select the D3 no-space result for subsequent admission or actual
-    /// capacity-repair decisions only. Propagates to every retained
-    /// session; fresh sessions adopt it at creation. Never touches
-    /// topology, revision, or existing classifications: retained overlap
-    /// allocations stay valid until a real capacity decision (D10).
-    pub(crate) fn set_no_space_result(&mut self, result: crate::admission::NoSpaceResult) {
-        self.no_space = result;
-        for session in self.sessions.values_mut() {
-            session.set_no_space_result(result);
         }
     }
 
@@ -904,10 +814,6 @@ impl Engine {
     fn adopt_session_policy(&self, session: &mut Session) {
         session.set_fixed_size_admission(self.fixed_size_admission);
         session.set_fixed_size_predicate(self.fixed_size_predicate);
-        session.set_maximized_focus_fence(self.maximized_focus_fence);
-        session.set_fixed_send_admission(self.fixed_send_admission);
-        session.set_anchor_fallback(self.anchor_fallback);
-        session.set_no_space_result(self.no_space);
         session.set_fresh_placement(self.fresh_placement);
         session.set_fresh_cursor(self.fresh_cursor);
     }
@@ -2986,9 +2892,8 @@ impl Engine {
             &hints,
             &event.windows,
         ) else {
-            // D7 geometric repair (float newest-first victims, or D9
-            // overlap retention): a real capacity decision on new
-            // bounds/gap, never on settings alone.
+            // D7 geometric repair (float newest-first victims): a real
+            // capacity decision on new bounds/gap, never on settings alone.
             let Some(repaired) = Self::try_repair_domain(
                 &session,
                 &event.domain_key,
@@ -4441,7 +4346,8 @@ impl Engine {
     }
 
     /// Directional focus request phase: two-domain pair planning with local
-    /// first then exhausted Left/Right cross, plus the legacy single-domain
+    /// first then exhausted cross (all four directions for native maximized,
+    /// Left/Right otherwise), plus the legacy single-domain
     /// local path. Same ownership contract as
     /// [`Engine::directional_move_request`]: protocol keeps envelope,
     /// tagged decoding, pair scope shape, parsed-direction/op validation, and
@@ -4527,14 +4433,19 @@ impl Engine {
             Err(reply) => return *reply,
         };
         let _ = session.sync_focus_from_window(source_key, &event.focused_window.clone());
-        // Float-origin cross-output focus (adapter local float search missed
-        // Left/Right): the subject is a floating/sticky exception, so the
-        // tiled local proposal (which refuses exceptions before any edge
-        // check) is skipped and the shared reciprocal-adjacency remembered
-        // target fallback applies directly. The subject stays bound to the
-        // active window; anything else refuses fail-closed.
+        let maximized_cross = event
+            .windows
+            .iter()
+            .any(|entry| entry.window == window && entry.maximized && !entry.fullscreen);
+        // Float-origin cross-output focus (adapter local float search missed;
+        // all four directions for native maximized, Left/Right otherwise): the
+        // subject is a floating/sticky exception, so the tiled local proposal
+        // (which refuses exceptions before any edge check) is skipped and the
+        // shared reciprocal-adjacency remembered target fallback applies
+        // directly. The subject stays bound to the active window; anything else
+        // refuses fail-closed.
         let (plan, crossed) = if *float_subject {
-            if !matches!(direction, Direction::Left | Direction::Right) {
+            if !(maximized_cross || matches!(direction, Direction::Left | Direction::Right)) {
                 return CoreReply::Rejected {
                     kind: RefusalKind::Unchanged.as_str(),
                     message: RefusalKind::Unchanged.message(),
@@ -4587,7 +4498,8 @@ impl Engine {
             ) {
                 Ok(plan) => (plan, false),
                 Err(ProposeError::Refused(RefusalKind::Unchanged))
-                    if matches!(direction, Direction::Left | Direction::Right) =>
+                    if maximized_cross
+                        || matches!(direction, Direction::Left | Direction::Right) =>
                 {
                     match session.propose_cross_output_focus(
                         source_key,
@@ -5694,12 +5606,10 @@ impl Engine {
 
     /// D7 repair attempt for a retained domain whose tree no longer
     /// projects at `bounds`/`gap`: adopt the geometry structurally, then
-    /// float newest-first victims (or retain overlap) with the
-    /// observation's hints, overlay protections, and live frames.
-    /// Revision-neutral like gap adoption; the caller projects and
-    /// stores on success. `None` is a narrow truthful hold. An
-    /// actually-changed geometry re-evaluates under the current setting;
-    /// identical geometry keeps an accepted overlap mark sheltered.
+    /// float newest-first victims with the observation's hints, overlay
+    /// protections, and live frames. Revision-neutral like gap adoption;
+    /// the caller projects and stores on success. `None` is a narrow
+    /// truthful hold. An actually-changed geometry re-evaluates.
     fn try_repair_domain(
         session: &Session,
         key: &DomainKey,

@@ -36,6 +36,20 @@ conformance target.
 - Historical frozen v4 handshakes (no `sharedNativeRoster`) explicitly reject
   under the new strict shape; see the frozen-rejection test in
   `crates/tiler-protocol/src/connection_protocol/tests.rs`.
+- Settings witnesses and inputs (anchor-fallback and no-space-result removal): five standalone
+  messages (`messages/settings-defaults.json`,
+  `messages/settings-alternatives.json`, `messages/settings-third-arms.json`,
+  `messages/settings-invalid-fields.json`, `messages/settings-restart-only.json`),
+  the Settings steps in the ten `scenarios/*.json` files, and the
+  `DiscoverWorld` Settings lines in
+  `crates/tiler-protocol/tests/data/world_eval_v4.jsonl` are recorded from
+  explicit typed `SettingsRequest` cases through `encode_settings` (never
+  read from old bytes or key-patched). `manifest.json` points those five
+  active witnesses to `messages/settings-*.json` instead of frozen `../v4`
+  (frozen `../v4` is untouched). Reproduction route:
+  `crates/tiler-protocol/tests/connection_settings_v4_record.rs` asserts exact byte
+  equality in normal mode and re-records under
+  `UPDATE_SETTINGS_V4_FIXTURES=1`.
 - Reply witnesses (138 WorldReply: 113 valid-wire, 25 reject-wire) are
   current-shape vectors recorded through the genuine strict reply codec
   (`decode_reply_v4` then `encode_reply_v4`, never string-patched):

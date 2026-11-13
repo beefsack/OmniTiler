@@ -462,8 +462,6 @@ export const SETTINGS_KEY_ORDER: ReadonlyArray<string> = [
     "sameAxis",
     "bornMaximized",
     "predicate",
-    "anchorFallback",
-    "noSpaceResult",
     "refill",
     "switchTarget",
     "freshPlacement",

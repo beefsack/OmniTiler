@@ -1,13 +1,187 @@
 # C9 product evidence
 
-- Status: evidence awaiting user decisions, 2026-11-12; no new behavior selected.
-- Goal: prepare the two admission settings, then small related batches of OPEN requirements, for decisions toward 0.1 Tier 1 compatibility and core/protocol correctness.
-- Scope: source research and records only. Existing decisions stand; missing decision "Why" entries are not backfilled.
-- Acceptance/evidence: enumerate settings, affected routes, source-version-qualified comparisons, consequences and all OPEN rows; fully investigate only requirement batch 1. Native outcomes not established by source remain TBD.
+- Status: fixed-largest and fixed-float removals implemented and independently reviewed offline. Shared Rust, exporter and KDE TypeScript gates pass; isolated native build passes, with only the known pre-existing recovery-test failure (36/37 native tests pass). Native adoption and unrelated requirement choices remain open.
+- Goal: remove both capacity settings and their storage/UI/wire propagation, preserving ordinary-anchor-first then largest-splittable fallback and fixed float on exhaustion. Keep the remaining product evidence for subsequent decisions.
+- Scope: shared policy, settings surfaces, protocol witnesses and offline regressions. Preserve ordinary anchoring, B6 minimum handling, next-decision timing and `noSpace` result provenance. Retire selectable capacity overflow and proven-unreachable accepted-overlap machinery. Missing decision "Why" entries are not backfilled.
+- Acceptance/evidence: ordinary anchor wins when splittable; otherwise largest area descending, child-order DFS then lifetime ID. Removed input reports UnknownField without losing valid siblings; removed stored keys are not adopted. Retired alternate policies and controls disappear. Historical fixture families remain unchanged; active witnesses come from their real producers. Add before/after regression evidence, run shared Rust and KDE checks, and review the complete settings/policy diff. Native outcomes not established by source remain TBD.
+- Approach: bounded shared-core removal and regression; platform storage/UI removal; genuine active-witness regeneration; owning decision/contract updates; integrated checks and review.
 - Reading key: `C/` = `crates/tiler-core/src/`; `W/` = `crates/tiler-windows/src/`; `M/` = `crates/tiler-macos/src/`; `R/` = `docs/spec/reference-outcomes/`. Line citations describe the inspected revision `7a6d6e12`, not future locations.
 - Reference releases: i3 `4.25.1`, sway `1.12`, Hyprland `v0.57.2`, COSMIC `epoch-1.11.0`. Release/tag metadata checked 2026-11-12: i3/COSMIC remote tags, sway/Hyprland latest stable release metadata ([sway](https://github.com/swaywm/sway/releases/tag/1.12), [Hyprland](https://github.com/hyprwm/Hyprland/releases/tag/v0.57.2)). All four source clones were available; source read at tags, not working-tree versions. [Reference authority](../decisions/reference-and-shortcuts.md#reference-outcome-authority) requires latest stable, but its example Hyprland/COSMIC versions are stale; those examples are not a fixed-pin exemption.
 
-## Part 1: admission settings (two-item decision batch)
+## Fixed-largest implementation
+
+- Removed `AnchorFallback`, closest-relative/no-search branches, Engine/Session
+  policy storage and propagation, catalog/options and Settings key ordering.
+  `session/capacity.rs` retains ordinary-first strict+hinted admission followed
+  by area/DFS/lifetime ranking. No-space, overlap retention, minimum handling,
+  named-send destination scope and exact-target R4/drag rules are unchanged.
+- Removed KDE XML/descriptors/control/read/write/normalization and Windows
+  schema/validation/catalog/control/logging plumbing. KDE never reads or
+  rewrites the old stored key; Windows serde ignores it and drops it when
+  saving. Existing removed-key handling is used, without aliases or migration.
+  KDE artifacts were regenerated with `cargo run -p tiler-kde-settings-exporter`
+  and its `--check` verified them. Native Qt/C++, Windows and macOS builds and
+  native consumption are not established by the offline checks.
+- Two added regressions failed before removal: SettingsState treated removed
+  `anchorFallback` as known, and the world admission test obeyed its no-search
+  value. After removal, valid siblings survive with unknown-field diagnostics
+  and the world uses fixed largest fallback. The normal full Rust suite passed
+  3377 tests, zero failures/ignored, one filtered. Existing largest/tie and
+  no-space/overlap coverage remains; Windows saved-key and KDE unread/unwritten
+  key regressions were added (native Windows/Qt tests unrun).
+- Frozen `world-wire/v4`, `stage5`, and existing `stage5-v4` remain unchanged.
+  Active world-wire Settings previously inherited five frozen messages; its
+  manifest now points to five new active messages. The explicit typed
+  [Settings recorder](../../crates/tiler-protocol/tests/connection_settings_v4_record.rs)
+  constructs intended requests and uses `encode_settings`, including deliberate
+  invalid/unknown-field cases. Removed-key behavior is separately covered by
+  core unit/world tests. Normal mode verifies fresh bytes; explicit recording
+  uses `UPDATE_SETTINGS_V4_FIXTURES=1` with the full Rust suite.
+- An initial read/delete-key/re-encode writer and whole-document reserialization
+  were rejected and replaced by that typed recorder. The ten scenario diffs now
+  remove only 21 Settings lines; three eval JSONL lines change only Settings
+  payloads, with surrounding formatting/key order restored. Manifest differences
+  are five active pointers plus retired schema/coverage metadata; README records
+  provenance and invocation. The new messages use compact canonical bytes.
+- Existing genuine KDE byte/migration and stage5 recorder routes refreshed the
+  active families. KDE changes only remove the setting; stage5 also carries
+  genuine volatile generation/source identities, with replay reading the recorded
+  manifest generation. No unrelated key-order churn remains.
+- Final offline gates passed: `cargo fmt --all -- --check`;
+  `cargo build -p tiler-core -p tiler-protocol -p omnitiler --all-targets`;
+  `cargo clippy -p tiler-core -p tiler-protocol -p omnitiler --all-targets -- -D warnings`;
+  `cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture`
+  (3377 passed, zero failed/ignored, one filtered); in `kwin/`, `npm run typecheck`
+  and `npm test` (1302 passed, zero failed/skipped, 191 suites). Independent
+  complete-diff review found no functional defects; its informational fallback
+  terminology comment was clarified. Native build/runtime gaps remain as above.
+- [D2 and D10](../decisions/layout-and-admission.md#best-effort-admission-fallback)
+  explicitly supersede their old alternatives/exposure. Native adoption still
+  needs fixed-fallback exhaustion, removed controls/keys and valid no-space
+  behavior checked on each platform; reference/native outcomes below stay TBD.
+
+## Native build repair and KDE follow-up (2026-11-13)
+
+- The removed control left 15 exposed KDE fields, but the generator, generated
+  header, native descriptor test and static KCM test still asserted 16. Corrected
+  those assertions, regenerated through the exporter and passed its `--check`
+  and 14 unit tests. Shifted the remaining warning row to close the UI grid gap.
+  Independent review found no blocking count, index or layout issue.
+- An isolated host-matched native build succeeds, including both settings
+  modules. Native tests report 36 passed and one pre-existing failure, not a
+  passing full native gate. The recovery test consumes unchanged `stage5-v2`
+  fixtures: `347af034` advanced covering revisions from 5/8 to 6/9 without
+  updating its three hardcoded fence assertions. It does not consume the newly
+  recorded `stage5-v4-active` family; that unrelated test was left unchanged.
+- The preloaded border branch of `just dev` skips the native build, leaving the
+  existing staged settings modules stale. This isolated build did not replace
+  them or reload the mapped border library. A fresh out-of-process KCM can use
+  the rebuilt config plugins through an isolated plugin path; ordinary staged
+  use requires an explicit native build and a fresh settings process. Refreshing
+  the mapped border library still requires a new desktop session.
+- Live largest-fallback admission passes with fixture-only windows: successive
+  nested admissions exhaust the focused anchor's planned tile to one pixel on
+  its split axis. The next admission splits the largest remaining tile while
+  the exhausted anchor stays unchanged. Native PID/title/UUID/frame joins,
+  production requested-frame traces and before/after presentations agree.
+  Client minimum clamping is observed separately; minimum hints alone were not
+  treated as proof that an anchor cannot split.
+- Rebuilt settings-page load/absent-control inspection and no-space Apply are
+  NOT RUN. Native offscreen KCM tests verify control absence and retained
+  no-space save behavior in private test configuration, not live page adoption.
+  Manual acceptance remains: inspect the rebuilt page, confirm the anchor
+  control is absent, then exercise no-space Apply and next-admission timing.
+- Follow-up format, all-target build and strict clippy pass for core, protocol,
+  CLI and exporter. The permitted Rust suite reports 3377 passed, zero failed
+  or ignored, one filtered; KDE typecheck and 1302 tests across 191 suites pass.
+  The [shared live follow-up](core-platform-switch-evidence.md#kde-follow-up-2026-11-13)
+  records readiness, helper-evidence qualifications and remaining native gaps.
+
+## Fixed-float implementation
+
+- User 2026-11-13 fixes geometric exhaustion to float and removes
+  `admission.no-space` / `noSpaceResult`, not the diagnostic `noSpace` result.
+  Shared enum/catalog/typed state, Engine/Session propagation and selection
+  branches are removed. Admission preserves opening frame; D7 repair floats
+  the shortest newest-first eligible victim prefix, preserving last live frame,
+  protected members and native focus. Ordinary anchoring, fixed-largest
+  fallback, minimum settlement and next-decision-only timing remain.
+- KDE XML/descriptors are generated through the exporter, with all exposed-field
+  assertions reduced from 15 to 14 and the remaining UI rows closed up. KCM and
+  live acquisition neither read nor write the retired stored key. Windows
+  schema/validation/control/acquisition edits are mechanical and uncompiled:
+  unknown stored fields are ignored and omitted on save, removed controls no
+  longer offer overlap, and removed adoption logging no longer claims pickup.
+  macOS has no setting surface to remove; shared-core admission and repair now
+  target fixed float there too. No native runtime acceptance is claimed.
+- Against saved pre-removal production, the identical final three regressions
+  fail: removed-key unknown-field/valid siblings, exhausted admission with
+  retired `allow-overlap`, and newest-victim repair with retired `allow-overlap`.
+  The admission `float` iteration already passes that baseline. After removal
+  all three pass in the permitted full shared suite. The typed Settings recorder
+  and genuine KDE/stage5 producers refreshed only active fixture families;
+  immutable `world-wire/v4`, `stage5` and `stage5-v4` remain unchanged.
+- Removed selection-only tests cover enum/default/setter choices, overlap
+  admission/retention, send/focus/resize overlap and the R4 overlap arm; removed
+  `d9_overlap_golden.rs` tested only the retired projector. KDE reader/live-timing
+  overlap-alphabet tests and Windows no-space choice tests are removed rather
+  than skipped. The matrix retains float discriminators and explicitly retires
+  the overlap alternative; unsupported reference/native outcomes remain TBD.
+- Active fixture scope: five compact world-wire Settings messages, ten scenario
+  Settings payloads and three eval Settings lines lose only `noSpaceResult`;
+  manifest drops its enum coverage. KDE byte Settings and migration Settings
+  lose only the key. Stage5 full/s2 discovery Settings lose the key; genuine
+  source/request/clock/attempt nonces refresh, and top-level generations are
+  normalized as its README specifies. Dispatch/projection bytes change only
+  generation identity, not layout or behavior; no key-order churn.
+
+### Capacity-overlap route audit
+
+- Accepted-overlap state was generation-local `Session`/pending state, initialized
+  empty and never serialized or supplied by IntentStore, seed/report or Settings.
+  Only the removed selection produced a new mark; moves/pair sessions copied
+  existing marks. Native overlapping frames and B6 minimum overconstraint do not
+  produce this authority. Consequently no retained accepted allocation remains
+  reachable in this implementation; no further product choice is required.
+- Locations below identify the inspected pre-removal sources, not current lines.
+
+| Route | Pre-removal source | Reachability after selection removal / action |
+| --- | --- | --- |
+| Admission / explicit tile | `session/ops/lifecycle.rs:746,836,1140` | Only selected overlap produced marks; delete branch/mark and use fixed float |
+| Convergence / startup seed | `session/world.rs:1907,1934,2016` | Only selected overlap produced marks; delete branch, retain strict seed and D7 |
+| Send / deferred send | `session/ops/workspace.rs:323,379,489,624,670,773,1013` | Selection or copied mark only; delete overlap fallback/propagation, retain transfer fences |
+| Move / R4 | `session/ops/move.rs:302,330,345,347,482` | Selected overlap or already accepted mark only; delete, retain exact wrap and float fallback |
+| Focus | `session/ops/focus.rs:144,541`; `session/world.rs:1116` | Prior mark only; strict projection remains |
+| Orientation | `session/ops/toggle_orientation.rs:155` | Prior mark only; strict projection remains |
+| Drag | `session/ops/drag.rs:153,327,517,810,958,1053` | Prior mark only; strict preview/drop/snap-back gates remain |
+| Resize | `session/ops/resize.rs:154,215,557,618,941,1004` | Prior mark only; strict geometry and minimum handling remain |
+| Repair | `session/capacity.rs:411,414-436,508` | Selection-only producer/shelter removed; newest-first float repair and safety holds remain |
+| Boundary projection | `boundary.rs:826-843` | Prior mark only; strict projector remains |
+| Pair/pending state | `session.rs:1344,1357-1358,1614-1620` | Internal copies, no external ingress; remove marks and policy state |
+
+- With no producer or accepted-state ingress, positive-overflow helpers in
+  `geometry.rs` and `size_hints.rs` have no production callers and are deleted.
+  Invalid bounds/topology, unrepresentable native targets and protected impossible
+  remainders still hold rather than inventing rectangles.
+- Final integrated evidence: exporter generation/check and 14 tests pass (14
+  exposed fields); formatting, all-target build and strict clippy pass for core,
+  protocol, CLI and exporter. Exact full shared suite passes 3366 tests with
+  zero failures/ignored and one filtered unsafe-posture check; compliant typed
+  recording and normal verification both pass. KDE typecheck and 1297 tests in
+  189 suites pass. The count reductions remove retired alternatives, not skips.
+- Isolated host-matched native build succeeds including both settings modules;
+  all 37 native tests run, 36 pass and only the known pre-existing
+  `native-effect-stage5-recovery` failure remains (the unchanged assertions
+  described above). This is not a passing full native gate. No native runtime
+  acceptance or Windows/macOS build is claimed.
+- Independent complete-delta review found no blocking functional/safety issues;
+  strict projection/B6, invalid/unrepresentable/protected holds, removed-key
+  handling, every overlap-state ingress and fixture semantic stability were
+  checked. Native platform consumption remains unverified.
+
+## Part 1: admission settings (historical two-item decision evidence)
+
+- Selection: User 2026-11-12 removed anchor-fallback and fixed largest; User 2026-11-13 removed no-space and fixed float. The latter supersedes D3's overlap alternative, D7's selectable overlap retention, D9's capacity-overflow projection and D10's no-space exposure, preserving float placement/focus/provenance, victim ordering/protection, strict safety holds, B6 minima and next-decision timing. The tables below describe the inspected pre-removal revision unless stated otherwise.
 
 ### Meaning, defaults, authority and exposure
 
@@ -119,7 +293,7 @@
 
 ## Verification, limits and next decision
 
-- Verified by source reads, exact OPEN-status enumeration, tag-qualified local source inspection and docs diff/whitespace review. Inventory IDs exactly match all 28 OPEN rows; batch sizes are 4/3/4/4/3/4/3/3. New-note relative file links resolve, added matrix target exists, note is ASCII. A broader link check found pre-existing missing `docs/changes/retained-focus-requests.md` targets in the matrix (also present at the inspected base); those unrelated links are unchanged. No live outcomes or test-suite results are claimed. Investigation reports were checked against key source spans; over-broad "Tier 1 always tiles" and "COSMIC equals stable-first" claims were rejected.
+- Historical research verification: source reads, exact OPEN-status enumeration, tag-qualified local source inspection and docs diff/whitespace review. Inventory IDs exactly match all 28 OPEN rows; batch sizes are 4/3/4/4/3/4/3/3. New-note relative file links resolve, added matrix target exists, note is ASCII. A broader link check found pre-existing missing `docs/changes/retained-focus-requests.md` targets in the matrix (also present at the inspected base); those unrelated links are unchanged. Research alone claimed no live outcomes or test-suite results; implementation evidence is separate above. Investigation reports were checked against key source spans; over-broad "Tier 1 always tiles" and "COSMIC equals stable-first" claims were rejected.
 - C9 corrections: `core-v4-review.md:267-268` is accurate about absent reference citations, but not an absence of user authority; `:275` correctly counts 28 but incorrectly describes all as already implemented. Absent cycle/preselect/layout/column verbs and the explicitly parked LAY-04 contradict that characterization. Its 183-row total (`:265`) and the spec's draft total are also stale: current enumeration is 184 rows (155 literal NORMATIVE plus qualified-NORMATIVE REQ-OUT-05, 28 OPEN). This is not evidence that the remaining OPEN rows should automatically become normative. Separately, the source recheck contradicts R-FOC-02's historical Hyprland-retain claim in the explicit zero-gap variant; opposite-edge fallback is not a stay rule for a half-width A.
 - Unverified/TBD: exact tiny rectangles/client settlement on every WM; exact latest-tag COSMIC FOC-01 fixture, Hyprland shipped-gap FOC-02 and move reconstruction; native settings pickup/parity, especially Windows report defaults; later batches' latest-source checks. No source result here selects a new default or expands scope.
-- Next action: present the two admission settings as the first decision batch, using the value/option tables above; ask for one setting decision at a time. Then present requirement batch 1. Promote only explicit resulting selections; later batches stay inventoried and unselected.
+- Next action: native adoption of fixed-largest/fixed-float behavior. Requirement batches remain inventoried and unselected.

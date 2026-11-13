@@ -697,7 +697,7 @@ fn capacity_float_preserves_focus_like_ordinary_float() {
 
 #[test]
 fn pair_round_trip_preserves_capacity_order_globally() {
-    // Admission sequence, capacity origin, and overlap marks survive
+    // Admission sequence and capacity origin survive
     // pair assembly and split partitioned by homing (orphans to source).
     let d1 = domain("o", "ws-1", 1, 1, 0);
     let d2 = domain("o", "ws-2", 100, 100, 0);

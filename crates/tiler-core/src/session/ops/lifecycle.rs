@@ -378,7 +378,6 @@ impl super::super::Session {
                 capacity_floats: self.capacity_floats.clone(),
                 admission_order: self.admission_order.clone(),
                 admission_counter: self.admission_counter,
-                overlap_accepted: self.overlap_accepted.clone(),
             });
             return Ok(SessionPlan {
                 dispatch,
@@ -469,7 +468,6 @@ impl super::super::Session {
                 capacity_floats: self.capacity_floats.clone(),
                 admission_order: self.admission_order.clone(),
                 admission_counter: self.admission_counter,
-                overlap_accepted: self.overlap_accepted.clone(),
             });
             return Ok(SessionPlan {
                 dispatch,
@@ -525,7 +523,6 @@ impl super::super::Session {
         let leg = crate::session::capacity::plan_admission_leg(
             self.policy(),
             &self.group_alloc,
-            self.anchor_fallback,
             target_tree,
             domain_bounds,
             domain_gap,
@@ -684,8 +681,7 @@ impl super::super::Session {
         }
         // A successful tile clears capacity origin and records the
         // first-successful-tiled-admission sequence (moves and re-tiles
-        // keep the first number). Strict success clears any overlap
-        // acceptance for this domain.
+        // keep the first number).
         let mut desired_capacity = self.capacity_floats.clone();
         desired_capacity.remove(window);
         let mut desired_order = self.admission_order.clone();
@@ -694,8 +690,6 @@ impl super::super::Session {
             desired_order.insert(window.clone(), desired_counter);
             desired_counter = desired_counter.saturating_add(1);
         }
-        let mut desired_overlap = self.overlap_accepted.clone();
-        desired_overlap.remove(&key);
         self.pending_desired = Some(PendingDesired {
             trees: desired_trees.clone(),
             windows: desired_windows.clone(),
@@ -714,7 +708,6 @@ impl super::super::Session {
             capacity_floats: desired_capacity,
             admission_order: desired_order,
             admission_counter: desired_counter,
-            overlap_accepted: desired_overlap,
         });
         Ok(SessionPlan {
             dispatch,
@@ -726,143 +719,23 @@ impl super::super::Session {
     }
 
     /// Stage the D3 no-space result after ordinary and fallback anchors
-    /// exhaust: overlap-admit at the ordinary anchor under `allow-overlap`,
-    /// else a slotless capacity float at the native opening frame (D4).
+    /// exhaust: a slotless capacity float at the native opening frame (D4).
     #[allow(clippy::too_many_arguments)]
     pub(in crate::session) fn stage_no_space_admission(
         &mut self,
         window: &WindowId,
         output: &OutputId,
         workspace: &WorkspaceId,
-        key: DomainKey,
-        leaf_id: NodeId,
-        ordinary_tree: Option<Node>,
-        hints: &BTreeMap<WindowId, crate::size_hints::WindowSizeHints>,
+        _key: DomainKey,
+        _leaf_id: NodeId,
+        _ordinary_tree: Option<Node>,
+        _hints: &BTreeMap<WindowId, crate::size_hints::WindowSizeHints>,
         suppress_fixed_float: bool,
         entry: &ObservedWindow,
         session_observation: &SessionObservation,
         correlation_id: &CorrelationId,
         capabilities: &LifecycleCapabilities,
     ) -> Result<SessionPlan, ProposeError> {
-        if self.no_space == crate::admission::NoSpaceResult::AllowOverlap {
-            // Overlap keeps tiled membership at the ordinary anchor with
-            // positive overflowing geometry (D9); B6 minimum flags ride
-            // along unchanged.
-            let Some(candidate) = ordinary_tree else {
-                return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
-            };
-            let mut desired_windows = self.windows.clone();
-            desired_windows.insert(
-                window.clone(),
-                WindowLink {
-                    window: window.clone(),
-                    leaf: leaf_id.clone(),
-                    output: output.clone(),
-                    workspace: workspace.clone(),
-                },
-            );
-            let domain = self.domain_for(output, workspace);
-            let desired_geometry = match domain {
-                Some(domain) => crate::session::capacity::project_domain_overlap(
-                    domain,
-                    &candidate,
-                    &desired_windows,
-                    &key,
-                    hints,
-                ),
-                None => None,
-            };
-            let Some(desired_geometry) = desired_geometry else {
-                return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
-            };
-            if desired_geometry.is_empty() {
-                return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
-            }
-            let mut desired_trees = self.trees.clone();
-            desired_trees.insert(key.clone(), Some(candidate));
-            let desired_snapshot = self.snapshot_for(&desired_trees, &desired_windows);
-            if !validate_topology(
-                &self.domains,
-                &desired_trees,
-                &desired_windows,
-                &self.exceptions,
-                &Some(key.clone()),
-                &Some(leaf_id.clone()),
-            ) {
-                return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
-            }
-            let intent = LifecycleIntent::Admit {
-                window: window.clone(),
-                output: output.clone(),
-                workspace: workspace.clone(),
-            };
-            let operation = LifecycleOperation::Admit {
-                window: window.clone(),
-                leaf: leaf_id.clone(),
-                output: output.clone(),
-                workspace: workspace.clone(),
-            };
-            let plan = LifecyclePlan::for_operation(intent, operation);
-            let dispatch = match self.reconciler.propose_lifecycle(
-                &plan,
-                &session_observation.observation,
-                correlation_id,
-                capabilities,
-            ) {
-                Ok(dispatch) => dispatch,
-                Err(crate::reconcile::ProposeError::PendingExists) => {
-                    return Err(ProposeError::PendingExists);
-                }
-                Err(crate::reconcile::ProposeError::Diverged(reason)) => {
-                    self.pending_desired = None;
-                    self.drag = None;
-                    return Err(ProposeError::Diverged(reason));
-                }
-            };
-            let mut desired_override = self.fixed_tile_override.clone();
-            let mut desired_automatic = self.automatic_fixed.clone();
-            if suppress_fixed_float || (self.fixed_admission && entry.fixed_suppress) {
-                desired_override.insert(window.clone());
-                desired_automatic.remove(window);
-            }
-            let mut desired_capacity = self.capacity_floats.clone();
-            desired_capacity.remove(window);
-            let mut desired_order = self.admission_order.clone();
-            let mut desired_counter = self.admission_counter;
-            if !desired_order.contains_key(window) {
-                desired_order.insert(window.clone(), desired_counter);
-                desired_counter = desired_counter.saturating_add(1);
-            }
-            let mut desired_overlap = self.overlap_accepted.clone();
-            desired_overlap.insert(key.clone());
-            self.pending_desired = Some(PendingDesired {
-                trees: desired_trees.clone(),
-                windows: desired_windows.clone(),
-                focused_domain: Some(key.clone()),
-                focused_leaf: Some(leaf_id.clone()),
-                last_active: self.updated_last_active(
-                    &Some(key.clone()),
-                    &Some(leaf_id.clone()),
-                    &desired_trees,
-                    &desired_windows,
-                ),
-                exceptions: self.exceptions.clone(),
-                retained_float_geometry: self.retained_float_geometry.clone(),
-                automatic_fixed: desired_automatic,
-                fixed_tile_override: desired_override,
-                capacity_floats: desired_capacity,
-                admission_order: desired_order,
-                admission_counter: desired_counter,
-                overlap_accepted: desired_overlap,
-            });
-            return Ok(SessionPlan {
-                dispatch,
-                desired_snapshot,
-                desired_focus_domain: Some(key),
-                desired_focus_leaf: Some(leaf_id),
-                desired_geometry,
-            });
-        }
         // Capacity float (D4): slotless membership with diagnostic-only
         // capacity origin, distinct from automatic fixed. No tile slot,
         // no allocation or frame authority: the adapter keeps the native
@@ -942,7 +815,6 @@ impl super::super::Session {
             capacity_floats: desired_capacity,
             admission_order: self.admission_order.clone(),
             admission_counter: self.admission_counter,
-            overlap_accepted: self.overlap_accepted.clone(),
         });
         Ok(SessionPlan {
             dispatch,
@@ -1049,7 +921,6 @@ impl super::super::Session {
                 capacity_floats: self.capacity_floats.clone(),
                 admission_order: self.admission_order.clone(),
                 admission_counter: self.admission_counter,
-                overlap_accepted: self.overlap_accepted.clone(),
             });
             return Ok(SessionPlan {
                 dispatch,
@@ -1130,26 +1001,19 @@ impl super::super::Session {
             return Err(ProposeError::Refused(RefusalKind::Unchanged));
         }
         // Complete desired geometry for the affected domain when tiled leaves
-        // remain; empty when the domain is now empty. Overlap-accepted
-        // domains (or overlap mode) keep projecting through the D9 gate
-        // so closes never refuse on retained overflow.
+        // remain; empty when the domain is now empty.
         let desired_geometry = match (
             self.domain_for(&key.output, &key.workspace),
             new_target.as_ref(),
         ) {
-            (Some(domain), Some(tree)) => {
-                let allow_overlap = self.no_space == crate::admission::NoSpaceResult::AllowOverlap
-                    || self.overlap_accepted.contains(&key);
-                crate::session::capacity::project_domain_geometry(
-                    domain,
-                    tree,
-                    &desired_windows,
-                    &key,
-                    &hints_from_observed(&session_observation.windows),
-                    allow_overlap,
-                )
-                .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?
-            }
+            (Some(domain), Some(tree)) => crate::session::capacity::project_domain_geometry(
+                domain,
+                tree,
+                &desired_windows,
+                &key,
+                &hints_from_observed(&session_observation.windows),
+            )
+            .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?,
             _ => Vec::new(),
         };
         let intent = LifecycleIntent::Remove {
@@ -1196,7 +1060,6 @@ impl super::super::Session {
             capacity_floats: self.capacity_floats.clone(),
             admission_order: self.admission_order.clone(),
             admission_counter: self.admission_counter,
-            overlap_accepted: self.overlap_accepted.clone(),
         });
         Ok(SessionPlan {
             dispatch,

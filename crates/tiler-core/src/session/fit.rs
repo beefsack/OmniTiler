@@ -186,7 +186,6 @@ impl super::Session {
             capacity_floats: self.capacity_floats.clone(),
             admission_order: fitted_order,
             admission_counter: fitted_counter,
-            overlap_accepted: self.overlap_accepted.clone(),
         });
         Ok(SessionPlan {
             dispatch,

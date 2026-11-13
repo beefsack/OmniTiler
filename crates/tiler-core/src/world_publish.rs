@@ -165,7 +165,7 @@ impl WorldEngine {
     /// projection or `seed-failed` from the seed build
     /// (`Session::new` inputs are pre-validated, so only the geometric
     /// admit steps can still fail there). Best-effort admission (D2/D3/D7,
-    /// selected 2026-10-17) floats or overlap-admits ordinary geometric
+    /// selected 2026-10-17) floats ordinary geometric
     /// exhaustion before this classifier runs, so a surviving hold here
     /// means a protected remainder (overlays, explicit fixed-tile wins,
     /// unsafe or excluded members), nonpositive usable area, or invalid

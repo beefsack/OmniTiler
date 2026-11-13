@@ -13,24 +13,22 @@ use crate::settings::{
 };
 
 use super::choice::{
-    anchor_fallback_selected, apply_anchor_fallback_selection, apply_born_maximized_selection,
-    apply_fixed_size_selection, apply_fresh_placement_selection, apply_migration_refill_selection,
-    apply_no_space_selection, apply_same_axis_selection, apply_switch_target_selection,
+    apply_born_maximized_selection, apply_fixed_size_selection, apply_fresh_placement_selection,
+    apply_migration_refill_selection, apply_same_axis_selection, apply_switch_target_selection,
     apply_workspace_mode_selection, born_overlay_selected, fixed_size_either_selected,
-    fresh_placement_selected, migration_refill_mru_selected, no_space_overlap_selected,
-    same_axis_swap_selected, switch_focused_selected, workspace_mode_selected,
+    fresh_placement_selected, migration_refill_mru_selected, same_axis_swap_selected,
+    switch_focused_selected, workspace_mode_selected,
 };
 use super::ctl::{checked, enable, get_text, set_checked, set_text};
 use super::dialogs::{DiscardEnd, PreviewEnd};
 use super::info::refresh_list;
 use super::{App, status};
 use super::{
-    ID_ALLOW_WIN_L, ID_ANCHOR_CLOSEST, ID_ANCHOR_LARGEST, ID_ANCHOR_NO_SEARCH, ID_APPLY,
-    ID_BIND_CHORD, ID_BORDER_COLOR, ID_BORDER_ENABLED, ID_BORDER_GAP, ID_BORDER_RADIUS,
-    ID_BORDER_THEME, ID_BORDER_WIDTH, ID_BORN_MAX_OVERLAY, ID_BORN_MAX_TILE, ID_CURSOR_WARP,
-    ID_DEFAULT_FLOATING, ID_DEFAULT_TILED, ID_FIXED_SIZE_BOTH, ID_FIXED_SIZE_EITHER,
-    ID_FOCUS_FOLLOWS, ID_INNER_GAP, ID_KEYBOARD_TAKEOVER, ID_MIGRATION_REFILL_LAST,
-    ID_MIGRATION_REFILL_MRU, ID_MOUSE_SNAP, ID_NO_SPACE_FLOAT, ID_NO_SPACE_OVERLAP, ID_OUTER_GAP,
+    ID_ALLOW_WIN_L, ID_APPLY, ID_BIND_CHORD, ID_BORDER_COLOR, ID_BORDER_ENABLED, ID_BORDER_GAP,
+    ID_BORDER_RADIUS, ID_BORDER_THEME, ID_BORDER_WIDTH, ID_BORN_MAX_OVERLAY, ID_BORN_MAX_TILE,
+    ID_CURSOR_WARP, ID_DEFAULT_FLOATING, ID_DEFAULT_TILED, ID_FIXED_SIZE_BOTH,
+    ID_FIXED_SIZE_EITHER, ID_FOCUS_FOLLOWS, ID_INNER_GAP, ID_KEYBOARD_TAKEOVER,
+    ID_MIGRATION_REFILL_LAST, ID_MIGRATION_REFILL_MRU, ID_MOUSE_SNAP, ID_OUTER_GAP,
     ID_PAGER_HIGHLIGHT_COLOR, ID_PAGER_HIGHLIGHT_THEME, ID_PLACE_CURSOR_CLOSEST,
     ID_PLACE_CURSOR_MRU, ID_PLACE_FOCUSED_MRU, ID_SAME_AXIS_GROUP, ID_SAME_AXIS_SWAP,
     ID_SWITCH_CURSOR, ID_SWITCH_FOCUSED, ID_TASKBAR_PAGER, ID_UNDERLAY_COLOR, ID_UNDERLAY_ENABLED,
@@ -94,19 +92,6 @@ pub(super) fn refresh_all(app: &mut App) {
     let mru = migration_refill_mru_selected(&app.work);
     set_checked(app.ctl(ID_MIGRATION_REFILL_LAST), !mru);
     set_checked(app.ctl(ID_MIGRATION_REFILL_MRU), mru);
-    // Best-effort admission D2 three-choice control: same
-    // functional-labels-only rule; its own WS_GROUP triple below keeps it
-    // independent from every pair above.
-    let anchor = anchor_fallback_selected(&app.work);
-    set_checked(app.ctl(ID_ANCHOR_LARGEST), anchor == 0);
-    set_checked(app.ctl(ID_ANCHOR_CLOSEST), anchor == 1);
-    set_checked(app.ctl(ID_ANCHOR_NO_SEARCH), anchor == 2);
-    // Best-effort admission D3 two-choice control: same
-    // functional-labels-only rule; its own WS_GROUP pair below keeps it
-    // independent from every control above.
-    let overlap = no_space_overlap_selected(&app.work);
-    set_checked(app.ctl(ID_NO_SPACE_FLOAT), !overlap);
-    set_checked(app.ctl(ID_NO_SPACE_OVERLAP), overlap);
     // Stage 2c two-choice control: cursor output versus the focused
     // window's output for numbered/relative/previous/trailing selections.
     // Same functional-labels-only rule; its own WS_GROUP pair below keeps
@@ -240,23 +225,6 @@ pub(super) fn collect_draft(app: &mut App) -> Result<Settings, String> {
     // otherwise the exact last-remaining token; only these two values can
     // reach validation.
     apply_migration_refill_selection(&mut draft, checked(app.ctl(ID_MIGRATION_REFILL_MRU)));
-    // Best-effort admission D2: the closest radio stages the exact
-    // closest token, the no-search radio the exact no-search token,
-    // otherwise the exact largest token; only these three values can reach
-    // validation. The choice saves immediately but takes effect on
-    // subsequent capacity decisions only (D10).
-    let anchor_index = if checked(app.ctl(ID_ANCHOR_CLOSEST)) {
-        1
-    } else if checked(app.ctl(ID_ANCHOR_NO_SEARCH)) {
-        2
-    } else {
-        0
-    };
-    apply_anchor_fallback_selection(&mut draft, anchor_index);
-    // Best-effort admission D3: the overlap radio stages the exact
-    // allow-overlap token, otherwise the exact float token; only these two
-    // values can reach validation. Same subsequent-decisions-only timing.
-    apply_no_space_selection(&mut draft, checked(app.ctl(ID_NO_SPACE_OVERLAP)));
     // Stage 2c: the focused radio stages the exact focused-output token,
     // otherwise the exact cursor-output token; only these two values can
     // reach validation. The choice saves immediately but takes effect on
