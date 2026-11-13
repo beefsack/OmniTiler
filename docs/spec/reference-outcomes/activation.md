@@ -186,10 +186,19 @@ sandboxed route exposes the workspace-level marker only.
   `WState::Urgent`; `set_focus`/`update_active` write focus state
   only, and the sole `Urgent` removal runs on workspace switch
   (`self.active != idx`).
+  Latest recheck: COSMIC `epoch-1.11.0`
+  `src/wayland/handlers/xdg_activation.rs:72-78,124-130`,
+  `src/shell/focus/mod.rs:199-225,285-335`, `src/shell/mod.rs:557-562`.
+  This is workspace urgency, not a per-window native hint. Native result TBD.
   `S(S-cos-act)` + `S(S-cos-actclear)`.
 - Then Hyprland/Dwindle: B marked urgent without stealing focus;
   focusing B clears the hint. `activate()` marks unconditionally
   while focus stays gated, and taking focus strips the urgent bit.
+  Latest recheck: Hyprland `v0.57.2`
+  `src/desktop/view/window/Window.cpp:815-834`,
+  `src/desktop/state/FocusState.cpp:213-214`,
+  `src/config/values/ConfigValues.cpp:584` (focus-on-activate default false).
+  Native result TBD.
   `S(S-hyp-act)`.
 - Then bspwm: B flagged urgent without stealing focus; focusing B
   clears the flag. Hint urgency sets the client flag, and the focus
@@ -199,6 +208,9 @@ sandboxed route exposes the workspace-level marker only.
   clears the leaf, parents, and workspace flags. Demand-attention
   messages and hidden-requester policy set urgency; the focus path
   resets leaf urgency.
+  Latest recheck: i3 `4.25.1 src/handlers.c:695-704`,
+  `src/con.c:250-274,2424-2460`. Focus clears the leaf and recomputes
+  aggregate markers, not unrelated urgent siblings. Native result TBD.
   `S(S-i3-act)`.
 - Then xmonad/Tall+Navigation2D: no native urgency marker is set;
   user focus is ordinary focus with nothing to clear. Core reads
@@ -215,6 +227,11 @@ sandboxed route exposes the workspace-level marker only.
   the focus arrives with a workspace switch). Shipped
   `focus_on_window_activation=urgent` marks; the seat focus path
   unsets or arms the timer.
+  Latest recheck: sway `1.12 sway/xdg_activation_v1.c:50-52`,
+  `sway/tree/view.c:509-513,1205-1229`,
+  `sway/input/seat.c:1091-1094,1223-1241`, `sway/config.c:256-257`.
+  The same-workspace row clears immediately; cross-workspace timeout is a
+  separate variant, not evidence for adding an OmniTiler timer. Native result TBD.
   `S(S-sway-act)`.
 - Then qtile/Columns: B marked urgent without stealing focus;
   focusing B clears the hint and strips `_NET_WM_STATE_DEMANDS_ATTENTION`.
@@ -263,4 +280,9 @@ sandboxed route exposes the workspace-level marker only.
   focus-time clear remain TBD; no product observer/marker path
   ([record](../../changes/archive/windows-d27-activation-verification.md)).
   `S(S-ours-act)`; queued.
-- Variant hook: provisional/TBD (urgency hook, to discuss).
+- Scope decision: product-owned urgency mark/clear is deferred beyond 0.1,
+  decided under the standing Tier 1 alignment rule (User 2026-11-13), preserving
+  [native-only urgency until indicator work](../../decisions/activation-requests.md#urgency-markclear-scope).
+  No product marker or clear-on-focus policy is introduced; the reference
+  majority supports clear-on-focus if this is later implemented, not a claim
+  of current native parity. Ours native visible mark/clear remains TBD.

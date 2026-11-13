@@ -27,3 +27,10 @@
 - Assumes / revisit if: KDE D27 is verification-only, no longer blocked; source trace complete but native outcomes TBD. Real-game must-pass covers active/idle/paused play; expectation is not evidence. Reopen only if real switch-away during active play observed.
 - Status: active, 2026-10-13
 - Evidence: [KWin D27 trace](../research/d27-kwin-activation-trace.md), [activation requirement](../spec/functional-spec.md#activation).
+
+### Urgency mark/clear scope
+- Decision (REQ-ACT-02): product-owned urgency mark/clear is deferred beyond 0.1, decided under the standing Tier 1 alignment rule (User 2026-11-13). No urgency state, wire fields, UI or native mark/clear override is added for 0.1. Preserve KDE native activation ownership and the earlier Windows native-only behavior until the planned indicator; that indicator's cleared-on-visit decision is unchanged.
+- Why: existing post-0.1 triage and urgency-presentation decisions already leave this native. Latest Hyprland, i3 and sway clear per-window urgency on focus, while COSMIC retains workspace urgency on same-workspace focus; these are evidence for later product behavior, not a reason to invent a currently absent marker or claim native parity.
+- Boundary: the deferral is normative; future product marker lifetime and clear timing remain unselected. This does not defer, amend or claim completion of REQ-ACT-01. No new assumption or setting is adopted.
+- Status: active scope decision, 2026-11-13; no runtime change. Native visible mark/clear journeys remain TBD on all adapters.
+- Evidence: [R-ACT-02](../spec/reference-outcomes/activation.md#r-act-02-urgency-marker-set-then-user-focuses-the-window), [existing urgency presentation](#urgency-presentation-and-future-setting), [0.1 triage](../research/release-0.1-triage.md), [batch 2](../changes/c9-product-evidence.md#requirement-batch-2-focus-and-attention-2026-11-13).

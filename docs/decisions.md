@@ -59,12 +59,12 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 
 ## Topics
 
-- [Activation requests](decisions/activation-requests.md): activation intent, urgency and host-specific exceptions.
+- [Activation requests](decisions/activation-requests.md): activation intent, urgency (product mark/clear deferred beyond 0.1) and host-specific exceptions.
 - [Commands](decisions/commands.md): workspace-tiling intent, undelayed command dispatch and the single ordered report ingress.
 - [Contract](decisions/contract.md): shared core/platform contract, capabilities, persistence and cross-platform wire decisions. <a id="contract"></a>
 - [Development](decisions/development.md): project identity, licensing, tooling and development entry points.
 - [Engine](decisions/engine.md): portable world ownership, convergence, operation policy and KDE route boundaries.
-- [Focus](decisions/focus.md): automatic-focus guards, the retained focus request, the empty execution subject, workspace memory and directional focus.
+- [Focus](decisions/focus.md): automatic-focus guards, the retained focus request, the empty execution subject, workspace memory, directional focus and the unresolved cycle/container scope.
 - [Gaming](decisions/gaming.md): game membership, anti-cheat limits and pause/release policy. <a id="anti-cheat-mechanism-limits"></a>
 - [KDE](decisions/kde.md): KDE support, packaging, Planner lifecycle and live-evidence boundary.
 - [Layout and admission](decisions/layout-and-admission.md): placement, admission, movement, output selection and native workspace adoption.

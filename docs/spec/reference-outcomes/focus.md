@@ -143,6 +143,8 @@ assertions are never evidence.
 
 - Given (tree profiles): `H[A,B,C]` with B focused (history A,C,B
   establishes it). Fresh float-variant leg: same plus ordinary F.
+  For the creation-order cycle, create A,B,C (then F) in that order;
+  current tree order alone does not prove creation order.
   No shell switcher (external Alt+Tab stays R-WS-07).
 - Given (column profiles): three single-window columns/strip order
   A,B,C with B focused; fresh float-variant leg adds ordinary F.
@@ -165,13 +167,20 @@ assertions are never evidence.
   float inclusion (float-variant leg: F in-cycle vs excluded).
 - Then COSMIC: no-counterpart (shipped `Focus` verbs are
   directional plus In/Out only; the switcher is an external System
-  command). `S(S-cos-focuskeys)` + `S(S-cos-sysact)`.
+  command). Latest recheck: COSMIC `epoch-1.11.0`
+  `data/keybindings.ron:9-18,109-112`, `src/input/actions.rs:746-757`.
+  `S(S-cos-focuskeys)` + `S(S-cos-sysact)`.
 - Then Hyprland/Dwindle: next C from B, previous back to B
   (reversible); edge next-from-C wraps to A and previous-from-A wraps to
   C (two-sided wrap in creation order A,B,C on the same workspace);
   ordinary F is in-cycle (no float filter on this path) while hidden
   windows are excluded (mapped gate). Previous runs the same verb with
-  the direction bool flipped. `S(S-hyp-focus)`.
+  the direction bool flipped. Latest recheck: Hyprland `v0.57.2`
+  `src/config/shared/actions/ConfigActions.cpp:1759-1804`,
+  `src/desktop/state/WindowQuery.cpp:278-291,310-314`,
+  `src/desktop/state/WindowState.cpp:14-20`. Creation order is an explicit
+  fixture precondition, not inferred from current tree order. Native result TBD.
+  `S(S-hyp-focus)`.
 - Then bspwm: TBD (F: the flat 3-child H fixture records no binary
   embedding, and the two ordered embeddings diverge on the B-origin
   legs: bare `next|prev` walks every node in order with match-all, so
@@ -184,7 +193,12 @@ assertions are never evidence.
   so the walk includes it (in-cycle); only the B-origin internal
   endpoints need the unrecorded embedding). `S(S-bsp-cycle)`; queued.
 - Then i3: next C, previous B; edges wrap C-to-A and A-to-C; F excluded
-  from the tiled walk. `S(S-i3-focusnext)` + `S(S-i3-flt-focus)`.
+  from the tiled walk. Latest recheck: i3 `4.25.1`
+  `src/commands.c:1290-1357`, `src/tree.c:503-577,593-629`,
+  `src/config.c:229`. `next|prev` maps to a direction on the parent's
+  orientation, not a global DFS cycle; the separate `sibling` variant
+  restricts scope. These flat-fixture endpoints do not establish nested
+  reversibility. Native result TBD. `S(S-i3-focusnext)` + `S(S-i3-flt-focus)`.
 - Then xmonad/Tall+Navigation2D: stack-order cycle (next C, previous
   back to B; documented wrapping covers the edge leg); float-variant F
   stays in the Stack (`float`/`sink` are floating-map writes only), so
@@ -192,7 +206,11 @@ assertions are never evidence.
   excluded). `S(S-xmo-core-nav)` + `S(S-xmo-float)`.
 - Then sway: next C, then previous back to B (reversible); edge leg
   next-from-C wraps to A and previous-from-A wraps to C; F excluded,
-  same legs. `S(S-sway-focusnext)` + `S(S-sway-focus)`.
+  same legs. Latest recheck: sway `1.12`
+  `sway/commands/focus.c:17-59,138-224,423-474`, `sway/config.c:274`.
+  Like i3, the parent orientation supplies the direction; the tiled walk
+  climbs at an edge and descends to the inactive focused view. This is not
+  a global DFS cycle. Native result TBD. `S(S-sway-focusnext)` + `S(S-sway-focus)`.
 - Then qtile/Columns: next C, previous B; edges wrap C-to-A and A-to-C
   across columns; F excluded from these tiled verbs. `S(S-qti-focus)`.
 - Then awesome/tile: Given-prepared native tiled order A,B,C (A master, B/C stacked per the row Given; manage prepends newcomers first but no admission runs in this row, so the prepared order controls while focus history A,C,B only selects B* focus) cycled by index via `client.next` over visible clients with the focus filter (`focus.byidx(1)`/`(-1)`; shipped index keys): next C from B, previous back to B (reversible); edge next-from-C wraps to A and previous-from-A wraps to C via `gmath.cycle`; ordinary float F passes `focus.filter` (normal focusable, not desktop/dock/splash) so the same verbs include F (in-cycle, not excluded). `S(S-awe-cycle)` + `S(S-awe-tile)` + `S(S-awe-manage)` + `S(S-awe-focus)` + `S(S-awe-keys)` + `S(S-awe-hist)`.
@@ -212,6 +230,10 @@ assertions are never evidence.
   Engine. `S(S-ours-focus)`.
 - Variant hook: provisional/TBD (cycle-order hook, to discuss).
 
+| Nested-order discriminator | Minimal action sequence | Source mechanics / remaining evidence |
+| --- | --- | --- |
+| Parent-orientation walk versus creation-order cycle | Single output, ordinary tiled `H[V[A,B*],C]`; create A,B,C in that order, establish history A,C,B; next, then previous without reset | Hyprland `v0.57.2` uses creation order (`WindowQuery.cpp:310-314`, full path above), whereas i3 `4.25.1 src/commands.c:1305-1315` and sway `1.12 sway/commands/focus.c:17-59` derive a direction from B's parent. Exact nested endpoints/native reversibility remain TBD; flat H[A,B,C] alone cannot select general cycle order. COSMIC `epoch-1.11.0` has no counterpart on the inspected action surface. No OmniTiler cycle is selected; see [batch 2](../../changes/c9-product-evidence.md#requirement-batch-2-focus-and-attention-2026-11-13) |
+
 ### R-FOC-04: parent/child focus scope
 
 - Given (tree profiles): `H[V[A,B*],C]`, leaf B focused.
@@ -224,11 +246,16 @@ assertions are never evidence.
 - Observe: group focus scope and child selection vs
   leaf-only/no-counterpart. Does not duplicate tab stepping.
 - Then COSMIC: parent focuses the V group container; child returns to
-  B (remembered member, else first child). `S(S-cos-tilefocus)`.
+  B (remembered member, else first child). Latest recheck: COSMIC
+  `epoch-1.11.0 src/shell/layout/tiling/mod.rs:1856-1936`: Out constructs
+  a `WindowGroup` carrying the child stack; In pops it, falling back to
+  the first child if that child is gone. Native result TBD. `S(S-cos-tilefocus)`.
 - Then Hyprland/Dwindle: no-counterpart (focus verbs are directional,
   cycle, window, last/urgent and monitor only, with window-only targets;
   no parent/child container verb in the dispatcher or Lua focus
-  inventory). `S(S-hyp-focus)` + `S(S-hyp-switcher)`.
+  inventory). Latest recheck: Hyprland `v0.57.2`
+  `src/config/shared/actions/ConfigActions.hpp:50-85`; group-tab verbs
+  are not tree-container focus. `S(S-hyp-focus)` + `S(S-hyp-switcher)`.
 - Then bspwm: TBD (F: the parent leg resolves deterministically to the
   V container (`@/parent` PATH jump or unqualified `first_ancestor`
   selects V; focusing it stores the container with X input cleared to
@@ -237,11 +264,15 @@ assertions are never evidence.
   branch and the source keeps no per-container remembered child).
   `S(S-bsp-cycle)`; queued.
 - Then i3: parent focuses V (`level_up`); child returns to B
-  (`level_down` to the focused descendant). `S(S-i3-focuslvl)`.
+  (`level_down` to the focused descendant). Latest recheck: i3 `4.25.1`
+  `src/commands.c:1401-1425`, `src/tree.c:386-430`: parent activation and
+  first focused child. Native result TBD. `S(S-i3-focuslvl)`.
 - Then xmonad/Tall+Navigation2D: no-counterpart (flat Tall, no
   container focus). `S(S-xmo-layout)`.
 - Then sway: parent focuses V; child returns to B (active tiling
-  child). `S(S-sway-focuslvl)`.
+  child). Latest recheck: sway `1.12 sway/commands/focus.c:339-362,416-421`:
+  parent node and seat's active tiling child. Native result TBD.
+  `S(S-sway-focuslvl)`.
 - Then qtile/Columns: no-counterpart (directional plus next/previous
   verbs and `toggle_split` only; no container-focus verb).
   `S(S-qti-focus)` + `S(S-qti-split)`.

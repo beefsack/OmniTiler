@@ -1,6 +1,6 @@
 # C9 product evidence
 
-- Status: fixed-largest and fixed-float removals implemented and independently reviewed offline. Shared Rust, exporter and KDE TypeScript gates pass; the native recovery fixture correction below closes the isolated native gate (37/37). Requirement batch 1 is decided User 2026-11-13, implemented and independently reviewed with all shared offline gates passing below. The scoped KDE batch-1 checks below establish both focus histories, explicit-command recency, closed-candidate fallthrough, swap and adjacent-output entry; hover, history-free fallback and literal single-output coverage remain open. Other native adoption and 24 requirement choices remain open.
+- Status: fixed-largest and fixed-float removals implemented and independently reviewed offline. Shared Rust, exporter and KDE TypeScript gates pass; the native recovery fixture correction below closes the isolated native gate (37/37). Requirement batch 1 is decided User 2026-11-13, implemented and independently reviewed with all shared offline gates passing below. The scoped KDE batch-1 checks below establish both focus histories, explicit-command recency, closed-candidate fallthrough, swap and adjacent-output entry; hover, history-free fallback and literal single-output coverage remain open. Batch 2 below records latest-release evidence, two unresolved implementation boundaries and one normative urgency deferral, with no runtime changes. Other native adoption and 23 requirement choices remain open.
 - Goal: remove both capacity settings and their storage/UI/wire propagation, preserving ordinary-anchor-first then largest-splittable fallback and fixed float on exhaustion. Keep the remaining product evidence for subsequent decisions.
 - Scope: shared policy, settings surfaces, protocol witnesses and offline regressions. Preserve ordinary anchoring, B6 minimum handling, next-decision timing and `noSpace` result provenance. Retire selectable capacity overflow and proven-unreachable accepted-overlap machinery. Missing decision "Why" entries are not backfilled.
 - Acceptance/evidence: ordinary anchor wins when splittable; otherwise largest area descending, child-order DFS then lifetime ID. Removed input reports UnknownField without losing valid siblings; removed stored keys are not adopted. Retired alternate policies and controls disappear. Historical fixture families remain unchanged; active witnesses come from their real producers. Add before/after regression evidence, run shared Rust and KDE checks, and review the complete settings/policy diff. Native outcomes not established by source remain TBD.
@@ -280,8 +280,8 @@
 
 ## Part 2: exact OPEN inventory
 
-- **24 requirement rows** have Status `OPEN` in `docs/spec/functional-spec.md` after batch 1's four User 2026-11-13 selections; the original inventory below had 28. Count is not every occurrence of OPEN (many normative rows have an open platform cell). No additional OPEN requirement IDs were found in the reference subfiles. The spec introduction now distinguishes selected R-MIN-04/R-INS-09 capacity/burst behavior from their still-unproved reference/native outcomes, and counts all 184 requirements (160 NORMATIVE including qualified REQ-OUT-05, 24 OPEN).
-- Table: spec citations use `F:` = `docs/spec/functional-spec.md` line. Reference citations use `R/` defined above and are existing revision-bound evidence, **not newly rechecked release evidence**, except batch 1 below. `Choice` means user product selection; `source` means further targeted latest-source work; `live` means user/native testing. "Absent" is bounded to inspected command/model surfaces, not a universal assertion about every adapter.
+- **23 requirement rows** have Status `OPEN` in `docs/spec/functional-spec.md` after batch 1's four User 2026-11-13 selections and batch 2's urgency deferral; the original inventory below had 28. Count is not every occurrence of OPEN (many normative rows have an open platform cell). No additional OPEN requirement IDs were found in the reference subfiles. The spec introduction distinguishes selected R-MIN-04/R-INS-09 capacity/burst behavior from their still-unproved reference/native outcomes, and counts all 184 requirements (161 NORMATIVE including qualified REQ-OUT-05, 23 OPEN). Batch 2 does not decide the two focus rows.
+- Table: spec citations use `F:` = `docs/spec/functional-spec.md` line. Reference citations use `R/` defined above and are existing revision-bound evidence, **not newly rechecked release evidence**, except the release-qualified batch 1 and 2 entries below. `Choice` means user product selection; `source` means further targeted latest-source work; `live` means user/native testing. "Absent" is bounded to inspected command/model surfaces, not a universal assertion about every adapter.
 - Code key **V**: complete command surfaces `C/world_report.rs:2009-2171` + `C/boundary.rs:41-149` contain no preselect, cycle, container-focus, equalize, rotate/mirror, master, layout-select or column/viewport verbs. **D**: `C/directional.rs:1179-1246` implements leaf directional focus, not viewport/container focus. **T**: absent column model/verbs on V/D; existing per-window sends `C/world_report.rs:2013-2018,2048-2066` do not implement whole-column semantics. These are code absence checks, not acceptance of the feature gap.
 
 | Batch | ID / F line | Plain open question | Existing evidence | Implemented behavior / remaining need |
@@ -290,9 +290,9 @@
 | 1 DECIDED | REQ-FOC-02 / 149 | User 2026-11-13: stay, no wrap/setting | Historical tally is not a revalidated default vote; latest Hyprland explicit zero-gap variant wraps (below) | Existing edge retain confirmed; adjacent-output crossing unchanged; shipped Hyprland geometry/native result TBD |
 | 1 DECIDED | REQ-MOV-02 / 167 | User 2026-11-13: swap, retain mover focus | `R/move.md:47-81`: all Tier 1 swap | Existing R2a `SwapNeighbor` confirmed; latest Hyprland exact geometry TBD |
 | 1 DECIDED | REQ-MOV-05 / 170 | User 2026-11-13: single-output edge no-op | `R/move.md:168-211`: all Tier 1 visually unchanged | Existing no-adjacent-output no-op confirmed; latest Hyprland exact rebuilt geometry TBD |
-| 2 | REQ-FOC-03 / 150 | Need next/previous cycle; which order, wrap, floats? | `R/focus.md:125-196`: multiple Tier 1 cycle forms, COSMIC none | Cycle absent (V); Choice + source |
-| 2 | REQ-FOC-04 / 151 | Need parent/child container focus? | `R/focus.md:198-247`: COSMIC/i3/sway verbs, others differ | Leaf-only (D), container verb absent (V); Choice + source |
-| 2 | REQ-ACT-02 / 460 | Urgency clears on focus or stays? | `R/activation.md:165-233`: COSMIC retains, most clear | No urgency field in `C/world_report.rs:1833-1871` or `C/seed.rs:33-61`; F:460 records adapter signal gap; Choice + source + live |
+| 2 STOP | REQ-FOC-03 / 151 | Need next/previous cycle; which order, wrap, floats? | [Latest release recheck](#requirement-batch-2-focus-and-attention-2026-11-13): COSMIC none, Hyprland creation-order incl floats, i3/sway parent-orientation tiled walk | Substantial synchronized command/shortcut surface; no implementation or selection |
+| 2 STOP | REQ-FOC-04 / 152 | Need parent/child container focus? | [Latest release recheck](#requirement-batch-2-focus-and-attention-2026-11-13): COSMIC/i3/sway group then remembered child; Hyprland none | Leaf-only model would change; no implementation or selection |
+| 2 DEFERRED | REQ-ACT-02 / 461 | Urgency clears on focus or stays? | [Latest release recheck](#requirement-batch-2-focus-and-attention-2026-11-13): COSMIC workspace marker retained, Hyprland/i3/sway per-window clear | NORMATIVE scope deferral beyond 0.1; native behavior unchanged, future product timing unselected |
 | 3 | REQ-INS-07b / 137 | Which inactive-workspace routing/admission anchor? | `R/insertion.md:281-307`: target-MRU/assignment paths; ours TBD | Exact destination-rule routing absent in V; separate no-steal rule already normative F:136; Choice + source + live |
 | 3 | REQ-SPC-02 / 496 | Tile, float or exclude splash/utility? | `R/special-windows.md:82-150`: COSMIC type split, i3/sway float variants | Narrow hold for Utility/Splash, `C/window_classify.rs:371-390`; Choice + source + live |
 | 3 | REQ-SPC-03 / 497 | How should app-specific PiP be admitted? | `R/special-windows.md:152-180`: Tier 1 TBD, niri app rule | No universal PiP classification in inspected type gate `C/window_classify.rs:377-390`; Choice + source + app/live |
@@ -315,7 +315,7 @@
 | 8 | REQ-COL-09 / 525 | Need virtual rows and cross-row sends? | `R/column-mechanics.md:391-428`: index-based workspaces versus row model | Workspace IDs/index sends exist `C/world_report.rs:2023-2066`, no row verb (T); Choice |
 | 8 | REQ-COL-10 / 526 | Need app-native tabs nested in stacks? | `R/column-mechanics.md:432-468`: per-window gates, unresolved native tabs | No native-tab command (V); Choice + app/live if selected |
 
-- Batch order: 1 settles already-running daily navigation/moves; 2 handles related focus/attention completeness; 3 admission/classification and observed-host correctness; 4 optional layout verbs; 5 composite overlay testing plus explicitly deferred items; 6-8 non-voting column mechanics. Maximum four rows per batch. More than 20 rows: investigation stops at this inventory plus batch 1, not all later source checks.
+- Batch order: 1 settles already-running daily navigation/moves; 2 handles related focus/attention completeness; 3 admission/classification and observed-host correctness; 4 optional layout verbs; 5 composite overlay testing plus explicitly deferred items; 6-8 non-voting column mechanics. Maximum four rows per batch. The original investigation stopped at this inventory plus batch 1; batch 2's later recheck does not cover batches 3-8.
 
 ## Requirement batch 1: historical evidence and options
 
@@ -489,6 +489,96 @@
   mismatch. No PASS was widened to cover hover, history-free fallback, literal
   single-output topology or physical input; batch-1 acceptance remains partial.
 
+## Requirement batch 2: focus and attention (2026-11-13)
+
+- Goal: resolve REQ-FOC-03/04 and REQ-ACT-02 against latest stable Tier 1
+  sources without inventing native results or reopening earlier behavior.
+  Acceptance separates a product scope decision from implementation and native
+  proof; requirements that need a new focus model or substantial command surface
+  remain OPEN with evidence-led alternatives.
+- Approach/outcome: targeted source rechecks, command/model/shortcut inventory,
+  scope decisions and independent diff review. This batch makes no runtime,
+  protocol, world-contract, fixture or adapter changes. No active-family refresh
+  is needed; all immutable fixtures are untouched. No live test is claimed.
+- Releases: COSMIC `epoch-1.11.0`, Hyprland `v0.57.2`, i3 `4.25.1`, sway
+  `1.12`; local tags and read-only origin tag listings rechecked 2026-11-13.
+  All inspected source versions were available locally; no fetch was needed.
+  Matching matrix cells carry their own version labels and native/TBD limits.
+
+| Row / shortest sequence | COSMIC `epoch-1.11.0` | Hyprland `v0.57.2` | i3 `4.25.1` | sway `1.12` | Outcome / assumption |
+| --- | --- | --- | --- | --- | --- |
+| FOC-03: create A,B,C in order, `H[A,B*,C]`; next, previous; fresh C-next and A-previous; fresh ordinary F | No compositor cycle on inspected surface; external switcher. `data/keybindings.ron:9-18,109-112` | C/B, wrap A/C, F included, creation order. `src/config/shared/actions/ConfigActions.cpp:1759-1804`, `src/desktop/state/WindowQuery.cpp:278-291,310-314` | C/B, wrap A/C, F excluded from tiled walk; parent-relative directional semantics, not global DFS. `src/commands.c:1290-1357`, `src/tree.c:503-577,593-629` | C/B, wrap A/C, F excluded from tiled walk; parent-relative direction and inactive-view descent. `sway/commands/focus.c:17-59,138-224,423-474` | STOP: substantial command/shortcut surface; no selection or assumption |
+| FOC-04: `H[V[A,B*],C]`; parent, child | V then B, group child stack. `src/shell/layout/tiling/mod.rs:1856-1936` | No counterpart on inspected focus/group-tab inventory. `src/config/shared/actions/ConfigActions.hpp:50-85` | V then B, level up/down. `src/commands.c:1401-1425`, `src/tree.c:386-430` | V then B, parent/active child. `sway/commands/focus.c:339-362,416-421` | STOP: focus-model change; no selection or assumption |
+| ACT-02: `H[A*,B]`; mark B, user focuses B on same workspace | Serial-less sandbox route marks workspace; same-workspace focus retains, workspace switch clears. `src/wayland/handlers/xdg_activation.rs:72-78,124-130`, `src/shell/focus/mod.rs:199-225,285-335`, `src/shell/mod.rs:557-562` | Marks unfocused window, focus clears. `src/desktop/view/window/Window.cpp:815-834`, `src/desktop/state/FocusState.cpp:213-214` | Demand-attention sets leaf; focus clears leaf and recomputes aggregates. `src/handlers.c:695-704`, `src/con.c:250-274,2424-2460` | Marks, same-workspace focus clears immediately; workspace-switch timer is separate. `sway/tree/view.c:509-513,1205-1229`, `sway/input/seat.c:1223-1241` | DEFERRED beyond 0.1: normative scope only, no future timing selected; no assumption |
+
+### Focus options and implementation boundaries
+
+- REQ-FOC-03 remains OPEN. Options: (a) preserve no cycle verb in 0.1,
+  consistent with existing post-0.1 triage and COSMIC's compositor inventory;
+  (b) add tiled parent-orientation next/previous with wrapping as i3/sway;
+  (c) add creation-order cycle including floats as Hyprland. The flat fixture
+  cannot select nested behavior, so the matrix adds a nested discriminator with
+  exact endpoints left TBD. Production completion is not just a planner helper:
+  `WorldCommand`, implicit-subject resolution, sizing, v4 codecs and shared tests;
+  KDE `world-report.ts`, `world-entry.ts`, `world-shortcuts.ts`;
+  native-effect `shortcutreconciler.cpp`/`.h`, catalog/preset/conflict tests;
+  and mechanical exhaustive-match adoption in Windows `world_tick.rs`.
+  Default chords and nested/cross-output scope need selection before that surface
+  is introduced. No command, wire variant, setting or shortcut is added here.
+- REQ-FOC-04 remains OPEN. Options: (a) preserve leaf-only focus in 0.1;
+  (b) design virtual group selection, remembered child and subsequent command
+  scope while native focus remains on a member. A separate auxiliary group
+  cursor is another design option, not selected or added. Current
+  `Session::focused_leaf` (`C/session.rs:763-764`),
+  `FocusPlan::Focused { leaf, route }` (`C/directional.rs:575-578`) and
+  `FocusRequest::target: WindowId` (`C/world_report.rs:420-437`) cannot represent
+  an active hostless group merely by adding parent/child aliases. Tier 1's
+  three group-capable WMs supply product evidence, not a host mapping or scope
+  decision for move/resize/close. No architecture/principle is changed here.
+
+### Urgency scope decision
+
+- REQ-ACT-02 is NORMATIVE only as a deferral: product-owned urgency mark/clear
+  is deferred beyond 0.1, decided under the standing Tier 1 alignment rule
+  (User 2026-11-13). [The topic decision](../decisions/activation-requests.md#urgency-markclear-scope)
+  preserves the prior Windows native-only-until-indicator and indicator
+  cleared-on-visit choices, plus KDE native activation ownership. No urgency
+  protocol/state/UI or native clear override is added; future product timing
+  remains unselected. This is not a claim that Tier 1 votes for deferral:
+  Hyprland/i3/sway support later clear-on-focus, while the earlier product scope
+  supplies the reason not to add that subsystem in 0.1.
+- Prior `P` triage means post-0.1, not an explicit prerequisite-gated park;
+  these three rows are distinct from LAY-04's expressly parked second-layout
+  decision, which is unchanged. Deferral resolves scope, not the native mark/
+  clear acceptance gap or REQ-ACT-01 implementation. No new behavior assumption,
+  timer, urgency setting or platform exception is selected.
+- Native/source limits: KWin's already-cited `8438567a src/activation.cpp:250-253`
+  clears attention on activation, but no live journey was run. Existing adapters
+  do not expose product urgency state; historical Windows flash notifications
+  are not visible marker or clear proof. Native outcomes remain TBD. Because
+  this is a scope-only decision with no executable change, no new behavioral
+  regression or recorder update applies; the unchanged shared suites are the
+  offline safety check, not evidence of urgency parity.
+- Counts: 184 total = 161 NORMATIVE (including qualified REQ-OUT-05),
+  23 OPEN, 0 PROVISIONAL. Batch 2 resolves one scope row and leaves two OPEN;
+  batches 3-8 retain 21 OPEN rows. No macOS/Windows behavior changes or adoption
+  items are introduced by this documentation-only batch.
+- Final sequential offline gates, with complete output retained externally:
+  `cargo fmt --all -- --check`;
+  `cargo build -p tiler-core -p tiler-protocol -p omnitiler --all-targets`;
+  `cargo clippy -p tiler-core -p tiler-protocol -p omnitiler --all-targets -- -D warnings`;
+  `cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture`;
+  then in `kwin/`, `npm run typecheck` and `npm test`: all exit 0. Rust:
+  3388 passed, zero failed/ignored, one filtered. KDE: 1297 passed in
+  189 suites, zero failed/skipped. Exporter is untouched; native builds and
+  runtime remain untested. Requirement enumeration independently confirms
+  184/161/23/0; whitespace review is clean.
+- Independent complete-diff review found no blocking defects. Its two
+  informational findings were corrected: continuation indentation now matches
+  the surrounding matrix, and this final gate/review record replaces the
+  pending placeholder. Implementation remains stopped for the two focus rows,
+  regardless of offline gate results; batch 2 is not fully resolved.
+
 ## Verification, limits and next decision
 
 - Historical research verification: source reads, exact OPEN-status enumeration, tag-qualified local source inspection and docs diff/whitespace review. Inventory IDs exactly match all 28 OPEN rows; batch sizes are 4/3/4/4/3/4/3/3. New-note relative file links resolve, added matrix target exists, note is ASCII. A broader link check found pre-existing missing `docs/changes/retained-focus-requests.md` targets in the matrix (also present at the inspected base); those unrelated links are unchanged. Research alone claimed no live outcomes or test-suite results; implementation evidence is separate above. Investigation reports were checked against key source spans; over-broad "Tier 1 always tiles" and "COSMIC equals stable-first" claims were rejected.
@@ -496,4 +586,4 @@
 - Unverified/TBD: exact tiny rectangles/client settlement on every WM; exact latest-tag COSMIC FOC-01 fixture, Hyprland shipped-gap FOC-02 and move reconstruction; native settings pickup/parity, especially Windows report defaults; later batches' latest-source checks. No source result here selects a new default or expands scope.
 - Next action: remaining native adoption of fixed-largest/fixed-float and the
   qualified batch-1 gaps above.
-  Batches 2-8 retain 24 OPEN rows.
+  Batch 2 retains two OPEN focus decisions; batches 3-8 retain 21 OPEN rows.
