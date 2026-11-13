@@ -21,6 +21,7 @@ Run everything with `cargo run --locked -p tiler-live-fixture --` from the
 repo root. Never assume a `target/` directory: `CARGO_TARGET_DIR` may
 redirect build output.
 Build without starting windows with `cargo build --locked -p tiler-live-fixture`.
+Run headless fixture tests with `cargo test --locked -p tiler-live-fixture`.
 On macOS/Windows prefix Cargo commands with `mise exec --`; Linux uses devenv.
 
 ```sh
@@ -272,6 +273,10 @@ Expected backend differences (not failures):
 - On X11, `"x11_window_type":"dialog"` creates a dialog-typed window
   (useful for tiler float/classification checks). On Wayland the same spawn
   reports `"x11_window_type"` unsupported and creates a normal window.
+- `"x11_window_type":"splash"` uses the same creation-only X11 hint
+  (`_NET_WM_WINDOW_TYPE_SPLASH`). On KDE Wayland use the forced X11/XWayland
+  launch below: native Wayland cannot express this type through winit and
+  reports it unsupported. Class and sentinel identity stay unchanged.
 - `mode:borderless_fullscreen` is the portable fullscreen smoke (works on
   both backends where the compositor honors it). `mode:exclusive_fullscreen`
   additionally needs a real display video mode and is reported `unsupported`
@@ -456,7 +461,7 @@ effective creation behavior.
 | `visible` | bool (requested default `true`) | `true` applies `with_visible(true)` where supported; Wayland reports `show`/`hide` unsupported. Spawn `visible:false` creates hidden where supported. |
 | `description` | string, max 65536 bytes | absent -> none. Local-only: stays in `requested`, never `configured`; rendered wrapped in-window. |
 | `title` | string suffix, no `\n`/`\r`; length bounded by the 1 MiB frame | absent or empty -> no suffix. Appended to the server-controlled `sentinel/id/run-tag` prefix. No Linux title readback; `snapshot.title` is constructed, not observed. |
-| `x11_window_type` | `normal` (requested default) / `dialog` / `utility`, creation-only | X11 creation attr; Wayland accepts `normal` as a no-op and reports other values unsupported. Runtime changes report unsupported, never recreate. |
+| `x11_window_type` | `normal` (requested default) / `dialog` / `utility` / `splash`, creation-only | X11 creation attr; Wayland accepts `normal` as a no-op and reports other values unsupported. Runtime changes report unsupported, never recreate. Windows/macOS likewise report non-normal types unsupported. |
 | `override_redirect` | bool, creation-only | absent -> winit default `false` (managed window). `true` off X11 reports unsupported; runtime changes never recreate. |
 | `window_level` | `always_on_top` / `normal` / `always_on_bottom` | absent -> winit default `Normal`. X11/Windows/macOS hint; Wayland non-normal unsupported, normal accepted as default no-op. |
 | `focus` | bool, one-shot, never stored | absent -> no request. `false` does nothing; `true` requests raise/focus where supported. Wayland `focus_window` is a winit no-op, so true reports unsupported; use real `observed.focused`. |
@@ -565,7 +570,7 @@ history is implemented. See the [integration results and limits](../../docs/chan
 ## Platform-specific feature how-to
 
 `platform.rs` holds the extension pattern: creation-only X11 window type
-`normal`/`dialog`/`utility` via safe winit extension APIs, gated per
+`normal`/`dialog`/`utility`/`splash` via safe winit extension APIs, gated per
 backend. A runtime change reports `unsupported` instead of recreating the
 window. Follow this shape for every future action:
 
@@ -583,7 +588,7 @@ window. Follow this shape for every future action:
    does. Accepted is never proof of effect.
 
 Worked example (shipped): `x11_window_type` maps the portable
-`normal`/`dialog`/`utility` to `winit::platform::x11::WindowType` at creation
+`normal`/`dialog`/`utility`/`splash` to `winit::platform::x11::WindowType` at creation
 (`platform::winit_x11_types`), gated by `action_supported(_, "x11")`; the
 same creation-only shape covers `override_redirect`.
 

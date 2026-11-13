@@ -1696,6 +1696,49 @@ mod tests {
     }
 
     #[test]
+    fn splash_creation_is_x11_only_and_runtime_changes_are_unsupported() {
+        for backend in ["x11", "wayland", "windows", "macos"] {
+            let mut host = FakeHost::for_backend(backend);
+            let x11 = capabilities_for_backend(backend).x11_window_type;
+            let mut server = Server::new(4242, "run1".to_string(), "secret".to_string());
+            let reply = reply_of(&server.handle_line(
+                &mut host,
+                r#"{"v":1,"request_id":"spawn","nonce":"secret","op":"spawn","windows":[{"id":"s","x11_window_type":"splash"}]}"#,
+                1,
+                None,
+            ));
+            let entry = &reply["result"]["windows"][0];
+            assert_eq!(entry["ok"], true);
+            assert_eq!(entry["snapshot"]["requested"]["x11_window_type"], "splash");
+            let outcome = entry["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|field| field["field"] == "x11_window_type")
+                .unwrap();
+            assert_eq!(
+                outcome["status"],
+                if x11 { "accepted" } else { "unsupported" }
+            );
+            assert_eq!(
+                entry["snapshot"]["configured"]["x11_window_type"],
+                if x11 { json!("splash") } else { json!(null) }
+            );
+            let reply = reply_of(&server.handle_line(
+                &mut host,
+                r#"{"v":1,"request_id":"set","nonce":"secret","op":"set","ids":["s"],"patch":{"x11_window_type":"splash"}}"#,
+                1,
+                None,
+            ));
+            assert_eq!(
+                reply["result"]["windows"][0]["fields"][0]["status"],
+                "unsupported"
+            );
+            assert_eq!(host.live.len(), 1);
+        }
+    }
+
+    #[test]
     fn runtime_x11_type_change_is_unsupported_not_applied() {
         let (mut server, mut host) = server();
         server.handle_line(

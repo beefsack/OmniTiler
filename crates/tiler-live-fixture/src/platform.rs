@@ -7,7 +7,7 @@
 //! unsupported everywhere else, no plugin framework.
 //!
 //! Shipped example: creation-only X11 `_NET_WM_WINDOW_TYPE`
-//! normal/dialog/utility. It exercises tiler classification and automatic
+//! normal/dialog/utility/splash. It exercises tiler classification and automatic
 //! float paths without scripts or access to foreign windows. Runtime changes
 //! to this creation-only value are reported as unsupported, never applied by
 //! recreating the window.
@@ -45,7 +45,7 @@ pub fn action_supported(action: &str, backend: &str) -> bool {
 
 /// Map the portable creation type to the winit X11 window type.
 ///
-/// Only `Normal`, `Dialog` and `Utility` are exposed: they are the useful
+/// Only `Normal`, `Dialog`, `Utility` and `Splash` are exposed: they are useful
 /// classification/automatic-float witnesses. Everything else stays out of
 /// scope for this dev helper.
 #[cfg(target_os = "linux")]
@@ -55,6 +55,7 @@ pub fn winit_x11_types(kind: X11WindowType) -> Vec<winit::platform::x11::WindowT
         X11WindowType::Normal => WindowType::Normal,
         X11WindowType::Dialog => WindowType::Dialog,
         X11WindowType::Utility => WindowType::Utility,
+        X11WindowType::Splash => WindowType::Splash,
     }]
 }
 
@@ -96,6 +97,10 @@ mod tests {
         assert_eq!(
             winit_x11_types(X11WindowType::Utility),
             vec![WindowType::Utility]
+        );
+        assert_eq!(
+            winit_x11_types(X11WindowType::Splash),
+            vec![WindowType::Splash]
         );
     }
 }

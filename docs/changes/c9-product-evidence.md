@@ -294,7 +294,7 @@
 | 2 DEFERRED | REQ-FOC-04 / 152 | User 2026-11-14: leaf-only focus in 0.1 | [Latest release recheck](#requirement-batch-2-focus-and-attention-2026-11-13): COSMIC/i3/sway group then remembered child; Hyprland none | NORMATIVE scope deferral beyond 0.1; important after 0.1, no future container-command semantics selected |
 | 2 DEFERRED | REQ-ACT-02 / 461 | Urgency clears on focus or stays? | [Latest release recheck](#requirement-batch-2-focus-and-attention-2026-11-13): COSMIC workspace marker retained, Hyprland/i3/sway per-window clear | NORMATIVE scope deferral beyond 0.1; native behavior unchanged, future product timing unselected |
 | 3 DECIDED | REQ-INS-07b / 138 | Target-local remembered tiled anchor; inactive admission never focuses/switches/replays | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): COSMIC/i3/sway target focus; Hyprland cursor-closest variant | Observed destination supported, no app-rule API added; inactive automatic-focus guard and shared regressions; native rule pickup TBD |
-| 3 DECIDED | REQ-SPC-02 / 497 | Splash and utility float under existing safety/ordinary-focus policy | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): splash 4/4 float, utility 3/4 float | Core type hold removed, KDE candidates widened; ASSUMPTION no type-specific focus exception; native focus/switcher TBD |
+| 3 DECIDED | REQ-SPC-02 / 497 | Splash and utility float under existing safety/ordinary-focus policy | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): splash 4/4 float, utility 3/4 float | Core type hold removed, KDE candidates widened; ASSUMPTION no type-specific focus exception; [XWayland fixture float/focus/native skip-flag follow-up](archive/kde-splash-fixture.md); visual switcher untested |
 | 3 DECIDED | REQ-SPC-03 / 498 | Ordinary reported facts, not PiP title/app inference | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): ordinary predicates/rules, exact apps TBD | ASSUMPTION no shipped app exception/new subsystem; metadata/fact discriminator; actual app/native TBD |
 | 3 DECIDED | REQ-SPC-05b / 509 | User 2026-11-14: retain feasible-minimum reallocation for now | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): tiled allocations retained in four inspected paths | NORMATIVE: feasible runtime minima take sibling slack; infeasible remain proportional; known divergence, revisit later; native journeys TBD |
 | 4 DEFERRED | REQ-INS-08 / 138 | User 2026-11-14: no preselection in 0.1 | [Batches 4-8](#preselected-split-option-sheet): 3/4 default-layout counterparts, Hyprland one-shot versus i3/sway persistent | NORMATIVE scope deferral beyond 0.1; keep in backlog, no future chord/lifetime/semantics selected |
@@ -809,10 +809,10 @@
   links; current capacity tags cite the separate release-qualified recheck,
   not historical R-MIN-04 pins. All 76 added/new relative links and anchors
   resolve; all nine changed/new files are ASCII and whitespace-clean.
-- Existing documentation drift, unchanged here: REQ-MIN-04b/f/g still describe
-  retired overlap/default-setting behavior in the functional spec. The active
-  D3/D9/D10 decisions and divergence inventory instead record fixed float,
-  retired overlap projection and removed capacity settings.
+- Documentation drift identified here: REQ-MIN-04b/f/g described retired
+  overlap/default-setting behavior. The later [capacity-spec correction](archive/kde-splash-fixture.md)
+  aligns them with the existing D3/D9/D10 fixed-float, retired-overlap and
+  removed-capacity-setting decisions; those decisions are unchanged.
 
 ## KDE batch-3 native check (2026-11-14)
 
@@ -893,6 +893,16 @@
   wrappers from the later empty process roster rather than calling them absent
   at the earlier checkpoint. No unsupported or overstated qualified verdict
   remains.
+
+### Splash fixture follow-up (2026-11-14)
+
+- The [splash fixture and capacity-spec correction](archive/kde-splash-fixture.md)
+  adds creation-only X11/XWayland splash support and records native typed
+  utility/splash float, observed focus and taskbar/skip-switcher facts. It
+  supersedes the missing-fixture gap in the historical splash NOT RUN row
+  above, not its earlier evidence. Separate above-state-lane and visual
+  switcher qualifications remain explicit. Real media-app flags and physical
+  shortcut delivery remain outside that follow-up.
 
 ## Verification, limits and next decision
 

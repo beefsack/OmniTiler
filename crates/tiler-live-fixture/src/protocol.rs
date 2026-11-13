@@ -54,6 +54,7 @@ pub enum X11WindowType {
     Normal,
     Dialog,
     Utility,
+    Splash,
 }
 
 /// Window stacking level hint.
