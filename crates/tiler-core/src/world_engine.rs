@@ -163,7 +163,7 @@ const RESIZE_REFUSAL_DIAG_CUT: &str = "...";
 const COMMAND_REFUSAL_DIAG_MAX: usize = 512;
 
 /// Sanitized opaque id for diagnostics: the validated value or `-`.
-fn diag_id(value: &str) -> &str {
+pub(crate) fn diag_id(value: &str) -> &str {
     if crate::bounds::is_opaque_id(value) {
         value
     } else {
@@ -351,6 +351,86 @@ fn diag_hints(hints: crate::size_hints::WindowSizeHints) -> String {
 pub(crate) fn emit_resize_refusal(line: String) {
     use std::io::Write as _;
     let _ = writeln!(std::io::stderr(), "{line}");
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_FOCUS_TRACE_SINK: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+    static TEST_FOCUS_TRACE_OVERRIDE: std::cell::RefCell<Option<bool>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Cached process-level `OMNITILER_TRACE=1` gate for core trace-only
+/// diagnostics (zero formatting/allocation/output when disabled).
+pub(crate) fn core_trace_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(enabled) = TEST_FOCUS_TRACE_OVERRIDE.with(|flag| *flag.borrow()) {
+        return enabled;
+    }
+    #[cfg(test)]
+    if TEST_FOCUS_TRACE_SINK.with(|sink| sink.borrow().is_some()) {
+        return true;
+    }
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("OMNITILER_TRACE").is_some_and(|v| v == "1"))
+}
+
+/// Best-effort trace-only focus diagnostic write (or isolated thread-local
+/// capture in unit tests).
+pub(crate) fn emit_focus_trace(line: String) {
+    #[cfg(test)]
+    {
+        if TEST_FOCUS_TRACE_OVERRIDE.with(|flag| *flag.borrow() == Some(false)) {
+            return;
+        }
+        let captured = TEST_FOCUS_TRACE_SINK.with(|sink| {
+            let mut borrow = sink.borrow_mut();
+            if let Some(lines) = borrow.as_mut() {
+                lines.push(line.clone());
+                true
+            } else {
+                false
+            }
+        });
+        if captured {
+            return;
+        }
+    }
+    emit_resize_refusal(line);
+}
+
+#[cfg(test)]
+pub(crate) fn with_focus_trace_capture<F: FnOnce()>(f: F) -> Vec<String> {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_FOCUS_TRACE_SINK.with(|sink| {
+                *sink.borrow_mut() = None;
+            });
+        }
+    }
+    TEST_FOCUS_TRACE_SINK.with(|sink| {
+        *sink.borrow_mut() = Some(Vec::new());
+    });
+    let _reset = Reset;
+    f();
+    TEST_FOCUS_TRACE_SINK.with(|sink| sink.borrow_mut().take().unwrap_or_default())
+}
+
+#[cfg(test)]
+pub(crate) fn with_focus_trace_disabled<F: FnOnce()>(f: F) {
+    struct Reset(Option<bool>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_FOCUS_TRACE_OVERRIDE.with(|flag| {
+                *flag.borrow_mut() = self.0;
+            });
+        }
+    }
+    let prev = TEST_FOCUS_TRACE_OVERRIDE.with(|flag| flag.borrow_mut().replace(false));
+    let _reset = Reset(prev);
+    f();
 }
 
 impl WorldEngine {

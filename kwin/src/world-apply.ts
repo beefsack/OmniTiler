@@ -21,9 +21,41 @@
 // from the fresh native facts.
 
 import type { ObservedWindow, WorldObservation } from "./world-observe";
-import { type WorldReply, type WorldReplyTransfer, type WorldReplyWindow, type WorldReplyResult, type FrameSetter, type WorldMemberRef, type WorldViewRef, type FocusReason, type FocusSetter, type WorldAfterShown, type WorldArrivalBracket, type WorldVisibilitySample } from "./world-report";
+import { type WorldReply, type WorldReplyTransfer, type WorldReplyWindow, type WorldReplyResult, type FrameSetter, type WorldMemberRef, type WorldViewRef, type FocusReason, type FocusSetter, type WorldAfterShown, type WorldArrivalBracket, type WorldVisibilitySample, type WorldFocusRequest } from "./world-report";
 import { compareU64, isCanonicalU64, isOpaqueId } from "./world-seq";
-import { WorldAdapterState } from "./world-state";
+import { WorldAdapterState, type FocusRequestRecord } from "./world-state";
+
+declare const __OMNITILER_TRACE__: string | undefined;
+
+let focusTraceLast: WeakMap<WorldAdapterState, { record: FocusRequestRecord | null; key: string }>;
+if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+    focusTraceLast = new WeakMap();
+}
+
+function traceFocusEval(
+    env: ApplyEnv,
+    focusReq: WorldFocusRequest,
+    decision: "deferred" | "equality" | "no-call" | "called",
+    reason: string,
+): void {
+    const record = env.state.focusCurrent;
+    const cmdSeq = focusReq.cmdSeq ?? "-";
+    const key = `${env.reply.gen}\u0000${focusReq.id}\u0000${focusReq.target}\u0000${focusReq.rev}\u0000${focusReq.cause}\u0000${cmdSeq}\u0000${decision}\u0000${reason}`;
+    const prev = focusTraceLast.get(env.state);
+    if (record !== null && prev !== undefined && prev.record === record && prev.key === key) {
+        return;
+    }
+    focusTraceLast.set(env.state, { record, key });
+    try {
+        env.log(
+            `omnitiler:world:trace ev=focus-eval gen=${env.reply.gen} req=${env.reply.req} rev=${env.reply.rev} obs=${env.reply.obs} ` +
+            `id=${focusReq.id} target=${focusReq.target} issuingRev=${focusReq.rev} cause=${focusReq.cause} ` +
+            `cmdSeq=${cmdSeq} decision=${decision} reason=${reason}`,
+        );
+    } catch (error) {
+        void error;
+    }
+}
 
 export interface ApplyEnv {
     state: WorldAdapterState;
@@ -2653,6 +2685,9 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
     const focusReq = reply.focusRequest;
     if (focusReq === null) {
         state.observeFocusEnvelope(null, reply.gen);
+        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+            focusTraceLast.delete(state);
+        }
     } else if (state.observeFocusEnvelope(focusReq, reply.gen) === "fresh") {
         // Selection readiness BEFORE the spend: a request carrying frozen
         // afterShown dependencies proves its frozen arrival set first. A
@@ -2662,6 +2697,9 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         if (focusReq.afterShown !== null) {
             const ready = checkSelectionReady(focusReq.afterShown);
             if (ready.status === "not-ready") {
+                if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                    traceFocusEval(env, focusReq, "deferred", "not-ready");
+                }
                 return result;
             }
             if (ready.status === "stopped") {
@@ -2680,6 +2718,9 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                     attemptMs: stamp,
                 });
                 state.noteFollowup();
+                if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                    traceFocusEval(env, focusReq, "no-call", "superseded");
+                }
                 result.stoppedMidApply = true;
                 return result;
             }
@@ -2709,6 +2750,17 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                 attemptMs: stamp,
             });
             state.noteFollowup();
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                const decision = setter === "not-called"
+                    ? (reason === "" ? "equality" : "no-call")
+                    : "called";
+                const traceReason = setter === "not-called"
+                    ? (reason === "" ? "already-target" : reason)
+                    : (setter === "accepted"
+                        ? (reason === "" ? "setter-accepted" : reason)
+                        : (reason === "" ? setter : reason));
+                traceFocusEval(env, focusReq, decision, traceReason);
+            }
         };
         const focusTarget = byWin.get(focusReq.target);
         // Frozen source domain: the target must still home where the
@@ -2875,6 +2927,9 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             attemptMs: stamp,
         });
         state.noteFollowup();
+        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+            traceFocusEval(env, focusReq, "no-call", "superseded");
+        }
         result.held += 1;
     }
     return result;

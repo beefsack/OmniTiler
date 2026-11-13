@@ -60,6 +60,31 @@ impl PendingFocus {
     }
 }
 
+fn emit_pending_focus_trace(
+    report: &WorldReportV4,
+    rev: u64,
+    pending: &PendingFocus,
+    decision: &str,
+    reason: &str,
+) {
+    let cmd_seq = pending
+        .cmd_seq
+        .map(|seq| seq.to_string())
+        .unwrap_or_else(|| "-".to_owned());
+    crate::world_engine::emit_focus_trace(format!(
+        "omnitiler:core:trace ev=focus-eval gen={} req={} obs={} rev={} id={} target={} issuingRev={} cause={} cmdSeq={} decision={decision} reason={reason}",
+        crate::world_engine::diag_id(&report.core_generation),
+        crate::world_engine::diag_id(&report.request_id),
+        report.observation_seq,
+        rev,
+        crate::world_engine::diag_id(&pending.id),
+        crate::world_engine::diag_id(&pending.target.0),
+        pending.issued_revision,
+        pending.cause.as_str(),
+        cmd_seq,
+    ));
+}
+
 /// Whether a first-correlated no-call row is a terminal disposition rather
 /// than unproven silence. Bare (`Empty`) and explicitly unproven
 /// (`FocusUnproven`) rows retain the request; every informative mechanical
@@ -276,6 +301,16 @@ impl WorldEngine {
         };
         // Native fallback already chose the winner: satisfied, no request.
         if report.focused_global == survivor.0 {
+            if crate::world_engine::core_trace_enabled() {
+                crate::world_engine::emit_focus_trace(format!(
+                    "omnitiler:core:trace ev=focus-eval gen={} req={} obs={} rev={} id=- target={} issuingRev=- cause=positive-close cmdSeq=- decision=equality reason=already-target request=not-created",
+                    crate::world_engine::diag_id(&report.core_generation),
+                    crate::world_engine::diag_id(&report.request_id),
+                    report.observation_seq,
+                    issuing_revision,
+                    crate::world_engine::diag_id(&survivor.0),
+                ));
+            }
             return;
         }
         // A non-target same-report fallback authorizes the correction only
@@ -368,6 +403,15 @@ impl WorldEngine {
             return;
         };
         if report.focused_global == pending.target.0 {
+            if crate::world_engine::core_trace_enabled() {
+                emit_pending_focus_trace(
+                    report,
+                    self.staged.revision,
+                    &pending,
+                    "equality",
+                    "already-target",
+                );
+            }
             self.pending_focus = None;
             self.logical_focus_cursor = Some(pending.target);
             return;
@@ -389,12 +433,35 @@ impl WorldEngine {
         if let Some(row) = pending.feedback.clone()
             && focus_feedback_retires(&pending, &row)
         {
+            if crate::world_engine::core_trace_enabled() {
+                let decision = match row.setter {
+                    VisibilitySetter::NotCalled => "no-call",
+                    VisibilitySetter::Accepted
+                    | VisibilitySetter::Refused
+                    | VisibilitySetter::Threw => "called",
+                };
+                let reason = if !row.reason.as_str().is_empty() {
+                    row.reason.as_str()
+                } else {
+                    row.setter.as_str()
+                };
+                emit_pending_focus_trace(report, self.staged.revision, &pending, decision, reason);
+            }
             self.pending_focus = None;
             self.reset_cursor_to_report_observed(report);
             return;
         }
         self.pending_focus = Some(pending.clone());
         if report.closed.iter().any(|id| id == &pending.target) {
+            if crate::world_engine::core_trace_enabled() {
+                emit_pending_focus_trace(
+                    report,
+                    self.staged.revision,
+                    &pending,
+                    "no-call",
+                    "target-closed",
+                );
+            }
             self.pending_focus = None;
             self.reset_cursor_to_report_observed(report);
             return;
@@ -407,11 +474,29 @@ impl WorldEngine {
             && report.focused_global.is_empty()
             && !report.foreground_known
         {
+            if crate::world_engine::core_trace_enabled() {
+                emit_pending_focus_trace(
+                    report,
+                    self.staged.revision,
+                    &pending,
+                    "no-call",
+                    "focus-unproven",
+                );
+            }
             self.pending_focus = None;
             self.reset_cursor_to_report_observed(report);
             return;
         }
         if report.focused_global != pending.baseline_focused {
+            if crate::world_engine::core_trace_enabled() {
+                emit_pending_focus_trace(
+                    report,
+                    self.staged.revision,
+                    &pending,
+                    "no-call",
+                    "baseline-changed",
+                );
+            }
             self.pending_focus = None;
             self.reset_cursor_to_report_observed(report);
             return;
@@ -423,6 +508,15 @@ impl WorldEngine {
                 .iter()
                 .any(|(out, ws)| self.views.get(out).is_none_or(|current| current != ws))
         {
+            if crate::world_engine::core_trace_enabled() {
+                emit_pending_focus_trace(
+                    report,
+                    self.staged.revision,
+                    &pending,
+                    "no-call",
+                    "view-drift",
+                );
+            }
             self.pending_focus = None;
             self.reset_cursor_to_report_observed(report);
         }

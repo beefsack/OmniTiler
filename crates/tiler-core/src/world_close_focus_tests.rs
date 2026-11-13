@@ -1907,3 +1907,352 @@ fn close_retirement_equality_changed_focus_target_loss() {
     );
     assert_eq!(retired.focus_request, None);
 }
+
+#[test]
+fn trace_emits_pre_mint_close_equality_without_fabricating_request() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let windows = vec![
+        fact("win-a", "out-a", 0),
+        fact("win-b", "out-a", 100),
+        fact("win-c", "out-a", 200),
+    ];
+    focus_sequence(&mut engine, 1, &windows, &["win-a", "win-c", "win-b"]);
+    let lines = crate::world_engine::with_focus_trace_capture(|| {
+        // Close win-b when host fallback already chose the MRU survivor win-c:
+        // no retained request is minted, and trace logs id=- / issuingRev=- / request=not-created.
+        let closed = accepted(
+            &mut engine,
+            &report(
+                4,
+                vec![fact("win-a", "out-a", 0), fact("win-c", "out-a", 200)],
+                vec!["win-b"],
+                "win-c",
+                true,
+                None,
+                None,
+            ),
+        );
+        assert_eq!(closed.focus_request, None);
+    });
+    assert_eq!(
+        lines.len(),
+        1,
+        "expected one pre-mint close equality trace: {lines:?}"
+    );
+    assert_eq!(
+        lines[0],
+        "omnitiler:core:trace ev=focus-eval gen=gen-1 req=req-4 obs=4 rev=4 id=- target=win-c issuingRev=- cause=positive-close cmdSeq=- decision=equality reason=already-target request=not-created"
+    );
+}
+
+#[test]
+fn trace_emits_retained_equality_and_terminal_retirements_for_admission_and_close() {
+    // 1. AutomaticAdmission retained equality retirement
+    let mut admission_engine =
+        WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted(
+        &mut admission_engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            "win-a",
+            true,
+            None,
+            None,
+        ),
+    );
+    let admitted = accepted(
+        &mut admission_engine,
+        &report(
+            2,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            "win-a",
+            true,
+            None,
+            None,
+        ),
+    );
+    let req = admitted.focus_request.expect("admission focus request");
+    assert_eq!(req.cause, FocusRequestCause::AutomaticAdmission);
+    assert_eq!(req.target.0, "win-b");
+
+    let admission_lines = crate::world_engine::with_focus_trace_capture(|| {
+        let satisfied = accepted(
+            &mut admission_engine,
+            &report(
+                3,
+                vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+                vec![],
+                "win-b",
+                true,
+                None,
+                None,
+            ),
+        );
+        assert_eq!(satisfied.focus_request, None);
+    });
+    assert_eq!(
+        admission_lines.len(),
+        1,
+        "admission equality: {admission_lines:?}"
+    );
+    assert_eq!(
+        admission_lines[0],
+        format!(
+            "omnitiler:core:trace ev=focus-eval gen=gen-1 req=req-3 obs=3 rev=3 id={} target=win-b issuingRev={} cause=automatic-admission cmdSeq=- decision=equality reason=already-target",
+            req.id, req.issued_revision
+        )
+    );
+
+    let survivors = vec![
+        fact("win-c", "out-a", 0),
+        fact("win-a", "out-a", 100),
+        fact("win-d", "out-a", 200),
+    ];
+
+    // 2. PositiveClose retained equality retirement
+    let mut close_eq_engine =
+        WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let close_eq_req = mint_close_a(&mut close_eq_engine);
+    let close_eq_lines = crate::world_engine::with_focus_trace_capture(|| {
+        let satisfied = accepted(
+            &mut close_eq_engine,
+            &report(4, survivors.clone(), vec![], "win-a", true, None, None),
+        );
+        assert_eq!(satisfied.focus_request, None);
+    });
+    assert_eq!(close_eq_lines.len(), 1);
+    assert_eq!(
+        close_eq_lines[0],
+        format!(
+            "omnitiler:core:trace ev=focus-eval gen=gen-1 req=req-4 obs=4 rev=4 id={} target=win-a issuingRev={} cause=positive-close cmdSeq=- decision=equality reason=already-target",
+            close_eq_req.id, close_eq_req.issued_revision
+        )
+    );
+
+    // 3. NotCalled feedback retirement -> decision=no-call
+    let mut not_called_engine =
+        WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let close_req = mint_close_a(&mut not_called_engine);
+    let close_lines = crate::world_engine::with_focus_trace_capture(|| {
+        let mut with_feedback = report(4, survivors.clone(), vec![], "win-c", true, None, None);
+        with_feedback.focus_feedback.push(FocusFeedback {
+            id: close_req.id.clone(),
+            target: close_req.target.clone(),
+            revision: close_req.issued_revision,
+            setter: VisibilitySetter::NotCalled,
+            reason: VisibilityReason::IdentityStale,
+            pre: Some(WindowId("win-c".to_owned())),
+            post: Some(WindowId("win-c".to_owned())),
+            foreground_proven: false,
+            arrival: Vec::new(),
+            attempt_ms: 0,
+        });
+        let retired = accepted(&mut not_called_engine, &with_feedback);
+        assert_eq!(retired.focus_request, None);
+    });
+    assert_eq!(
+        close_lines.len(),
+        1,
+        "close feedback retirement: {close_lines:?}"
+    );
+    assert_eq!(
+        close_lines[0],
+        format!(
+            "omnitiler:core:trace ev=focus-eval gen=gen-1 req=req-4 obs=4 rev=4 id={} target=win-a issuingRev={} cause=positive-close cmdSeq=- decision=no-call reason=identity-stale",
+            close_req.id, close_req.issued_revision
+        )
+    );
+
+    // 4. Refused feedback retirement -> decision=called reason=native-refused
+    let mut refused_engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let refused_req = mint_close_a(&mut refused_engine);
+    let refused_lines = crate::world_engine::with_focus_trace_capture(|| {
+        let mut with_feedback = report(4, survivors.clone(), vec![], "win-c", true, None, None);
+        with_feedback.focus_feedback.push(FocusFeedback {
+            id: refused_req.id.clone(),
+            target: refused_req.target.clone(),
+            revision: refused_req.issued_revision,
+            setter: VisibilitySetter::Refused,
+            reason: VisibilityReason::NativeRefused,
+            pre: Some(WindowId("win-c".to_owned())),
+            post: Some(WindowId("win-c".to_owned())),
+            foreground_proven: true,
+            arrival: Vec::new(),
+            attempt_ms: 0,
+        });
+        let retired = accepted(&mut refused_engine, &with_feedback);
+        assert_eq!(retired.focus_request, None);
+    });
+    assert_eq!(refused_lines.len(), 1);
+    assert_eq!(
+        refused_lines[0],
+        format!(
+            "omnitiler:core:trace ev=focus-eval gen=gen-1 req=req-4 obs=4 rev=4 id={} target=win-a issuingRev={} cause=positive-close cmdSeq=- decision=called reason=native-refused",
+            refused_req.id, refused_req.issued_revision
+        )
+    );
+
+    // 5. Threw feedback retirement -> decision=called reason=unsupported
+    let mut threw_engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let threw_req = mint_close_a(&mut threw_engine);
+    let threw_lines = crate::world_engine::with_focus_trace_capture(|| {
+        let mut with_feedback = report(4, survivors.clone(), vec![], "win-c", true, None, None);
+        with_feedback.focus_feedback.push(FocusFeedback {
+            id: threw_req.id.clone(),
+            target: threw_req.target.clone(),
+            revision: threw_req.issued_revision,
+            setter: VisibilitySetter::Threw,
+            reason: VisibilityReason::Unsupported,
+            pre: Some(WindowId("win-c".to_owned())),
+            post: Some(WindowId("win-c".to_owned())),
+            foreground_proven: false,
+            arrival: Vec::new(),
+            attempt_ms: 0,
+        });
+        let retired = accepted(&mut threw_engine, &with_feedback);
+        assert_eq!(retired.focus_request, None);
+    });
+    assert_eq!(threw_lines.len(), 1);
+    assert_eq!(
+        threw_lines[0],
+        format!(
+            "omnitiler:core:trace ev=focus-eval gen=gen-1 req=req-4 obs=4 rev=4 id={} target=win-a issuingRev={} cause=positive-close cmdSeq=- decision=called reason=unsupported",
+            threw_req.id, threw_req.issued_revision
+        )
+    );
+
+    // 6. target-closed retirement
+    let mut closed_engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let closed_req = mint_close_a(&mut closed_engine);
+    let closed_lines = crate::world_engine::with_focus_trace_capture(|| {
+        let retired = accepted(
+            &mut closed_engine,
+            &report(
+                4,
+                vec![fact("win-c", "out-a", 0), fact("win-d", "out-a", 200)],
+                vec!["win-a"],
+                "win-c",
+                true,
+                None,
+                None,
+            ),
+        );
+        assert_eq!(retired.focus_request, None);
+    });
+    assert_eq!(closed_lines.len(), 1);
+    assert_eq!(
+        closed_lines[0],
+        format!(
+            "omnitiler:core:trace ev=focus-eval gen=gen-1 req=req-4 obs=4 rev=4 id={} target=win-a issuingRev={} cause=positive-close cmdSeq=- decision=no-call reason=target-closed",
+            closed_req.id, closed_req.issued_revision
+        )
+    );
+
+    // 7. focus-unproven retirement (PositiveClose with empty + unknown foreground)
+    let mut unproven_engine =
+        WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let unproven_req = mint_close_a(&mut unproven_engine);
+    let unproven_lines = crate::world_engine::with_focus_trace_capture(|| {
+        let retired = accepted(
+            &mut unproven_engine,
+            &report(4, survivors.clone(), vec![], "", false, None, None),
+        );
+        assert_eq!(retired.focus_request, None);
+    });
+    assert_eq!(unproven_lines.len(), 1);
+    assert_eq!(
+        unproven_lines[0],
+        format!(
+            "omnitiler:core:trace ev=focus-eval gen=gen-1 req=req-4 obs=4 rev=4 id={} target=win-a issuingRev={} cause=positive-close cmdSeq=- decision=no-call reason=focus-unproven",
+            unproven_req.id, unproven_req.issued_revision
+        )
+    );
+
+    // 8. baseline-changed retirement
+    let mut baseline_engine =
+        WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let baseline_req = mint_close_a(&mut baseline_engine);
+    let baseline_lines = crate::world_engine::with_focus_trace_capture(|| {
+        let retired = accepted(
+            &mut baseline_engine,
+            &report(4, survivors.clone(), vec![], "win-d", true, None, None),
+        );
+        assert_eq!(retired.focus_request, None);
+    });
+    assert_eq!(baseline_lines.len(), 1);
+    assert_eq!(
+        baseline_lines[0],
+        format!(
+            "omnitiler:core:trace ev=focus-eval gen=gen-1 req=req-4 obs=4 rev=4 id={} target=win-a issuingRev={} cause=positive-close cmdSeq=- decision=no-call reason=baseline-changed",
+            baseline_req.id, baseline_req.issued_revision
+        )
+    );
+
+    // 9. view-drift retirement
+    let mut view_engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
+    focus_sequence(&mut view_engine, 1, &windows, &["win-a", "win-b"]);
+    let view_survivors = vec![fact("win-a", "out-a", 0)];
+    let minted = accepted(
+        &mut view_engine,
+        &report(
+            3,
+            view_survivors.clone(),
+            vec!["win-b"],
+            "",
+            true,
+            None,
+            None,
+        ),
+    );
+    let view_req = minted.focus_request.clone().expect("minted close");
+    let mut ring = view_engine
+        .mapping
+        .get("out-a")
+        .cloned()
+        .unwrap_or_else(|| vec![view_of(&minted, "out-a")]);
+    if !ring.contains(&"ws-moved".to_owned()) {
+        ring.push("ws-moved".to_owned());
+    }
+    view_engine.mapping.insert("out-a".to_owned(), ring);
+    view_engine
+        .views
+        .insert("out-a".to_owned(), "ws-moved".to_owned());
+    let view_lines = crate::world_engine::with_focus_trace_capture(|| {
+        let retired = accepted(
+            &mut view_engine,
+            &report(4, view_survivors, vec![], "", true, None, None),
+        );
+        assert_eq!(retired.focus_request, None);
+    });
+    assert_eq!(view_lines.len(), 1);
+    assert_eq!(
+        view_lines[0],
+        format!(
+            "omnitiler:core:trace ev=focus-eval gen=gen-1 req=req-4 obs=4 rev=4 id={} target=win-a issuingRev={} cause=positive-close cmdSeq=- decision=no-call reason=view-drift",
+            view_req.id, view_req.issued_revision
+        )
+    );
+
+    // 10. Deterministic trace-off check (independent of external OMNITILER_TRACE env).
+    let mut disabled_engine =
+        WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    mint_close_a(&mut disabled_engine);
+    let captured_while_disabled = crate::world_engine::with_focus_trace_capture(|| {
+        crate::world_engine::with_focus_trace_disabled(|| {
+            assert!(!crate::world_engine::core_trace_enabled());
+            let satisfied = accepted(
+                &mut disabled_engine,
+                &report(4, survivors.clone(), vec![], "win-a", true, None, None),
+            );
+            assert_eq!(satisfied.focus_request, None);
+        });
+    });
+    assert!(
+        captured_while_disabled.is_empty(),
+        "disabled trace must emit zero lines: {captured_while_disabled:?}"
+    );
+}

@@ -1135,6 +1135,102 @@ below records which mechanisms were subsequently removed.
   remain unverified; no platform-specific code changed. Native KDE/macOS acceptance
   and the separate suppressed-admission subject question remain open.
 
+### KDE retained-focus diagnostic acceptance (2026-11-14)
+
+- Goal: close the silent native-equality/no-call evidence gap without changing
+  focus behavior. Trace each fresh retained-request evaluation with its immutable
+  tuple, publication correlation and actual call/equality/no-call branch; preserve
+  once-per-id accounting and trace-off efficiency. Inspect core admission/close
+  decisions for the corresponding silent boundary.
+- Acceptance: branch diagnostics covered offline; sequential format, three-package
+  all-target build/strict clippy/permitted test suite and KWin typecheck/full tests;
+  independent diff review. Then fixture-only native admission and positive-close
+  checks with joined foreground and retained-request evidence, plus a native
+  call-issued control where feasible. Audit saved raw evidence and complete
+  helper/process teardown before claiming native acceptance.
+- Implemented trace-only `ev=focus-eval`, carrying `gen/req/rev/obs`,
+  retained `id/target/issuingRev/cause/cmdSeq`, and `decision/reason`.
+  Decisions are `deferred`, `equality`, `no-call`, or `called`; refused and
+  thrown setter attempts are `called`, never `no-call`. Core also logs retained
+  equality/retirement and pre-mint positive-close equality. The latter truthfully
+  uses `id=- issuingRev=- request=not-created`, not an invented request.
+- No behavior, wire fields, fixture bytes or dependencies changed. Ordinary KDE
+  builds strip the diagnostics; unchanged deferred outcomes deduplicate against
+  the bounded current envelope record and generation, including fresh same-gen
+  handshakes. Spent/null envelopes stay silent. Core uses cached trace enablement
+  before formatting/allocation and best-effort stderr.
+- An earlier review caught refused setter feedback mislabeled `no-call`.
+  Setter-based labels, core generation correlation and missing retirement-branch
+  tests are now present. Fresh independent final-diff review finds no defects.
+  Tests cover every new decision branch, trace-off behavior, deduplication and
+  fresh handshakes. Earlier intermediate counts and unsuccessful formatting/
+  compilation attempts are not final verification evidence.
+- Fresh sequential gates all exit 0, with full command/output/exit logs retained:
+  `cargo fmt --all -- --check`;
+  `cargo build -p tiler-core -p tiler-protocol -p omnitiler --all-targets`;
+  `cargo clippy -p tiler-core -p tiler-protocol -p omnitiler --all-targets -- -D warnings`;
+  `cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture`;
+  then KWin `npm run typecheck` and `npm test`. Rust: 3,400 passed across
+  70 summaries, zero failed/ignored, one filtered. KWin: 1,302 passed across
+  190 suites, zero failed/cancelled/skipped.
+- Native evidence bundle: externally retained focus-diagnostic acceptance.
+  Raw `*-commands.jsonl`, `*-native.json`, `*-fixture.jsonl` and
+  `*-presentation.json` retain calls/replies/status and exact sentinel/PID/UUID
+  joins. Journal sources below are in `final-journal.jsonl` and
+  `teardown-journal.jsonl`; core traces are in `saved-planner-log.log`.
+  Wayland fixtures only, exact class scope, on a workspace appended beyond
+  the whole pre-start roster; no physical-input or display-topology claim.
+- Evaluated readiness passes: post-cursor current-owner `ready`, `discovered`,
+  `src-1-1o25ph3` and matching `observe-applied` revision 1. Separate unfiltered
+  scripting-category checks are empty.
+
+| Native leg | Verdict | Concrete evidence and boundary |
+| --- | --- | --- |
+| Admission request and native equality | PASS, diagnostic correlation | `settled-b` revision 7 joins B's exact sentinel/PID/UUID and matching tiled frames, with native/fixture/core focus B. `src-6-vkqbfn` revision 6 evaluates `focus-6`, target B, `cause=automatic-admission decision=equality reason=already-target`; core `src-7-xqvrwa` retires that same tuple by equality. C repeats this at revisions 8/9 with `focus-8`. This proves retained admission satisfaction, not that a tiler setter caused native map activation. |
+| Positive-close retained successor and native call-issued control | PASS | `stage-a-focused` revision 10 proves A focused. One scoped helper activates C then B in the same evaluation; `before-close-b` revision 11 proves B focused. Closing B succeeds; `after-close-b` captures native fallback C. `src-c-127zonw` revision 12 evaluates `focus-12`, target A, `cause=positive-close decision=called reason=setter-accepted`; the result reports `proven=true`. `close-b-settled` revision 13 independently agrees on native/fixture/core A, matching frames and B absent. Core `src-d-107woso` retires the identical tuple by equality. |
+| Positive-close native fallback already equals successor | PASS, no request created | Closing focused A leaves C focused in native/fixture/core state (`close-a-settled`, revision 15). Core `src-e-1x98uyx` revision 14 records C as `cause=positive-close decision=equality reason=already-target request=not-created`, with `id=- issuingRev=-`. No retained request or setter is claimed for this branch. |
+
+- First-window admission additionally exposes a truthful superseded no-call:
+  `src-3-d3yl68` revision 3 evaluates `focus-3` with `decision=no-call
+  reason=superseded`; core revision 4 then satisfies it by equality. This is
+  not an admission-actuation claim or a demonstrated product defect.
+- Collection qualifications: some immediate native captures precede application;
+  only the explicitly settled checkpoints establish final state. An initial
+  scripting-error query used a malformed cursor extraction and failed; the
+  corrected extraction selected only the opaque cursor and the recapture
+  succeeded. No product mutation was repeated for that collection failure.
+- Workspace observations: the pre-existing test workspace named "Focus
+  diagnostics" was present initially and retired during ordinary controller
+  lifecycle churn. A new test workspace was appended beyond that roster.
+  Teardown selected a surviving original workspace; no exact restoration is
+  claimed and no workspace-retirement defect is inferred.
+- Lifecycle: all 19 nonce-named helpers retain source, plugin, signed load ID,
+  pre-load child roster, exact-object introspection and raw run/unload replies.
+  Every helper was unloaded with named-plugin false and exact-object absence
+  before the next helper or controller teardown. Final checks preserve the
+  initial sole script object; three predecessor helper names also read false.
+- Teardown: fixture shutdown succeeded; owned native windows, server, socket and
+  private directory are absent. Combined tmpfs dev, planner and tray logs were
+  copied before teardown. `dev-off` unloaded the controller and stopped the
+  planner; terminating the exact verified foreground shell through its cleanup
+  trap removed the tray and eight followers. Final status is DOWN, with no
+  `ydotoold` and no scripting-category errors. All recorded child PIDs are absent;
+  two top-level launch wrappers have exited but remain defunct under their parent
+  (`final-wrapper-states.txt`, `final-accounting.json`). Complete PID-absence
+  proof was open for those two wrappers at the audit; a later direct check found
+  both entries gone. No running test process remained.
+- Independent saved-raw-evidence audit accepts the three scoped verdicts,
+  evaluated readiness and all 19 helper lifecycles, with the two exited-wrapper
+  PID-absence proof explicitly open. An audit-summary parsing error initially
+  called wrapped presentation replies revision-null; decoding their embedded
+  JSON confirms revisions 8/12/14, without changing any verdict.
+- The earlier smoke failures remain historical evidence-gate failures, not
+  demonstrated product failures. Enabled hover/float guards, physical shortcuts,
+  unavailable-pending-target native command subjects and complete intent-restart
+  settlement remain outside this native result. The diagnostic/native checks
+  above are verified; the two exited-wrapper entries were later found absent,
+  completing teardown accounting.
+
 ## Source anchors
 
 - E1: `docs/principles.md:135-171`.
