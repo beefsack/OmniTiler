@@ -1173,9 +1173,10 @@ pub struct WorldEngine {
     /// never a birth. Pruned like `born_attempted`.
     pub(crate) born_seen_nonfullscreen: BTreeSet<WindowId>,
     /// Lifetimes latched keep-overlay at tiled-first evaluation
-    /// ([`born_keep_latch`](crate::window_policy::born_keep_latch)): a later
-    /// flip to tile-on-launch never reclears them. Pruned like
-    /// `born_attempted`.
+    /// ([`born_keep_latch`](crate::window_policy::born_keep_latch)) or seeded
+    /// from the startup cohort on the first accepted usable complete
+    /// inventory: a later flip to tile-on-launch never reclears them. Pruned
+    /// like `born_attempted`.
     pub(crate) born_keep_overlay: BTreeSet<WindowId>,
     /// Lifetime-local core-composed maximize bits (`caps.maximize == false`
     /// only): windows whose published frame is the output work area under

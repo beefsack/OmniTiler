@@ -12,7 +12,7 @@
 //! [`crate::world_clear`].
 //!
 //! Two lanes, one binding shape:
-//! - Born lane: a first-seen maximized, non-fullscreen window on a
+//! - Born lane: a post-startup first-seen maximized, non-fullscreen window on a
 //!   tiled/controlled scope clears once under `tile-on-launch`. The
 //!   keep-overlay decision latches per lifetime at tiled-first evaluation
 //!   ([`born_keep_latch`](crate::window_policy::born_keep_latch)), so a
@@ -23,7 +23,10 @@
 //!   fixed birth). Later fullscreen on admitted tiles never enters the held
 //!   set, and floating-first windows never clear through either lane.
 //!
-//! Birth identity is first evaluable sighting, not session pre-membership:
+//! Startup fact/held identities keep native maximize through delayed admission;
+//! their existing floating/fixed-size and fullscreen gates still take precedence.
+//! For later arrivals, birth identity is first evaluable sighting, not session
+//! pre-membership:
 //! arrivals that cannot be evaluated yet (unhomed, held/unreadable scope,
 //! minimized, unreadable rect) mark nothing and decide on the first report
 //! that proves scope, so late admission is never defeated by an earlier
@@ -275,6 +278,21 @@ impl WorldEngine {
             self.born_seen_nonfullscreen.clear();
             self.born_keep_overlay.clear();
             return;
+        }
+        // Startup adoption: on the first accepted usable complete inventory
+        // (`!self.placement_bootstrapped`), seed `born_keep_overlay` with all
+        // fact and held identities so pre-existing maximized windows retain
+        // their native maximize overlay (and reserved tile slot) even when
+        // admission is delayed through held/minimized/unreadable/unhomed
+        // states. Fullscreen-born windows still enter `born_held_fullscreen`
+        // and clear on first exit (checked before `born_keep_overlay` below).
+        if !self.placement_bootstrapped {
+            for window in self.staged.facts.keys() {
+                self.born_keep_overlay.insert(window.clone());
+            }
+            for held in &self.staged.held_windows {
+                self.born_keep_overlay.insert(held.window.clone());
+            }
         }
         // Explicit closes prune every born lifetime set, so id reuse after
         // a close starts a fresh lifetime that may clear again.

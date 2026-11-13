@@ -170,8 +170,12 @@
   [intent contract](../decisions/contract.md#intent-ownership-and-persistence)
   rejects losing intent on restart. The unchanged `v/float/stickyPrior` storage
   shape alone cannot decide native-overlay survival. A minimal native restart
-  discriminator is [recorded with expected/reference outcomes TBD](../spec/reference-outcomes.md#native-maximize-across-tiler-restart).
-  No product fix or intent-schema change was made.
+  discriminator was [initially recorded with expected/reference outcomes TBD](../spec/reference-outcomes.md#native-maximize-across-tiler-restart).
+  No product fix or intent-schema change was made in that native leg. The later
+  user decision (2026-11-13) preserves startup native maximize; the
+  [offline startup-adoption fix](native-maximize-startup-adoption.md) confirms the
+  born-clear source path and adds shared core/service regressions. This does not
+  supply the missing native setter correlation or post-fix native acceptance.
 - Helper accounting is qualified by the
   [scoped follow-up](c9-product-evidence.md#native-recovery-correction-and-scoped-follow-up-2026-11-13).
   Both trace sets were copied before teardown; final output/status receipts and

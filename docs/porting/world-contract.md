@@ -275,7 +275,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | `defaultTiled` | bool | true | Subsequent new workspaces (`workspace.default-tiled`). |
 | `mode` | `per-output-local/global-unique/shared` | per-output-local | Restart (`workspace.mode`). |
 | `sameAxis` | `group-with-neighbor/swap-with-neighbor` | group-with-neighbor | Subsequent move (`move.same-axis`). |
-| `bornMaximized` | `tile-on-launch/keep-maximized-overlay` | tile-on-launch | Subsequent admission (`admission.born-maximized`). |
+| `bornMaximized` | `tile-on-launch/keep-maximized-overlay` | tile-on-launch | Post-startup first appearance only; startup native maximize is adopted as an overlay (`admission.born-maximized`). |
 | `predicate` | `both-axes-fixed/either-axis-fixed` | both-axes-fixed | Subsequent admissions only; retained classifications unchanged (`admission.fixed-size`). |
 | `refill` | `last-remaining-workspace/most-recently-used-workspace` | last-remaining-workspace | Subsequent migration (`migration.refill`). |
 | `switchTarget` | `cursor-output/focused-output` | cursor-output | Subsequent selection (`output.switch-target`). |
@@ -465,6 +465,17 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   distinction from native adoption are recorded in the
   [correction evidence](../changes/v4-migration.md#milestone-3-source-checked-corrections).
   [Intent ownership](../decisions/contract.md#intent-ownership-and-persistence).
+- Core adopts startup native maximize without a clear: the first accepted usable
+  complete inventory after settings/screen readiness defines startup presence,
+  including held identities. Earlier incomplete/unready reports do not finish
+  startup. Delayed held/minimized/unreadable/unhomed admission retains that
+  exemption until lifetime end; no maximized fact is invented. Ordinary tiled
+  bases reserve slots; imported float/sticky and fixed-size classification keep
+  their existing precedence. Only later first appearances use `bornMaximized`.
+  Re-handshake resets the model and adopts its initial roster; transport recovery
+  without reset preserves known-window state. No wire field or adapter policy is
+  added. Fullscreen and the composed `maximize:false` route are unchanged.
+  [Born-maximized decision](../decisions/window-state.md#born-maximized-policy-and-tile-overlays).
 - Minimized/host-hidden membership and eligibility remain distinct; no implicit
   unminimize/app-unhide. Existing workspace migration/output displacement and
   pre-hide transfers may relocate membership without geometry or activation.

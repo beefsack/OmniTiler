@@ -128,12 +128,23 @@ fn born_clear_engine() -> WorldEngine {
         .expect("generation")
 }
 
+/// Fresh birth-clear engine that has already completed its empty startup
+/// baseline report, so the next report represents post-startup arrivals.
+fn born_clear_engine_post_startup() -> WorldEngine {
+    let mut engine = born_clear_engine();
+    accepted(
+        &mut engine,
+        &report(0, 0, vec![screen("out-a", 0)], Vec::new(), None, None),
+    );
+    engine
+}
+
 #[test]
 fn commandless_birth_mints_and_publishes_clear() {
     // A tiled-first born maximized window binds commandlessly and the
     // reply carries the one-shot `clear_operation` desire. No command
     // ran: the binding id comes from the core born serial.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     let reply = accepted(
         &mut engine,
         &report(
@@ -241,7 +252,7 @@ fn disabled_deferred_conditions_mint_nothing() {
 fn rehandshake_without_birth_clear_drops_old_binding() {
     // Capabilities are immutable per connection. A fresh adapter lifetime
     // without birth-clear starts with no retained token and cannot mint one.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     let first = accepted(
         &mut engine,
         &report(
@@ -342,7 +353,7 @@ fn accepted_attempt_plus_unmaximized_proves_and_retires() {
     // The spent operation never re-actuates: a correlated accepted
     // attempt plus complete readable unmaximized facts retires the
     // binding, and the next report carries no desire and mints nothing.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     let first = accepted(
         &mut engine,
         &report(
@@ -393,7 +404,7 @@ fn external_clear_without_attempt_abandons() {
     // Unmaximized facts with no correlated attempt name newer external
     // input, not our clear: the binding abandons with no continuation
     // and never re-mints.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     accepted(
         &mut engine,
         &report(
@@ -422,7 +433,7 @@ fn proven_refusal_retires_and_never_retries() {
     // An explicit refusal with an unchanged readable maximized preimage
     // proves refusal: the binding retires and later maximized reports
     // never re-mint.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     let first = accepted(
         &mut engine,
         &report(
@@ -474,7 +485,7 @@ fn throw_latches_ambiguity_through_unchanged_reads() {
     // A throw may have executed: the binding holds with no retry, and
     // the staged pending attempt survives a later unmaximized read
     // without proving an external clear.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     let first = accepted(
         &mut engine,
         &report(
@@ -523,7 +534,7 @@ fn throw_latches_ambiguity_through_unchanged_reads() {
 fn unreadable_proof_holds_without_spend() {
     // An accepted attempt with an unreadable post latches ambiguity:
     // never success, never retry.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     let first = accepted(
         &mut engine,
         &report(
@@ -561,7 +572,7 @@ fn async_success_completes_on_later_unmaximized_facts() {
     // Setter acceptance is never synchronous completion: the binding
     // holds while the window still reads maximized, then retires when
     // later readable facts prove the async clear landed.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     let first = accepted(
         &mut engine,
         &report(
@@ -891,7 +902,7 @@ fn keep_overlay_skips_born_but_clears_held_exit() {
 fn floating_scope_never_clears_and_latches_floating_first() {
     // A maximized birth on a floating workspace keeps its overlay, and a
     // later tiled admission of the same lifetime never clears either.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     accepted(
         &mut engine,
         &report(
@@ -968,7 +979,7 @@ fn close_prunes_and_replacement_rearms() {
     // An explicit close prunes every born lifetime set, so a replacement
     // lifetime under the same id binds fresh with a new operation id.
     use crate::directional::WindowId as W;
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     let first = accepted(
         &mut engine,
         &report(
@@ -1004,7 +1015,7 @@ fn close_prunes_and_replacement_rearms() {
 fn minimized_and_unreadable_hold_without_spend() {
     // Minimized and unreadable facts hold the binding with no attempt
     // and no spent mark: a later readable reply retries the desire.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     let first = accepted(
         &mut engine,
         &report(
@@ -1110,7 +1121,7 @@ fn sticky_birth_never_clears() {
 fn fullscreen_flip_abandons_into_held_lane() {
     // A fullscreen flip while a born clear is outstanding abandons the
     // born binding and re-arms the held lane for the eventual exit.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     accepted(
         &mut engine,
         &report(
@@ -1161,7 +1172,7 @@ fn distinct_births_dedup_per_window() {
     // maximized windows sharing one domain hold at engine converge, so
     // the dedup pair rides separate outputs like a real two-display
     // capture.)
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     let screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let reply = accepted(
         &mut engine,
@@ -1231,7 +1242,7 @@ fn delayed_fixed_transition_abandons_without_retry() {
     // A birth that reads fixed only after minting abandons with no retry:
     // fixed births float beneath their overlay. The first report mints on
     // non-fixed hints; the fixed report retires the binding.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     let first = accepted(
         &mut engine,
         &report(
@@ -1279,7 +1290,7 @@ fn delayed_unreadable_late_admission_binds() {
     // An unreadable birth (no rect) marks nothing and never mints; the
     // first readable maximized report binds it. Late admission is never
     // defeated by the earlier non-decision.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     let unreadable = WindowFact {
         rect: None,
         ..born_maximized("win-born", "out-a", 100)
@@ -1352,7 +1363,7 @@ fn complete_departures_bound_all_born_sets() {
     // (A returning id re-evaluates against retained slots, covered by
     // implicit_departure_restore_is_not_birth; replacement after explicit
     // close is covered by close_prunes_and_replacement_rearms.)
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     let first = accepted(
         &mut engine,
         &report(
@@ -1433,7 +1444,7 @@ fn same_domain_cohort_clear_admission_parked_b1() {
     // held; only the clear token rides, settled solely by fresh native
     // evidence plus the correlated raw attempt. Sequential arrival binds
     // both (see distinct_births_dedup_per_window).
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     let reply = accepted(
         &mut engine,
         &report(
@@ -1477,7 +1488,7 @@ fn cohort_clear_publishes_held_property_tokens() {
     // actuator consumes `clear_operation` without any frame/member
     // authority, so geometry writes stay held while the property clear
     // proceeds. Both rows carry no allocation and hold both authorities.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     let reply = accepted(&mut engine, &cohort_report(1, 1));
     assert_eq!(engine.born_retained_len(), 2);
     for win in ["win-a", "win-b"] {
@@ -1522,7 +1533,7 @@ fn cohort_clear_settles_and_converges_frames() {
     // dispatch, and fresh native evidence (correlated accepted attempts
     // plus readable unmaximized facts) retires both bindings with no
     // re-mint. The converged scope then tiles the proven frames.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     let first = accepted(&mut engine, &cohort_report(1, 1));
     let opa = desire_op(&first, "win-a").expect("a desires");
     let opb = desire_op(&first, "win-b").expect("b desires");
@@ -1857,7 +1868,7 @@ fn sticky_flip_abandons_with_no_retry() {
     // binding abandons on the flip report, publishes no desire there or
     // later, and never re-mints even if the window unstickies while
     // still maximized.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     accepted(
         &mut engine,
         &report(
@@ -1904,7 +1915,7 @@ fn floating_fact_flip_abandons_and_latches() {
     // A floating-fact flip ends the automatic clear with no retry and
     // latches floating-first: the flip report abandons, and a later
     // return to maximized-tiled facts never re-mints.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     accepted(
         &mut engine,
         &report(
@@ -1953,7 +1964,7 @@ fn floating_flip_gapped_withholds_desire_then_abandons() {
     // from absence), but publish withholds the desire through the
     // per-window reproof. The next complete report abandons, and the
     // spent token never rides.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     let first = accepted(
         &mut engine,
         &report(
@@ -2000,7 +2011,7 @@ fn floating_flip_gapped_withholds_desire_then_abandons() {
 fn sticky_flip_gapped_withholds_desire() {
     // Gap plus sticky flip: the binding holds across the gap with no
     // desire, then abandons on the complete report with no retry.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     accepted(
         &mut engine,
         &report(
@@ -2058,7 +2069,7 @@ fn explicit_float_intent_supersedes_birth() {
     // ToggleFloat command on a maximized born-pending window refuses at
     // the session (only unflagged members float), so the intent is staged
     // directly here; the command-refusal path is pinned separately below.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     accepted(
         &mut engine,
         &report(
@@ -2127,7 +2138,7 @@ fn toggle_float_on_maximized_birth_refuses_without_clear() {
     // the automatic birth is correctly NOT superseded — the clear must
     // land before any float (clear-then-float coherence). The binding
     // survives the refusal and the desire rides the next report.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     accepted(
         &mut engine,
         &report(
@@ -2200,7 +2211,7 @@ fn mode_flip_does_not_reclear_retained_lifetime() {
     // a retained lifetime: the outstanding binding keeps its operation id
     // across TileOnLaunch -> KeepMaximizedOverlay -> TileOnLaunch with no
     // second mint.
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     let first = accepted(
         &mut engine,
         &report(
@@ -2264,7 +2275,7 @@ fn empty_native_free_migration_retires_echoless_born_clear_proceeds() {
     // is staged directly; only the born-authority mirror is pinned
     // here.
     use std::collections::BTreeMap;
-    let mut engine = born_clear_engine();
+    let mut engine = born_clear_engine_post_startup();
     accepted(
         &mut engine,
         &report(
@@ -2398,4 +2409,590 @@ fn retained_maximized_slot_keeps_controlled_reservation() {
         ScopeAuthority::Controlled,
         "retained scope stays controlled"
     );
+}
+
+#[test]
+fn default_startup_maximized_keeps_overlay_with_reserved_slot() {
+    let mut engine = born_clear_engine();
+    let reply = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![born_maximized("win-start", "out-a", 100)],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        engine.born_retained_len(),
+        0,
+        "startup maximized survivor never mints a born clear"
+    );
+    assert_eq!(desire_op(&reply, "win-start"), None);
+    let row = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-start")
+        .expect("startup survivor row");
+    assert!(
+        row.allocation.is_some(),
+        "startup maximized survivor reserves a tile slot"
+    );
+    assert_eq!(row.frame_authority, ScopeAuthority::Controlled);
+    assert_eq!(row.membership_authority, ScopeAuthority::Controlled);
+}
+
+#[test]
+fn later_born_after_startup_clears_once_then_tiles() {
+    let mut engine = born_clear_engine();
+    let startup = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![born_maximized("win-start", "out-a", 100)],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(desire_op(&startup, "win-start"), None);
+    let later = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![
+                born_maximized("win-start", "out-a", 100),
+                born_maximized("win-later", "out-a", 200),
+            ],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(desire_op(&later, "win-start"), None);
+    let op = desire_op(&later, "win-later").expect("later born window clears once");
+    assert!(op.starts_with("op-born-"));
+    assert_eq!(engine.born_retained_len(), 1);
+    let cleared = accepted(
+        &mut engine,
+        &report_clears(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![
+                born_maximized("win-start", "out-a", 100),
+                fact("win-later", "out-a", 200),
+            ],
+            "",
+            vec![clear_attempt(
+                &op,
+                "win-later",
+                FrameSetter::Accepted,
+                Some(true),
+                Some(false),
+            )],
+        ),
+    );
+    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(desire_op(&cleared, "win-later"), None);
+    let later_row = cleared
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-later")
+        .expect("later born tiled row");
+    assert!(later_row.allocation.is_some());
+    assert_eq!(later_row.frame_authority, ScopeAuthority::Controlled);
+}
+
+#[test]
+fn keep_maximized_overlay_unchanged_startup_and_later() {
+    let mut engine = born_clear_engine();
+    set_born_policy(
+        &mut engine,
+        2,
+        crate::born_maximized::BornMaximized::KeepMaximizedOverlay,
+    );
+    let startup = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![born_maximized("win-start", "out-a", 100)],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(desire_op(&startup, "win-start"), None);
+    assert_eq!(engine.born_retained_len(), 0);
+    let later = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![
+                born_maximized("win-start", "out-a", 100),
+                born_maximized("win-later", "out-a", 200),
+            ],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(desire_op(&later, "win-start"), None);
+    assert_eq!(desire_op(&later, "win-later"), None);
+    assert_eq!(engine.born_retained_len(), 0);
+    for id in ["win-start", "win-later"] {
+        let row = later
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == id)
+            .expect("kept overlay row");
+        assert!(row.allocation.is_some());
+        assert_eq!(row.frame_authority, ScopeAuthority::Controlled);
+    }
+}
+
+#[test]
+fn startup_maximized_later_user_unmaximize_restores_reserved_slot() {
+    let mut engine = born_clear_engine();
+    let startup = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![born_maximized("win-start", "out-a", 100)],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(desire_op(&startup, "win-start"), None);
+    let reserved = startup
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-start")
+        .and_then(|row| row.allocation)
+        .expect("reserved slot");
+    let restored = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![fact("win-start", "out-a", 100)],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(desire_op(&restored, "win-start"), None);
+    let restored_row = restored
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-start")
+        .expect("restored row");
+    assert_eq!(restored_row.allocation, Some(reserved));
+    assert_eq!(restored_row.frame_authority, ScopeAuthority::Controlled);
+}
+
+#[test]
+fn multiple_startup_maximized_survivors_keep_overlay_and_restore_slots() {
+    let mut engine = born_clear_engine();
+    let startup = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![
+                born_maximized("win-a", "out-a", 100),
+                born_maximized("win-b", "out-a", 200),
+            ],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(desire_op(&startup, "win-a"), None);
+    assert_eq!(desire_op(&startup, "win-b"), None);
+    let alloc_a = startup
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-a")
+        .and_then(|row| row.allocation)
+        .expect("slot a");
+    let alloc_b = startup
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-b")
+        .and_then(|row| row.allocation)
+        .expect("slot b");
+    assert_ne!(alloc_a, alloc_b);
+    let restored = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![fact("win-a", "out-a", 100), fact("win-b", "out-a", 200)],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        restored
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-a")
+            .and_then(|row| row.allocation),
+        Some(alloc_a)
+    );
+    assert_eq!(
+        restored
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-b")
+            .and_then(|row| row.allocation),
+        Some(alloc_b)
+    );
+}
+
+#[test]
+fn startup_mix_maximized_and_ordinary_tiled_no_restore_reflow() {
+    let mut engine = born_clear_engine();
+    let startup = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![
+                born_maximized("win-max", "out-a", 100),
+                fact("win-tile", "out-a", 200),
+            ],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(desire_op(&startup, "win-max"), None);
+    let max_alloc = startup
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-max")
+        .and_then(|row| row.allocation)
+        .expect("reserved max slot");
+    let tile_alloc = startup
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-tile")
+        .and_then(|row| row.allocation)
+        .expect("ordinary tiled slot");
+    let restored = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![
+                fact("win-max", "out-a", 100),
+                fact("win-tile", "out-a", 200),
+            ],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        restored
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-max")
+            .and_then(|row| row.allocation),
+        Some(max_alloc),
+        "restored startup maximized window takes its reserved slot"
+    );
+    assert_eq!(
+        restored
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-tile")
+            .and_then(|row| row.allocation),
+        Some(tile_alloc),
+        "ordinary tiled sibling does not reflow on unmaximize"
+    );
+}
+
+#[test]
+fn startup_incomplete_then_complete_adopts_complete_cohort() {
+    let mut engine = born_clear_engine();
+    let mut incomplete = report(
+        1,
+        1,
+        vec![screen("out-a", 0)],
+        vec![born_maximized("win-pre", "out-a", 100)],
+        None,
+        None,
+    );
+    incomplete.inventory_complete = false;
+    let bootstrap = accepted(&mut engine, &incomplete);
+    assert!(bootstrap.windows.is_empty(), "incomplete stays pre-ready");
+    let startup = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![born_maximized("win-start", "out-a", 100)],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(desire_op(&startup, "win-start"), None);
+    assert_eq!(engine.born_retained_len(), 0);
+    let later = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![
+                born_maximized("win-start", "out-a", 100),
+                born_maximized("win-later", "out-a", 200),
+            ],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(desire_op(&later, "win-start"), None);
+    assert!(desire_op(&later, "win-later").is_some());
+}
+
+#[test]
+fn startup_held_and_minimized_and_unhomed_preserve_presence() {
+    let mut engine = born_clear_engine();
+    let mut startup_report = report(
+        1,
+        1,
+        vec![screen("out-a", 0)],
+        vec![
+            WindowFact {
+                minimized: Some(true),
+                ..born_maximized("win-min", "out-a", 100)
+            },
+            WindowFact {
+                output: None,
+                ..born_maximized("win-unhomed", "out-a", 200)
+            },
+        ],
+        None,
+        None,
+    );
+    startup_report.held_windows = vec![crate::world_report::HeldWindowRow {
+        window: WindowId("win-held".to_owned()),
+        ordinal: 0,
+        output: Some(OutputId("out-a".to_owned())),
+        fields: Vec::new(),
+        diagnostic: None,
+        kind: crate::world_report::RowDiagnosticKind::InvalidFact,
+    }];
+    let startup = accepted(&mut engine, &startup_report);
+    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(desire_op(&startup, "win-min"), None);
+    let recovered = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![
+                born_maximized("win-min", "out-a", 100),
+                born_maximized("win-unhomed", "out-a", 200),
+                born_maximized("win-held", "out-a", 300),
+            ],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(desire_op(&recovered, "win-min"), None);
+    assert_eq!(desire_op(&recovered, "win-unhomed"), None);
+    assert_eq!(desire_op(&recovered, "win-held"), None);
+}
+
+#[test]
+fn startup_close_and_id_reuse_rearms_born_clear() {
+    let mut engine = born_clear_engine();
+    let startup = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![born_maximized("win-reuse", "out-a", 100)],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(desire_op(&startup, "win-reuse"), None);
+    let mut close_report = report(2, 2, vec![screen("out-a", 0)], Vec::new(), None, None);
+    close_report.closed = vec![WindowId("win-reuse".to_owned())];
+    accepted(&mut engine, &close_report);
+    let reused = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![born_maximized("win-reuse", "out-a", 100)],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        desire_op(&reused, "win-reuse").is_some(),
+        "reused id after explicit close clears as a fresh born window"
+    );
+}
+
+#[test]
+fn reconnect_preserves_latches_and_rehandshake_adopts_new_startup() {
+    let mut engine = born_clear_engine();
+    let startup = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![born_maximized("win-start", "out-a", 100)],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(desire_op(&startup, "win-start"), None);
+    // Transport recovery without re-handshake: known startup id stays
+    // untouched while a newly appearing id uses born policy.
+    let recovered = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![
+                born_maximized("win-start", "out-a", 100),
+                born_maximized("win-new", "out-a", 200),
+            ],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(desire_op(&recovered, "win-start"), None);
+    assert!(desire_op(&recovered, "win-new").is_some());
+
+    // Re-handshake resets the engine baseline and adopts the new startup
+    // inventory without clearing.
+    let capabilities = crate::connection::HostCapabilities {
+        birth_clear: true,
+        native_sticky: true,
+        maximize: true,
+        ..Default::default()
+    };
+    let handshake = engine.handshake(&crate::connection::HandshakeRequest {
+        adapter: "adapter-1".to_owned(),
+        request: "rehandshake-1".to_owned(),
+        application_identity: crate::connection::ApplicationIdentity {
+            app_id: Some("app.test".to_owned()),
+            executable: Some("test-app".to_owned()),
+            process_id: Some("pid-1".to_owned()),
+        },
+        capabilities,
+    });
+    assert!(handshake.kind.is_none());
+    let generation = handshake.generation.expect("rehandshake generation");
+    engine
+        .handle_settings(&crate::connection::SettingsRequest {
+            adapter: "adapter-1".to_owned(),
+            generation: generation.clone(),
+            request: "rehandshake-settings".to_owned(),
+            revision: 0,
+            values: vec![(
+                "bornMaximized".to_owned(),
+                crate::connection::RawSettingValue::String("tile-on-launch".to_owned()),
+            )],
+        })
+        .expect("initial settings accepted");
+    let mut fresh_report = report(
+        1,
+        1,
+        vec![screen("out-a", 0)],
+        vec![born_maximized("win-rehand", "out-a", 100)],
+        None,
+        None,
+    );
+    fresh_report.core_generation = generation;
+    let rehand = accepted(&mut engine, &fresh_report);
+    assert_eq!(desire_op(&rehand, "win-rehand"), None);
+    assert_eq!(engine.born_retained_len(), 0);
+}
+
+#[test]
+fn startup_float_fixed_sticky_and_fullscreen_unchanged() {
+    let mut engine = born_clear_engine();
+    let mut sticky = born_maximized("win-sticky", "out-a", 200);
+    sticky.sticky = Some(true);
+    let startup = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![
+                WindowFact {
+                    maximized: Some(true),
+                    ..float_fact("win-float", "out-a", 50, 50)
+                },
+                fixed_maximized("win-fixed", "out-a", 150),
+                sticky,
+                born_fullscreen("win-fs", "out-a", 300),
+            ],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(engine.born_retained_len(), 0);
+    for id in ["win-float", "win-fixed", "win-sticky", "win-fs"] {
+        assert_eq!(desire_op(&startup, id), None);
+    }
+    let after_fs_exit = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![
+                WindowFact {
+                    maximized: Some(true),
+                    ..float_fact("win-float", "out-a", 50, 50)
+                },
+                fixed_maximized("win-fixed", "out-a", 150),
+                WindowFact {
+                    sticky: Some(true),
+                    ..born_maximized("win-sticky", "out-a", 200)
+                },
+                born_maximized("win-fs", "out-a", 300),
+            ],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        desire_op(&after_fs_exit, "win-fs").is_some(),
+        "fullscreen-born startup window still clears on first exit to maximized"
+    );
+    for id in ["win-float", "win-fixed", "win-sticky"] {
+        assert_eq!(desire_op(&after_fs_exit, id), None);
+    }
 }

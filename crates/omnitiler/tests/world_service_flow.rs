@@ -2596,14 +2596,82 @@ fn born_restored_row(win: &str, desktop: &str) -> String {
 }
 
 #[test]
-fn born_maximized_cohort_clears_and_settles_through_broker() {
-    // Same-desktop maximized cohort: first complete captured-shaped report
-    // binds both births through the broker/core lane, the
-    // reply rides both one-shot `clear_op` tokens with no geometry while
-    // held, and correlated accepted attempts plus restored facts settle both
-    // with no re-mint.
+fn born_startup_maximized_survivor_keeps_overlay_and_later_born_clears() {
     let (service, generation) = discovered_born_service();
     let native = born_native_order();
+    let startup = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                1,
+                1,
+                &inner_report_birth(
+                    &[born_maximized_row(BORN_WIN_A, UUID_A)],
+                    true,
+                    true,
+                    &native,
+                ),
+            ))
+            .expect("accepted"),
+    );
+    assert_eq!(startup["ready"], true);
+    assert_eq!(clear_op_of(&startup, BORN_WIN_A), "");
+    let startup_row = reply_row(&startup, BORN_WIN_A);
+    assert!(
+        !startup_row["alloc"].is_null(),
+        "startup survivor reserves slot"
+    );
+    assert_eq!(startup_row["frame_auth"], "controlled");
+    assert_eq!(startup_row["member_auth"], "controlled");
+    let later = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                2,
+                2,
+                &inner_report_birth(
+                    &[
+                        born_maximized_row(BORN_WIN_A, UUID_A),
+                        born_maximized_row(BORN_WIN_B, UUID_A),
+                    ],
+                    true,
+                    true,
+                    &native,
+                ),
+            ))
+            .expect("accepted"),
+    );
+    assert_eq!(clear_op_of(&later, BORN_WIN_A), "");
+    let opb = clear_op_of(&later, BORN_WIN_B);
+    assert!(
+        opb.starts_with("op-born-"),
+        "later born clears once, got {opb}"
+    );
+}
+
+#[test]
+fn born_maximized_cohort_clears_and_settles_through_broker() {
+    // Same-desktop maximized cohort: after the empty startup baseline,
+    // the next complete captured-shaped report binds both births through
+    // the broker/core lane, the reply rides both one-shot `clear_op`
+    // tokens with no geometry while held, and correlated accepted attempts
+    // plus restored facts settle both with no re-mint.
+    let (service, generation) = discovered_born_service();
+    let native = born_native_order();
+    let baseline = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                1,
+                1,
+                &inner_report_birth(&[], true, true, &native),
+            ))
+            .expect("accepted"),
+    );
+    assert_eq!(baseline["ready"], true);
     let first_inner = inner_report_birth(
         &[
             born_maximized_row(BORN_WIN_A, UUID_A),
@@ -2615,7 +2683,7 @@ fn born_maximized_cohort_clears_and_settles_through_broker() {
     );
     let first = parse(
         &service
-            .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &first_inner))
+            .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &first_inner))
             .expect("accepted"),
     );
     assert_eq!(first["ready"], true);
@@ -2670,7 +2738,7 @@ fn born_maximized_cohort_clears_and_settles_through_broker() {
     );
     let second = parse(
         &service
-            .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &second_inner))
+            .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &second_inner))
             .expect("accepted"),
     );
     assert_eq!(clear_op_of(&second, BORN_WIN_A), "", "proof retires a");
@@ -2692,7 +2760,7 @@ fn born_maximized_cohort_clears_and_settles_through_broker() {
     // A further unchanged report never re-mints: at-most-once holds.
     let third = parse(
         &service
-            .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &second_inner))
+            .evaluate_capture(&capture(ADAPTER, &generation, 4, 4, &second_inner))
             .expect("accepted"),
     );
     assert_eq!(clear_op_of(&third, BORN_WIN_A), "");
@@ -2890,13 +2958,22 @@ fn born_async_accepted_then_later_read_settles_without_reactuation() {
     // re-actuates: the follow-up carries no desire.
     let (service, generation) = discovered_born_service();
     let native = born_native_order();
+    service
+        .evaluate_capture(&capture(
+            ADAPTER,
+            &generation,
+            1,
+            1,
+            &inner_report_birth(&[], true, true, &native),
+        ))
+        .expect("accepted");
     let first = parse(
         &service
             .evaluate_capture(&capture(
                 ADAPTER,
                 &generation,
-                1,
-                1,
+                2,
+                2,
                 &inner_report_birth(
                     &[born_maximized_row(BORN_WIN_A, UUID_A)],
                     true,
@@ -2921,7 +2998,7 @@ fn born_async_accepted_then_later_read_settles_without_reactuation() {
     );
     let second = parse(
         &service
-            .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &second_inner))
+            .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &second_inner))
             .expect("accepted"),
     );
     assert_eq!(
@@ -2936,8 +3013,8 @@ fn born_async_accepted_then_later_read_settles_without_reactuation() {
             .evaluate_capture(&capture(
                 ADAPTER,
                 &generation,
-                3,
-                3,
+                4,
+                4,
                 &inner_report_birth(
                     &[born_restored_row(BORN_WIN_A, UUID_A)],
                     true,
@@ -2958,8 +3035,8 @@ fn born_async_accepted_then_later_read_settles_without_reactuation() {
             .evaluate_capture(&capture(
                 ADAPTER,
                 &generation,
-                4,
-                4,
+                5,
+                5,
                 &inner_report_birth(
                     &[born_maximized_row(BORN_WIN_A, UUID_A)],
                     true,
@@ -2983,13 +3060,22 @@ fn born_refused_attempt_retires_without_retry() {
     // re-mint.
     let (service, generation) = discovered_born_service();
     let native = born_native_order();
+    service
+        .evaluate_capture(&capture(
+            ADAPTER,
+            &generation,
+            1,
+            1,
+            &inner_report_birth(&[], true, true, &native),
+        ))
+        .expect("accepted");
     let first = parse(
         &service
             .evaluate_capture(&capture(
                 ADAPTER,
                 &generation,
-                1,
-                1,
+                2,
+                2,
                 &inner_report_birth(
                     &[born_maximized_row(BORN_WIN_A, UUID_A)],
                     true,
@@ -3012,7 +3098,7 @@ fn born_refused_attempt_retires_without_retry() {
     );
     let second = parse(
         &service
-            .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &second_inner))
+            .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &second_inner))
             .expect("accepted"),
     );
     assert_eq!(clear_op_of(&second, BORN_WIN_A), "");
@@ -3021,8 +3107,8 @@ fn born_refused_attempt_retires_without_retry() {
             .evaluate_capture(&capture(
                 ADAPTER,
                 &generation,
-                3,
-                3,
+                4,
+                4,
                 &inner_report_birth(
                     &[born_maximized_row(BORN_WIN_A, UUID_A)],
                     true,

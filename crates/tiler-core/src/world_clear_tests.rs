@@ -2860,11 +2860,15 @@ fn desire_cmdseq_born_clear_is_commandless() {
         },
     )
     .expect("generation");
+    accepted(
+        &mut engine,
+        &report(1, 1, vec![screen("out-a", 0)], Vec::new(), None, None),
+    );
     let reply = accepted(
         &mut engine,
         &report(
-            1,
-            1,
+            2,
+            2,
             vec![screen("out-a", 0)],
             vec![WindowFact {
                 maximized: Some(true),
@@ -2901,8 +2905,8 @@ fn desire_cmdseq_born_clear_is_commandless() {
     let reply = accepted(
         &mut engine,
         &report(
-            2,
-            2,
+            3,
+            3,
             vec![screen("out-a", 0)],
             vec![WindowFact {
                 maximized: Some(true),

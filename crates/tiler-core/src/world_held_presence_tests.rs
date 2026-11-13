@@ -202,13 +202,26 @@ fn born_binding_survives_hold_and_recovers_same_operation() {
     // A maximized birth binds commandlessly; a held row keeps the binding
     // with no desire, and recovery republishes the same operation id.
     let mut engine = born_engine();
+    accepted(
+        &mut engine,
+        &report_full(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            Vec::new(),
+            Vec::new(),
+            "",
+            None,
+            None,
+        ),
+    );
     let mut maximized = fact("win-born", "out-a", 0);
     maximized.maximized = Some(true);
     let reply = accepted(
         &mut engine,
         &report_full(
-            1,
-            1,
+            2,
+            2,
             vec![screen("out-a", 0)],
             vec![maximized],
             Vec::new(),
@@ -234,8 +247,8 @@ fn born_binding_survives_hold_and_recovers_same_operation() {
     let reply = accepted(
         &mut engine,
         &report_full(
-            2,
-            2,
+            3,
+            3,
             vec![screen("out-a", 0)],
             vec![held_fact],
             Vec::new(),
@@ -261,8 +274,8 @@ fn born_binding_survives_hold_and_recovers_same_operation() {
     let reply = accepted(
         &mut engine,
         &report_full(
-            3,
-            3,
+            4,
+            4,
             vec![screen("out-a", 0)],
             vec![recovered],
             Vec::new(),
