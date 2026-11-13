@@ -889,12 +889,13 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             continue;
         }
         const ref = item as object;
-        // Candidate boundary includes real dialogs: a non-normal window with
-        // `dialog=true` (actual KWin dialog) rides the raw lane for broker
-        // retained membership; other non-normal transient/modal surfaces
-        // (menus, tooltips) stay dropped. Non-normal shell/popups need not
-        // expose usable managed geometry or membership and must not hold
-        // ordinary candidates.
+        // Candidate boundary includes real dialogs, utility/toolbar, and
+        // splash surfaces: a non-normal window with `dialog=true`,
+        // `utility=true`, `toolbar=true`, or `splash=true` rides the raw
+        // lane for broker retained membership; other non-normal
+        // transient/modal surfaces (menus, tooltips) stay dropped.
+        // Non-normal shell/popups need not expose usable managed geometry
+        // or membership and must not hold ordinary candidates.
         const normalWindowRaw = readProp(ref, "normalWindow");
         if (typeof normalWindowRaw !== "boolean") {
             windowsReadable = false;
@@ -906,7 +907,9 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             windowsReadable = false;
             continue;
         }
-        if (!normalWindow && !dialogForCandidate) {
+        const utilityForCandidate = readProp(ref, "utility") === true || readProp(ref, "toolbar") === true;
+        const splashForCandidate = readProp(ref, "splash") === true;
+        if (!normalWindow && !dialogForCandidate && !utilityForCandidate && !splashForCandidate) {
             continue;
         }
         // Scoped runs exclude foreign windows from observation entirely
@@ -1053,9 +1056,9 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             // UTF-8 <=4096 bytes, matching MAX_METADATA_TEXT_BYTES);
             // resizable/above/below ride null when unreadable so an
             // incomplete source holds narrowly instead of clearing the
-            // lane. The candidate boundary above guarantees normalWindow
-            // or dialog is a readable true, so the kind mapping below
-            // never yields null for a pushed row.
+            // lane. The candidate boundary above guarantees normalWindow,
+            // dialog, utility/toolbar, or splash is a readable true, so
+            // the kind mapping below never yields null for a pushed row.
             const boundedText = (value: unknown): string | null => {
                 if (typeof value !== "string") {
                     return null;

@@ -789,33 +789,43 @@ rectangles where geometry is load-bearing.
   add an implicit fullscreen exit or restore.
 - Observe: Whether the action applies, B's fullscreen flag and membership,
   focus, and the resulting layout; record native state separately from focus.
-- Then COSMIC: Move resolves the keyboard target to a tiling node; fullscreen
-  B is a separate fullscreen target removed from the tree, so the lookup misses
-  and `move_current_node` returns without a move. Orientation toggle likewise
+- Then COSMIC (`epoch-1.11.0`): fullscreen move forwards the fullscreen target
+  as `MoveFurther` (`src/shell/mod.rs:4374-4384`), not an in-tree move.
+  Output forwarding (`src/input/actions.rs:813-850`) has no destination in
+  this single-output fixture. Orientation toggle
   requires a focused tiling node and has no tree effect. Workspace switch calls
   workspace activation without a fullscreen setter; persistence/focus on return
-  through the full shell path remains TBD. `S(S-cos-fs-actions)` +
-  `S(S-cos-fsreq)`.
-- Then Hyprland/Dwindle: Directional move returns immediately for a fullscreen
+  through the full shell path remains TBD. Release paths: workspace activation
+  `src/shell/mod.rs:541-584,1778-1813`; fullscreen focus/presentation
+  `src/shell/focus/order.rs:216-232`, `src/shell/workspace.rs:812-835`;
+  orientation `src/shell/layout/tiling/mod.rs:2089-2098`.
+- Then Hyprland/Dwindle (`v0.57.2`): Directional move returns immediately for a fullscreen
   subject. `togglesplit` resolves B's layout node but its fullscreen guard
   refuses the toggle. Workspace activation does not clear fullscreen; with
   `input:follow_mouse=0`, return focus selects the workspace fullscreen cover.
-  `S(S-hyp-fs-actions)` + `S(S-hyp-fs)`.
+  Move guard `src/config/shared/actions/ConfigActions.cpp:560-567`;
+  `src/output/Monitor.cpp:1330-1428`, `src/desktop/state/FocusState.cpp:80-85`;
+  orientation guard `src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:681-684,774-785`.
+  Exact native frames/focus settlement TBD.
 - Then bspwm: All three combined fullscreen action legs TBD; no source audit of
   fullscreen directional move, workspace return or parent orientation toggle
   at the cited pin. `S(S-bsp-fs)`.
-- Then i3: With output fullscreen, directional move takes the fullscreen
+- Then i3 (`4.25.1`): With output fullscreen, directional move takes the fullscreen
   branch to output-directed transfer; on this single-output fixture there is
   no destination, so B stays fullscreen. Workspace switch and parent split
   toggle do not clear the con's fullscreen mode; exact focus return is TBD.
-  `S(S-i3-fs-actions)` + `S(S-i3-fs)`.
+  Move `src/move.c:206-213,277-283`; `src/workspace.c:438-522`;
+  split/layout `src/commands.c:1174-1202,1597-1648`,
+  `src/con.c:2109-2155`. Source retains fullscreen; native settlement TBD.
 - Then xmonad/Tall+Navigation2D: All three combined legs TBD; EWMH fullscreen
   is float-based and no combined action sequence was audited. `S(S-xmo-ewmh)`.
-- Then sway: Workspace fullscreen directional move considers outputs only; the
+- Then sway (`1.12`): Workspace fullscreen directional move considers outputs only; the
   single-output fixture has no target, so B stays fullscreen. Workspace switch
   retains the workspace fullscreen field; layout toggle changes the parent
   layout without a fullscreen-clear path. Exact focus/frame settlement TBD.
-  `S(S-sway-fs-actions)` + `S(S-sway-full)`.
+  Move `sway/commands/move.c:277-313`; `sway/tree/workspace.c:731-743`,
+  `sway/input/seat.c:1148-1151`;
+  `sway/commands/split.c:53-84`, `sway/commands/layout.c:117-175`.
 - Then qtile/Columns: All three combined legs TBD; no source audit at the
   cited pin. `S(S-qti-fs)`.
 - Then awesome/tile: All three combined legs TBD; no source audit at the cited
@@ -829,12 +839,22 @@ rectangles where geometry is load-bearing.
   `S(S-kar-maxfs)`.
 - Then paneru: All three combined legs TBD; fullscreen is a host Space/strip
   journey rather than a shared tiling-tree action. `S(S-pan-fsfocus)`.
-- Then Ours KDE: Fullscreen directional move remains fenced by the existing
-  [window-state decision](../../decisions/window-state.md#directional-maximize-and-fullscreen-operations).
-  Fullscreen state after workspace switch/return and layout toggle remains
-  TBD. `D(D-dec-ww)`.
-- Then Ours Windows: Same fixed fullscreen directional-move fence; state after
-  workspace switch/return and layout toggle remains TBD. `D(D-dec-ww)`.
+- Additional fresh leg (existing workspace tiling on/off, not alternate
+  layout selection): toggle workspace tiling off then on beneath fullscreen B.
+  COSMIC `epoch-1.11.0` `src/shell/workspace.rs:1430-1489` moves ordinary
+  layers without touching `fullscreen_surfaces`. Other Tier 1 exact equivalent
+  journeys TBD; do not equate parent split toggle with workspace tiling.
+- Then Ours KDE: NORMATIVE existing directional-move fence; explicit workspace
+  switch/return preserves fullscreen and host-owned return requests focus on
+  the remembered fullscreen cover through existing arrival fencing. Parent
+  orientation toggle refuses without changing the tree. Workspace tiling
+  off/on preserves native fullscreen without subject frame/state or automatic
+  focus writes; ordinary siblings may reflow. Shared command regressions cover
+  both born-fullscreen and retained tiled-overlay cases; native outcomes TBD.
+- Then Ours Windows: same shared state-preservation target. Native-free
+  suppression keeps its existing fullscreen safety gate; explicit return can
+  request legacy direct focus, never new fullscreen suppression authority.
+  Native visibility/stacking/return remains TBD, not proved by the core journey.
 - Explicit-action reuse: fullscreen send
   [R-MAX-09](#r-max-09-send-a-maximizedfullscreen-window-to-another-workspace);
   float toggle [R-MAX-10](#r-max-10-float-toggle-on-fullscreen);
@@ -844,4 +864,10 @@ rectangles where geometry is load-bearing.
   Focus-steal-on-map reuses
   [R-INS-06](insertion.md#r-ins-06-open-over-an-overlay-maximized-plus-fresh-fullscreen-variant)
   (focused fullscreen B before ordinary C maps).
-- Variant hook: fullscreen explicit-action state.
+- Variant hook: REQ-MAX-12 decided under the standing Tier 1 alignment rule
+  (User 2026-11-13). Retain fullscreen across switch/return (all four inspected
+  paths). ASSUMPTION: choose existing parent-orientation no-op over i3/sway's
+  parent mutation in the even split; no new setting for this small safety
+  behavior, potentially configurable later. Workspace tiling preservation is
+  supported by COSMIC and the existing gaming principle. Alternate layout
+  selection remains parked. [Decision](../../decisions/window-state.md#fullscreen-workspace-and-layout-actions).

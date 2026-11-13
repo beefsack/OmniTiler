@@ -67,7 +67,7 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 - [Focus](decisions/focus.md): automatic-focus guards, the retained focus request, the empty execution subject, workspace memory, directional focus and the unresolved cycle/container scope.
 - [Gaming](decisions/gaming.md): game membership, anti-cheat limits and pause/release policy. <a id="anti-cheat-mechanism-limits"></a>
 - [KDE](decisions/kde.md): KDE support, packaging, Planner lifecycle and live-evidence boundary.
-- [Layout and admission](decisions/layout-and-admission.md): placement, admission, movement, output selection and native workspace adoption.
+- [Layout and admission](decisions/layout-and-admission.md): placement, admission (including inactive-destination admission without focus steal), movement, output selection and native workspace adoption.
 - [macOS](decisions/macos.md): native Spaces, input, presentation, lifecycle and macOS 0.1 scope.
 - [Observability](decisions/observability.md): logging, tracing, identity and privacy boundaries.
 - [Persistence](decisions/persistence.md): restart adoption and durable user intent.
@@ -75,7 +75,7 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 - [Reference and shortcuts](decisions/reference-and-shortcuts.md): reference authority, shortcut ownership, conflicts and presets. <a id="reference-tiers"></a>
 - [Settings](decisions/settings.md): shared settings model, platform ownership and UI behavior.
 - [Visuals](decisions/visuals.md): borders, underlays, pointer presentation and group visuals. <a id="anchored-active-border-v4-r20"></a>
-- [Window state](decisions/window-state.md): floating, sticky, maximize, fullscreen and lifecycle transitions.
+- [Window state](decisions/window-state.md): floating (including utility/splash floats and fact-based picture-in-picture admission), sticky, maximize, fullscreen (including workspace and layout actions) and lifecycle transitions.
 - [Windows](decisions/windows.md): Windows owner, input, workspace and safety decisions. <a id="rust-unsafe-guardrail"></a>
 - [Workspaces](decisions/workspaces.md): workspace authority, views, sends, lifecycle and history.
 - [World rendering](decisions/world-rendering.md): latest-world rendering, freshness, presentation and stress acceptance.

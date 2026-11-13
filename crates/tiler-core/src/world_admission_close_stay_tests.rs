@@ -3123,3 +3123,307 @@ fn retained_admission_retires_when_float_target_turns_maximized() {
         "retired row never reissues on restore: {fourth:?}"
     );
 }
+
+#[test]
+fn inactive_workspace_birth_anchors_remembered_without_focus_or_switch_and_never_replays() {
+    use crate::world_report::{NativeObservation, NativeOccupancy, NativeWorkspaceFact};
+
+    fn host_fact(window: &str, output: &str, native: &str, x: i32) -> WindowFact {
+        let mut f = fact(window, output, x);
+        f.sticky = Some(false);
+        f.native_workspace = NativeWorkspaceFact::Value(native.to_owned());
+        f
+    }
+
+    fn native_obs(output: &str, order: &[&str], current: &str) -> NativeObservation {
+        NativeObservation {
+            output: OutputId(output.to_owned()),
+            native_order: order.iter().map(|id| (*id).to_owned()).collect(),
+            current_native: Some(current.to_owned()),
+            occupancy: order
+                .iter()
+                .map(|id| NativeOccupancy {
+                    native: (*id).to_owned(),
+                    count: None,
+                })
+                .collect(),
+        }
+    }
+
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+
+    // 1. Bootstrap on n2 (W2) with H[win-b, win-c] and win-c focused so W2
+    //    remembers win-c, while win-a sits on n1 (W1).
+    let mut boot = report(
+        1,
+        vec![
+            host_fact("win-a", "out-a", "n1", 0),
+            host_fact("win-b", "out-a", "n2", 0),
+            host_fact("win-c", "out-a", "n2", 200),
+        ],
+        vec![],
+        vec![],
+        "win-c",
+        None,
+        None,
+    );
+    boot.screens = vec![screen("out-a", 0)];
+    boot.native = vec![native_obs("out-a", &["n1", "n2"], "n2")];
+    let boot_reply = accepted(&mut engine, &boot);
+    let w1_id = boot_reply
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n1"))
+        .expect("W1 bound to n1")
+        .id
+        .clone();
+    let w2_id = boot_reply
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n2"))
+        .expect("W2 bound to n2")
+        .id
+        .clone();
+    let w2_key = crate::session::DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId(w2_id.clone()),
+    };
+
+    // 2. Switch to W1 (n1) with win-a focused; W2 becomes inactive with
+    //    remembered leaf win-c.
+    let mut on_w1 = report(
+        2,
+        vec![
+            host_fact("win-a", "out-a", "n1", 0),
+            host_fact("win-b", "out-a", "n2", 0),
+            host_fact("win-c", "out-a", "n2", 200),
+        ],
+        vec![],
+        vec![],
+        "win-a",
+        None,
+        None,
+    );
+    on_w1.screens = vec![screen("out-a", 0)];
+    on_w1.native = vec![native_obs("out-a", &["n1", "n2"], "n1")];
+    let on_w1_reply = accepted(&mut engine, &on_w1);
+    assert_eq!(view_of(&on_w1_reply, "out-a"), w1_id);
+    assert_eq!(
+        committed_focus(&engine, "out-a", &w1_id).as_deref(),
+        Some("win-a")
+    );
+    {
+        let session = engine.engine().session(&w2_key).expect("W2 session");
+        let remembered = session
+            .remembered_leaf(&w2_key)
+            .expect("W2 remembered leaf");
+        let snapshot = session.snapshot();
+        let remembered_win = snapshot
+            .windows
+            .iter()
+            .find(|link| link.leaf == remembered)
+            .map(|link| link.window.0.as_str());
+        assert_eq!(remembered_win, Some("win-c"), "W2 remembers win-c");
+    }
+
+    // 3. Newcomer win-d observed on inactive W2 (n2) while W1 (n1) stays
+    //    displayed with win-a focused.
+    let mut admit_d = report(
+        3,
+        vec![
+            host_fact("win-a", "out-a", "n1", 0),
+            host_fact("win-b", "out-a", "n2", 0),
+            host_fact("win-c", "out-a", "n2", 200),
+            host_fact("win-d", "out-a", "n2", 300),
+        ],
+        vec![],
+        vec![],
+        "win-a",
+        None,
+        None,
+    );
+    admit_d.screens = vec![screen("out-a", 0)];
+    admit_d.native = vec![native_obs("out-a", &["n1", "n2"], "n1")];
+    let admit_reply = accepted(&mut engine, &admit_d);
+
+    // No automatic focus or view switch.
+    assert!(
+        admit_reply.focus_request.is_none(),
+        "inactive birth must not request focus: {admit_reply:?}"
+    );
+    assert!(
+        admit_reply.effects.is_empty(),
+        "inactive birth must not emit focus effects: {:?}",
+        admit_reply.effects
+    );
+    assert!(
+        admit_reply.transfers.is_empty(),
+        "inactive birth must not trigger transfers: {:?}",
+        admit_reply.transfers
+    );
+    assert_eq!(view_of(&admit_reply, "out-a"), w1_id);
+    assert!(
+        engine.admission_focus_spent.contains("win-d"),
+        "inactive birth spends admission focus"
+    );
+
+    // Allocations prove win-d anchored at remembered win-c (right half of H[B,C]),
+    // leaving win-b in the untouched left half.
+    let row_b = admit_reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-b")
+        .expect("win-b row");
+    let row_c = admit_reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-c")
+        .expect("win-c row");
+    let row_d = admit_reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-d")
+        .expect("win-d row");
+    assert_eq!(row_b.workspace, w2_id);
+    assert_eq!(row_c.workspace, w2_id);
+    assert_eq!(row_d.workspace, w2_id);
+    let alloc_b = row_b.allocation.expect("win-b allocation");
+    let alloc_c = row_c.allocation.expect("win-c allocation");
+    let alloc_d = row_d.allocation.expect("win-d allocation");
+    assert!(
+        alloc_b.x < alloc_c.x && alloc_c.x == alloc_d.x && alloc_c.w == alloc_d.w,
+        "win-d splits remembered win-c rather than win-b: b={alloc_b:?} c={alloc_c:?} d={alloc_d:?}"
+    );
+
+    // 4. Returning to W2 (n2) must never replay admission focus for win-d.
+    let mut return_w2 = report(
+        4,
+        vec![
+            host_fact("win-a", "out-a", "n1", 0),
+            host_fact("win-b", "out-a", "n2", 0),
+            host_fact("win-c", "out-a", "n2", 200),
+            host_fact("win-d", "out-a", "n2", 300),
+        ],
+        vec![],
+        vec![],
+        "win-c",
+        None,
+        None,
+    );
+    return_w2.screens = vec![screen("out-a", 0)];
+    return_w2.native = vec![native_obs("out-a", &["n1", "n2"], "n2")];
+    let return_reply = accepted(&mut engine, &return_w2);
+    assert!(
+        return_reply.focus_request.is_none(),
+        "returning to W2 must not replay admission focus: {return_reply:?}"
+    );
+    assert!(return_reply.effects.is_empty());
+}
+
+#[test]
+fn same_report_inactive_and_active_new_births_keep_active_focus_eligible() {
+    use crate::world_report::{
+        FocusRequestCause, NativeObservation, NativeOccupancy, NativeWorkspaceFact,
+    };
+
+    fn host_fact(window: &str, output: &str, native: &str, x: i32) -> WindowFact {
+        let mut f = fact(window, output, x);
+        f.sticky = Some(false);
+        f.native_workspace = NativeWorkspaceFact::Value(native.to_owned());
+        f
+    }
+
+    fn native_obs(output: &str, order: &[&str], current: &str) -> NativeObservation {
+        NativeObservation {
+            output: OutputId(output.to_owned()),
+            native_order: order.iter().map(|id| (*id).to_owned()).collect(),
+            current_native: Some(current.to_owned()),
+            occupancy: order
+                .iter()
+                .map(|id| NativeOccupancy {
+                    native: (*id).to_owned(),
+                    count: None,
+                })
+                .collect(),
+        }
+    }
+
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+
+    // 1. Bootstrap on n1 (W1) with win-a focused and win-b on n2 (W2).
+    let mut boot = report(
+        1,
+        vec![
+            host_fact("win-a", "out-a", "n1", 0),
+            host_fact("win-b", "out-a", "n2", 0),
+        ],
+        vec![],
+        vec![],
+        "win-a",
+        None,
+        None,
+    );
+    boot.screens = vec![screen("out-a", 0)];
+    boot.native = vec![native_obs("out-a", &["n1", "n2"], "n1")];
+    let boot_reply = accepted(&mut engine, &boot);
+    let w1_id = boot_reply
+        .workspaces
+        .iter()
+        .find(|row| row.native_binding.as_deref() == Some("n1"))
+        .expect("W1 bound to n1")
+        .id
+        .clone();
+
+    // 2. Same report births: win-d on inactive W2 (n2) and win-e on active W1 (n1).
+    let mut both_born = report(
+        2,
+        vec![
+            host_fact("win-a", "out-a", "n1", 0),
+            host_fact("win-b", "out-a", "n2", 0),
+            host_fact("win-e", "out-a", "n1", 100),
+            host_fact("win-d", "out-a", "n2", 100),
+        ],
+        vec![],
+        vec![],
+        "win-a",
+        None,
+        None,
+    );
+    both_born.screens = vec![screen("out-a", 0)];
+    both_born.native = vec![native_obs("out-a", &["n1", "n2"], "n1")];
+    let reply = accepted(&mut engine, &both_born);
+
+    assert_eq!(view_of(&reply, "out-a"), w1_id);
+    let issued = reply
+        .focus_request
+        .as_ref()
+        .expect("active newcomer win-e remains eligible for admission focus");
+    assert_eq!(issued.target.0, "win-e");
+    assert_eq!(issued.cause, FocusRequestCause::AutomaticAdmission);
+    assert!(engine.admission_focus_spent.contains("win-d"));
+    assert!(engine.admission_focus_spent.contains("win-e"));
+
+    // 3. Switching to W2 (n2) must not replay admission focus for win-d.
+    let mut switch_w2 = report(
+        3,
+        vec![
+            host_fact("win-a", "out-a", "n1", 0),
+            host_fact("win-b", "out-a", "n2", 0),
+            host_fact("win-e", "out-a", "n1", 100),
+            host_fact("win-d", "out-a", "n2", 100),
+        ],
+        vec![],
+        vec![],
+        "win-b",
+        None,
+        None,
+    );
+    switch_w2.screens = vec![screen("out-a", 0)];
+    switch_w2.native = vec![native_obs("out-a", &["n1", "n2"], "n2")];
+    let switch_reply = accepted(&mut engine, &switch_w2);
+    assert!(
+        switch_reply.focus_request.is_none(),
+        "spent inactive birth win-d never replays on switch: {switch_reply:?}"
+    );
+    assert!(switch_reply.effects.is_empty());
+}

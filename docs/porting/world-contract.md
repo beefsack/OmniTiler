@@ -528,7 +528,11 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   eligible default. Never add a fact to the list because one read failed.
   An unlisted required input that is null is unknown now and holds only the
   classification/action that needs it, not unrelated windows or properties.
-- Unreadable `hints` do not erase independently proven dialog/sheet,
+- Utility (including normalized toolbar) and splash are ordinary float origins,
+  like dialog/sheet; independent safety gates still win. PiP has no universal
+  kind or title-derived policy; use ordinary reported facts. See
+  [admission decision](../decisions/window-state.md#splash-utility-and-picture-in-picture-admission).
+- Unreadable `hints` do not erase independently proven dialog/sheet/utility/splash,
   transient/modal or retained explicit/automatic-fixed float membership.
   Preserve unknown hints; ordinary hint-dependent admission and explicit tile
   override remain held. Refuse float-to-tile convergence and constrained float

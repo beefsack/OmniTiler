@@ -15,6 +15,9 @@ interface FakeWin {
     transient: boolean;
     transientFor: unknown;
     dialog: boolean;
+    utility?: boolean;
+    toolbar?: boolean;
+    splash?: boolean;
     modal: boolean;
     wantsInput: boolean;
     internalId: string;
@@ -166,6 +169,24 @@ describe("world observation presentation ingress", () => {
         assert.equal(fact?.normalWindow, false);
         assert.equal(fact?.dialog, true);
         assert.equal(fact?.hidden, false);
+    });
+
+    it("admits non-normal utility, toolbar, and splash windows to the raw lane", () => {
+        const utility = win("win-utility", { normalWindow: false, utility: true });
+        const toolbar = win("win-toolbar", { normalWindow: false, toolbar: true });
+        const splash = win("win-splash", { normalWindow: false, splash: true });
+        const member = win("win-member");
+        const { surface } = makeSurface({ wins: [utility, toolbar, splash, member], active: member });
+        const obs = observe(surface, STYLE);
+        assert.ok(obs !== null);
+        assert.equal(obs.complete, true);
+        assert.deepEqual(
+            obs.windowFacts.map((row) => row.win).sort(),
+            ["win-member", "win-splash", "win-toolbar", "win-utility"],
+        );
+        assert.equal(obs.windowFacts.find((f) => f.win === "win-utility")?.windowType, "utility");
+        assert.equal(obs.windowFacts.find((f) => f.win === "win-toolbar")?.windowType, "utility");
+        assert.equal(obs.windowFacts.find((f) => f.win === "win-splash")?.windowType, "splash");
     });
 
     it("drops non-dialog non-normal transient surfaces without holding", () => {

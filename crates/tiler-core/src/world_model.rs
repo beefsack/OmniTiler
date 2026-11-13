@@ -1439,6 +1439,8 @@ impl WorldEngine {
             if known.is_none() && !self.prior_empty_controlled(&domain.key) {
                 continue;
             }
+            let domain_active = self.effective_view(&domain.key.output).as_deref()
+                == Some(domain.key.workspace.0.as_str());
             let empty = BTreeSet::new();
             let before: &BTreeSet<String> = known.unwrap_or(&empty);
             let converged = current.get(&domain.key);
@@ -1487,6 +1489,16 @@ impl WorldEngine {
                         && session.is_automatic_fixed_float(&window.window)
                         && !session.has_fixed_tile_override(&window.window)
                     {
+                        self.admission_focus_spent.insert(window.window.0.clone());
+                        continue;
+                    }
+                    // REQ-INS-07b: a newcomer homed on an inactive workspace
+                    // (not currently displayed on its output) must not steal
+                    // focus or trigger a view switch; spend each inactive
+                    // birth individually so it never replays on later
+                    // selection and never overrides an eligible active
+                    // newcomer.
+                    if !domain_active {
                         self.admission_focus_spent.insert(window.window.0.clone());
                         continue;
                     }

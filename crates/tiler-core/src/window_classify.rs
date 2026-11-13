@@ -18,11 +18,12 @@
 //! and `activationInhibited` known-true refuse on the safety gate;
 //! supported-null holds. `owned` known-true refuses alone (existing host
 //! safety gate); supported-null `owned` holds.
-//! Transient/modal and dialog/sheet kinds float; a transient/modal
-//! unknown holds only while no independent float origin (the other
-//! known-true predicate, or a dialog/sheet kind) already proves float,
-//! and skipped inputs default false (tile). A null layer holds only the
-//! non-float candidate the layer gate would actually judge.
+//! Transient/modal and dialog/sheet/utility/splash kinds float; a
+//! transient/modal unknown holds only while no independent float origin
+//! (the other known-true predicate, or a dialog/sheet/utility/splash kind)
+//! already proves float, and skipped inputs default false (tile). A null
+//! layer holds only the non-float candidate the layer gate would actually
+//! judge.
 //!
 //! Shell rules (no Settings exemption, no metadata-self heuristic):
 //! known-unowned generic Win32 dialog class `#32770` refuses membership
@@ -112,7 +113,7 @@ pub struct ClassifyInput<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClassifiedWindow {
     /// Float membership: explicit float, float origin (transient, modal,
-    /// dialog/sheet kind), or fixed-size admission float.
+    /// dialog/sheet/utility/splash kind), or fixed-size admission float.
     pub floating: bool,
     /// Excluded from tiling fit: safety/managed/shell/dialog exclusion
     /// or a held classification. Never set by the border-only signal.
@@ -254,10 +255,13 @@ pub fn classify_window(input: ClassifyInput<'_>) -> ClassifiedWindow {
     let transient = PredicateState::resolve(fact.transient, FactName::Transient, unavailable);
     let modal = PredicateState::resolve(fact.modal, FactName::Modal, unavailable);
 
-    // Dialog kind drives the float origin below.
-    let dialog_kind = matches!(
+    // Dialog, sheet, utility, and splash kinds drive the float origin below.
+    let float_kind = matches!(
         fact.window_type,
-        Some(WindowType::Dialog) | Some(WindowType::Sheet)
+        Some(WindowType::Dialog)
+            | Some(WindowType::Sheet)
+            | Some(WindowType::Utility)
+            | Some(WindowType::Splash)
     );
 
     // Exclusion gates on known facts (fail closed, precedence over hold).
@@ -310,9 +314,10 @@ pub fn classify_window(input: ClassifyInput<'_>) -> ClassifiedWindow {
                     || (executable_supported && fact.executable.is_none())))
     });
 
-    // Float origins (transient, modal, dialog/sheet kind). Evaluated
-    // before the layer gate so recognized float exceptions precede it.
-    let float_member = transient.gate_or_false() || modal.gate_or_false() || dialog_kind;
+    // Float origins (transient, modal, dialog/sheet/utility/splash kind).
+    // Evaluated before the layer gate so recognized float exceptions
+    // precede it.
+    let float_member = transient.gate_or_false() || modal.gate_or_false() || float_kind;
 
     // Nonordinary layer refuses only after the float origins above.
     if !float_member && !skipped(FactName::Layer) && fact.layer.is_some_and(|layer| layer != 0) {
@@ -358,26 +363,24 @@ pub fn classify_window(input: ClassifyInput<'_>) -> ClassifiedWindow {
     }
     if transient == PredicateState::UnknownHold
         && modal != PredicateState::Applicable(true)
-        && !dialog_kind
+        && !float_kind
     {
         hold = true;
     }
     if modal == PredicateState::UnknownHold
         && transient != PredicateState::Applicable(true)
-        && !dialog_kind
+        && !float_kind
     {
         hold = true;
     }
     // Kind is required but nullable: a null kind holds the dependent
-    // membership, period, independent of Class support. Only
-    // normal/dialog/sheet admission is normative; utility/splash are
-    // explicitly open (REQ-SPC-02) and every other nonordinary kind is
-    // undecided this increment, so all of them hold narrowly rather
-    // than tiling or excluding by default.
+    // membership, period, independent of Class support. Normal, dialog,
+    // sheet, utility, and splash admission is normative (utility/splash
+    // float as ordinary members); every other nonordinary kind is
+    // undecided this increment, so those hold narrowly rather than tiling
+    // or excluding by default.
     match fact.window_type {
         None
-        | Some(WindowType::Utility)
-        | Some(WindowType::Splash)
         | Some(WindowType::Desktop)
         | Some(WindowType::Dock)
         | Some(WindowType::Menu)
@@ -386,7 +389,11 @@ pub fn classify_window(input: ClassifyInput<'_>) -> ClassifiedWindow {
         | Some(WindowType::Other) => {
             hold = true;
         }
-        Some(WindowType::Normal) | Some(WindowType::Dialog) | Some(WindowType::Sheet) => {}
+        Some(WindowType::Normal)
+        | Some(WindowType::Dialog)
+        | Some(WindowType::Sheet)
+        | Some(WindowType::Utility)
+        | Some(WindowType::Splash) => {}
     }
     // Class feeds the shell gates; a null executable never holds
     // membership: it feeds only the border-only signal above, which fails

@@ -93,21 +93,25 @@ transient (no dialog flag) is a different fixture and is not claimed.
 - Observe: excluded/unmanaged vs floating/tiled, focus steal, and
   task-switcher presence. All three legs are load-bearing; a cell
   missing any applicable leg stays P.
-- Then COSMIC: X11 splash floats while X11 utility tiles (Utility
-  excluded from `is_dialog`); Wayland-native typed legs are
-  fixture-inapplicable (xdg has no splash/utility type counterpart).
-  Newcomer takes focus on the active workspace; the external switcher lists every tracked toplevel with no workspace/visibility filter and activation forwards to the toplevel, so admitted splash/utility are listed when tracked. `S(S-cos-admit)` + `S(S-cos-mapfocus)` + `S(S-lch-altab)` + `S(S-pop-toplevel)` + `S(S-cos-topact)`.
-- Then Hyprland/Dwindle: X11 splash and utility both float (SPLASH and UTILITY atoms) with neither taking initial focus (non-DIALOG float atoms suggest no initial focus); Wayland-native typed legs are fixture-inapplicable (no splash/utility type counterpart; float only via parent or fixed size). Switcher leg is a no-counterpart (no native Alt+Tab/listing verb in the inventory; cycle is same-workspace and the shipped launcher is external). `S(S-hyp-spc)` + `S(S-hyp-switcher)`.
+- Then COSMIC (`epoch-1.11.0`): X11 splash floats, utility tiles unless
+  another float predicate applies (`src/shell/layout/mod.rs:20-58`). xdg has
+  no typed splash/utility counterpart. Active-workspace newcomer focus and
+  tracked-toplevel registration: `src/shell/mod.rs:3084,3173-3177`. External
+  switcher evidence remains historical `S(S-lch-altab)` + `S(S-pop-toplevel)`;
+  exact release/native switcher outcome TBD.
+- Then Hyprland/Dwindle (`v0.57.2`): X11 splash/utility float with no initial
+  focus (`src/desktop/view/window/X11Backend.cpp:59-80`). xdg typed legs have
+  no counterpart. Native switcher no-counterpart on the inspected inventory
+  (`S(S-hyp-switcher)`); exact native/app outcome TBD.
 - Then bspwm: Splash tiles as ordinary with newcomer focus (no splash branch in the type/transient/fixed legs); utility tiles without focus (`focus=false`); switcher leg no-counterpart (no native switcher/listing verb in this profile, so presence never runs); `S(S-bsp-spc)` + `S(S-bsp-switcher)` + `S(S-bsp-insert)`.
-- Then i3: both float (DIALOG/UTILITY/TOOLBAR/NOTIFICATION/SPLASH
-  plus MODAL branch) with visible-workspace newcomer focus.
-  Switcher presence TBD. `S(S-i3-min)`; queued.
+- Then i3 (`4.25.1`): X11 splash/utility float (`src/manage.c:462-474`);
+  visible-workspace newcomer focus (`:601-613`). Switcher/native outcome TBD.
 - Then xmonad/Tall+Navigation2D: both tile as ordinary newcomers
   with focus (no type branch; only fixed/transient float); switcher leg no-counterpart (no native Alt+Tab/cross-workspace listing verb in this profile: core mod+Tab is same-stack `focusDown`, `dmenu_run`/`gmrun` are external launchers with no traced switcher activation, and Navigation2D stays on the same layer, so presence never runs). `S(S-xmo-float)` + `S(S-xmo-switcher)`.
-- Then sway: xwayland U floats (DIALOG/UTILITY/TOOLBAR/SPLASH and
-  modal branches); xdg typed legs are fixture-inapplicable (xdg has
-  no window-type counterpart; only parent/fixed-size float). Focus
-  and switcher TBD. `S(S-sway-spc)`; queued.
+- Then sway (`1.12`): Xwayland splash/utility float
+  (`sway/desktop/xwayland.c:310-329`); xdg parent/fixed-size predicate has no
+  typed counterpart (`sway/desktop/xdg_shell.c:228-235`). Focus, switcher and
+  exact native outcome TBD.
 - Then qtile/Columns: X11/XWayland U legs both float (utility/splash/dialog in shipped
   rules; unplaced floats center) with stealable focus on X11 (notification-only
   exclusion, so splash/utility take focus); Wayland-native xdg U legs are
@@ -142,12 +146,19 @@ transient (no dialog flag) is a different fixture and is not claimed.
 - Then karousel/Lazy: X11 splash and utility both float (managed types whose `windowType` is not Normal, so `shouldTile` fails the `normalWindow` gate and `addClient` constructs Floating with the native frame retained and no script focus write); Wayland-native typed legs are fixture-inapplicable (xdg/PlasmaShell roles carry no splash/utility counterpart, mapping only Desktop/Dock/OSD/Notification/Tooltip/Critical/AppletPopup/Normal). Splash is special, so it skips both the X11 manage focus branch (`requestFocus`) and the attention branch (`demandAttention` requires non-special): no steal, no attention. Utility is not special, so the generic fork applies: no `requestFocus` (`wantsTabFocus` requires Normal/Dialog/AppletPopup) with `demandAttention` on the deny branch. Both are excluded from the host switcher list (`wantsTabFocus` false for Splash/Utility). Exact utility attention TBD (fixture: activation timestamp selecting the allow/deny fork unstated). `S(S-kar-spc)` + `S(S-kar-float)` + `S(S-kwin-manage)` + `S(S-kwin-add)` + `S(S-kwin-tabbox)`.
 - Then paneru: role-gated management with no splash/utility branch: a U
   reporting the standard subrole (or AXWindow plus floating subrole) is managed as ordinary through the fresh path in both legs; any other typed subrole is skipped unless a title/bundle rule forces management. Skipped windows spawn no entity and take no focus write; paneru offers no switcher entry (no cross-strip listing op; listing and activation are host-owned). `S(S-pan-spc)` + `S(S-pan-admit)` + `S(S-pan-fresh)` + `S(S-pan-switcher)`.
-- Then Ours KDE: TBD (same `normalWindow` type-eligibility gap as
-  R-SPC-01). `S(S-ours-spc-kde)`; queued.
-- Then Ours Windows: utility is toolwindow-excluded from tile
-  targets; standalone splash eligibility TBD.
-  `S(S-ours-spc-win)`; queued.
-- Variant hook: provisional/TBD (window-type hook, to discuss).
+- Then Ours KDE: NORMATIVE utility (including toolbar) and splash float via
+  shared type classification; raw candidate capture includes those types.
+  Independent safety gates still win. No type-specific focus/stacking or
+  switcher override; existing ordinary-float policy applies. Native focus,
+  switcher presence and typed-window actuation remain TBD.
+- Then Ours Windows: same typed-fact target; WS_EX_TOOLWINDOW remains an
+  independent safety exclusion, not a utility-type inference. Native splash
+  classification/adoption TBD.
+- Variant hook: REQ-SPC-02 decided under the standing Tier 1 alignment rule
+  (User 2026-11-13): splash 4/4 float, utility 3/4 float. ASSUMPTION: no new
+  type-specific focus exception for the split/partial focus evidence; keep
+  existing host switcher ownership. Could revisit with discriminating native
+  evidence, without a setting now.
 
 ### R-SPC-03: enter app picture-in-picture mode
 
@@ -157,13 +168,23 @@ transient (no dialog flag) is a different fixture and is not claimed.
 - When: enter the app's PiP mode.
 - Observe: separate float/topmost vs ordinary tile; app-rule vs
   native window-type distinction. No universal PiP type is assumed.
-- Then COSMIC: TBD (no PiP branch traced; app/flags-specific).
-  Queued.
-- Then Hyprland/Dwindle: TBD (no PiP branch traced). Queued.
+- Then COSMIC (`epoch-1.11.0`): ordinary parent/modal/type/fixed-size
+  predicates (`src/shell/layout/mod.rs:20-58`) and configured app-id/title
+  tiling exceptions (`:61-109`, `src/shell/mod.rs:3094-3095,3135`). These do
+  not establish this unspecified app's flags; PiP outcome/topmost TBD.
+- Then Hyprland/Dwindle (`v0.57.2`): ordinary backend float traits
+  (`src/desktop/view/window/WaylandBackend.cpp:31-38`, `X11Backend.cpp:59-95`)
+  and static floating rules (`Window.cpp:1038-1046,1232-1233,1301`) apply.
+  Actual app flags/rules, PiP admission and topmost TBD.
 - Then bspwm: TBD (no PiP branch traced). Queued.
-- Then i3: TBD (no PiP branch traced). Queued.
+- Then i3 (`4.25.1`): ordinary type/modal/fixed-size gate
+  (`src/manage.c:462-474`) and user criteria apply, not a universal PiP type.
+  Actual app/rule outcome and topmost TBD.
 - Then xmonad/Tall+Navigation2D: TBD (no PiP branch traced). Queued.
-- Then sway: TBD (no PiP branch traced). Queued.
+- Then sway (`1.12`): ordinary parent/fixed-size xdg predicate
+  (`sway/desktop/xdg_shell.c:228-235`) or Xwayland type/modal/fixed-size
+  predicate (`sway/desktop/xwayland.c:310-342`) applies. Actual app/rule
+  outcome and topmost TBD.
 - Then qtile/Columns: TBD (no PiP branch traced; float rules are
   type/class/transient, not PiP). Queued.
 - Then awesome/tile: TBD (no PiP branch traced). Queued.
@@ -173,11 +194,19 @@ transient (no dialog flag) is a different fixture and is not claimed.
 - Then PaperWM: no PiP branch exists in `add_filter`, `insertWindow`, or the registered action inventory, so an ordinary Normal non-transient client would tile as a fresh column at the open-position index with widths per column layout - but the scenario's required pre-act record (toolkit, app, version, actual flags and rules) is omitted, so whether this app's PiP client satisfies that antecedent is unestablished: admission TBD (fixture: record toolkit, app, version, actual flags and rules before acting). App-specific stay-on-top beyond the tiled branch's `unmake_above` TBD (host/live: app above-flag behavior untraced). `S(S-pap-spc)` + `S(S-pap-ins)` + `S(S-pap-layout)` + `S(S-pap-acts)`; admission queued (fixture), stay-on-top queued (host).
 - Then karousel/Lazy: TBD (no PiP branch traced). Queued.
 - Then paneru: TBD (no PiP branch traced). Queued.
-- Then Ours KDE: TBD (no PiP type or rule in the observer or the
-  Engine). `S(S-ours-spc-kde)`; queued.
-- Then Ours Windows: TBD (owned/tool/dialog gates do not name PiP;
-  app-specific eligibility untraced). `S(S-ours-spc-win)`; queued.
-- Variant hook: provisional/TBD (PiP hook, to discuss; app-specific).
+- Minimal discriminator: fresh ordinary Normal resizable P with title
+  `Picture-in-Picture`, then fresh P with the same metadata plus known
+  transient or utility fact. Record safety inputs in both legs; do not infer
+  an actual app's flags from its UI label.
+- Then Ours KDE/Windows: NORMATIVE ordinary fact-based admission, not an
+  app-name/title heuristic: the metadata-only leg tiles, the positive float
+  fact leg floats unless an existing safety gate wins. No new topmost write
+  or application-rule subsystem. Actual app/version/native outcomes TBD.
+- Variant hook: REQ-SPC-03 decided under the standing Tier 1 alignment rule
+  (User 2026-11-13). ASSUMPTION: retain ordinary facts without shipping a PiP
+  title/app exception; inspected Tier 1 predicates/rules support this conservative
+  implementation, not a universal app outcome. Later app-rule configurability
+  may be considered with real app evidence, not introduced here.
 
 ### R-SPC-04: open a fixed-size window (min=max 640x480)
 
@@ -238,21 +267,28 @@ transient (no dialog flag) is a different fixture and is not claimed.
   reactive clamp/reflow/float vs ignored request/hint. Client-side
   acknowledgement chatter is not load-bearing beyond the reactive
   outcome.
-- Then COSMIC: allocation stays tile-authoritative (tiling without
-  minimum enforcement; the compositor drives configure serials).
-  `S(S-cos-min)`.
-- Then Hyprland/Dwindle: allocation stays authoritative (tiled size
-  limits default off; tiled X11 configure requests are refused via
-  an authoritative size resend). `S(S-hyp-min)` + `S(S-hyp-cfg)`.
+- Then COSMIC (`epoch-1.11.0`): X11 configure requests resize floats only;
+  tiled path sends authoritative configure (`src/xwayland.rs:918-974`).
+  Inspected tiling layout does not consume client minima and drives configure
+  serials (`src/shell/layout/tiling/mod.rs:3124`). Exact client settlement TBD.
+- Then Hyprland/Dwindle (`v0.57.2`): tiled X11 resize resends layout size
+  (`src/desktop/view/window/Window.cpp:974-980`); commit hint clamping is
+  floating-only (`:1791-1795`). `misc:size_limits_tiled=false`
+  (`src/config/values/ConfigValues.cpp:608`); tiled rule size limits at
+  `src/layout/target/WindowTarget.cpp:237-248` are not ordinary client minima.
+  Exact client settlement TBD.
 - Then bspwm: request ignored (`honor_size_hints=false` default);
   allocation retained. `S(S-bsp-hint)`.
-- Then i3: request ignored (tiled render ignores size hints).
-  Allocation retained. `S(S-i3-min)`.
+- Then i3 (`4.25.1`): configure resize requires floating leaf
+  (`src/handlers.c:345-376`); normal-hint updates resize/render floats only
+  (`:1006-1019`). Tiled allocation retained; exact client settlement TBD.
 - Then xmonad/Tall+Navigation2D: request has no path (Tall recalc
   owns geometry). Allocation retained. `S(S-xmo-layout)`.
-- Then sway: request ignored (arrange ignores hints; the runtime
-  hint path handles urgency only). Allocation retained.
-  `S(S-sway-min)`.
+- Then sway (`1.12`): tiled Xwayland configure resends current allocation
+  (`sway/desktop/xwayland.c:589-605`); inspected hints listener handles urgency
+  (`:756-774`), not tiled resize. xdg constraints are floating inputs
+  (`sway/desktop/xdg_shell.c:149-156`, `sway/tree/view.c:261-270`).
+  Exact client settlement TBD.
 - Then qtile/Columns: request ignored (tiled place without hints).
   Allocation retained. `S(S-qti-min)`.
 - Then awesome/tile: request ignored while B stays resizable
@@ -270,13 +306,21 @@ transient (no dialog flag) is a different fixture and is not claimed.
 - Then PaperWM: allocation policy tile-authoritative. A tiled B's app-owned resize or minimum-hint raise has no hint branch (no minima consult); `size-changed` queues a column relayout which recomputes targets from preferredWidth/client frame (not guaranteed to overwrite a preferredWidth the client keeps asserting) with no re-float. Recomputed targets settle natively X11-sync/Wayland-async (post-request re-read, actuals feed layout): exact native frames TBD (live: client settle timing). `S(S-pap-appresize)` + `S(S-pap-layout)`; frames queued (live).
 - Then karousel/Lazy: app-owned geometry on tiled B feeds the column width path (`frameGeometryChanged` outside interactive resize re-asserts via rate-limited `onFrameGeometryChanged` into `setWidth` clamped into [min,max] and stored as preferred, with relayout and no re-float); a bare minimum-hint raise with no geometry change has no path (only `captionChanged` re-evaluates tiling for caption-follow rules; no size-hint watcher). Exact native frames TBD (live: client settle timing). `S(S-kar-manual-width)` + `S(S-kar-min)` + `S(S-kar-admit)`.
 - Then paneru: app-owned geometry is observed, not refused: the live frame is re-read into Bounds through the moved/resized update path (managed strips nudged, floating windows leave the strip alone, own-resize echoes skipped in flight) with no re-float or admission reclassification; a bare minimum-hint raise with no geometry change has no path (AX exposes no min/max hint equality; float is rule-assigned). `S(S-pan-admit)`.
-- Then Ours KDE: Engine allocation stays authoritative (geometry
-  applied from the tree). Host hint reaction TBD.
-  `S(S-ours-spc-kde)` + `S(S-ours-admit)`; queued.
-- Then Ours Windows: Engine allocation stays authoritative with
-  declared hints carried per member (min-enforcing rows); exact
-  reflow TBD. `S(S-ours-spc-win)`; queued.
-- Variant hook: provisional/TBD (client-hint hook, to discuss).
+- Additional discriminating fresh leg: zero gaps, width 1200, `H[A,B*]`
+  equal allocations 600/600; raise only B's non-fixed minimum width to 700
+  (feasible), versus a fresh run raising it above total width (infeasible).
+- Then Ours KDE/Windows: authoritative core allocation, but feasible minima
+  can redistribute sibling slack (500/700 in the added fixture), while
+  infeasible minima retain proportional geometry. Existing
+  `satisfiable_minimum_takes_sibling_slack_with_shares_untouched` pins the first
+  result; shared report regression pins infeasible hint/drift retention.
+  Native reaction and exact client settlement remain TBD.
+- Variant hook: REQ-SPC-05b STOP, still OPEN. Tier 1 inspected paths support
+  retained allocations, but selecting blanket no-reflow would supersede
+  [Placement and minimums](../../decisions/layout-and-admission.md#placement-and-minimums).
+  Options: retain the recorded feasible-minimum host adaptation and test its
+  native outcome, or explicitly supersede it to ignore runtime minima while
+  tiled. No behavior change or assumption selected for this row.
 
 ## Q2 fixed-size admission discriminators (2026-10-08)
 

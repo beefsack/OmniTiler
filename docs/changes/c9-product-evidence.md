@@ -280,7 +280,7 @@
 
 ## Part 2: exact OPEN inventory
 
-- **23 requirement rows** have Status `OPEN` in `docs/spec/functional-spec.md` after batch 1's four User 2026-11-13 selections and batch 2's urgency deferral; the original inventory below had 28. Count is not every occurrence of OPEN (many normative rows have an open platform cell). No additional OPEN requirement IDs were found in the reference subfiles. The spec introduction distinguishes selected R-MIN-04/R-INS-09 capacity/burst behavior from their still-unproved reference/native outcomes, and counts all 184 requirements (161 NORMATIVE including qualified REQ-OUT-05, 23 OPEN). Batch 2 does not decide the two focus rows.
+- **19 requirement rows** have Status `OPEN` in `docs/spec/functional-spec.md` after batch 1's four selections, batch 2's urgency deferral and batch 3's four selections; the original inventory below had 28. Count is not every occurrence of OPEN (many normative rows have an open platform cell). No additional OPEN requirement IDs were found in the reference subfiles. The spec introduction distinguishes selected R-MIN-04/R-INS-09 capacity/burst behavior from their still-unproved reference/native outcomes, and counts all 184 requirements (165 NORMATIVE including qualified REQ-OUT-05, 19 OPEN). Batch 2 does not decide the two focus rows; batch 3 leaves the feasible-minimum conflict OPEN.
 - Table: spec citations use `F:` = `docs/spec/functional-spec.md` line. Reference citations use `R/` defined above and are existing revision-bound evidence, **not newly rechecked release evidence**, except the release-qualified batch 1 and 2 entries below. `Choice` means user product selection; `source` means further targeted latest-source work; `live` means user/native testing. "Absent" is bounded to inspected command/model surfaces, not a universal assertion about every adapter.
 - Code key **V**: complete command surfaces `C/world_report.rs:2009-2171` + `C/boundary.rs:41-149` contain no preselect, cycle, container-focus, equalize, rotate/mirror, master, layout-select or column/viewport verbs. **D**: `C/directional.rs:1179-1246` implements leaf directional focus, not viewport/container focus. **T**: absent column model/verbs on V/D; existing per-window sends `C/world_report.rs:2013-2018,2048-2066` do not implement whole-column semantics. These are code absence checks, not acceptance of the feature gap.
 
@@ -293,15 +293,15 @@
 | 2 STOP | REQ-FOC-03 / 151 | Need next/previous cycle; which order, wrap, floats? | [Latest release recheck](#requirement-batch-2-focus-and-attention-2026-11-13): COSMIC none, Hyprland creation-order incl floats, i3/sway parent-orientation tiled walk | Substantial synchronized command/shortcut surface; no implementation or selection |
 | 2 STOP | REQ-FOC-04 / 152 | Need parent/child container focus? | [Latest release recheck](#requirement-batch-2-focus-and-attention-2026-11-13): COSMIC/i3/sway group then remembered child; Hyprland none | Leaf-only model would change; no implementation or selection |
 | 2 DEFERRED | REQ-ACT-02 / 461 | Urgency clears on focus or stays? | [Latest release recheck](#requirement-batch-2-focus-and-attention-2026-11-13): COSMIC workspace marker retained, Hyprland/i3/sway per-window clear | NORMATIVE scope deferral beyond 0.1; native behavior unchanged, future product timing unselected |
-| 3 | REQ-INS-07b / 137 | Which inactive-workspace routing/admission anchor? | `R/insertion.md:281-307`: target-MRU/assignment paths; ours TBD | Exact destination-rule routing absent in V; separate no-steal rule already normative F:136; Choice + source + live |
-| 3 | REQ-SPC-02 / 496 | Tile, float or exclude splash/utility? | `R/special-windows.md:82-150`: COSMIC type split, i3/sway float variants | Narrow hold for Utility/Splash, `C/window_classify.rs:371-390`; Choice + source + live |
-| 3 | REQ-SPC-03 / 497 | How should app-specific PiP be admitted? | `R/special-windows.md:152-180`: Tier 1 TBD, niri app rule | No universal PiP classification in inspected type gate `C/window_classify.rs:377-390`; Choice + source + app/live |
-| 3 | REQ-SPC-05b / 508 | What host reaction/reflow follows changed hints? | `R/special-windows.md:229-279`: allocations retained; native journeys TBD | Authoritative allocation exists (F:507), exact journey unproved; `C/admission.rs:104-129` uses hints but does not prove host response; live |
+| 3 DECIDED | REQ-INS-07b / 138 | Target-local remembered tiled anchor; inactive admission never focuses/switches/replays | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): COSMIC/i3/sway target focus; Hyprland cursor-closest variant | Observed destination supported, no app-rule API added; inactive automatic-focus guard and shared regressions; native rule pickup TBD |
+| 3 DECIDED | REQ-SPC-02 / 497 | Splash and utility float under existing safety/ordinary-focus policy | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): splash 4/4 float, utility 3/4 float | Core type hold removed, KDE candidates widened; ASSUMPTION no type-specific focus exception; native focus/switcher TBD |
+| 3 DECIDED | REQ-SPC-03 / 498 | Ordinary reported facts, not PiP title/app inference | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): ordinary predicates/rules, exact apps TBD | ASSUMPTION no shipped app exception/new subsystem; metadata/fact discriminator; actual app/native TBD |
+| 3 STOP | REQ-SPC-05b / 509 | Retain prior feasible-minimum reallocation or supersede it to match Tier 1 no-reflow? | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): tiled allocations retained in four inspected paths | Earlier Placement and minimums decision honors feasible minima; no new behavior selected or implemented; native journeys TBD |
 | 4 | REQ-INS-08 / 138 | Need preselected split, one-shot or persistent? | `R/insertion.md:309-341`: Hyprland one-shot, i3/sway persistent | Absent (V); Choice + source |
 | 4 | REQ-RSZ-04 / 185 | Need equalize/balance action? | `R/resize.md:192-290`: several lower-tier alternatives, Tier 1 no counterpart recorded | Absent (V), existing pixel resize distinct; Choice + source |
 | 4 | REQ-LAY-02 / 193 | Need rotate/mirror; which scope? | `R/layout-commands.md:78-135`: bspwm full legs, Hyprland narrower | Absent (V); Choice + source |
 | 4 | REQ-LAY-03 / 194 | Need promote-to-master/root? | `R/layout-commands.md:137-182`: xmonad/awesome master, Hyprland root | Absent (V); Choice + source |
-| 5 | REQ-MAX-12 / 330 | Fullscreen plus workspace-return/layout-toggle effects? | `R/maximize-fullscreen.md:781-840`: retained/fenced legs, many TBD | Fullscreen move fence `C/world_directional.rs:148-152` exists, not proof of switch/return/toggle journey; Choice + source + live |
+| 3 DECIDED (from 5) | REQ-MAX-12 / 331 | Preserve fullscreen across workspace return/tiling toggle; parent orientation no-op | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): state retained; parent mutation splits 2/2 | Existing commands confirmed by shared regressions; ASSUMPTION orientation no-op, native-free fullscreen suppression veto unchanged; native outcome TBD |
 | 5 | REQ-WS-07 / 214 | Shell listing and activation: switch workspace or pull window? | `R/workspaces.md:377-431`: native filtering; SW_HIDE accepted for 0.1 | Native-shell behavior, no listing/activation verb (V); keep-SW_HIDE already selected F:214; remaining Choice + live, post-0.1 |
 | 5 | REQ-LAY-04 / 195 | Which workspace-local alternative layout? | `R/layout-commands.md:184-227`; expressly parked until a genuine second layout | Layout-select absent (V); already parked by User 2026-10-09, not a fresh 0.1 choice |
 | 6 | REQ-COL-01 / 517 | Need admission into a scrollable three-column strip? | `R/column-mechanics.md:22-60`: non-voting scrolling lineage | Absent (T); Choice whether in scope before source work |
@@ -315,7 +315,7 @@
 | 8 | REQ-COL-09 / 525 | Need virtual rows and cross-row sends? | `R/column-mechanics.md:391-428`: index-based workspaces versus row model | Workspace IDs/index sends exist `C/world_report.rs:2023-2066`, no row verb (T); Choice |
 | 8 | REQ-COL-10 / 526 | Need app-native tabs nested in stacks? | `R/column-mechanics.md:432-468`: per-window gates, unresolved native tabs | No native-tab command (V); Choice + app/live if selected |
 
-- Batch order: 1 settles already-running daily navigation/moves; 2 handles related focus/attention completeness; 3 admission/classification and observed-host correctness; 4 optional layout verbs; 5 composite overlay testing plus explicitly deferred items; 6-8 non-voting column mechanics. Maximum four rows per batch. The original investigation stopped at this inventory plus batch 1; batch 2's later recheck does not cover batches 3-8.
+- Batch order: 1 settles already-running daily navigation/moves; 2 handles related focus/attention completeness; 3 admission/classification and observed-host correctness (plus MAX-12 brought forward from 5); 4 optional layout verbs; 5 remaining explicitly deferred items; 6-8 non-voting column mechanics. The original inventory used at most four rows per batch; batch 3 covers five. Latest-source checks now cover batches 1-3 and MAX-12, not remaining batches 4-8.
 
 ## Requirement batch 1: historical evidence and options
 
@@ -579,11 +579,110 @@
   pending placeholder. Implementation remains stopped for the two focus rows,
   regardless of offline gate results; batch 2 is not fully resolved.
 
+## Requirement batch 3: admission and fullscreen (2026-11-13)
+
+- Goal/acceptance: resolve inactive-destination anchoring, splash/utility and
+  app-specific PiP admission, hint-change reaction and fullscreen workspace/
+  layout interactions against latest stable Tier 1 sources. Preserve existing
+  architecture, gaming principle, minimum policy and fixed-size decisions.
+  Product selection is separate from actual app/native evidence. Four rows
+  become NORMATIVE; SPC-05b stops at an earlier-decision conflict, not a lack of
+  implementation effort.
+- Approach: release-qualified local source inspection, minimal discriminators,
+  shared/KDE regression implementation, sequential integrated offline gates and
+  complete-diff review. COSMIC `epoch-1.11.0`, Hyprland `v0.57.2`, i3 `4.25.1`
+  and sway `1.12` were checked against read-only origin tag listings on
+  2026-11-13; no newer stable tag was found. Matrix cells carry inline versions
+  and exact source paths; app/native outcomes not proved by source stay TBD.
+
+| Row / discriminator | COSMIC `epoch-1.11.0` | Hyprland `v0.57.2` | i3 `4.25.1` | sway `1.12` | Decision / assumption |
+| --- | --- | --- | --- | --- | --- |
+| INS-07b: W1 A focused, W2 H[B,C] remembers C; D routed to W2 | Workspace token, target last-active tiled node; no inactive focus. `src/shell/mod.rs:3044-3086,3153-3184`, `src/shell/layout/tiling/mod.rs:417-419,2826-2845` | Silent workspace rule, inactive cursor-closest anchor, no switch/focus. `src/desktop/view/window/Window.cpp:1370-1415,1519,1565-1571`, `src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:95-106,650-666` | Assignment, target focused tiled descendant, invisible workspace suppresses focus. `src/manage.c:289-316,601-613` | Assignment, target inactive tiled focus, differing workspace suppresses focus. `sway/tree/view.c:632-715,850-872,898-902,945-957` | Target-local remembered/fallback; no focus/switch/replay for inactive births. No assumption; existing placement settings stand |
+| SPC-02: fresh typed splash; utility/toolbar variant | Splash floats, utility normally tiles. `src/shell/layout/mod.rs:20-58` | Both float, initial focus suppressed. `src/desktop/view/window/X11Backend.cpp:59-80` | Both float, visible-workspace focus. `src/manage.c:462-474,601-613` | Both float; focus/switcher TBD. `sway/desktop/xwayland.c:310-329` | Float both, retain safety gates. ASSUMPTION no new type-focus exception; host switcher unchanged |
+| SPC-03: PiP label only versus positive ordinary float fact | Parent/type/fixed predicates and configured app/title exceptions. `src/shell/layout/mod.rs:20-109` | Backend traits and floating rule. `src/desktop/view/window/WaylandBackend.cpp:31-38`, `X11Backend.cpp:59-95`, `Window.cpp:1038-1046,1232-1233,1301` | Ordinary type/modal/fixed gate. `src/manage.c:462-474` | Ordinary xdg/Xwayland float predicates. `sway/desktop/xdg_shell.c:228-235`, `sway/desktop/xwayland.c:310-342` | ASSUMPTION ordinary facts, no app/title heuristic/new rule subsystem/topmost inference. Actual app outcomes TBD for all four |
+| SPC-05b: runtime non-fixed minimum raise, feasible 600/600 -> min B700 versus infeasible | Tiled configure retained, no inspected tiled-minimum path. `src/xwayland.rs:918-974` | Tiled configure resend, floating-only client hint clamp. `src/desktop/view/window/Window.cpp:974-980,1791-1795` | Resize/hint update path floating-only. `src/handlers.c:345-376,1006-1019` | Tiled configure retained; hint listener urgency-only. `sway/desktop/xwayland.c:589-605,756-774` | STOP, OPEN: earlier feasible-minimum policy reallocates 500/700. No new decision/assumption/behavior change |
+| MAX-12: fullscreen move, workspace switch/return, orientation; extra workspace-tiling off/on | Switch retains fullscreen layer; orientation no-op; tiling toggle leaves fullscreen layer. `src/shell/mod.rs:541-584,1778-1813`, `src/shell/layout/tiling/mod.rs:2089-2098`, `src/shell/workspace.rs:1430-1489` | Switch retains fullscreen, return cover focus; orientation guard. `src/output/Monitor.cpp:1330-1428`, `src/desktop/state/FocusState.cpp:80-85`, `src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:774-785` | Switch retains fullscreen; parent layout may mutate. `src/workspace.c:438-522`, `src/commands.c:1174-1202,1597-1648` | Switch retains fullscreen; parent may mutate. `sway/tree/workspace.c:731-743`, `sway/commands/split.c:53-84`, `sway/commands/layout.c:117-175` | Retain fullscreen, existing move fence. ASSUMPTION orientation no-op in even split; existing workspace tiling toggle preserves fullscreen |
+
+- Authority: the four selections were decided under the standing Tier 1
+  alignment rule (User 2026-11-13). The topic decisions own reasons,
+  assumptions and revisit conditions: [inactive destination](../decisions/layout-and-admission.md#inactive-destination-admission),
+  [special admission](../decisions/window-state.md#splash-utility-and-picture-in-picture-admission)
+  and [fullscreen actions](../decisions/window-state.md#fullscreen-workspace-and-layout-actions).
+  No new command, shortcut, setting, native-kind arm, wire field or adapter rule
+  subsystem is introduced. PiP is a fact-based policy decision, not proof of
+  any unspecified media application's flags or a Tier 1 vote for one app rule.
+- Implementation: `take_admission_focus` spends each converged birth on an
+  inactive workspace before active-newcomer selection; remembered target-local
+  anchoring is unchanged. This prevents an inactive birth masking an eligible
+  active one in the same report and prevents replay after workspace return.
+  Utility/splash now share the existing dialog/sheet float-origin classification,
+  including independent nullable transient/modal/layer/hint inputs; safety gates
+  remain prior. KDE captures non-normal utility/toolbar/splash through raw facts
+  rather than dropping them. Ordinary floats carry no automatic frame or native
+  membership-write authority. No new focus/stacking exception is added.
+- Shared regressions: two report-level inactive-destination tests prove remembered
+  C anchoring, no automatic focus/view transfer, per-birth spending, mixed active/
+  inactive births and no replay. Four classification journeys prove utility/
+  splash float and null independence, safety precedence, metadata-only PiP tile
+  versus ordinary float facts, and existing infeasible-minimum/drift retention.
+  Four fullscreen command journeys prove host-owned return focus/arrival fencing,
+  refusal of orientation and directional move, tiling off/on without fullscreen
+  subject frame/state/automatic focus, and unchanged native-free suppression veto.
+  KDE capture regression covers all three type flags. Existing feasible-minimum
+  regression proves the STOP discriminator; it is not changed.
+- SPC-05b options: (a) explicitly retain the recorded host adaptation, feasible
+  minima redistribute slack while infeasible minima remain proportional, then
+  test native convergence; (b) explicitly supersede that decision for runtime
+  tiled hints to match the inspected Tier 1 no-reflow paths. The earlier
+  [Placement and minimums](../decisions/layout-and-admission.md#placement-and-minimums)
+  choice and delayed host-settled-geometry design timing are untouched. Added
+  infeasible-hint/drift regression describes existing behavior only; native
+  reaction remains TBD and this row stays OPEN pending that product decision.
+- Fullscreen limits: parent orientation and workspace tiling off/on are distinct
+  existing commands, not the parked alternate-layout feature. Native-free
+  selection still withholds controlled suppression for fullscreen; explicit
+  return uses existing direct-focus fallback rather than host-owned awaitShown.
+  No safety gate is relaxed to claim parity. Native visibility, stacking and
+  fullscreen retention must be checked on the actual host.
+- Fixtures/contract: no immutable or active family changed; no recorder refresh
+  was needed. The world contract clarifies the new float origins under the
+  existing type vocabulary, not a protocol/version change. `tiler-protocol` and
+  the settings exporter are untouched. No live desktop test was run.
+- Integration corrections: a new remembered-leaf assertion needed a retained
+  snapshot binding to compile. Initial classification oracles incorrectly
+  expected ordinary floats to have native membership-write authority and a
+  feasible fixed-minimum update to retain exact proportional geometry; they now
+  assert existing ordinary-float authority and retained tiled membership. The
+  infeasible-minimum exact-allocation assertion is unchanged. KDE's test surface
+  type needed the three native flags added before typecheck could compile.
+- Sequential integrated gates: `cargo fmt --all -- --check`;
+  `cargo build -p tiler-core -p tiler-protocol -p omnitiler --all-targets`;
+  `cargo clippy -p tiler-core -p tiler-protocol -p omnitiler --all-targets -- -D warnings`;
+  `cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture`;
+  then in `kwin/`, `npm run typecheck` and `npm test`: corrected integrated
+  results exit 0, Rust 3398 passed, zero failed/ignored, one filtered; KDE
+  1298 passed in 189 suites, zero failed/skipped. Earlier integrated test and
+  typecheck failures are not acceptance evidence. Complete output retained
+  externally. Independent complete-diff review found no defects; source
+  predicate spot-checks, the new untracked test, all production/test/doc hunks
+  and the 184/165/19/0 enumeration were reviewed. Whitespace review is clean.
+- Counts: 184 total = 165 NORMATIVE (including qualified REQ-OUT-05), 19 OPEN,
+  0 PROVISIONAL. Batch 3 resolves four rows (including MAX-12 from batch 5),
+  stops one. Batch 2 retains two OPEN focus rows; other batches retain 16 OPEN.
+- Platform adoption: shared inactive-birth focus suppression and utility/splash
+  float-origin admission change the Windows/macOS core target too, with no
+  adapter edits/builds here. Windows tool-window/owned gates remain; AX floating
+  windows normalized to utility now get a positive float origin rather than a
+  hold. PiP metadata behavior and fullscreen command behavior are confirmed,
+  not newly altered. Native pickup, focus/switcher, actual PiP apps and fullscreen
+  return/tiling toggles remain unverified on all hosts.
+
 ## Verification, limits and next decision
 
 - Historical research verification: source reads, exact OPEN-status enumeration, tag-qualified local source inspection and docs diff/whitespace review. Inventory IDs exactly match all 28 OPEN rows; batch sizes are 4/3/4/4/3/4/3/3. New-note relative file links resolve, added matrix target exists, note is ASCII. A broader link check found pre-existing missing `docs/changes/retained-focus-requests.md` targets in the matrix (also present at the inspected base); those unrelated links are unchanged. Research alone claimed no live outcomes or test-suite results; implementation evidence is separate above. Investigation reports were checked against key source spans; over-broad "Tier 1 always tiles" and "COSMIC equals stable-first" claims were rejected.
 - C9 corrections: `core-v4-review.md:267-268` is accurate about absent reference citations, but not an absence of user authority; `:275` correctly counts 28 but incorrectly describes all as already implemented. Absent cycle/preselect/layout/column verbs and the explicitly parked LAY-04 contradict that characterization. Its 183-row total (`:265`) and the spec's draft total are also stale: current enumeration is 184 rows (155 literal NORMATIVE plus qualified-NORMATIVE REQ-OUT-05, 28 OPEN). This is not evidence that the remaining OPEN rows should automatically become normative. Separately, the source recheck contradicts R-FOC-02's historical Hyprland-retain claim in the explicit zero-gap variant; opposite-edge fallback is not a stay rule for a half-width A.
-- Unverified/TBD: exact tiny rectangles/client settlement on every WM; exact latest-tag COSMIC FOC-01 fixture, Hyprland shipped-gap FOC-02 and move reconstruction; native settings pickup/parity, especially Windows report defaults; later batches' latest-source checks. No source result here selects a new default or expands scope.
+- Unverified/TBD: exact tiny rectangles/client settlement on every WM; exact latest-tag COSMIC FOC-01 fixture, Hyprland shipped-gap FOC-02 and move reconstruction; native settings pickup/parity, especially Windows report defaults; remaining batches 4-8 latest-source checks except MAX-12. Research alone selects nothing; batch selections and assumptions are recorded separately above.
 - Next action: remaining native adoption of fixed-largest/fixed-float and the
   qualified batch-1 gaps above.
-  Batch 2 retains two OPEN focus decisions; batches 3-8 retain 21 OPEN rows.
+  Batch 2 retains two OPEN focus decisions; SPC-05b retains its earlier-decision
+  conflict; other remaining batches retain 16 OPEN rows.

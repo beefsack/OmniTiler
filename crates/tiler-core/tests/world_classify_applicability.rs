@@ -7,7 +7,11 @@
 //!   float membership when the layer is null and the irrelevant
 //!   transient/modal counterpart is null.
 //! - Guards: unknown own pid still holds regardless of executable,
-//!   unowned `#32770` refusal and utility/splash holds are unchanged.
+//!   unowned `#32770` refusal and remaining TBD nonordinary kind holds are
+//!   unchanged; utility/splash float as ordinary members with safety gates
+//!   retained; PiP title/class alone tiles while ordinary float facts float;
+//!   already-tiled infeasible min-hint raises and geometry drift retain
+//!   authoritative allocations.
 
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
@@ -326,15 +330,15 @@ fn unknown_own_pid_holds_and_dialog_refusal_unchanged() {
     let mut dialog = healthy("win-32770");
     dialog.class = Some("#32770".to_owned());
     dialog.window_type = Some(WindowType::Dialog);
-    // Utility/splash kinds stay in the TBD hold.
-    let mut utility = healthy("win-utility");
-    utility.window_type = Some(WindowType::Utility);
+    // Remaining nonordinary kinds (e.g. menu) stay in the TBD hold.
+    let mut menu = healthy("win-menu");
+    menu.window_type = Some(WindowType::Menu);
     let reply = accepted(
         &mut engine,
         &report(
             1,
             1,
-            vec![unknown_own, dialog, utility, healthy("win-control")],
+            vec![unknown_own, dialog, menu, healthy("win-control")],
             PresentationIngressV4::default(),
         ),
     );
@@ -346,7 +350,7 @@ fn unknown_own_pid_holds_and_dialog_refusal_unchanged() {
         "no refusal: {:?}",
         reply.diagnostics
     );
-    for win in ["win-unknown-own", "win-32770", "win-utility"] {
+    for win in ["win-unknown-own", "win-32770", "win-menu"] {
         for row in reply.windows.iter().filter(|row| row.lifetime.0 == win) {
             assert_ne!(
                 row.membership_authority,
@@ -359,4 +363,244 @@ fn unknown_own_pid_holds_and_dialog_refusal_unchanged() {
     let control = row_of(&reply, "win-control");
     assert_eq!(control.membership_authority, ScopeAuthority::Controlled);
     assert!(control.allocation.is_some());
+}
+
+#[test]
+fn utility_and_splash_float_as_ordinary_members_including_nullable_unrelated_facts() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let mut utility = healthy("win-utility");
+    utility.window_type = Some(WindowType::Utility);
+    utility.transient = None;
+    utility.modal = None;
+    utility.layer = None;
+    utility.hints = None;
+    utility.executable = None;
+    utility.title = None;
+    utility.role = None;
+
+    let mut splash = healthy("win-splash");
+    splash.window_type = Some(WindowType::Splash);
+    splash.transient = None;
+    splash.modal = None;
+    splash.layer = None;
+    splash.hints = None;
+    splash.executable = None;
+    splash.title = None;
+    splash.role = None;
+
+    let reply = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![utility, splash, healthy("win-control")],
+            PresentationIngressV4::default(),
+        ),
+    );
+    for win in ["win-utility", "win-splash"] {
+        let row = row_of(&reply, win);
+        assert_eq!(
+            row.membership_authority,
+            ScopeAuthority::Untouched,
+            "{win}: ordinary float member keeps untouched membership authority, got {row:?}"
+        );
+        assert_eq!(
+            row.frame_authority,
+            ScopeAuthority::Untouched,
+            "{win}: ordinary float member keeps untouched frame authority, got {row:?}"
+        );
+        assert!(row.floating, "{win}: must float, got {row:?}");
+        assert_eq!(
+            row.float_origin, None,
+            "{win}: ordinary float, not fixed-auto"
+        );
+        assert_eq!(row.allocation, None, "{win}: no tile geometry");
+    }
+    let control = row_of(&reply, "win-control");
+    assert_eq!(control.membership_authority, ScopeAuthority::Controlled);
+    assert!(!control.floating);
+    assert!(control.allocation.is_some());
+}
+
+#[test]
+fn utility_and_splash_retain_safety_owned_and_tool_window_gates() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let mut owned_utility = healthy("win-owned-utility");
+    owned_utility.window_type = Some(WindowType::Utility);
+    owned_utility.owned = Some(true);
+
+    let mut tool_splash = healthy("win-tool-splash");
+    tool_splash.window_type = Some(WindowType::Splash);
+    tool_splash.tool_window = Some(true);
+
+    let mut priv_utility = healthy("win-priv-utility");
+    priv_utility.window_type = Some(WindowType::Utility);
+    priv_utility.privileged = Some(true);
+
+    let mut unmanaged_splash = healthy("win-unmanaged-splash");
+    unmanaged_splash.window_type = Some(WindowType::Splash);
+    unmanaged_splash.managed = Some(false);
+
+    let mut null_owned_utility = healthy("win-null-owned-utility");
+    null_owned_utility.window_type = Some(WindowType::Utility);
+    null_owned_utility.owned = None;
+
+    let reply = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                owned_utility,
+                tool_splash,
+                priv_utility,
+                unmanaged_splash,
+                null_owned_utility,
+                healthy("win-control"),
+            ],
+            PresentationIngressV4::default(),
+        ),
+    );
+    for win in [
+        "win-owned-utility",
+        "win-tool-splash",
+        "win-priv-utility",
+        "win-unmanaged-splash",
+        "win-null-owned-utility",
+    ] {
+        for row in reply.windows.iter().filter(|row| row.lifetime.0 == win) {
+            assert_ne!(
+                row.membership_authority,
+                ScopeAuthority::Controlled,
+                "{win} must not gain controlled membership, got {row:?}"
+            );
+            assert!(!row.floating, "{win} must not float, got {row:?}");
+            assert_eq!(row.allocation, None, "{win}: no geometry, got {row:?}");
+        }
+    }
+    let control = row_of(&reply, "win-control");
+    assert_eq!(control.membership_authority, ScopeAuthority::Controlled);
+    assert!(control.allocation.is_some());
+}
+
+#[test]
+fn pip_title_and_class_alone_tile_while_ordinary_float_facts_float() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    // PiP-like title, class, and keepAbove alone on a Normal window do not float.
+    let mut pip_normal = healthy("win-pip-normal");
+    pip_normal.title = Some("Picture-in-Picture".to_owned());
+    pip_normal.class = Some("PictureInPicture".to_owned());
+    pip_normal.above = Some(true);
+
+    // Same PiP metadata with a positive ordinary float fact (transient, modal,
+    // or utility kind) floats via the ordinary fact.
+    let mut pip_transient = healthy("win-pip-transient");
+    pip_transient.title = Some("Picture-in-Picture".to_owned());
+    pip_transient.class = Some("PictureInPicture".to_owned());
+    pip_transient.transient = Some(true);
+
+    let mut pip_utility = healthy("win-pip-utility");
+    pip_utility.title = Some("Picture-in-Picture".to_owned());
+    pip_utility.class = Some("PictureInPicture".to_owned());
+    pip_utility.window_type = Some(WindowType::Utility);
+
+    let reply = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![pip_normal, pip_transient, pip_utility],
+            PresentationIngressV4::default(),
+        ),
+    );
+    let normal_row = row_of(&reply, "win-pip-normal");
+    assert_eq!(normal_row.membership_authority, ScopeAuthority::Controlled);
+    assert!(!normal_row.floating, "PiP metadata alone must not float");
+    assert!(normal_row.allocation.is_some());
+
+    for win in ["win-pip-transient", "win-pip-utility"] {
+        let row = row_of(&reply, win);
+        assert_eq!(
+            row.membership_authority,
+            ScopeAuthority::Untouched,
+            "{win}: ordinary float member keeps untouched membership authority, got {row:?}"
+        );
+        assert_eq!(
+            row.frame_authority,
+            ScopeAuthority::Untouched,
+            "{win}: ordinary float member keeps untouched frame authority, got {row:?}"
+        );
+        assert!(row.floating, "{win} must float via ordinary float facts");
+        assert_eq!(row.float_origin, None);
+        assert_eq!(row.allocation, None);
+    }
+}
+
+#[test]
+fn already_tiled_infeasible_min_raise_and_geometry_drift_retain_allocations() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let r1 = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![healthy("win-a"), healthy("win-b")],
+            PresentationIngressV4::default(),
+        ),
+    );
+    let alloc_a1 = row_of(&r1, "win-a").allocation.expect("win-a tiled");
+    let alloc_b1 = row_of(&r1, "win-b").allocation.expect("win-b tiled");
+
+    // Runtime infeasible non-fixed minimum-hint raise + app resize geometry
+    // drift on win-b: retains authoritative allocations with no eviction, no
+    // reflow, and no float.
+    let mut raised_b = healthy("win-b");
+    raised_b.hints = Some(WindowSizeHints {
+        min_w: Some(900),
+        min_h: Some(700),
+        max_w: None,
+        max_h: None,
+    });
+    raised_b.rect = Some(rect(0, 0, 900, 700));
+    let r2 = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![healthy("win-a"), raised_b],
+            PresentationIngressV4::default(),
+        ),
+    );
+    let row_a2 = row_of(&r2, "win-a");
+    let row_b2 = row_of(&r2, "win-b");
+    assert_eq!(row_a2.membership_authority, ScopeAuthority::Controlled);
+    assert_eq!(row_b2.membership_authority, ScopeAuthority::Controlled);
+    assert!(!row_a2.floating);
+    assert!(!row_b2.floating);
+    assert_eq!(row_a2.allocation, Some(alloc_a1));
+    assert_eq!(row_b2.allocation, Some(alloc_b1));
+
+    // Prior fixed-size admission decision for already-tiled win-b stays
+    // unchanged even if win-b later reports equal min/max hints.
+    let mut fixed_b = healthy("win-b");
+    fixed_b.hints = Some(WindowSizeHints {
+        min_w: Some(400),
+        min_h: Some(400),
+        max_w: Some(400),
+        max_h: Some(400),
+    });
+    let r3 = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![healthy("win-a"), fixed_b],
+            PresentationIngressV4::default(),
+        ),
+    );
+    let row_b3 = row_of(&r3, "win-b");
+    assert_eq!(row_b3.membership_authority, ScopeAuthority::Controlled);
+    assert!(!row_b3.floating, "retained tiled stays tiled");
+    assert_eq!(row_b3.float_origin, None, "no fixed-size float admission");
+    assert!(row_b3.allocation.is_some(), "win-b remains tiled");
 }
