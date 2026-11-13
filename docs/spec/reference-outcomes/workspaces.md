@@ -390,12 +390,33 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
 - Observe (column leg): B listed vs omitted; switch to WS1 with membership
   unchanged vs pull into WS2.
 
-- Then COSMIC: B listed: the Alt+Tab empty-query search appends every compositor-published toplevel with no workspace/visibility filter; selecting B calls `manager.activate`, and the compositor unminimizes B, switches to WS1 via `shell.activate`, and focuses B with membership unchanged (never pulled into WS2; sticky windows focus in place); `S(S-cos-sysact)` + `S(S-cos-syscmd)` + `S(S-lch-altab)` + `S(S-pop-toplevel)` + `S(S-cos-topact)`; exact switcher visuals/key-repeat timing TBD
-- Then Hyprland/Dwindle: no-counterpart (no Alt+Tab/listing verb in the dispatcher inventory: `cycle_next` cycles the same workspace by default, `focus last`/`urgent_or_last` are history single-targets, and the shipped example binds an external `hyprlauncher` menu). `S(S-hyp-switcher)`
+- Then COSMIC (`epoch-1.11.0`): Alt+Tab / Super+Tab invokes external
+  `System(WindowSwitcher)` (`data/keybindings.ron:109-112`). Compositor
+  toplevel protocols publish windows (`src/wayland/protocols/toplevel_info.rs:9-31`);
+  manager activation unminimizes, switches to the owning workspace and
+  focuses without changing membership
+  (`src/wayland/handlers/toplevel_management.rs:33-112`). Historical launcher
+  evidence lists B without a workspace filter (`S(S-lch-altab)` +
+  `S(S-pop-toplevel)` + `S(S-cos-syscmd)`); latest external UI listing,
+  visuals/key-repeat and exact native journey remain TBD. This is a shell
+  counterpart, not a built-in compositor popup.
+- Then Hyprland/Dwindle (`v0.57.2`): no built-in Alt+Tab listing/binding;
+  Super+R launches external `hyprlauncher` (`example/hyprland.lua:33,274`).
+  Foreign-toplevel publication/activation exists
+  (`src/protocols/ForeignToplevel.cpp:36-41`, `src/protocols/ForeignToplevelWlr.cpp:31`);
+  that is not proof of an external switcher's filter or switch-versus-pull
+  result. Exact shell/native journey TBD; optional layouts do not add a UI.
 - Then bspwm: no-counterpart (no Alt+Tab/listing verb in source or the shipped sxhkdrc: `super+Tab` toggles the last desktop, `grave` the last node, `o/i` walk history single-targets, and `{next,prev}.local` cycles the current desktop only; `dmenu_run` is an external program launcher and `bspc query` lists have no traced switcher activation). `S(S-bsp-switcher)`
-- Then i3: no-counterpart (no Alt+Tab/listing verb in the FOCUS command inventory or shipped config: `dmenu_run` plus a commented `rofi` alternate are external launchers, and focus verbs are directional/output/mode/parent-child single-targets while workspace number/next/prev switch views without listing). `S(S-i3-switcher)`
+- Then i3 (`4.25.1`): no built-in Alt+Tab listing/binding; Mod1+D launches
+  `dmenu_run` (`etc/config:63-65`). EWMH client lists and activation requests
+  exist (`src/ewmh.c:246-270`, `src/handlers.c:755-780`), but do not select
+  an external shell's filter or activation policy; exact journey TBD.
 - Then xmonad/Tall+Navigation2D: no-counterpart (no Alt+Tab/cross-workspace listing verb in this profile: core mod+Tab is same-stack `focusDown`, `dmenu_run`/`gmrun` are external launchers, and Navigation2D `windowGo`/`windowSwap` stay on the same layer). `S(S-xmo-switcher)`
-- Then sway: no-counterpart (no Alt+Tab/listing verb in the focus command inventory or shipped config: `$menu wmenu-run` is an external launcher, and focus verbs are directional/output/mode/parent-child single-targets with no listing). `S(S-sway-switcher)`
+- Then sway (`1.12`): no built-in Alt+Tab listing/binding; `$mod+d` launches
+  external `wmenu-run` (`config.in:19,74`). Foreign-toplevel list/management
+  exists (`sway/server.c:469-477`); activation focuses the existing container,
+  with a separate hidden-scratchpad branch (`sway/tree/view.c:735-752`).
+  Exact external switcher filtering/workspace journey TBD, not a pull vote.
 - Then qtile/Columns: no-counterpart (no Alt+Tab/listing verb in the shipped keys: mod+Tab switches layouts, mod+space and `next/prev_window` cycle the current group only, and the bar `WindowName`/`TaskList`/`WindowTabs` widgets display the current group only; `toscreen` pulls a group with no listing). `S(S-qti-switcher)`
 - Then awesome/tile: B is listed by the native `awful.menu.clients` inventory (unfiltered `client.iterate` over all screens with no tag filter, exposed as `client_list` on the shipped tasklist right-click; the shipped mod+Tab key is history-previous, not a listing, and the tasklist shows current tags only); activation views B's tags via `viewmore` with membership unchanged (no tag write to B) plus `activate raise`. `S(S-awe-switcher)`
 - Then niri: B is listed in the default All scope (the MRU UI collects
@@ -429,7 +450,11 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   `S(S-pan-cmds)` + `S(S-pan-switcher)`.
 - Then Ours KDE: Per the KDE source, native filter permits B; TabBox activation follows configured policy, default switch to WS1, alternative bring-to-current; exact user-version live outcome TBD; `D(D-alt-tab)`
 - Then Ours Windows: Current `SW_HIDE`: B omitted; kept for 0.1 User 2026-10-17. Future inclusion/activation policy TBD; switch-versus-pull open in post-0.1 research. `D(D-alt-tab)`
-- Variant hook: V-WS-SHELL-ACTIVATE.
+- Variant hook: V-WS-SHELL-ACTIVATE remains unselected for future behavior.
+  REQ-WS-07 is NORMATIVE only as a scope deferral beyond 0.1, decided under
+  the standing Tier 1 alignment rule (User 2026-11-13). Preserve the earlier
+  User 2026-10-17 keep-SW_HIDE decision and native KDE shell ownership;
+  no listing override, switch-versus-pull policy or runtime change added.
 
 ## New scenarios (GWT; fixtures/actions/discriminators per the approved expansion record)
 

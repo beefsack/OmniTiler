@@ -210,15 +210,16 @@ ancestry claims. Ours cells cite Engine + adapter source at `9241c94`
   equal leaf area.
 - Observe: equal sibling shares vs recursive tree balance, preserved ratios
   or missing command.
-- Then COSMIC: no-counterpart (no equalize/balance verb in the action,
+- Then COSMIC (`epoch-1.11.0`): no-counterpart, unbound (no equalize/balance verb in the action,
   binding, or tiling inventories: the shortcut Action inventory carries
   only `Resizing` for resize plus magnification `ZoomIn`/`ZoomOut`, the
   shipped keybindings bind only `Resizing(Outwards/Inwards)`, and the
   tiling layout exposes only edge-walk `possible_resizes`,
   `resize_request`, and pixel `resize`; admission `equal_sizing` is an
   automatic new-window split, not a user verb; neither a local nor a
-  workspace-wide equalize exists). `S(S-cos-resize)`.
-- Then Hyprland/Dwindle: no-counterpart (no equalize/balance verb in the
+  workspace-wide equalize exists). `src/input/actions.rs:964-1067`,
+  `data/keybindings.ron:83-98`, `src/shell/layout/tiling/mod.rs:2443-2520`.
+- Then Hyprland/Dwindle (`v0.57.2`): no-counterpart, unbound (no equalize/balance verb in the
   action, dispatcher, or Dwindle inventories: the window action
   declarations and dispatched names carry only pixel `resize`, the
   Dwindle path is per-split pixel `resizeTarget`, and the Dwindle
@@ -226,31 +227,35 @@ ancestry claims. Ours cells cite Engine + adapter source at `9241c94`
   preselect/splitratio only; `splitratio` adjusts the single
   `CURRENT_NODE` parent split by delta or exact value, not the whole
   workspace, so it is not an equalize counterpart).
-  `S(S-hyp-resize)`.
+  `src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:676-772`.
+  Optional non-default scrolling has `layoutmsg colresize all <width>`
+  assigning every column the supplied width, not balancing this binary tree
+  (`src/layout/algorithm/tiled/scrolling/ScrollingAlgorithm.cpp:1233-1250`);
+  also unbound (`example/hyprland.lua:265-316`).
 - Then bspwm: leg `-E` resets every split ratio to the configured 0.5, so
   A stays 0.5 and the inner pair splits evenly: 0.5/0.25/0.25. Fresh leg
   `-B` rebalances by leaf count (outer 1/3, inner 1/2): exact thirds.
   `S(S-bsp-resize)` + `S(S-bsp-bal)` + `S(S-bsp-ins)` (default ratio).
-- Then i3: no-counterpart (no equalize/balance verb in the command
+- Then i3 (`4.25.1`): no-counterpart, unbound (no equalize/balance verb in the command
   inventory: `INITIAL` lists move/exec/layout/focus/split/`resize`/swap
   and others with no equalize form, and the `RESIZE` grammar is
   grow/shrink/set only; grow/shrink moves one tiling pair by px/ppt and
   `resize set` writes an exact width/height on the single focused
   container, neither equalizes all siblings nor balances the tree).
-  `S(S-i3-resize)`.
+  `parser-specs/commands.spec:12-47,281-306`.
 - Then xmonad/Tall+Navigation2D: no-counterpart (no equalize verb in the
   profile: core `Tall` handles only `Shrink`/`Expand`/`IncMasterN` with
   keys for focus/swap/shrink/expand/master-count/sink only; contrib
   `BinarySpacePartition` `Balance`/`Equalize` messages exist but are
   out of this Tall+Navigation2D profile, so the binary-embedded Given
   has no applicable equalize leg). `S(S-xmo-resize)`.
-- Then sway: no-counterpart (no equalize/balance verb in the command
+- Then sway (`1.12`): no-counterpart, unbound (no equalize/balance verb in the command
   inventory: the runtime table carries layout/move/`resize`/split/swap
   and others with no equalize form, and `resize` dispatches only
   set/grow/shrink; grow/shrink moves one resize-parent pair and `resize
   set` writes an exact size on the single focused container; arrange
   `normalize` only re-sums fractions to 1.0 internally, it is not a user
-  verb). `S(S-sway-resize)`.
+  verb). `sway/commands.c:114-143`, `sway/commands/resize.c:554-583`.
 - Then qtile/Columns: `normalize()` sets every column width (and in-column
   heights) to 100: exact thirds on the column Given. `S(S-qti-resize)`.
 - Then awesome/tile: no-counterpart (no equalize verb in the tag, key,
@@ -287,4 +292,7 @@ ancestry claims. Ours cells cite Engine + adapter source at `9241c94`
 - Then Ours Windows: no-counterpart (no equalize verb in the operation
   inventory; directional keyboard resize is a separate operation).
   `S(S-ours-resize)` + `S(S-ours-winbind)`.
-- Variant hook: provisional/TBD.
+- Variant hook: REQ-RSZ-04 is NORMATIVE as a scope deferral beyond 0.1,
+  decided under the standing Tier 1 alignment rule (User 2026-11-13).
+  No equalize verb added or future semantics selected; 0/4 default-layout
+  counterparts and existing post-0.1 triage. Exact unsupported outcomes stay TBD.

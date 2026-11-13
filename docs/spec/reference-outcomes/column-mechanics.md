@@ -19,6 +19,28 @@ scrolling, Centered/Grouped off, no default stack (`S(S-kar-base)`);
 paneru shipped defaults, width presets, resize-cycle on, auto-center
 off, append admission (`S(S-pan-base)`).
 
+- Tier 1 release recheck 2026-11-14: the cells below distinguish the native
+  default tiled model from optional algorithms. COSMIC `epoch-1.11.0` uses
+  an output-bound Group/Mapped tree (`src/shell/layout/tiling/mod.rs:133-168`);
+  i3 `4.25.1` uses container/workspace attachment (`src/tree.c:149-174`);
+  sway `1.12` uses workspace tiling siblings (`sway/tree/view.c:898-902`).
+  Hyprland `v0.57.2` defaults to Dwindle, but also registers optional master,
+  scrolling and monocle (`src/config/values/ConfigValues.cpp:180`,
+  `src/layout/supplementary/WorkspaceAlgoMatcher.cpp:22-35`).
+- Binding convention for these ten rows: no default binding for the requested
+  column/viewport/virtual-row/app-native-tab operation in those four default
+  tiled models (`cosmic-comp epoch-1.11.0 data/keybindings.ron`,
+  `Hyprland v0.57.2 example/hyprland.lua:265-316`, `i3 4.25.1 etc/config`,
+  `sway 1.12 config.in`). Admission/tab creation is an event, not a shortcut.
+  Related ordinary tree bindings are named where useful, never counted as
+  column counterparts. Optional Hyprland scrolling commands below are also
+  unbound in its shipped example. Exact unsupported/native journeys stay TBD.
+- REQ-COL-01 through REQ-COL-10 are NORMATIVE only as scope deferrals beyond
+  0.1, decided under the standing Tier 1 alignment rule (User 2026-11-13).
+  OmniTiler has no strip/viewport model; prior triage places all ten after 0.1.
+  No future mechanics or runtime behavior is selected. Tree tabbed stacks
+  remain the separate already-selected post-0.1 design, not a column promise.
+
 ### R-COL-01: open a window over three half-width columns
 
 - Given (column profiles): `COL[C1[A],C2[B*],C3[C]]`, each 0.5W;
@@ -27,19 +49,24 @@ off, append admission (`S(S-pan-base)`).
 - When: open D.
 - Observe: new column before/after focus or append vs same-column
   admission; existing widths stable vs rescaled; new focus viewport.
-- Then COSMIC: fixture-inapplicable: no strip/column model; ordinary
-  admission splits the focused leaf's long edge. `S(S-cos-model)`.
-- Then Hyprland/Dwindle: fixture-inapplicable under the Dwindle
+- Then COSMIC (`epoch-1.11.0`): fixture-inapplicable: no strip/column
+  model; ordinary admission splits the focused leaf's long edge
+  (`src/shell/layout/tiling/mod.rs:548-616`); automatic, no binding.
+- Then Hyprland/Dwindle (`v0.57.2`): fixture-inapplicable under the Dwindle
   profile: admission splits the anchor with pointer-ordered newcomer,
-  no strip columns. `S(S-hyp-ins)`.
+  no strip columns (`src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:63-95`).
+  Optional scrolling inserts a new column after the anchor column and fits
+  the viewport, rather than rescaling existing columns
+  (`src/layout/algorithm/tiled/scrolling/ScrollingAlgorithm.cpp:725-785,330-339`).
+  Automatic admission, no binding; exact new focus/native journey TBD.
 - Then bspwm: fixture-inapplicable: binary tree, anchor longest-side
   split with newcomer second child. `S(S-bsp-insert)`.
-- Then i3: fixture-inapplicable: tree attach after the focused parent;
-  no geometry-driven strip. `S(S-i3-ins)`.
+- Then i3 (`4.25.1`): fixture-inapplicable: attach under the focused
+  tree parent, no strip (`src/tree.c:149-174`); automatic, no binding.
 - Then xmonad/Tall+Navigation2D: fixture-inapplicable: flat
   master/stack, no columns. `S(S-xmo-layout)`.
-- Then sway: fixture-inapplicable: sibling attach after the focused
-  tiling node. `S(S-sway-ins)`.
+- Then sway (`1.12`): fixture-inapplicable: sibling attach after the
+  focused tiling node (`sway/tree/view.c:898-902`); automatic, no binding.
 - Then qtile/Columns: fixture-inapplicable: the exact three-column
   fixture exceeds shipped `num_columns=2`; at the limit admission
   stays in the current column. `S(S-qti-add)`.
@@ -69,18 +96,22 @@ off, append admission (`S(S-pan-base)`).
   once, with each profile's native verb.
 - Observe: ratio/pixel presets, wrap/stop and window vs column scope;
   oversized columns only where a native preset exists.
-- Then COSMIC: no-counterpart: pixel resize only, no width presets or
-  cycle verb. `S(S-cos-resize)`.
-- Then Hyprland/Dwindle: no-counterpart: pixel-delta resize only, no
-  preset cycle. `S(S-hyp-resize)`.
+- Then COSMIC (`epoch-1.11.0`): no-counterpart, unbound: pixel resize,
+  not presets (`src/shell/layout/tiling/mod.rs:2514-2605`). Super+R /
+  Super+Shift+R enter ordinary resize (`data/keybindings.ron:91-92`).
+- Then Hyprland/Dwindle (`v0.57.2`): no-counterpart, unbound: pixel/ratio
+  resize only (`src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:312-470`).
+  Optional scrolling `layoutmsg colresize +conf` / `-conf` steps/wraps
+  configured widths (`src/layout/algorithm/tiled/scrolling/ScrollingAlgorithm.cpp:1233-1290`);
+  defaults 0.333/0.5/0.667/1.0 (`src/config/values/ConfigValues.cpp:828`).
 - Then bspwm: no-counterpart: `-z` pixel handle plus root `-E`/`-B`,
   no preset cycle. `S(S-bsp-resize)`.
-- Then i3: no-counterpart: grow/shrink shares only, no preset cycle.
-  `S(S-i3-resize)`.
+- Then i3 (`4.25.1`): no-counterpart, unbound: resize grow/shrink/set,
+  not preset cycle (`parser-specs/commands.spec:281-306`).
 - Then xmonad/Tall+Navigation2D: no-counterpart: `Shrink`/`Expand`
   move `frac` only, no edge or preset verb. `S(S-xmo-resize)`.
-- Then sway: no-counterpart: tiled share adjust only, no preset cycle.
-  `S(S-sway-resize)`.
+- Then sway (`1.12`): no-counterpart, unbound: resize set/grow/shrink,
+  not preset cycle (`sway/commands/resize.c:554-583`).
 - Then qtile/Columns: no-counterpart for the preset cycle: directional
   grows move width/height from the neighbor plus `normalize`; no
   preset-step verb. `S(S-qti-resize)`.
@@ -114,18 +145,22 @@ off, append admission (`S(S-pan-base)`).
   native verb.
 - Observe: which adjacent window/column is consumed, visible vertical
   allocation vs tabs, new column side and width recovery.
-- Then COSMIC: no-counterpart: move R1/R2/R3 branches only, no
-  consume/expel verb. `S(S-cos-move)`.
-- Then Hyprland/Dwindle: no-counterpart: remove/reinsert focal move
-  only, no consume/expel verb. `S(S-hyp-move)`.
+- Then COSMIC (`epoch-1.11.0`): no-counterpart, unbound: tree swap/reparent,
+  no column consume/expel (`src/shell/layout/tiling/mod.rs:1507-1560`).
+- Then Hyprland/Dwindle (`v0.57.2`): no-counterpart, unbound: directional
+  remove/reinsert (`src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:558-595`).
+  Optional scrolling `consume` takes the next column's first target;
+  `expel` takes the current column's last target into a new column;
+  `consume_or_expel prev|next` instead acts on the focused target
+  (`src/layout/algorithm/tiled/scrolling/ScrollingAlgorithm.cpp:1554-1616`).
 - Then bspwm: no-counterpart: leaf exchange only, no consume/expel
   verb. `S(S-bsp-move-target)`.
-- Then i3: no-counterpart: `tree_move`/reinsert only, no
-  consume/expel verb. `S(S-i3-move)`.
+- Then i3 (`4.25.1`): no-counterpart, unbound: tree move/reparent, not
+  column consume/expel (`src/move.c:259-280`, `parser-specs/commands.spec:12-47`).
 - Then xmonad/Tall+Navigation2D: no-counterpart: same-layer stack swap
   only, no consume/expel verb. `S(S-xmo-nav)`.
-- Then sway: no-counterpart: same-parent swap/reparent only, no
-  consume/expel verb. `S(S-sway-move)`.
+- Then sway (`1.12`): no-counterpart, unbound: tree swap/reparent, not
+  column consume/expel (`sway/commands/move.c:301-330`, `sway/commands.c:114-143`).
 - Then qtile/Columns: no-counterpart: no consume/expel verb in the
   Columns command inventory (directional focus, shuffle carry, grow,
   swap-column, `toggle_split` display flip, normalize/reset only);
@@ -166,18 +201,22 @@ off, append admission (`S(S-pan-base)`).
 - When: focus D by identity.
 - Observe: minimal scroll vs centering/grouped scroll,
   partial-visibility threshold and offscreen input focus.
-- Then COSMIC: fixture-inapplicable: no strip viewport; directional
-  focus walks the tree, exhausted edges fall through. `S(S-cos-tilefocus)`.
-- Then Hyprland/Dwindle: fixture-inapplicable: directional query plus
-  monitor fallback, no strip viewport. `S(S-hyp-focus)`.
+- Then COSMIC (`epoch-1.11.0`): fixture-inapplicable, unbound: tree focus,
+  no strip viewport (`src/shell/layout/tiling/mod.rs:1835-2087`).
+- Then Hyprland/Dwindle (`v0.57.2`): fixture-inapplicable, identity focus
+  unbound: fixed-work-area tree, not a viewport. Optional scrolling responds
+  to `focuswindow` by fitting the target column at `follow_focus=1`,
+  `focus_fit_method=1`; center is a named alternative
+  (`src/layout/algorithm/tiled/scrolling/ScrollingAlgorithm.cpp:640-723`,
+  `src/config/values/ConfigValues.cpp:820-822`). Native endpoint TBD.
 - Then bspwm: fixture-inapplicable: leaf selector over shown desktops,
   no strip viewport. `S(S-bsp-flt-focus)`.
-- Then i3: fixture-inapplicable: tiled walk excluding floats, no strip
-  viewport. `S(S-i3-flt-focus)`.
+- Then i3 (`4.25.1`): fixture-inapplicable, identity focus unbound:
+  criteria focus selects a tree container, no viewport (`src/commands.c:1431-1465`).
 - Then xmonad/Tall+Navigation2D: fixture-inapplicable: same-layer
   line/side navigation, no strip viewport. `S(S-xmo-nav)`.
-- Then sway: fixture-inapplicable: sibling-walk focus, no strip
-  viewport. `S(S-sway-focus)`.
+- Then sway (`1.12`): fixture-inapplicable, identity focus unbound:
+  criteria focus selects a tree node, no viewport (`sway/commands/focus.c:364-389`).
 - Then qtile/Columns: fixture-inapplicable for the viewport leg: column
   left/right step with wrap, but all columns share the group width with
   no scrolling viewport. `S(S-qti-focus)` + `S(S-qti-resize)`.
@@ -210,18 +249,20 @@ off, append admission (`S(S-pan-base)`).
   verb.
 - Observe: one-shot viewport change vs persistent centering policy,
   whole-column vs single-window target.
-- Then COSMIC: fixture-inapplicable: no strip viewport to center.
-  `S(S-cos-model)`.
-- Then Hyprland/Dwindle: fixture-inapplicable: Dwindle has no strip
-  viewport. `S(S-hyp-ins)`.
+- Then COSMIC (`epoch-1.11.0`): fixture-inapplicable, unbound: output-bound
+  tree, no strip viewport (`src/shell/layout/tiling/mod.rs:133-168`).
+- Then Hyprland/Dwindle (`v0.57.2`): fixture-inapplicable, unbound:
+  no strip viewport. Optional scrolling `layoutmsg center` centers the
+  active column once without focus or persistent-policy writes
+  (`src/layout/algorithm/tiled/scrolling/ScrollingAlgorithm.cpp:1663-1673`).
 - Then bspwm: fixture-inapplicable: binary tree, no viewport.
   `S(S-bsp-insert)`.
-- Then i3: fixture-inapplicable: tree attach model, no viewport.
-  `S(S-i3-ins)`.
+- Then i3 (`4.25.1`): fixture-inapplicable, unbound: tree attachment,
+  no viewport (`src/tree.c:149-174`, `parser-specs/commands.spec:12-47`).
 - Then xmonad/Tall+Navigation2D: fixture-inapplicable: flat layout, no
   viewport. `S(S-xmo-layout)`.
-- Then sway: fixture-inapplicable: tree model, no viewport.
-  `S(S-sway-ins)`.
+- Then sway (`1.12`): fixture-inapplicable, unbound: workspace tiling
+  siblings, no viewport (`sway/tree/view.c:898-902`, `sway/commands.c:114-143`).
 - Then qtile/Columns: fixture-inapplicable: columns share the group
   width, no viewport to center. `S(S-qti-resize)`.
 - Then awesome/tile: fixture-inapplicable: master/stack partition, no
@@ -252,18 +293,24 @@ off, append admission (`S(S-pan-base)`).
   then select C.
 - Observe: display-only membership/height retention vs actual grouping,
   single-visible tabs vs accordion.
-- Then COSMIC: fixture-inapplicable: no strip columns; its stack
-  convert/flatten is a different model. `S(S-cos-stack)`.
-- Then Hyprland/Dwindle: fixture-inapplicable: group create/destroy
-  only, no column display. `S(S-hyp-groupop)`.
+- Then COSMIC (`epoch-1.11.0`): fixture-inapplicable: Super+S toggles a
+  tree stack, not a scrollable column display (`data/keybindings.ron:84`,
+  `src/shell/layout/tiling/mod.rs:2132-2251`); column action unbound.
+- Then Hyprland/Dwindle (`v0.57.2`): fixture-inapplicable, unbound:
+  compositor groups are not strip-column display. No column tabbed-display
+  verb in optional scrolling's inspected `layoutMsg` inventory either
+  (`src/layout/algorithm/tiled/scrolling/ScrollingAlgorithm.cpp:1155-1710`);
+  grouping remains a separate target (`src/desktop/view/Group.hpp:18`).
 - Then bspwm: fixture-inapplicable: no column or tabbed display.
   `S(S-bsp-insert)`.
-- Then i3: fixture-inapplicable: parent tabbed/stacked layouts exist
-  but the strip column fixture has no counterpart. `S(S-i3-layout)`.
+- Then i3 (`4.25.1`): fixture-inapplicable: Mod1+S/W sets parent tree
+  stacking/tabbed layout, not strip-column display (`etc/config:104-105`,
+  `src/commands.c:1597-1622`); column action unbound.
 - Then xmonad/Tall+Navigation2D: fixture-inapplicable: no tabs or
   columns in this profile. `S(S-xmo-layout)`.
-- Then sway: fixture-inapplicable: parent tabbed/stacked splits exist
-  but the strip column fixture has no counterpart. `S(S-sway-layout)`.
+- Then sway (`1.12`): fixture-inapplicable: `$mod+s/w` sets parent tree
+  stacking/tabbed layout, not strip-column display (`config.in:149-150`,
+  `sway/commands/layout.c:117-146`); column action unbound.
 - Then qtile/Columns: `toggle_split` flips C2 between all-visible split
   and single-visible stacked (display-only: membership and height shares
   retained, only the `split` flag flips; stacked shows the current window
@@ -298,20 +345,25 @@ off, append admission (`S(S-pan-base)`).
 - When: send whole C2 to WS2 with the native verb.
 - Observe: atomic column transfer vs one-window send/no verb,
   membership/width preservation and target column position.
-- Then COSMIC: column-atomic leg fixture-inapplicable: single-window
-  send follows (Move) or stays (Send); reuse R-WS-01. `S(S-cos-send)`.
-- Then Hyprland/Dwindle: column-atomic leg fixture-inapplicable:
-  single-window transfer with follow/silent refocus; reuse R-WS-01.
-  `S(S-hyp-movews)`.
+- Then COSMIC (`epoch-1.11.0`): column-atomic leg fixture-inapplicable,
+  unbound: Move/Send acts on focused window/stack, no strip-column unit
+  (`src/input/actions.rs:293-319`); reuse R-WS-01, not column transfer.
+- Then Hyprland/Dwindle (`v0.57.2`): column-atomic leg fixture-inapplicable,
+  unbound: ordinary window transfer (`example/hyprland.lua:286-294`).
+  Optional scrolling's inspected `layoutMsg` inventory also has no
+  whole-column workspace-send verb
+  (`src/layout/algorithm/tiled/scrolling/ScrollingAlgorithm.cpp:1155-1710`).
 - Then bspwm: column-atomic leg fixture-inapplicable: node send with
   `--follow`; reuse R-WS-01. `S(S-bsp-xfer)`.
-- Then i3: column-atomic leg fixture-inapplicable: no-follow container
-  send; reuse R-WS-01. `S(S-i3-movews)`.
+- Then i3 (`4.25.1`): column-atomic leg fixture-inapplicable, unbound:
+  sends a tree container, not strip column (`src/commands.c:343-364`);
+  ordinary Mod1+Shift+digits send is distinct (`etc/config:153-162`).
 - Then xmonad/Tall+Navigation2D: column-atomic leg
   fixture-inapplicable: `shiftWin` explicit-tag transfer only; reuse
   R-WS-01. `S(S-xmo-shift)`.
-- Then sway: column-atomic leg fixture-inapplicable: no-follow tiled
-  append; reuse R-WS-01. `S(S-sway-movews)`.
+- Then sway (`1.12`): column-atomic leg fixture-inapplicable, unbound:
+  sends a tree container, not strip column (`sway/commands/move.c:419-450`);
+  ordinary `$mod+Shift+digits` send is distinct (`config.in:127-136`).
 - Then qtile/Columns: column-atomic leg fixture-inapplicable:
   per-window `togroup` transfer; reuse R-WS-01. `S(S-qti-group)`.
 - Then awesome/tile: column-atomic leg fixture-inapplicable:
@@ -349,16 +401,22 @@ off, append admission (`S(S-pan-base)`).
   command (keyboard step first, gesture leg only if source is unclear).
 - Observe: viewport independent of focus vs automatic refocus; clamp
   and offscreen-focused-window policy.
-- Then COSMIC: fixture-inapplicable: no strip viewport.
-  `S(S-cos-model)`.
-- Then Hyprland/Dwindle: fixture-inapplicable: no strip viewport.
-  `S(S-hyp-ins)`.
+- Then COSMIC (`epoch-1.11.0`): fixture-inapplicable, unbound: output-bound
+  tree, no viewport (`src/shell/layout/tiling/mod.rs:133-168`).
+- Then Hyprland/Dwindle (`v0.57.2`): fixture-inapplicable, unbound:
+  no viewport. Optional scrolling `layoutmsg move <delta>` changes tape
+  offset, then updates focus from the center column; not guaranteed
+  focus-preserving (`src/layout/algorithm/tiled/scrolling/ScrollingAlgorithm.cpp:1170-1232`).
+  Gesture motion uses `moveTape` without focus during motion; final snap/
+  focus is separate (`:1712-1726`, `src/managers/input/trackpad/gestures/ScrollMoveGesture.cpp:66-142`).
 - Then bspwm: fixture-inapplicable: no strip viewport.
   `S(S-bsp-insert)`.
-- Then i3: fixture-inapplicable: no strip viewport. `S(S-i3-ins)`.
+- Then i3 (`4.25.1`): fixture-inapplicable, unbound: no viewport or
+  scroll command (`src/tree.c:149-174`, `parser-specs/commands.spec:12-47`).
 - Then xmonad/Tall+Navigation2D: fixture-inapplicable: no strip
   viewport. `S(S-xmo-layout)`.
-- Then sway: fixture-inapplicable: no strip viewport. `S(S-sway-ins)`.
+- Then sway (`1.12`): fixture-inapplicable, unbound: no viewport or
+  scroll command (`sway/tree/view.c:898-902`, `sway/commands.c:114-143`).
 - Then qtile/Columns: fixture-inapplicable: columns share the group
   width, no viewport to scroll. `S(S-qti-resize)`.
 - Then awesome/tile: fixture-inapplicable: no strip viewport.
@@ -396,18 +454,21 @@ off, append admission (`S(S-pan-base)`).
   native virtual-move verb and follow policy named.
 - Observe: native Space vs internal row membership, empty-row reaping
   and append vs positional admission.
-- Then COSMIC: no-counterpart: workspaces are the only domain; no
-  virtual rows inside a native container. `S(S-cos-ws)`.
-- Then Hyprland/Dwindle: no-counterpart: numbered workspaces only, no
-  virtual rows. `S(S-hyp-ws)`.
+- Then COSMIC (`epoch-1.11.0`): no-counterpart, unbound: workspace owns
+  tiling/floating layers directly, no nested virtual rows
+  (`src/shell/workspace.rs:104-121`).
+- Then Hyprland/Dwindle (`v0.57.2`): no-counterpart, unbound: numbered,
+  named/special workspaces, not sub-rows; optional scrolling does not add
+  a virtual workspace layer (`src/workspace/HLWorkspace.hpp:22-63`,
+  `src/config/lua/bindings/LuaBindingsDispatchers.cpp:48-147`).
 - Then bspwm: no-counterpart: monitor/desktop scope only, no virtual
   rows. `S(S-bsp-ws)`.
-- Then i3: no-counterpart: static-named workspaces only, no virtual
-  rows. `S(S-i3-ws)`.
+- Then i3 (`4.25.1`): no-counterpart, unbound: workspace containers
+  attach to output content, no virtual sub-rows (`src/workspace.c:158-167`).
 - Then xmonad/Tall+Navigation2D: no-counterpart: static workspace
   list, no virtual rows. `S(S-xmo-ws)`.
-- Then sway: no-counterpart: output-owned workspaces only, no virtual
-  rows. `S(S-sway-ws)`.
+- Then sway (`1.12`): no-counterpart, unbound: output-owned workspace
+  directly holds tiling/floating lists (`include/sway/tree/workspace.h:26-56`).
 - Then qtile/Columns: no-counterpart: static groups 1-9 only, no
   virtual rows. `S(S-qti-ws)`.
 - Then awesome/tile: no-counterpart: static tags only, no virtual
@@ -436,18 +497,23 @@ off, append admission (`S(S-pan-base)`).
 - When: the app creates a native tab for A; then select B.
 - Observe: native tabs nested inside a vertical stack vs all windows
   as peers, ownership/focus and column width stability.
-- Then COSMIC: no-counterpart: per-window admission; no app-tab
-  nesting. `S(S-cos-mapfocus)`.
-- Then Hyprland/Dwindle: no-counterpart: per-window map/focus; no
-  app-tab nesting. `S(S-hyp-newfocus)`.
+- Then COSMIC (`epoch-1.11.0`): no-counterpart, unbound: maps individual
+  surfaces, not app-native macOS tabs (`src/shell/mod.rs:2990-3030`).
+- Then Hyprland/Dwindle (`v0.57.2`): no-counterpart, unbound: per-target
+  admission in Dwindle and optional scrolling
+  (`src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:63-67`,
+  `src/layout/algorithm/tiled/scrolling/ScrollingAlgorithm.cpp:725-785`);
+  compositor groups (`src/desktop/view/Group.hpp:18`) are not app-native tabs.
 - Then bspwm: no-counterpart: per-node insert/focus; no app-tab
   nesting. `S(S-bsp-insert)`.
-- Then i3: no-counterpart: per-container attach/focus; no app-tab
-  nesting. `S(S-i3-ins)`.
+- Then i3 (`4.25.1`): no-counterpart, unbound: each managed window has
+  its container, not app-native tab nesting (`src/manage.c:106-127`,
+  `src/con.c:178-185`); WM tabbed layout is distinct.
 - Then xmonad/Tall+Navigation2D: no-counterpart: `insertUp` per window;
   no app-tab nesting. `S(S-xmo-ins)`.
-- Then sway: no-counterpart: per-sibling admission; no app-tab
-  nesting. `S(S-sway-ins)`.
+- Then sway (`1.12`): no-counterpart, unbound: each mapped view creates
+  a container, not app-native tab nesting (`sway/tree/view.c:812-840`);
+  WM tabbed layout is distinct.
 - Then qtile/Columns: no-counterpart: per-client admission; no
   app-tab nesting. `S(S-qti-add)`.
 - Then awesome/tile: no-counterpart: newcomer appended per client; no

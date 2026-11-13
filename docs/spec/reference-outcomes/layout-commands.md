@@ -96,25 +96,30 @@ implementation record. Selected intent and doc assertions alone are never eviden
   node's parent only, never the whole tree.
 - Observe: axis/order/geometry transform, focus preservation or missing
   transform. Rotate and mirror report separately.
-- Then COSMIC: no-counterpart on both legs (no rotate/mirror verb in the
+- Then COSMIC (`epoch-1.11.0`): no-counterpart on both legs, unbound (no rotate/mirror verb in the
   keybinding inventory; `ToggleOrientation` flips only the focused
-  parent's axis, which belongs to R-LAY-01). `S(S-cos-orient)`.
-- Then Hyprland/Dwindle: no-counterpart for the requested whole-fixture
+  parent's axis, which belongs to R-LAY-01).
+  `src/input/actions.rs:163-1067`, `data/keybindings.ron:83-92`.
+- Then Hyprland/Dwindle (`v0.57.2`): no-counterpart for the requested whole-fixture
   transform (`rotatesplit`/`swapsplit` dispatch on the focused node's
   parent only). Nearest native scope: both named commands swap the V
-  parent's children to `V[C,B*]` at shipped defaults (recalculation restores
-  V after rotation); focus B stays. `S(S-hyp-lay)` + `S(S-hyp-defaults)`.
+  parent's children, with rotation also flipping its axis
+  (`src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:686-703,788-834`).
+  Neither is bound (`example/hyprland.lua:265-316`). Config default
+  `preserve_split=false` re-derives the axis, but the shipped example sets
+  it true (`src/config/values/ConfigValues.cpp:778`, `example/hyprland.lua:183-185`);
+  exact transformed geometry stays TBD, not a uniform shipped-default result.
 - Then bspwm: leg 1 `-R 90` on the root flips the split type at every
   level with the 90-degree conditional swap, yielding `V[H[B,C],A]`,
   focus B; leg 2 `-F horizontal` swaps children where the split matches,
   yielding `H[V[B,C],A]`, focus B (no focus write on either path).
   `S(S-bsp-rot)`.
-- Then i3: no-counterpart on both legs (the command inventory lists no
-  rotate/mirror verb). `S(S-i3-cmds)`.
+- Then i3 (`4.25.1`): no-counterpart on both legs, unbound (the command
+  inventory lists no rotate/mirror verb). `parser-specs/commands.spec:12-47`.
 - Then xmonad/Tall+Navigation2D: fixture-inapplicable (flat Tall has no
   nested H/V levels). `S(S-xmo-layout)`.
-- Then sway: no-counterpart on both legs (the runtime command table
-  lists no rotate/mirror verb). `S(S-sway-cmds)`.
+- Then sway (`1.12`): no-counterpart on both legs, unbound (the runtime
+  command table lists no rotate/mirror verb). `sway/commands.c:114-143`.
 - Then qtile/Columns: fixture-inapplicable (no nested H counterpart;
   shuffle verbs are column-level or in-column only).
   `S(S-qti-shuffle)` + `S(S-qti-add)`.
@@ -132,7 +137,11 @@ implementation record. Selected intent and doc assertions alone are never eviden
   the Engine + adapter op inventory). `S(S-ours-planops)`.
 - Then Ours Windows: same missing-verb legs as Ours KDE.
   `S(S-ours-planops)`.
-- Variant hook: provisional/TBD (rotate/mirror hook, to discuss).
+- Variant hook: REQ-LAY-02 is NORMATIVE as a scope deferral beyond 0.1,
+  decided under the standing Tier 1 alignment rule (User 2026-11-13).
+  Three Tier 1 inventories lack even a local rotate/mirror verb; Hyprland's
+  narrower parent operations do not supply the requested recursive transform.
+  Existing post-0.1 triage stands; no runtime change or future transform selected.
 
 ### R-LAY-03: promote B to master
 
@@ -148,20 +157,27 @@ implementation record. Selected intent and doc assertions alone are never eviden
   below; focus-only stepping is never substituted.
 - Observe: master identity change/reorder vs focus-only, tree operation
   or no master concept.
-- Then COSMIC: no-counterpart (no master concept; the tiling model holds
-  Group/Mapped nodes only). `S(S-cos-model)`.
-- Then Hyprland/Dwindle: no master concept in Dwindle; `movetoroot` is the
-  native tree operation, swapping B toward the root (returns false with no
-  mutation when already at the root). `S(S-hyp-lay)`.
+- Then COSMIC (`epoch-1.11.0`): no-counterpart, unbound (no master concept
+  or promote verb in `src/shell/layout/tiling/mod.rs:149-168` and
+  `src/input/actions.rs:163-1067`).
+- Then Hyprland/Dwindle (`v0.57.2`): `layoutmsg movetoroot` swaps B with
+  the root's opposite child (stable mode preserves its side); already a
+  root child returns false, not a master identity
+  (`src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:704-714,836-868`).
+  Optional non-default master provides `swapwithmaster`
+  (`src/layout/algorithm/tiled/master/MasterAlgorithm.cpp:546-555`).
+  Both unbound (`example/hyprland.lua:265-316`).
 - Then bspwm: no-counterpart (desktop layout is tiled/monocle only; no
   master). `S(S-bsp-layout)`.
-- Then i3: no-counterpart (split/tabbed/stacked container layouts; no
-  master). `S(S-i3-layout)`.
+- Then i3 (`4.25.1`): no-counterpart, unbound (split/tabbed/stacked tree,
+  no master or promote verb). `src/commands.c:1597-1645`,
+  `parser-specs/commands.spec:12-47`.
 - Then xmonad/Tall+Navigation2D: B becomes master via `swapMaster`
   (old master swapped into tiling order); focus stays B.
   `S(S-xmo-master)`.
-- Then sway: no-counterpart (same container layouts as i3; no master).
-  `S(S-sway-layout)`.
+- Then sway (`1.12`): no-counterpart, unbound (container layouts, no
+  master or promote verb). `sway/commands/layout.c:117-190`,
+  `sway/commands.c:114-143`.
 - Then qtile/Columns: no-counterpart (split/stacked column modes only;
   no master in Columns). `S(S-qti-split)`.
 - Then awesome/tile: B moves to the primary section via `setmaster`
@@ -179,7 +195,11 @@ implementation record. Selected intent and doc assertions alone are never eviden
   + adapter op inventory). `S(S-ours-planops)`.
 - Then Ours Windows: same missing-verb leg as Ours KDE.
   `S(S-ours-planops)`.
-- Variant hook: provisional/TBD (master-promote hook, to discuss).
+- Variant hook: REQ-LAY-03 is NORMATIVE as a scope deferral beyond 0.1,
+  decided under the standing Tier 1 alignment rule (User 2026-11-13).
+  Only Hyprland has a default-layout root counterpart; its master role is
+  optional/non-default. Existing post-0.1 triage stands; no runtime change
+  or future promote semantics selected.
 
 ### R-LAY-04: select a native alternative layout on WS2; return to WS1
 
@@ -196,29 +216,32 @@ implementation record. Selected intent and doc assertions alone are never eviden
   with native ownership, not tile/float.
 - Observe: per-workspace vs global layout selection and preserved window
   order.
-- Then COSMIC: no-counterpart (`WorkspaceLayout` Vertical/Horizontal is
+- Then COSMIC (`epoch-1.11.0`): no-counterpart, unbound (`WorkspaceLayout` Vertical/Horizontal is
   a single global workspace-navigation arrangement, not a tiled algorithm
   choice; `TileBehavior` Global/PerWorkspace scopes tiling enable, not
   algorithm selection; no runtime per-workspace layout-select verb).
-  `S(S-cos-wslay)` + `S(S-cos-ctl-tile)`.
-- Then Hyprland/Dwindle: L1 dwindle (global default), L2 master (a
+  `cosmic-comp-config/src/workspace.rs:41-44`, `src/input/actions.rs:998-1028`.
+- Then Hyprland/Dwindle (`v0.57.2`): L1 dwindle (global default), L2 master (a
   registered tiled algorithm) via a workspace rule carrying the layout
   override; the rule selects WS2's tiled algorithm per workspace while WS1
-  keeps dwindle. Order preserved through the switch (existing tiled
-  targets re-admit in order and append under shipped master defaults).
-  `S(S-hyp-layout)`.
+  keeps dwindle (`src/layout/supplementary/WorkspaceAlgoMatcher.cpp:22-35,104-113`).
+  Other registered alternatives are scrolling and monocle; none is the
+  shipped default. Layout selection unbound in `example/hyprland.lua:265-316`;
+  exact latest-release order/geometry roundtrip remains TBD.
 - Then bspwm: L1 tiled, L2 monocle; `desktop -l` is per-desktop, so WS2
   shows monocle while WS1 stays tiled with A/B order preserved.
   `S(S-bsp-desklay)` + `S(S-bsp-layout)`.
-- Then i3: L1 split-H, L2 tabbed; `layout tabbed` retargets WS2's H parent
+- Then i3 (`4.25.1`): L1 split-H, L2 tabbed; `layout tabbed` retargets WS2's H parent
   (same children, order kept, B the active tab) while WS1 keeps split-H.
-  `S(S-i3-layout)`.
+  `src/commands.c:1597-1622`; bound `Mod1+w` tabbed, `Mod1+s` stacking,
+  `Mod1+e` toggle split (`etc/config:104-106`).
 - Then xmonad/Tall+Navigation2D: L1 Tall, L2 Mirror Tall; each workspace
   carries its own layout, so `NextLayout` on WS2 leaves WS1 on Tall
   with stack order preserved. `S(S-xmo-wslay)`.
-- Then sway: L1 H, L2 tabbed; `layout tabbed` retargets WS2's H parent
+- Then sway (`1.12`): L1 H, L2 tabbed; `layout tabbed` retargets WS2's H parent
   (same children, order kept, B the active tab) while WS1 keeps H.
-  `S(S-sway-layout)`.
+  `sway/commands/layout.c:117-190`; bound `$mod+w` tabbed, `$mod+s`
+  stacking, `$mod+e` toggle split (`config.in:149-151`).
 - Then qtile/Columns: L1 Columns, L2 Max; each group keeps its own
   layouts list and current index, so `next_layout` naming WS2's group
   leaves WS1 on Columns. `S(S-qti-wslay)`.

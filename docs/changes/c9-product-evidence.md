@@ -1,6 +1,6 @@
 # C9 product evidence
 
-- Status: fixed-largest and fixed-float removals implemented and independently reviewed offline. Shared Rust, exporter and KDE TypeScript gates pass; the native recovery fixture correction below closes the isolated native gate (37/37). Requirement batch 1 is decided User 2026-11-13, implemented and independently reviewed with all shared offline gates passing below. The scoped KDE batch-1 checks below establish both focus histories, explicit-command recency, closed-candidate fallthrough, swap and adjacent-output entry; hover, history-free fallback and literal single-output coverage remain open. Batch 2 below records latest-release evidence, two unresolved implementation boundaries and one normative urgency deferral, with no runtime changes. Other native adoption and 23 requirement choices remain open.
+- Status: fixed-largest and fixed-float removals implemented and independently reviewed offline. Shared Rust, exporter and KDE TypeScript gates pass; the native recovery fixture correction below closes the isolated native gate (37/37). Requirement batches 1 and 3 record their decisions, implementation and offline review below; batch-1 native acceptance remains partial. Batch 2 retains two focus choices and defers urgency. Batches 4-8 add fourteen normative scope deferrals, leave preselection a CANDIDATE and preserve the existing alternate-layout park, with no runtime change. Five requirement rows remain OPEN; other native adoption remains unproved.
 - Goal: remove both capacity settings and their storage/UI/wire propagation, preserving ordinary-anchor-first then largest-splittable fallback and fixed float on exhaustion. Keep the remaining product evidence for subsequent decisions.
 - Scope: shared policy, settings surfaces, protocol witnesses and offline regressions. Preserve ordinary anchoring, B6 minimum handling, next-decision timing and `noSpace` result provenance. Retire selectable capacity overflow and proven-unreachable accepted-overlap machinery. Missing decision "Why" entries are not backfilled.
 - Acceptance/evidence: ordinary anchor wins when splittable; otherwise largest area descending, child-order DFS then lifetime ID. Removed input reports UnknownField without losing valid siblings; removed stored keys are not adopted. Retired alternate policies and controls disappear. Historical fixture families remain unchanged; active witnesses come from their real producers. Add before/after regression evidence, run shared Rust and KDE checks, and review the complete settings/policy diff. Native outcomes not established by source remain TBD.
@@ -280,7 +280,7 @@
 
 ## Part 2: exact OPEN inventory
 
-- **19 requirement rows** have Status `OPEN` in `docs/spec/functional-spec.md` after batch 1's four selections, batch 2's urgency deferral and batch 3's four selections; the original inventory below had 28. Count is not every occurrence of OPEN (many normative rows have an open platform cell). No additional OPEN requirement IDs were found in the reference subfiles. The spec introduction distinguishes selected R-MIN-04/R-INS-09 capacity/burst behavior from their still-unproved reference/native outcomes, and counts all 184 requirements (165 NORMATIVE including qualified REQ-OUT-05, 19 OPEN). Batch 2 does not decide the two focus rows; batch 3 leaves the feasible-minimum conflict OPEN.
+- **5 requirement rows** have Status `OPEN` in `docs/spec/functional-spec.md` after batches 1-3 and batches 4-8's fourteen scope deferrals; the original inventory below had 28. Count is not every occurrence of OPEN (many normative rows have an open platform cell). The current 184 requirements are 179 NORMATIVE (including qualified REQ-OUT-05), 5 OPEN, 0 PROVISIONAL. The five are FOC-03/04, SPC-05b, INS-08 (CANDIDATE) and LAY-04 (PARKED). Scope deferral selects no future runtime mechanics or native outcome.
 - Table: spec citations use `F:` = `docs/spec/functional-spec.md` line. Reference citations use `R/` defined above and are existing revision-bound evidence, **not newly rechecked release evidence**, except the release-qualified batch 1 and 2 entries below. `Choice` means user product selection; `source` means further targeted latest-source work; `live` means user/native testing. "Absent" is bounded to inspected command/model surfaces, not a universal assertion about every adapter.
 - Code key **V**: complete command surfaces `C/world_report.rs:2009-2171` + `C/boundary.rs:41-149` contain no preselect, cycle, container-focus, equalize, rotate/mirror, master, layout-select or column/viewport verbs. **D**: `C/directional.rs:1179-1246` implements leaf directional focus, not viewport/container focus. **T**: absent column model/verbs on V/D; existing per-window sends `C/world_report.rs:2013-2018,2048-2066` do not implement whole-column semantics. These are code absence checks, not acceptance of the feature gap.
 
@@ -297,25 +297,25 @@
 | 3 DECIDED | REQ-SPC-02 / 497 | Splash and utility float under existing safety/ordinary-focus policy | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): splash 4/4 float, utility 3/4 float | Core type hold removed, KDE candidates widened; ASSUMPTION no type-specific focus exception; native focus/switcher TBD |
 | 3 DECIDED | REQ-SPC-03 / 498 | Ordinary reported facts, not PiP title/app inference | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): ordinary predicates/rules, exact apps TBD | ASSUMPTION no shipped app exception/new subsystem; metadata/fact discriminator; actual app/native TBD |
 | 3 STOP | REQ-SPC-05b / 509 | Retain prior feasible-minimum reallocation or supersede it to match Tier 1 no-reflow? | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): tiled allocations retained in four inspected paths | Earlier Placement and minimums decision honors feasible minima; no new behavior selected or implemented; native journeys TBD |
-| 4 | REQ-INS-08 / 138 | Need preselected split, one-shot or persistent? | `R/insertion.md:309-341`: Hyprland one-shot, i3/sway persistent | Absent (V); Choice + source |
-| 4 | REQ-RSZ-04 / 185 | Need equalize/balance action? | `R/resize.md:192-290`: several lower-tier alternatives, Tier 1 no counterpart recorded | Absent (V), existing pixel resize distinct; Choice + source |
-| 4 | REQ-LAY-02 / 193 | Need rotate/mirror; which scope? | `R/layout-commands.md:78-135`: bspwm full legs, Hyprland narrower | Absent (V); Choice + source |
-| 4 | REQ-LAY-03 / 194 | Need promote-to-master/root? | `R/layout-commands.md:137-182`: xmonad/awesome master, Hyprland root | Absent (V); Choice + source |
+| 4 CANDIDATE | REQ-INS-08 / 138 | Need preselected split, one-shot or persistent? | [Batches 4-8](#preselected-split-option-sheet): 3/4 default-layout counterparts, Hyprland one-shot versus i3/sway persistent | OPEN; no implementation/chord/lifetime selected; existing post-0.1 triage unchanged |
+| 4 DEFERRED | REQ-RSZ-04 / 185 | Equalize/balance scope beyond 0.1 | [Latest recheck](#requirement-batches-4-8-absent-verbs-and-scope-2026-11-14): 0/4 default counterparts; optional Hyprland all-column widths distinct | NORMATIVE scope deferral; no runtime change/future semantics selected |
+| 4 DEFERRED | REQ-LAY-02 / 193 | Rotate/mirror scope beyond 0.1 | Latest recheck: COSMIC/i3/sway none; Hyprland immediate-parent only, config/example preserve-split differ | NORMATIVE scope deferral; no runtime change/future transform selected |
+| 4 DEFERRED | REQ-LAY-03 / 194 | Promote-to-master/root scope beyond 0.1 | Latest recheck: only Hyprland root counterpart, master optional | NORMATIVE scope deferral; no runtime change/future semantics selected |
 | 3 DECIDED (from 5) | REQ-MAX-12 / 331 | Preserve fullscreen across workspace return/tiling toggle; parent orientation no-op | [Batch 3 latest release recheck](#requirement-batch-3-admission-and-fullscreen-2026-11-13): state retained; parent mutation splits 2/2 | Existing commands confirmed by shared regressions; ASSUMPTION orientation no-op, native-free fullscreen suppression veto unchanged; native outcome TBD |
-| 5 | REQ-WS-07 / 214 | Shell listing and activation: switch workspace or pull window? | `R/workspaces.md:377-431`: native filtering; SW_HIDE accepted for 0.1 | Native-shell behavior, no listing/activation verb (V); keep-SW_HIDE already selected F:214; remaining Choice + live, post-0.1 |
-| 5 | REQ-LAY-04 / 195 | Which workspace-local alternative layout? | `R/layout-commands.md:184-227`; expressly parked until a genuine second layout | Layout-select absent (V); already parked by User 2026-10-09, not a fresh 0.1 choice |
-| 6 | REQ-COL-01 / 517 | Need admission into a scrollable three-column strip? | `R/column-mechanics.md:22-60`: non-voting scrolling lineage | Absent (T); Choice whether in scope before source work |
-| 6 | REQ-COL-02 / 518 | Need column-width presets? | `R/column-mechanics.md:64-104`: scroller preset forms | Absent (T); Choice |
-| 6 | REQ-COL-03 / 519 | Need consume/expel between columns? | `R/column-mechanics.md:109-156`: scroller variants | Absent (T); Choice |
-| 6 | REQ-COL-04 / 520 | Focus off-screen window by identity? | `R/column-mechanics.md:160-200`: scroller scroll-to | Leaf focus exists (D), no viewport (T); Choice |
-| 7 | REQ-COL-05 / 521 | Need explicit column/window centering? | `R/column-mechanics.md:204-243`: one-shot scroller centering | Absent (T); Choice |
-| 7 | REQ-COL-06 / 522 | Need tabbed/stacked column display? | `R/column-mechanics.md:247-290`: different scroller displays | Absent (T); Choice, coordinate already-selected post-0.1 tabbed-stack design |
-| 7 | REQ-COL-07 / 523 | Send whole column to workspace/output? | `R/column-mechanics.md:294-340`: whole-column versus window/group | Per-window send only (T); Choice |
-| 8 | REQ-COL-08 / 524 | Scroll viewport without moving focus? | `R/column-mechanics.md:344-387`: gesture/scroll variants | Absent (T); Choice |
-| 8 | REQ-COL-09 / 525 | Need virtual rows and cross-row sends? | `R/column-mechanics.md:391-428`: index-based workspaces versus row model | Workspace IDs/index sends exist `C/world_report.rs:2023-2066`, no row verb (T); Choice |
-| 8 | REQ-COL-10 / 526 | Need app-native tabs nested in stacks? | `R/column-mechanics.md:432-468`: per-window gates, unresolved native tabs | No native-tab command (V); Choice + app/live if selected |
+| 5 DEFERRED | REQ-WS-07 / 214 | Product shell listing/activation beyond 0.1 | Latest recheck: COSMIC external switcher shortcuts and activation; other Tier 1 protocol support is not a built-in listing UI | NORMATIVE scope deferral; earlier keep-SW_HIDE/native KDE ownership preserved; future switch-versus-pull unselected |
+| 5 PARKED/UNCHANGED | REQ-LAY-04 / 195 | Which workspace-local alternative layout? | Latest recheck refreshes optional algorithms and native tree tabbed bindings | OPEN/PARKED by User 2026-10-09 until genuine second layout; unchanged |
+| 6 DEFERRED | REQ-COL-01 / 517 | Strip admission beyond 0.1 | Latest recheck: all four default models fixture-inapplicable; optional Hyprland scrolling admits columns | NORMATIVE scope deferral; no column model added |
+| 6 DEFERRED | REQ-COL-02 / 518 | Column presets beyond 0.1 | Latest recheck: no default counterparts; optional Hyprland scrolling has preset cycle | NORMATIVE scope deferral; future mechanics unselected |
+| 6 DEFERRED | REQ-COL-03 / 519 | Consume/expel beyond 0.1 | Latest recheck: no default counterparts; optional Hyprland scrolling has consume/expel | NORMATIVE scope deferral; future mechanics unselected |
+| 6 DEFERRED | REQ-COL-04 / 520 | Off-screen strip focus beyond 0.1 | Latest recheck: no default viewport; optional Hyprland scrolling fits on identity focus | NORMATIVE scope deferral; ordinary focus unchanged |
+| 7 DEFERRED | REQ-COL-05 / 521 | Viewport centering beyond 0.1 | Latest recheck: no default viewport; optional Hyprland scrolling has one-shot center | NORMATIVE scope deferral; future mechanics unselected |
+| 7 DEFERRED | REQ-COL-06 / 522 | Column tabbed display beyond 0.1 | Latest recheck: tree stacks/tabs distinct; no column-display verb in inspected optional Hyprland inventory | NORMATIVE scope deferral; already-selected post-0.1 tree tabbed-stack design unchanged |
+| 7 DEFERRED | REQ-COL-07 / 523 | Column-atomic sends beyond 0.1 | Latest recheck: ordinary window/container sends distinct; no column-send verb in inspected optional Hyprland inventory | NORMATIVE scope deferral; ordinary sends unchanged |
+| 8 DEFERRED | REQ-COL-08 / 524 | Manual viewport scroll beyond 0.1 | Latest recheck: no default viewport; optional Hyprland keyboard scroll updates focus | NORMATIVE scope deferral; future focus policy unselected |
+| 8 DEFERRED | REQ-COL-09 / 525 | Virtual sub-rows beyond 0.1 | Latest recheck: ordinary workspaces, not nested virtual rows, in all four | NORMATIVE scope deferral; ordinary workspaces unchanged |
+| 8 DEFERRED | REQ-COL-10 / 526 | App-native tab nesting beyond 0.1 | Latest recheck: per-window/target admission, WM groups/tabs distinct | NORMATIVE scope deferral; future native behavior TBD |
 
-- Batch order: 1 settles already-running daily navigation/moves; 2 handles related focus/attention completeness; 3 admission/classification and observed-host correctness (plus MAX-12 brought forward from 5); 4 optional layout verbs; 5 remaining explicitly deferred items; 6-8 non-voting column mechanics. The original inventory used at most four rows per batch; batch 3 covers five. Latest-source checks now cover batches 1-3 and MAX-12, not remaining batches 4-8.
+- Batch order: 1 settles daily navigation/moves; 2 focus/attention; 3 admission/classification/fullscreen (plus MAX-12 brought forward from 5); 4 optional layout verbs; 5 earlier deferred/parked items; 6-8 column mechanics. Latest-source checks now cover all batches, qualified by their per-row native/TBD limits and optional-layout distinctions. Line locators in the original inventory remain historical; use requirement IDs.
 
 ## Requirement batch 1: historical evidence and options
 
@@ -677,12 +677,101 @@
   not newly altered. Native pickup, focus/switcher, actual PiP apps and fullscreen
   return/tiling toggles remain unverified on all hosts.
 
+## Requirement batches 4-8: absent verbs and scope (2026-11-14)
+
+- Goal/acceptance: recheck the sixteen remaining absent-verb/scope rows;
+  distinguish default-layout features, optional algorithms and shell ownership;
+  resolve only authorized scope deferrals and return applicable majority
+  candidates without implementation. No runtime, protocol, contract, settings,
+  shortcut or fixture change; no live test or cargo/npm gate applies.
+- Releases: read-only local tags and origin tag listings checked 2026-11-14:
+  COSMIC `epoch-1.11.0`, Hyprland `v0.57.2`, i3 `4.25.1`, sway `1.12`
+  remain latest stable in those listings. All source reads use the local tags;
+  no source fetch or clone was needed. Historical source keys keep their pins.
+- Outcome: fourteen DEFER, one CANDIDATE (INS-08), one PARKED/UNCHANGED
+  (LAY-04). Every DEFER is NORMATIVE only as a scope deferral beyond 0.1,
+  decided under the standing Tier 1 alignment rule (User 2026-11-13), like
+  ACT-02. Future semantics/native outcomes remain unselected/TBD. Counts:
+  184 total = 179 NORMATIVE (including qualified OUT-05), 5 OPEN, 0 PROVISIONAL.
+- Reading table: `none` means no requested counterpart/default binding in
+  inspected inventory, never an agreeing no-op; `inapplicable` means no
+  faithful strip fixture. Related tree/container verbs do not count as strip
+  mechanics. Every cell's detailed tagged path/line evidence is in its linked
+  reference row. Admission is automatic, not bound.
+
+| Requirement / reference row | COSMIC `epoch-1.11.0` | Hyprland `v0.57.2` | i3 `4.25.1` | sway `1.12` | Classification / reason |
+| --- | --- | --- | --- | --- | --- |
+| [REQ-INS-08](../spec/reference-outcomes/insertion.md#r-ins-08-admission-under-an-explicit-preselected-split-direction) | None; existing-parent orientation only | Dwindle `preselect` axis+side, one-shot; unbound | Persistent split container; Mod1+H/V | Persistent split container; `$mod+b/v` | CANDIDATE, OPEN: 3/4 applicable counterparts; lifetime/structure split; triage not superseded |
+| [REQ-RSZ-04](../spec/reference-outcomes/resize.md#r-rsz-04-equalizebalance-once) | None; pixel resize only | None in Dwindle; optional scrolling `colresize all` assigns widths, unbound | None; grow/shrink/set only | None; set/grow/shrink only | DEFER: 0/4 default counterparts; prior post-0.1 triage |
+| [REQ-LAY-02](../spec/reference-outcomes/layout-commands.md#r-lay-02-rotate-90-degrees-mirror-leftright-separate-fresh-legs) | None | Parent-only `rotatesplit`/`swapsplit`, unbound; not recursive transform | None | None | DEFER: 3/4 lack even local counterpart; requested whole-tree transform absent; prior triage |
+| [REQ-LAY-03](../spec/reference-outcomes/layout-commands.md#r-lay-03-promote-b-to-master) | None | Dwindle `movetoroot`, unbound; `swapwithmaster` optional master only | None | None | DEFER: one default root counterpart; no OmniTiler master model; prior triage |
+| [REQ-WS-07](../spec/reference-outcomes/workspaces.md#r-ws-07-shell-switcher-listing) | External switcher on Alt/Super+Tab; manager switches/focuses without pull; latest UI listing TBD | No built-in listing/binding; foreign-toplevel protocols, external launcher | No built-in listing/binding; EWMH lists/activation | No built-in listing/binding; foreign-toplevel protocols | DEFER: prior keep-SW_HIDE-for-0.1 and post-0.1 triage; protocol presence does not select shell policy |
+| [REQ-LAY-04](../spec/reference-outcomes/layout-commands.md#r-lay-04-select-a-native-alternative-layout-on-ws2-return-to-ws1) | None; tiling-enable scope is distinct | Workspace layout override, unbound; master/scrolling/monocle alternatives to default Dwindle | Parent tabbed/stacking, Mod1+W/S | Parent tabbed/stacking, `$mod+w/s` | PARKED/UNCHANGED: User 2026-10-09 genuine-second-layout prerequisite |
+| [REQ-COL-01](../spec/reference-outcomes/column-mechanics.md#r-col-01-open-a-window-over-three-half-width-columns) | Inapplicable: tree admission | Dwindle inapplicable; optional scrolling inserts column after anchor and fits view | Inapplicable: tree attach | Inapplicable: sibling attach | DEFER: absent strip model, prior post-0.1 triage |
+| [REQ-COL-02](../spec/reference-outcomes/column-mechanics.md#r-col-02-cycle-column-width-through-presets-and-back) | None | None in Dwindle; optional scrolling `colresize +/-conf` wraps presets, unbound | None | None | DEFER: no default column presets/model; prior triage |
+| [REQ-COL-03](../spec/reference-outcomes/column-mechanics.md#r-col-03-consume-a-column-then-expel-it) | None | None in Dwindle; optional scrolling consumes next-first / expels current-last, unbound | None; tree moves distinct | None; tree moves distinct | DEFER: no default column consume/expel/model; prior triage |
+| [REQ-COL-04](../spec/reference-outcomes/column-mechanics.md#r-col-04-focus-an-off-screen-window-by-identity) | Inapplicable: no viewport | Dwindle inapplicable; optional scrolling fits column on identity focus, unbound | Inapplicable: no viewport | Inapplicable: no viewport | DEFER: no default strip viewport/model; ordinary focus unchanged |
+| [REQ-COL-05](../spec/reference-outcomes/column-mechanics.md#r-col-05-explicitly-center-the-focused-columnwindow) | Inapplicable | Dwindle inapplicable; optional scrolling one-shot `center`, unbound | Inapplicable | Inapplicable | DEFER: no default viewport/model; prior triage |
+| [REQ-COL-06](../spec/reference-outcomes/column-mechanics.md#r-col-06-toggle-column-tabbedstacked-display-then-select) | Tree stack Super+S distinct | Dwindle groups distinct; no column-display command in inspected optional scrolling inventory | Tree tabs/stack Mod1+W/S distinct | Tree tabs/stack `$mod+w/s` distinct | DEFER: column fixture inapplicable; selected post-0.1 tree stacks unchanged |
+| [REQ-COL-07](../spec/reference-outcomes/column-mechanics.md#r-col-07-send-a-whole-column-to-another-workspace) | Window/stack send distinct | Window sends distinct; no column-workspace send in inspected optional scrolling inventory | Tree-container send distinct | Tree-container send distinct | DEFER: no default column-atomic unit/model; prior triage |
+| [REQ-COL-08](../spec/reference-outcomes/column-mechanics.md#r-col-08-scroll-the-viewport-without-a-focus-command) | Inapplicable | Dwindle inapplicable; optional scrolling `move` updates focus, unbound; gesture final snap/focus separate | Inapplicable | Inapplicable | DEFER: no default viewport/model; optional manual scroll not guaranteed focus-preserving |
+| [REQ-COL-09](../spec/reference-outcomes/column-mechanics.md#r-col-09-paneru-virtual-rows-send-across-rows) | None; ordinary workspaces | None, including optional scrolling; ordinary workspaces | None; workspace containers | None; workspace lists | DEFER: no virtual sub-row model/counterpart; prior triage |
+| [REQ-COL-10](../spec/reference-outcomes/column-mechanics.md#r-col-10-app-native-tabs-nested-in-a-vertical-stack) | None; surface admission | None in Dwindle/scrolling; target admission, WM groups distinct | None; per-window containers | None; per-view containers | DEFER: app-native tabs not WM tabs; no native-tab/column model; prior triage |
+
+### Preselected split option sheet
+
+- Majority semantics: explicit H/V insertion direction exists in 3/4 default
+  tiled layouts; this is not a majority for a shared lifetime, child side or
+  tree structure. COSMIC has no counterpart. Hyprland defaults to a one-shot
+  direction+side override; i3/sway keep an actual split container. No default
+  chord common to all three exists. i3 ships Mod1+H/V, sway `$mod+b/v`,
+  Hyprland ships none; COSMIC none. i3 generated modifier selection can differ
+  from literal `etc/config`. The existing P triage stays effective while this
+  row remains OPEN; availability evidence alone does not bring it into 0.1.
+- Options, no selection: (a) retain no 0.1 verb under prior triage;
+  (b) design a one-shot direction/side override like Hyprland, with domain,
+  anchor, cancellation and failed-admission consumption specified;
+  (c) design persistent split-container insertion like i3/sway, including
+  singleton representation, append/flatten lifetime and subsequent-command
+  scope. A persistent flag is not automatically i3/sway parity. Making lifetime
+  configurable is another product choice, not implied by evidence.
+- Minimal sequence: existing R-INS-08 opens C then D after preselection;
+  added 1200x400 B / zero-gap control records actual anchor/C rectangle so
+  ordinary long-edge splitting can be discriminated from persistent V-parent
+  insertion. Exact latest-release geometry/focus endpoints remain TBD.
+
+| Surface | Rough implementation footprint if selected, not a design approval |
+| --- | --- |
+| Core command/state | Moderate for one-shot, larger for persistent containers. Add typed intent/execution-subject and routing/capability coverage around `C/world_report.rs:2072-2234`, `C/boundary.rs:41-149`; admission `C/session.rs:3039-3072` currently wraps a leaf in a binary group, not persistent sibling append. Domain/anchor/lifetime/failed-admission semantics and all admission routes need tests. Preserve existing long-edge/orientation/capacity decisions unless explicitly superseded |
+| Codec | Add command decoding/encoding, implicit-subject validation, sizing and roundtrip/refusal witnesses in `crates/tiler-protocol/src/world_protocol.rs` (`decode_command` at 2396), plus shared exhaustive matches; not a settings-only change |
+| KDE shortcut/KCM | Extend `kwin/src/world-report.ts` command union, `world-entry.ts` ingress and `world-shortcuts.ts:108-260`; native `shortcutreconciler.cpp:615-635` catalog plus KCM/preset/conflict parity tests. Choose chords separately, without silently rebinding existing actions |
+| Settings | A fixed command lifetime needs no new settings field by itself. Only an expressly selected configurable lifetime/side policy would extend shared catalog/state, codec, generated KDE descriptors/KCM storage and other platform settings; no such setting selected |
+| Tests/adoption | Core admission/scope/lifetime/close/transfer/failure and rapid-input cases; protocol roundtrip/invalid payload tests; KDE ingress/catalog/KCM tests. Other adapters' exhaustive command/shortcut adoption and native input/geometry remain separate future work |
+
+- Evidence corrections: the optional Hyprland scrolling algorithm was missing
+  from the older Tier 1-only-default discussion. Its `colresize all` assigns
+  widths but is not default-tree equalize. Its manual keyboard `move` also
+  updates focus, unlike a guaranteed focus-preserving scroll. For LAY-02,
+  registered `preserve_split=false` differs from shipped example `true`
+  (`src/config/lua/DefaultConfig.hpp:14-18` embeds that example); exact transform results
+  were weakened to TBD instead of attributing one uniform shipped result.
+  COSMIC default Alt/Super+Tab bindings are in cosmic-comp itself; missing
+  latest launcher source does not erase those bindings or revalidate its UI.
+- Verification/review: independent complete-diff review spot-checked at least
+  one source span per Tier 1 WM for CANDIDATE INS-08, plus DEFER samples
+  RSZ-04, LAY-02 and COL-08 across all four WMs. No material defect found;
+  corrected one abbreviated Hyprland header citation to its full
+  `src/config/lua/DefaultConfig.hpp` path. Requirement enumeration confirms
+  184/179/5/0; `git diff --check` is clean. No runtime acceptance
+  claimed; unchanged runtime suites were not rerun for this docs-only pass.
+
 ## Verification, limits and next decision
 
 - Historical research verification: source reads, exact OPEN-status enumeration, tag-qualified local source inspection and docs diff/whitespace review. Inventory IDs exactly match all 28 OPEN rows; batch sizes are 4/3/4/4/3/4/3/3. New-note relative file links resolve, added matrix target exists, note is ASCII. A broader link check found pre-existing missing `docs/changes/retained-focus-requests.md` targets in the matrix (also present at the inspected base); those unrelated links are unchanged. Research alone claimed no live outcomes or test-suite results; implementation evidence is separate above. Investigation reports were checked against key source spans; over-broad "Tier 1 always tiles" and "COSMIC equals stable-first" claims were rejected.
 - C9 corrections: `core-v4-review.md:267-268` is accurate about absent reference citations, but not an absence of user authority; `:275` correctly counts 28 but incorrectly describes all as already implemented. Absent cycle/preselect/layout/column verbs and the explicitly parked LAY-04 contradict that characterization. Its 183-row total (`:265`) and the spec's draft total are also stale: current enumeration is 184 rows (155 literal NORMATIVE plus qualified-NORMATIVE REQ-OUT-05, 28 OPEN). This is not evidence that the remaining OPEN rows should automatically become normative. Separately, the source recheck contradicts R-FOC-02's historical Hyprland-retain claim in the explicit zero-gap variant; opposite-edge fallback is not a stay rule for a half-width A.
-- Unverified/TBD: exact tiny rectangles/client settlement on every WM; exact latest-tag COSMIC FOC-01 fixture, Hyprland shipped-gap FOC-02 and move reconstruction; native settings pickup/parity, especially Windows report defaults; remaining batches 4-8 latest-source checks except MAX-12. Research alone selects nothing; batch selections and assumptions are recorded separately above.
+- Unverified/TBD: exact tiny rectangles/client settlement on every WM; exact latest-tag COSMIC FOC-01 fixture, Hyprland shipped-gap FOC-02 and move reconstruction; native settings pickup/parity, especially Windows report defaults; exact preselect/transform/native shell journeys and latest external COSMIC switcher UI. Batches 4-8 recheck source availability/bindings, not native acceptance; scope decisions select no future mechanics.
 - Next action: remaining native adoption of fixed-largest/fixed-float and the
   qualified batch-1 gaps above.
   Batch 2 retains two OPEN focus decisions; SPC-05b retains its earlier-decision
-  conflict; other remaining batches retain 16 OPEN rows.
+  conflict; INS-08 remains an OPEN candidate and LAY-04 remains PARKED/OPEN.
+  Fourteen batches 4-8 rows are normative scope deferrals, not runtime gaps.

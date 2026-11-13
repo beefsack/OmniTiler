@@ -147,6 +147,27 @@
 - Status: active, 2026-10-09.
 - Evidence: [research](../research/workspace-local-layout-selection.md).
 
+### Preselected split candidate
+- Decision: REQ-INS-08 remains OPEN; no preselect command, default chord or persistence setting selected. Existing post-0.1 triage is unchanged.
+- Why: Hyprland/Dwindle, i3 and sway ship applicable split-direction counterparts, but Hyprland defaults one-shot while i3/sway retain a split container; COSMIC only changes existing parents. A majority for availability does not select lifetime or direction/side semantics.
+- Assumes / revisit if: choose scope, lifetime, cancellation and binding before implementation; immediate-parent orientation toggle remains distinct. Exact unsupported/native outcomes stay TBD.
+- Status: unresolved; latest-release evidence rechecked 2026-11-14.
+- Evidence: [preselect discriminator](../spec/reference-outcomes/insertion.md#r-ins-08-admission-under-an-explicit-preselected-split-direction), [option sheet](../changes/c9-product-evidence.md#preselected-split-option-sheet).
+
+### Optional layout verbs scope
+- Decision: REQ-RSZ-04 equalize/balance, REQ-LAY-02 rotate/mirror and REQ-LAY-03 promote-to-master/root are NORMATIVE scope deferrals beyond 0.1, decided under the standing Tier 1 alignment rule (User 2026-11-13). No runtime command, shortcut or setting is added; future behavior remains unselected. REQ-LAY-04 retains its separate User 2026-10-09 prerequisite-gated park.
+- Why: no equalize/balance verb in any Tier 1 default tiled layout; COSMIC/i3/sway have no rotate/mirror or promote counterpart. Hyprland supplies narrower Dwindle parent transforms and root promotion; master promotion and all-column width assignment belong to optional non-default models. Existing triage already puts these verbs after 0.1.
+- Assumes / revisit if: reconsider after 0.1 against the selected tree model and release-qualified evidence, not as agreeing no-ops. Deferral is scope authority, not native acceptance or a future semantic selection.
+- Status: active scope deferrals; 2026-11-14 evidence, no runtime change.
+- Evidence: [equalize](../spec/reference-outcomes/resize.md#r-rsz-04-equalizebalance-once), [rotate/mirror](../spec/reference-outcomes/layout-commands.md#r-lay-02-rotate-90-degrees-mirror-leftright-separate-fresh-legs), [promote](../spec/reference-outcomes/layout-commands.md#r-lay-03-promote-b-to-master), [post-0.1 triage](../research/release-0.1-triage.md#proposal-a1---original-exhaustive-inventory-every-then-open-row-once).
+
+### Scrollable-column scope
+- Decision: REQ-COL-01 through REQ-COL-10 are NORMATIVE scope deferrals beyond 0.1, decided under the standing Tier 1 alignment rule (User 2026-11-13). No strip/viewport, width preset, consume/expel, scroll-to-focus, centering, column display/send, manual scroll, virtual row or app-native-tab nesting subsystem is selected or added.
+- Why: OmniTiler's tree has no scrollable-column model; all four Tier 1 default tiled models lack this strip fixture. Hyprland's optional scrolling algorithm supports admission, presets, consume/expel, focus-fit and centering, but is not Dwindle and supplies no majority for changing OmniTiler's model. Existing triage places all ten after 0.1.
+- Assumes / revisit if: choose a genuine alternative layout before designing its mechanics. Existing post-0.1 tree tabbed-stack design is not deferred anew or equated with strip-column display. Ordinary container sends, workspaces and WM-owned tabs do not establish column-atomic sends, sub-rows or app-native tabs. Future outcomes remain TBD.
+- Status: active scope deferrals; 2026-11-14 evidence, no runtime change.
+- Evidence: [release-qualified column rows](../spec/reference-outcomes/column-mechanics.md), [batches 4-8](../changes/c9-product-evidence.md#requirement-batches-4-8-absent-verbs-and-scope-2026-11-14), [post-0.1 triage](../research/release-0.1-triage.md#proposal-a1---original-exhaustive-inventory-every-then-open-row-once).
+
 ### Directional move/output transfer and selection
 - Decision: Local restructure/swap/escape wins first; otherwise move crosses adjacent output; sole root leaf crosses all four directions. Adjacency uses reciprocal edge-touch + positive overlap on full output rectangles (not work areas), all directions, no wrap; unreadable topology refuses, no candidate no-op. For exhausted window moves and explicit sends choose edge containing moving-window-center projection; otherwise larger overlap with window span along edge; final left/top. Left/right project y, up/down x; edges half-open, exact half-pixel centers. Multiple center-containing edges tie left/top; span only when none contains center. Ascending x then y; equal positions by stable output ID; reverse multiplicity valid if resolved pair reciprocal. Migration instead largest shared edge then left/top.
 - Why: not recorded.

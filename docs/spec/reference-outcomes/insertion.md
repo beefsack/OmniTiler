@@ -346,15 +346,38 @@ ancestry claims. Ours cells cite Engine + adapter source at `9241c94`
   automatic chain.
 - Observe: explicit direction overrides auto axis vs unsupported;
   consumed one-shot vs persistent direction on the next admission.
-- Then COSMIC: no-counterpart (no split-direction preselect verb in the
-  inspected inventory; `ToggleOrientation`/`Orientation` flip the
-  existing parent axis only, and the pointer/drop-zone path is not this
-  leg). `S(S-cos-pre)`.
-- Then Hyprland/Dwindle: preselect forces the next admission axis and newcomer side, then resets under the shipped default. `S(S-hyp-pre)` + `S(S-hyp-defaults)`.
+- Lifetime discriminator (fresh tree leg): use zero gaps, B 1200x400,
+  preselect top/bottom at B (Hyprland `preselect down`, i3 `split v`,
+  sway `splitv`), open C then D, letting each ordinary admission take
+  focus. Record the actual anchor and C rectangle before D. Compare D's
+  automatic long-edge split with persistent same-container V insertion;
+  repeat without preselection as control. Exact per-release geometry/focus
+  endpoints remain TBD, especially Hyprland's recalc/config baseline.
+- Then COSMIC (`epoch-1.11.0`): no preselect counterpart or binding in the
+  inspected action/default-binding inventories (`src/input/actions.rs:163-1067`,
+  `data/keybindings.ron:83-92`); `Orientation` changes an existing parent,
+  not future admission (`src/shell/layout/tiling/mod.rs:2089-2130`).
+- Then Hyprland/Dwindle (`v0.57.2`): `layoutmsg preselect <direction>`
+  forces the next admission axis and newcomer side, then resets with
+  `permanent_direction_override=false` (`src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:162-181,244-250,715-748`,
+  `src/config/values/ConfigValues.cpp:781`). Available in default Dwindle;
+  unbound in the shipped `example/hyprland.lua:265-316`. Exact C/D geometry
+  and native focus at this release remain TBD; this establishes the verb,
+  not identical persistent-container semantics.
 - Then bspwm: `-p DIR` preselects the splitting area with `~` cancel (manual insertion mode); the preselect overrides the automatic axis at B (WEST/EAST vertical, NORTH/SOUTH horizontal, newcomer on the preselected side at the stored ratio) and is consumed one-shot via cancel after use, so D admits on the automatic branch. `S(S-bsp-pre)`.
-- Then i3: `split vertical` wraps B in a persistent V parent via `tree_split` (`H[A,V[B]]`, B's percent carried); C admits after B in that V (override of the shipped splith default) with newcomer focus, D admits after C in the same V with newcomer focus (persistent, not one-shot). `S(S-i3-split)` + `S(S-i3-ins)`.
+- Then i3 (`4.25.1`): `split v` wraps B in a persistent V parent
+  (`H[A,V[B]]`, B's percent carried), or reorients a singleton parent
+  (`src/tree.c:327-379`); later admissions attach after focused descendants
+  (`src/tree.c:149-174`). Default bindings `Mod1+h` / `Mod1+v` select H/V
+  (`etc/config:95-98`; generated modifier choice can differ). Persistent
+  container, not one-shot; exact release/native C/D journey remains TBD.
 - Then xmonad/Tall+Navigation2D: no-counterpart - fixed master/stack algorithm has no split-direction verb. `S(S-xmo-layout)` + `S(S-xmo-core-nav)`.
-- Then sway: `splitv` dispatches through `do_split` wrapping B in a persistent V parent; C admits after B in that V (override) with newcomer focus, D admits after C in the same V with newcomer focus (persistent, not one-shot). `S(S-sway-default)` + `S(S-sway-split)` + `S(S-sway-ins)`.
+- Then sway (`1.12`): `splitv` / `split v` wraps B in a persistent V
+  parent, or reorients a singleton parent (`sway/commands/split.c:12-33,53-115`,
+  `sway/tree/container.c:1508-1564`); later admissions attach after the
+  focused sibling (`sway/tree/view.c:898-902`). Default `$mod+b` / `$mod+v`
+  select H/V (`config.in:145-146`). Persistent, not one-shot; exact
+  release/native C/D journey remains TBD.
 - Then qtile/Columns: no-counterpart (insertion-index model per `S(S-qti-add)`; the Columns command inventory - directional focus per `S(S-qti-focus)`, shuffle carry per `S(S-qti-shuffle)`, `toggle_split` display flip per `S(S-qti-split)` - lists no split-direction preselect verb, so neither leg has a preselect path; ordinary admission would follow `S(S-qti-add)` only). `S(S-qti-add)` + `S(S-qti-focus)` + `S(S-qti-shuffle)` + `S(S-qti-split)`.
 - Then awesome/tile: no-counterpart - fixed master/stack tile algorithm (`tile`/`tile.left`/`tile.top`/`tile.bottom` via `do_tile`, per-tag `layout.get`/`set` only) has no split-direction preselect verb in the shipped layout/tag/key inventories (shipped keys bind index focus/swap only); neither leg has a preselect path and no override/consumption leg runs; ordinary admission would follow `S(S-awe-tile)` only. `S(S-awe-tile)` + `S(S-awe-tileleft)` + `S(S-awe-layout)` + `S(S-awe-keys)`.
 - Then niri: no-counterpart for the split-direction preselect
@@ -367,7 +390,10 @@ ancestry claims. Ours cells cite Engine + adapter source at `9241c94`
 - Then paneru: no-counterpart - the `Operation` inventory lists no split-direction preselect verb, so neither leg has a preselect path; ordinary admission would follow the fresh strip index policy. `S(S-pan-cmds)` + `S(S-pan-ins)` + `S(S-pan-fresh)`.
 - Then Ours KDE: TBD (no preselection concept evidenced at `9241c94`; not claimed absent).
 - Then Ours Windows: TBD, same as Ours KDE.
-- Variant hook: V-INS-AXIS.
+- Variant hook: V-INS-AXIS. REQ-INS-08 remains OPEN / CANDIDATE: 3/4
+  Tier 1 default-layout counterparts, but one-shot versus persistent scope
+  differs; no semantics, binding or setting selected. Existing post-0.1
+  triage is not superseded. [Options and footprint](../../changes/c9-product-evidence.md#preselected-split-option-sheet).
 
 <a id="r-ins-09-burst-of-maps-versus-roster-delivered-together"></a>
 ### R-INS-09: burst of maps versus roster delivered together

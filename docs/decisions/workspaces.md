@@ -266,6 +266,13 @@
 - Status: active, 2026-10-17
 - Evidence: [Alt+Tab research](../research/windows-port/alt-tab-hidden-workspaces.md).
 
+### Shell switcher scope
+- Decision: REQ-WS-07 is NORMATIVE only as a scope deferral beyond 0.1, decided under the standing Tier 1 alignment rule (User 2026-11-13). Preserve User 2026-10-17 keep-SW_HIDE-for-0.1 and KDE's native TabBox ownership; no product listing override or switch-versus-pull activation policy is selected or added.
+- Why: earlier hidden-presentation choice and post-0.1 triage already govern. COSMIC supplies external shell shortcuts plus compositor activation; Hyprland/i3/sway expose lists/activation protocols but no built-in Alt+Tab UI. Protocol availability is not a majority for a shell filter or an OmniTiler hidden-window representation.
+- Assumes / revisit if: revisit after 0.1 with actual native switcher evidence and the existing complexity constraint. Future inclusion, activation and macOS shell behavior remain TBD; no native acceptance follows from deferral.
+- Status: active scope deferral; latest-release compositor/default-binding evidence rechecked 2026-11-14, no runtime change.
+- Evidence: [R-WS-07](../spec/reference-outcomes/workspaces.md#r-ws-07-shell-switcher-listing), [batches 4-8](../changes/c9-product-evidence.md#requirement-batches-4-8-absent-verbs-and-scope-2026-11-14).
+
 ### Windows workspace focus and command boundary
 - Decision: Workspace focus uses bounded owner-thread E8 prime (unassigned virtual key injected after native safety gates and before one `SetForegroundWindow`, holding last-input foreground right) plus exact foreground readback, without `AttachThreadInput`; Terminal is ordinary. CLI exposes `workspace --select N` / `workspace --send N`, opt-in `--scope-exe` / `--scope-host-child` proof fences, and exact-owner automation send; dispatch acknowledgement is not effect proof.
 - Why: not recorded.
