@@ -1165,13 +1165,17 @@ dev-kde *args:
     DEV_ON_OK=0
     INT_RECEIVED=0
     TAIL_PID=""
+    TAIL_SED_PID=""
     JOURNAL_PID=""
+    JOURNAL_SED_PID=""
     FOLLOW_PID=""
     TEE_PID=""
     KWIN_PID=""
     PLANNER_LOG=""
     DEV_LOG=""
     DEV_FIFO="$STATE_DIR/dev-stream"
+    PLANNER_RAW="$STATE_DIR/dev-planner-raw"
+    KWIN_RAW="$STATE_DIR/dev-kwin-raw"
     PLANNER_STREAM="$STATE_DIR/dev-planner-stream"
     KWIN_STREAM="$STATE_DIR/dev-kwin-stream"
     TRAY_BUS="com.omnitiler.Tray"
@@ -1180,6 +1184,8 @@ dev-kde *args:
     TRAY_START=""
     TRAY_LOG=""
     TRAY_TAIL_PID=""
+    TRAY_SED_PID=""
+    TRAY_RAW="$STATE_DIR/dev-tray-raw"
     TRAY_STREAM="$STATE_DIR/dev-tray-stream"
     tray_start_identity() {
       local pid="$1" stat_line stat_pid rest
@@ -1231,8 +1237,11 @@ dev-kde *args:
       trap - INT TERM EXIT
       set +e
       if [[ -n "${TAIL_PID:-}" ]]; then kill "$TAIL_PID" 2>/dev/null || true; fi
+      if [[ -n "${TAIL_SED_PID:-}" ]]; then kill "$TAIL_SED_PID" 2>/dev/null || true; fi
       if [[ -n "${JOURNAL_PID:-}" ]]; then kill "$JOURNAL_PID" 2>/dev/null || true; fi
+      if [[ -n "${JOURNAL_SED_PID:-}" ]]; then kill "$JOURNAL_SED_PID" 2>/dev/null || true; fi
       if [[ -n "${TRAY_TAIL_PID:-}" ]]; then kill "$TRAY_TAIL_PID" 2>/dev/null || true; fi
+      if [[ -n "${TRAY_SED_PID:-}" ]]; then kill "$TRAY_SED_PID" 2>/dev/null || true; fi
       if [[ -n "${FOLLOW_PID:-}" ]]; then kill "$FOLLOW_PID" 2>/dev/null || true; fi
       if [[ -n "${TEE_PID:-}" ]]; then kill "$TEE_PID" 2>/dev/null || true; fi
       # No generic `kill $(jobs -p)`: the owned tray is a child job and is
@@ -1266,7 +1275,7 @@ dev-kde *args:
         fi
         # Wait for the stopped log followers, never a tray whose identity
         # changed and therefore must remain untouched.
-        for child in "${TAIL_PID:-}" "${JOURNAL_PID:-}" "${TRAY_TAIL_PID:-}" "${FOLLOW_PID:-}" "${TEE_PID:-}"; do
+        for child in "${TAIL_PID:-}" "${TAIL_SED_PID:-}" "${JOURNAL_PID:-}" "${JOURNAL_SED_PID:-}" "${TRAY_TAIL_PID:-}" "${TRAY_SED_PID:-}" "${FOLLOW_PID:-}" "${TEE_PID:-}"; do
           if [[ -n "$child" ]]; then wait "$child" 2>/dev/null || true; fi
         done
         just --justfile "$JUSTFILE" dev-off
@@ -1276,7 +1285,7 @@ dev-kde *args:
           native_unload_owned_reverse || NATIVE_OFF_RC=$?
         fi
         if [[ -n "${DEV_LOG:-}" ]]; then echo "combined log: $DEV_LOG"; fi
-        rm -f -- "$STATE_DIR/dev-stream" "$STATE_DIR/dev-planner-stream" "$STATE_DIR/dev-kwin-stream" "$STATE_DIR/dev-tray-stream" "$STATE_DIR/tray-pid" "$STATE_DIR/tray-exe" "$STATE_DIR/tray-start" "$STATE_DIR/tray-log" 2>/dev/null || true
+        rm -f -- "$STATE_DIR/dev-stream" "$STATE_DIR/dev-planner-raw" "$STATE_DIR/dev-kwin-raw" "$STATE_DIR/dev-tray-raw" "$STATE_DIR/dev-planner-stream" "$STATE_DIR/dev-kwin-stream" "$STATE_DIR/dev-tray-stream" "$STATE_DIR/tray-pid" "$STATE_DIR/tray-exe" "$STATE_DIR/tray-start" "$STATE_DIR/tray-log" 2>/dev/null || true
         if [[ "$TRAY_OFF_RC" -ne 0 ]]; then
           echo "error: just dev: owned tray teardown failed; teardown is unverified" >&2
         fi
@@ -1438,8 +1447,11 @@ dev-kde *args:
     # From here the session is UP via this command; refresh stream paths
     # (already initialized before loads) before touching logs.
     DEV_FIFO="$STATE_DIR/dev-stream"
+    PLANNER_RAW="$STATE_DIR/dev-planner-raw"
+    KWIN_RAW="$STATE_DIR/dev-kwin-raw"
     PLANNER_STREAM="$STATE_DIR/dev-planner-stream"
     KWIN_STREAM="$STATE_DIR/dev-kwin-stream"
+    TRAY_RAW="$STATE_DIR/dev-tray-raw"
     TRAY_STREAM="$STATE_DIR/dev-tray-stream"
     [[ -f "$STATE_DIR/planner-log" ]] || { echo "error: just dev: missing planner log pointer ($STATE_DIR/planner-log)" >&2; exit 1; }
     PLANNER_LOG="$(cat "$STATE_DIR/planner-log")"
@@ -1461,21 +1473,30 @@ dev-kde *args:
     echo "kwin pid: $KWIN_PID"
     DEV_LOG="$(mktemp "$RUNTIME_DIR/omnitiler-dev.XXXXXX.log")" || { echo "error: just dev: could not create combined log" >&2; exit 1; }
     printf '%s\n' "$DEV_LOG" > "$STATE_DIR/dev-log" || { echo "error: just dev: could not record combined log path" >&2; exit 1; }
-    rm -f -- "$DEV_FIFO" "$PLANNER_STREAM" "$KWIN_STREAM" "$TRAY_STREAM" 2>/dev/null || true
+    rm -f -- "$DEV_FIFO" "$PLANNER_RAW" "$KWIN_RAW" "$TRAY_RAW" "$PLANNER_STREAM" "$KWIN_STREAM" "$TRAY_STREAM" 2>/dev/null || true
     mkfifo -- "$DEV_FIFO" || { echo "error: just dev: could not create stream $DEV_FIFO" >&2; exit 1; }
+    mkfifo -- "$PLANNER_RAW" || { echo "error: just dev: could not create raw stream $PLANNER_RAW" >&2; exit 1; }
+    mkfifo -- "$KWIN_RAW" || { echo "error: just dev: could not create raw stream $KWIN_RAW" >&2; exit 1; }
     : > "$PLANNER_STREAM" || { echo "error: just dev: could not create $PLANNER_STREAM" >&2; exit 1; }
     : > "$KWIN_STREAM" || { echo "error: just dev: could not create $KWIN_STREAM" >&2; exit 1; }
     : > "$TRAY_STREAM" || { echo "error: just dev: could not create $TRAY_STREAM" >&2; exit 1; }
     echo "combined log: $DEV_LOG"
     tee -a "$DEV_LOG" <"$DEV_FIFO" &
     TEE_PID=$!
-    tail -n +1 -F "$PLANNER_LOG" 2>/dev/null | sed -u 's/^/[planner] /' >>"$PLANNER_STREAM" &
+    tail -n +1 -F "$PLANNER_LOG" 2>/dev/null >"$PLANNER_RAW" &
     TAIL_PID=$!
-    journalctl --user -f _PID="$KWIN_PID" -o cat --no-pager 2>/dev/null | grep --line-buffered -F "omnitiler:" | sed -u 's/^/[kwin] /' >>"$KWIN_STREAM" &
+    sed -u 's/^/[planner] /' <"$PLANNER_RAW" >>"$PLANNER_STREAM" &
+    TAIL_SED_PID=$!
+    journalctl --user -f _PID="$KWIN_PID" -o cat --no-pager 2>/dev/null >"$KWIN_RAW" &
     JOURNAL_PID=$!
+    sed -nu '/omnitiler:/s/^/[kwin] /p' <"$KWIN_RAW" >>"$KWIN_STREAM" &
+    JOURNAL_SED_PID=$!
     if [[ "${TRAY_OWNED:-0}" -eq 1 ]]; then
-      tail -n +1 -F "$TRAY_LOG" 2>/dev/null | sed -u 's/^/[tray] /' >>"$TRAY_STREAM" &
+      mkfifo -- "$TRAY_RAW" || { echo "error: just dev: could not create raw stream $TRAY_RAW" >&2; exit 1; }
+      tail -n +1 -F "$TRAY_LOG" 2>/dev/null >"$TRAY_RAW" &
       TRAY_TAIL_PID=$!
+      sed -u 's/^/[tray] /' <"$TRAY_RAW" >>"$TRAY_STREAM" &
+      TRAY_SED_PID=$!
       tail -q -n +1 -s 0.2 -F "$PLANNER_STREAM" "$KWIN_STREAM" "$TRAY_STREAM" >"$DEV_FIFO" 2>/dev/null &
       FOLLOW_PID=$!
     else

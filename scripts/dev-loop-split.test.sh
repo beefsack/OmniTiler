@@ -226,6 +226,10 @@ if [[ "$is_follower" -eq 1 ]]; then
   done
   exit 0
 fi
+if [[ "${FAKE_UPSTREAM_FOLLOW_BLOCK:-0}" == "1" ]]; then
+  printf '%s\n' "$$" >> "${FAKE_STATE_DIR:?}/tail-block.pids"
+  exec sleep 1000
+fi
 for a in "$@"; do
   if [[ -f "$a" ]]; then
     echo "fake-planner-line"
@@ -240,6 +244,10 @@ set -euo pipefail
 printf 'journalctl %s\n' "$*" >> "${FAKE_CALL_LOG:?}"
 echo "omnitiler:plan:cmd=plan-1-p1 kind=admit windows=1 outcome=planned-applied"
 echo "omnitiler:route-diag:drag-pull action=dispatch"
+if [[ "${FAKE_UPSTREAM_FOLLOW_BLOCK:-0}" == "1" ]]; then
+  printf '%s\n' "$$" >> "${FAKE_STATE_DIR:?}/journal-block.pids"
+  exec sleep 1000
+fi
 exit 0
 EOF
   cat > "$FAKE_BIN/bin/kcmshell6" <<'EOF'
@@ -537,7 +545,7 @@ run_just() {
 run_just_async() {
   set +e
   set -m
-  FAKE_STATE_DIR="$WORK/state" FAKE_CALL_LOG="$WORK/calls.log" PROC_ROOT="$WORK/proc" OMNITILER_BIN="$OMNITILER_BIN" OMNITILER_KWIN_DIR="$WORK/fake-kwin" OMNITILER_NATIVE_SOURCE="$WORK/fake-native-source" OMNITILER_NATIVE_BUILD="$WORK/fake-native-build" OMNITILER_NATIVE_STAGE="$WORK/fake-native-stage" OMNITILER_TARGET_DIR="$WORK/fake-target" OMNITILER_KWIN_DEV_CMAKE_DIR="$WORK/fake-kwin-cmake" OMNITILER_HOST_KWIN_BIN="$WORK/fake-host/kwin_wayland" OMNITILER_STORE_ROOT="$WORK/fake-store" NIX_BIN="$FAKE_BIN/bin/nix" RUSTC_BIN="$WORK/fake-store/hash-rustc/bin/rustc" CARGO_BIN="$WORK/fake-store/hash-cargo/bin/cargo" CMAKE_BIN="$WORK/fake-store/hash-cmake/bin/cmake" FAKE_DRV="$FAKE_DRV" FAKE_STORE_PATH="$FAKE_STORE_PATH" FAKE_DEV_OUT="$FAKE_DEV_OUT" XDG_RUNTIME_DIR="$WORK/runtime" XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP-KDE}" DEV_LOOP_START_TEST="$WORK/fake-start-test.sh" DEV_LOOP_DOGFOOD="$WORK/fake-dogfood.sh" FAKE_TAIL_FOLLOW_BLOCK="${FAKE_TAIL_FOLLOW_BLOCK:-0}" PATH="$WORK/fake-store/hash-cargo/bin:$FAKE_BIN/bin:$PATH" just --justfile "$ISOLATED_JUSTFILE" "$@" >"$OUTPUT" 2>&1 &
+  FAKE_STATE_DIR="$WORK/state" FAKE_CALL_LOG="$WORK/calls.log" PROC_ROOT="$WORK/proc" OMNITILER_BIN="$OMNITILER_BIN" OMNITILER_KWIN_DIR="$WORK/fake-kwin" OMNITILER_NATIVE_SOURCE="$WORK/fake-native-source" OMNITILER_NATIVE_BUILD="$WORK/fake-native-build" OMNITILER_NATIVE_STAGE="$WORK/fake-native-stage" OMNITILER_TARGET_DIR="$WORK/fake-target" OMNITILER_KWIN_DEV_CMAKE_DIR="$WORK/fake-kwin-cmake" OMNITILER_HOST_KWIN_BIN="$WORK/fake-host/kwin_wayland" OMNITILER_STORE_ROOT="$WORK/fake-store" NIX_BIN="$FAKE_BIN/bin/nix" RUSTC_BIN="$WORK/fake-store/hash-rustc/bin/rustc" CARGO_BIN="$WORK/fake-store/hash-cargo/bin/cargo" CMAKE_BIN="$WORK/fake-store/hash-cmake/bin/cmake" FAKE_DRV="$FAKE_DRV" FAKE_STORE_PATH="$FAKE_STORE_PATH" FAKE_DEV_OUT="$FAKE_DEV_OUT" XDG_RUNTIME_DIR="$WORK/runtime" XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP-KDE}" DEV_LOOP_START_TEST="$WORK/fake-start-test.sh" DEV_LOOP_DOGFOOD="$WORK/fake-dogfood.sh" FAKE_TAIL_FOLLOW_BLOCK="${FAKE_TAIL_FOLLOW_BLOCK:-0}" FAKE_UPSTREAM_FOLLOW_BLOCK="${FAKE_UPSTREAM_FOLLOW_BLOCK:-0}" PATH="$WORK/fake-store/hash-cargo/bin:$FAKE_BIN/bin:$PATH" just --justfile "$ISOLATED_JUSTFILE" "$@" >"$OUTPUT" 2>&1 &
   JUST_ASYNC_PID=$!
   set +m
   set -e
@@ -2039,6 +2047,71 @@ if [[ -f "$WORK/runtime/omnitiler-dev/planner-pid" ]]; then PASS=$((PASS + 1)); 
 kill "$CTRL_FAIL_PID" 2>/dev/null || true
 wait "$CTRL_FAIL_PID" 2>/dev/null || true
 rm -f "$WORK/state/stop-fails"
+
+# dev-kde: single-PID SIGTERM (no process-group signal) stops blocking upstream
+# tail and journalctl followers without hanging or leaving orphans.
+reset_state
+set_controller false
+rm -f "$WORK/state/tail-block.pids" "$WORK/state/journal-block.pids"
+sleep 300 &
+DEV_TERM_PID=$!
+make_planner_proc "$DEV_TERM_PID" 777004
+printf '%s\n' "$DEV_TERM_PID" > "$WORK/state/owner-pid"
+export FAKE_TAIL_FOLLOW_BLOCK=1
+export FAKE_UPSTREAM_FOLLOW_BLOCK=1
+: > "$OUTPUT"
+run_just_async dev-kde
+JUST_PID="$JUST_ASYNC_PID"
+READY=0
+for _ in $(seq 1 50); do
+  if grep -Fq "combined log:" "$OUTPUT" 2>/dev/null && [[ -s "$WORK/state/tail-block.pids" && -s "$WORK/state/journal-block.pids" ]]; then
+    READY=1
+    break
+  fi
+  if ! kill -0 "$JUST_PID" 2>/dev/null; then break; fi
+  sleep 0.2
+done
+if [[ "$READY" -ne 1 ]]; then
+  echo "FAIL [dev SIGTERM setup missing combined log or blocking followers]" >&2
+  cat "$OUTPUT" >&2
+  FAIL=$((FAIL + 1))
+  kill -KILL -- "-$JUST_PID" 2>/dev/null || true
+  set +e; wait "$JUST_PID" 2>/dev/null; set -e
+else
+  kill -TERM "$JUST_PID" 2>/dev/null || true
+  set +e
+  N=0
+  TIMED_OUT=0
+  while kill -0 "$JUST_PID" 2>/dev/null; do
+    N=$((N + 1))
+    if [[ "$N" -gt 25 ]]; then
+      TIMED_OUT=1
+      kill -KILL -- "-$JUST_PID" 2>/dev/null || true
+      break
+    fi
+    sleep 0.2
+  done
+  wait "$JUST_PID" 2>/dev/null
+  EXIT=$?
+  set -e
+  if [[ "$TIMED_OUT" -eq 0 ]]; then PASS=$((PASS + 1)); else echo "FAIL [dev SIGTERM teardown hung waiting on upstream followers]" >&2; FAIL=$((FAIL + 1)); fi
+  assert_calls_contain "start-test stop 7" "dev SIGTERM teardown stop"
+  assert_calls_contain "dogfood enable" "dev SIGTERM teardown enable"
+  assert_calls_contain "unloadEffect" "dev SIGTERM teardown native unload"
+  if [[ ! -e "$WORK/runtime/omnitiler-dev/dev-log" && ! -e "$WORK/runtime/omnitiler-dev/dev-stream" && ! -e "$WORK/runtime/omnitiler-dev/dev-planner-raw" && ! -e "$WORK/runtime/omnitiler-dev/dev-kwin-raw" && ! -e "$WORK/runtime/omnitiler-dev/dev-tray-raw" && ! -e "$WORK/runtime/omnitiler-dev/dev-planner-stream" && ! -e "$WORK/runtime/omnitiler-dev/dev-kwin-stream" ]]; then PASS=$((PASS + 1)); else echo "FAIL [dev SIGTERM stream/raw state removed]" >&2; FAIL=$((FAIL + 1)); fi
+  for p in $(cat "$WORK/state/tail-block.pids" "$WORK/state/journal-block.pids" 2>/dev/null); do
+    if kill -0 "$p" 2>/dev/null; then
+      echo "FAIL [dev SIGTERM left surviving upstream follower pid $p]" >&2
+      FAIL=$((FAIL + 1))
+      kill -KILL "$p" 2>/dev/null || true
+    else
+      PASS=$((PASS + 1))
+    fi
+  done
+fi
+unset FAKE_TAIL_FOLLOW_BLOCK FAKE_UPSTREAM_FOLLOW_BLOCK
+kill "$DEV_TERM_PID" 2>/dev/null || true
+wait "$DEV_TERM_PID" 2>/dev/null || true
 
 echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
