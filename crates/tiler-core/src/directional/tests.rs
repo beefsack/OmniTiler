@@ -1453,6 +1453,139 @@ fn focus_fails_closed_on_duplicate_single_child_and_missing() {
     );
 }
 
+#[test]
+fn focus_perpendicular_descent_uses_most_recent_history() {
+    // H[V[A, B], C*]
+    let tree = group(
+        "root",
+        Axis::Horizontal,
+        vec![
+            group("inner", Axis::Vertical, vec![leaf("A"), leaf("B")]),
+            leaf("C"),
+        ],
+    );
+    // Focus history A, B, C (newest-first: C, B, A) -> Left from C picks B.
+    let history_abc = [NodeId::from("C"), NodeId::from("B"), NodeId::from("A")];
+    assert_eq!(
+        plan_focus_with_history(&tree, &NodeId::from("C"), Direction::Left, &history_abc),
+        Some(FocusPlan::Focused {
+            leaf: NodeId::from("B"),
+            route: vec![NodeId::from("inner"), NodeId::from("B")],
+        })
+    );
+    // Fresh focus history B, A, C (newest-first: C, A, B) -> Left from C picks A.
+    let history_bac = [NodeId::from("C"), NodeId::from("A"), NodeId::from("B")];
+    assert_eq!(
+        plan_focus_with_history(&tree, &NodeId::from("C"), Direction::Left, &history_bac),
+        Some(FocusPlan::Focused {
+            leaf: NodeId::from("A"),
+            route: vec![NodeId::from("inner"), NodeId::from("A")],
+        })
+    );
+    // No history -> fallback to stable first child A.
+    assert_eq!(
+        plan_focus_with_history(&tree, &NodeId::from("C"), Direction::Left, &[]),
+        Some(FocusPlan::Focused {
+            leaf: NodeId::from("A"),
+            route: vec![NodeId::from("inner"), NodeId::from("A")],
+        })
+    );
+}
+
+#[test]
+fn focus_perpendicular_descent_nested_perpendicular_and_parallel() {
+    // H[V[H2[A, B], V2[C, D]], E*]
+    let tree = group(
+        "root",
+        Axis::Horizontal,
+        vec![
+            group(
+                "outer-v",
+                Axis::Vertical,
+                vec![
+                    group("inner-h", Axis::Horizontal, vec![leaf("A"), leaf("B")]),
+                    group("inner-v", Axis::Vertical, vec![leaf("C"), leaf("D")]),
+                ],
+            ),
+            leaf("E"),
+        ],
+    );
+    // Perpendicular into perpendicular: newest descendant in outer-v is C (in inner-v);
+    // inner-v is also perpendicular so it picks C.
+    let hist_perpendicular = [
+        NodeId::from("E"),
+        NodeId::from("C"),
+        NodeId::from("D"),
+        NodeId::from("A"),
+        NodeId::from("B"),
+    ];
+    assert_eq!(
+        plan_focus_with_history(
+            &tree,
+            &NodeId::from("E"),
+            Direction::Left,
+            &hist_perpendicular
+        ),
+        Some(FocusPlan::Focused {
+            leaf: NodeId::from("C"),
+            route: vec![
+                NodeId::from("outer-v"),
+                NodeId::from("inner-v"),
+                NodeId::from("C"),
+            ],
+        })
+    );
+    // Perpendicular into parallel: newest descendant in outer-v is A (in inner-h);
+    // inner-h is parallel to Left, so parallel descent stays on its bordering edge (B).
+    let hist_into_parallel = [NodeId::from("E"), NodeId::from("A"), NodeId::from("C")];
+    assert_eq!(
+        plan_focus_with_history(
+            &tree,
+            &NodeId::from("E"),
+            Direction::Left,
+            &hist_into_parallel
+        ),
+        Some(FocusPlan::Focused {
+            leaf: NodeId::from("B"),
+            route: vec![
+                NodeId::from("outer-v"),
+                NodeId::from("inner-h"),
+                NodeId::from("B"),
+            ],
+        })
+    );
+    // No history: outer-v falls back to first child (inner-h), inner-h parallel Left -> B.
+    assert_eq!(
+        plan_focus_with_history(&tree, &NodeId::from("E"), Direction::Left, &[]),
+        Some(FocusPlan::Focused {
+            leaf: NodeId::from("B"),
+            route: vec![
+                NodeId::from("outer-v"),
+                NodeId::from("inner-h"),
+                NodeId::from("B"),
+            ],
+        })
+    );
+    // Stale/closed MRU entry skipped: X-closed is ignored, next candidate D wins.
+    let hist_stale = [
+        NodeId::from("E"),
+        NodeId::from("X-closed"),
+        NodeId::from("D"),
+        NodeId::from("A"),
+    ];
+    assert_eq!(
+        plan_focus_with_history(&tree, &NodeId::from("E"), Direction::Left, &hist_stale),
+        Some(FocusPlan::Focused {
+            leaf: NodeId::from("D"),
+            route: vec![
+                NodeId::from("outer-v"),
+                NodeId::from("inner-v"),
+                NodeId::from("D"),
+            ],
+        })
+    );
+}
+
 // ---- fraction sizing (cosmic-move-adapter.test.ts sizing cases) ----
 
 #[test]

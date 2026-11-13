@@ -112,6 +112,13 @@
 - Status: active, 2026-10-12
 - Evidence: [triage](../research/release-0.1-triage.md#user-decisions-2026-10-12).
 
+### In-group move and single-output edge
+- Decision (user 2026-11-13, REQ-MOV-02 / REQ-MOV-05): confirm the existing in-group leaf swap with mover focus retained (`H[A,V[C,B*]]`, move B up -> `H[A,V[B*,C]]`). After local move exhaustion at a single-output edge with no adjacent output, retain tree and focus unchanged. Existing adjacent-output transfer and other move rules remain unchanged.
+- Why: retain the implemented behavior supported by the recorded Tier 1 swap/visually-unchanged outcomes; distinguish Hyprland's remove/reinsert reconstruction from a structural no-op.
+- Rejected: changing these moves or adding a setting without an evidenced alternative for these fixtures.
+- Status: active, User 2026-11-13; shared-core behavior confirmed, native acceptance pending.
+- Evidence / TBD: [R-MOV-02](../spec/reference-outcomes/move.md#r-mov-02-in-group-vertical-swap), [R-MOV-05](../spec/reference-outcomes/move.md#r-mov-05-edge-move-with-no-left-neighbor), [batch 1](../changes/c9-product-evidence.md#requirement-batch-1-decisions-and-implementation-2026-11-13). Exact latest-release Hyprland rebuilt geometry/ratios and native journeys remain TBD.
+
 ### Same-axis move setting
 - Decision: One global `sameAxisMove` / `core.same_axis_move` setting: `group-with-neighbor` default, label Group with neighbor, tooltip COSMIC; or `swap-with-neighbor`, label Swap with neighbor, tooltip i3/sway. Windows schema-v1 missing defaults to group. Changes affect subsequent moves without rebuilding existing trees; no migration. Swap replaces only R2c when neighbor is adjacent direct leaf sibling in same group, moving shares with windows; leaf/group neighbor rules stay current.
 - Why: not recorded.

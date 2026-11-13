@@ -108,8 +108,31 @@ impl super::super::Session {
         let Some(tree) = self.trees.get(domain).cloned().flatten() else {
             return Err(ProposeError::Refused(RefusalKind::FocusMismatch));
         };
-        let Some(focus_plan) = crate::directional::plan_focus(&tree, &focused_leaf, direction)
-        else {
+        let history_newest_first: Vec<NodeId> = self
+            .focus_history
+            .get(domain)
+            .map(|history| {
+                history
+                    .iter()
+                    .rev()
+                    .filter(|leaf| {
+                        self.focus_resolves(
+                            &Some(domain.clone()),
+                            &Some((*leaf).clone()),
+                            &self.trees,
+                            &self.windows,
+                        )
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let Some(focus_plan) = crate::directional::plan_focus_with_history(
+            &tree,
+            &focused_leaf,
+            direction,
+            &history_newest_first,
+        ) else {
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
         };
         let (target_leaf, route) = match &focus_plan {
@@ -230,6 +253,13 @@ impl super::super::Session {
                     self.focused_domain = desired.focused_domain;
                     self.focused_leaf = desired.focused_leaf;
                     self.focus_stack = self.updated_focus_stack(
+                        &self.focused_domain,
+                        &self.focused_leaf,
+                        &self.trees,
+                        &self.windows,
+                    );
+                    self.focus_history = self.updated_focus_history_on(
+                        &self.focus_history,
                         &self.focused_domain,
                         &self.focused_leaf,
                         &self.trees,

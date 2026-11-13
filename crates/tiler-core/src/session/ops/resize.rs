@@ -320,6 +320,7 @@ impl super::super::Session {
                         &self.trees,
                         &self.windows,
                     );
+                    self.prune_focus_history();
                     self.last_active = desired.last_active;
                     self.exceptions = desired.exceptions;
                     self.retained_float_geometry = desired.retained_float_geometry;

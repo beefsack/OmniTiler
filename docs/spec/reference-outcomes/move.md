@@ -76,8 +76,10 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
 - Then karousel/Lazy: B swaps above C with no focus write, so focus stays
   B. `S(S-kar-move)`.
 - Then paneru: B swaps with C above in the same strip. `S(S-pan-move)`.
-- Then Ours KDE: `H[A,V[B,C]]`; `D(D-dec-cos)`
-- Then Ours Windows: `H[A,V[B,C]]`; `D(D-dec-cos)`
+- Then Ours KDE: `H[A,V[B*,C]]`, swap in place with mover focus retained;
+  confirmed User 2026-11-13, existing shared-core behavior. Native journey TBD.
+  [Decision](../../decisions/layout-and-admission.md#in-group-move-and-single-output-edge).
+- Then Ours Windows: same shared-core swap/focus target; native journey TBD.
 - Variant hook: V-MOVE-NARY.
 
 <a id="r-mov-03-backfill-same-row-carry-to-the-right-scrolling"></a>
@@ -200,14 +202,14 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   cross displays); tree and focus unchanged. `S(S-pan-swap-peer)` +
   `S(S-pan-swap)`.
 - Then Ours KDE: Local R1/R2/R3 first; no adjacent output in this fixture means
-  no-op. Exhausted R4 otherwise crosses in all four directions, never cycles
+  no-op with tree and focus retained, confirmed User 2026-11-13;
+  [decision](../../decisions/layout-and-admission.md#in-group-move-and-single-output-edge).
+  Native journey TBD. Exhausted R4 otherwise crosses in all four directions, never cycles
   workspaces; [item-5 offline record](../../changes/archive/four-direction-output-transfer.md).
-- Then Ours Windows: local-only (corrected 2026-10-08 at `db31234`):
-  Local R1/R2/R3 first; no adjacent output in this fixture means no-op.
-  No Windows crossing wired: single-domain event `cross_output_transfer:false`
-  (`crates/tiler-windows/src/tiling_sys.rs:6099/6105`); handoff item 5 plus
-  the parked parity-queue multi-output foundation pending. `D(D-dec-cos)` is
-  the selected target, not current capability.
+- Then Ours Windows: same shared-core single-output no-op target, confirmed
+  User 2026-11-13; native journey TBD. Historical 2026-10-08 local-only
+  implementation evidence does not establish current output-crossing capability;
+  crossing is a separate R-MOV-08/11 journey.
 - Variant hook: V-R4-DIR.
 
 

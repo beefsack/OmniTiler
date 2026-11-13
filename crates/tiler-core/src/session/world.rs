@@ -366,6 +366,9 @@ impl super::Session {
         if let Some(stack) = self.focus_stack.remove(source) {
             self.focus_stack.insert(target.clone(), stack);
         }
+        if let Some(history) = self.focus_history.remove(source) {
+            self.focus_history.insert(target.clone(), history);
+        }
         if let Some(active) = self.last_active.remove(source) {
             self.last_active.insert(target.clone(), active);
         }
@@ -495,6 +498,7 @@ impl super::Session {
         stay.focused_domain = None;
         stay.focused_leaf = None;
         stay.focus_stack.clear();
+        stay.focus_history.clear();
         stay.last_active.clear();
         stay.exceptions.retain(|id, _| sticky_ids.contains(id));
         stay.retained_float_geometry
@@ -608,6 +612,10 @@ impl super::Session {
             &self.trees,
             &self.windows,
         );
+        // `focus_history` is intentionally NOT updated here: `sync_focus_from_window`
+        // runs on `Engine::local_focus_request` / pair convergence with
+        // `event.focused_window`, which may fall back to lagging native
+        // foreground and must not reorder newer accepted focus (e.g. hover).
         true
     }
 
@@ -629,6 +637,7 @@ impl super::Session {
         if !self.sync_focus_from_window(domain, window) {
             return false;
         }
+        let _ = self.record_focus_history(domain, window);
         self.last_active = self.updated_last_active(
             &self.focused_domain,
             &self.focused_leaf,
@@ -1282,6 +1291,70 @@ impl super::Session {
             !leaves.is_empty()
         });
         if let (Some(domain), Some(leaf)) = (focus_domain, focus_leaf) {
+            let leaves = next.entry(domain.clone()).or_default();
+            leaves.retain(|known| known != leaf);
+            leaves.push(leaf.clone());
+        }
+        next
+    }
+
+    /// Record `window` as the most recently accepted logical tiled focus in
+    /// `domain` for perpendicular directional-focus descent, without mutating
+    /// `focused_domain`, `focused_leaf`, `last_active`, or `focus_stack`.
+    pub(crate) fn record_focus_history(&mut self, domain: &DomainKey, window: &WindowId) -> bool {
+        let Some(link) = self.windows.get(window) else {
+            return false;
+        };
+        if link.output != domain.output || link.workspace != domain.workspace {
+            return false;
+        }
+        let leaf = link.leaf.clone();
+        if !self.focus_resolves(
+            &Some(domain.clone()),
+            &Some(leaf.clone()),
+            &self.trees,
+            &self.windows,
+        ) {
+            return false;
+        }
+        self.focus_history = self.updated_focus_history_on(
+            &self.focus_history,
+            &Some(domain.clone()),
+            &Some(leaf),
+            &self.trees,
+            &self.windows,
+        );
+        true
+    }
+
+    pub(super) fn prune_focus_history(&mut self) {
+        self.focus_history = self.updated_focus_history_on(
+            &self.focus_history,
+            &None,
+            &None,
+            &self.trees,
+            &self.windows,
+        );
+    }
+
+    pub(super) fn updated_focus_history_on(
+        &self,
+        base: &BTreeMap<DomainKey, Vec<NodeId>>,
+        focus_domain: &Option<DomainKey>,
+        focus_leaf: &Option<NodeId>,
+        trees: &BTreeMap<DomainKey, Option<Node>>,
+        windows: &BTreeMap<WindowId, WindowLink>,
+    ) -> BTreeMap<DomainKey, Vec<NodeId>> {
+        let mut next = base.clone();
+        next.retain(|domain, leaves| {
+            leaves.retain(|leaf| {
+                self.focus_resolves(&Some(domain.clone()), &Some(leaf.clone()), trees, windows)
+            });
+            !leaves.is_empty()
+        });
+        if let (Some(domain), Some(leaf)) = (focus_domain, focus_leaf)
+            && self.focus_resolves(&Some(domain.clone()), &Some(leaf.clone()), trees, windows)
+        {
             let leaves = next.entry(domain.clone()).or_default();
             leaves.retain(|known| known != leaf);
             leaves.push(leaf.clone());
@@ -2117,6 +2190,7 @@ impl super::Session {
             &self.trees,
             &self.windows,
         );
+        self.prune_focus_history();
         self.last_active = self.updated_last_active(
             &self.focused_domain,
             &self.focused_leaf,

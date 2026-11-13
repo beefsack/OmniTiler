@@ -29,6 +29,7 @@ impl super::super::Session {
                         &self.trees,
                         &self.windows,
                     );
+                    self.prune_focus_history();
                     self.exceptions = desired.exceptions;
                     self.retained_float_geometry = desired.retained_float_geometry;
                     self.automatic_fixed = desired.automatic_fixed;

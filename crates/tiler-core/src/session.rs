@@ -763,6 +763,12 @@ pub struct Session {
     focused_domain: Option<DomainKey>,
     focused_leaf: Option<NodeId>,
     focus_stack: BTreeMap<DomainKey, Vec<NodeId>>,
+    /// Focus-only per-domain recency (oldest-to-newest) for perpendicular
+    /// directional-focus descent. Separate accepted-focus authority from
+    /// `focus_stack`: updated only by accepted logical focus (`remember_focus`,
+    /// `record_focus_history`, `verify_focus`), never by `sync_focus_from_window`
+    /// or `converge_observation` which may carry lagging native foreground.
+    focus_history: BTreeMap<DomainKey, Vec<NodeId>>,
     last_active: BTreeMap<DomainKey, NodeId>,
     exceptions: BTreeMap<WindowId, ExceptionRecord>,
     retained_float_geometry: BTreeMap<WindowId, Rect>,
@@ -919,6 +925,7 @@ impl Session {
             focused_domain: None,
             focused_leaf: None,
             focus_stack: BTreeMap::new(),
+            focus_history: BTreeMap::new(),
             last_active: BTreeMap::new(),
             exceptions: BTreeMap::new(),
             retained_float_geometry: BTreeMap::new(),
@@ -1228,11 +1235,13 @@ impl Session {
         let mut exceptions = source.exceptions.clone();
         let mut retained = source.retained_float_geometry.clone();
         let mut focus_stack = source.focus_stack.clone();
+        let mut focus_history = source.focus_history.clone();
         let mut last_active = source.last_active.clone();
         // Remap per-domain focus bookkeeping from component keys to pair keys.
         // Keys match by (output, workspace) here, but re-key explicitly so a
         // caller-supplied pair with equal keys stays exact.
         remap_domain_map(&mut focus_stack, &source_key, &pair_source_key);
+        remap_domain_map(&mut focus_history, &source_key, &pair_source_key);
         remap_domain_map(&mut last_active, &source_key, &pair_source_key);
         let mut focused_domain = source.focused_domain.clone();
         if focused_domain.as_ref() == Some(&source_key) {
@@ -1278,6 +1287,16 @@ impl Session {
                 remap_node_ids(&mut leaves, &target_remap);
                 focus_stack.insert(remapped, leaves);
             }
+            for (key, leaves) in &target.focus_history {
+                let remapped = if key == &target_key {
+                    pair_target_key.clone()
+                } else {
+                    key.clone()
+                };
+                let mut leaves = leaves.clone();
+                remap_node_ids(&mut leaves, &target_remap);
+                focus_history.insert(remapped, leaves);
+            }
             for (key, leaf) in &target.last_active {
                 let remapped = if key == &target_key {
                     pair_target_key.clone()
@@ -1309,6 +1328,7 @@ impl Session {
         pair.focused_domain = focused_domain;
         pair.focused_leaf = focused_leaf;
         pair.focus_stack = focus_stack;
+        pair.focus_history = focus_history;
         pair.last_active = last_active;
         pair.exceptions = exceptions;
         pair.retained_float_geometry = retained;
@@ -1604,6 +1624,11 @@ impl Session {
                 .focus_stack
                 .insert(source_key.clone(), leaves.clone());
         }
+        if let Some(leaves) = self.focus_history.get(&pair_source_key) {
+            source
+                .focus_history
+                .insert(source_key.clone(), leaves.clone());
+        }
         if let Some(leaf) = self.last_active.get(&pair_source_key) {
             source.last_active.insert(source_key.clone(), leaf.clone());
         }
@@ -1612,6 +1637,12 @@ impl Session {
             remap_node_ids(&mut leaves, &moved_target_remap);
             remap_node_ids(&mut leaves, &self.canonical_pair_target_restore);
             target.focus_stack.insert(target_key.clone(), leaves);
+        }
+        if let Some(leaves) = self.focus_history.get(&pair_target_key) {
+            let mut leaves = leaves.clone();
+            remap_node_ids(&mut leaves, &moved_target_remap);
+            remap_node_ids(&mut leaves, &self.canonical_pair_target_restore);
+            target.focus_history.insert(target_key.clone(), leaves);
         }
         if let Some(leaf) = self.last_active.get(&pair_target_key) {
             let mut leaf = leaf.clone();
@@ -1635,6 +1666,8 @@ impl Session {
         if !source.validate_current_topology() || !target.validate_current_topology() {
             return Err(CanonicalPairError::DomainMismatch);
         }
+        source.prune_focus_history();
+        target.prune_focus_history();
         let target_empty = target.trees.get(&target_key).cloned().flatten().is_none()
             && target.windows.is_empty()
             && target.exceptions.is_empty()
@@ -1883,6 +1916,7 @@ impl Session {
                         &self.trees,
                         &self.windows,
                     );
+                    self.prune_focus_history();
                     self.last_active = desired.last_active;
                     self.exceptions = desired.exceptions;
                     self.retained_float_geometry = desired.retained_float_geometry;
@@ -9993,5 +10027,33 @@ mod tests {
             "exhausted newcomer never silently floats"
         );
         assert_eq!(leaves_of(&session), vec![leaf("leaf-win-1")]);
+    }
+
+    #[test]
+    fn sync_focus_from_window_does_not_update_focus_history() {
+        let mut session = session_three();
+        let key = domain_key();
+        assert!(session.remember_focus(&key, &WindowId("win-1".to_owned())));
+        assert!(session.remember_focus(&key, &WindowId("win-2".to_owned())));
+        assert!(session.remember_focus(&key, &WindowId("win-3".to_owned())));
+        let history_before = session
+            .focus_history
+            .get(&key)
+            .cloned()
+            .expect("focus_history populated");
+        assert_eq!(
+            history_before,
+            vec![leaf("leaf-win-1"), leaf("leaf-win-2"), leaf("leaf-win-3")]
+        );
+        assert!(session.sync_focus_from_window(&key, &WindowId("win-1".to_owned())));
+        assert_eq!(
+            session.focus(),
+            (Some(key.clone()), Some(leaf("leaf-win-1")))
+        );
+        assert_eq!(
+            session.focus_history.get(&key),
+            Some(&history_before),
+            "sync_focus_from_window must not update or reorder focus_history"
+        );
     }
 }

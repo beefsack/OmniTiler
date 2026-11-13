@@ -70,17 +70,18 @@ assertions are never evidence.
 - Then paneru: A in both runs. `Focus` West from C takes the left column's
   position-matched member (A); the path consults strip order only, never
   history. `S(S-pan-focus)` + `S(S-pan-swap-peer)` + `S(S-pan-cmds)`.
-- Then Ours KDE: A in both runs. Perpendicular V descends to its first
-  child; the Engine dispatches focus to A and the adapter calls
-  `setActive`. `S(S-ours-focus)`.
-- Then Ours Windows: A in both runs via the shared Engine, actuated via
-  `actuate_focus`. `S(S-ours-focus)`.
-- Variant hook: provisional/TBD (no suitable existing hook; do not reuse
-  V-FLOAT-FOCUS, which covers tile/float layers, not tile-tile ties).
+- Then Ours KDE: run 1 B, run 2 A. User 2026-11-13 selects most recently
+  core-accepted focused eligible descendant at each perpendicular descent;
+  no history falls back to first child. Shared-core scenario regressions
+  cover both runs, explicit focus and accepted hover before native confirmation;
+  native delivery TBD. [Decision](../../decisions/focus.md#perpendicular-directional-focus).
+- Then Ours Windows: same shared-core B/A target; native adoption TBD.
+- Variant hook: no tile-tile tie setting selected. V-FLOAT-FOCUS covers
+  tile/float layers, not this tie.
 
 | Geometric-versus-order discriminator | Minimal action sequence | Evidence / unsupported outcome |
 | --- | --- | --- |
-| Unequal perpendicular siblings | Given zero gaps, no reserved area, `H[V[A,B],C*]`, height 800, A allocated top 200 and B remaining 600; record both A,B,C and B,A,C histories in fresh fixtures. Focus left; observe first-child A, nearer-center B, or history-sensitive result | Core first-child selects A (`crates/tiler-core/src/directional.rs:1199-1205`, inspected `7a6d6e12`). COSMIC `epoch-1.11.0`, `src/shell/layout/tiling/mod.rs:2022-2061`, compares geometric distances, with C's left-edge point at y=399 and candidate centers y=100/500, implying B under these allocated rectangles. Exact native rectangles/result TBD. Other references' unequal-share variant outcomes TBD; do not infer them from the original equal-half cells |
+| Unequal perpendicular siblings | Given zero gaps, no reserved area, `H[V[A,B],C*]`, height 800, A allocated top 200 and B remaining 600; record both A,B,C and B,A,C histories in fresh fixtures. Focus left; observe first-child A, nearer-center B, or history-sensitive result | OmniTiler selected history implies B/A independent of shares (User 2026-11-13); pre-change core first-child selected A (`directional.rs:1199-1205`, inspected `7a6d6e12`). COSMIC `epoch-1.11.0`, `src/shell/layout/tiling/mod.rs:2022-2061`, compares geometric distances, with C's left-edge point at y=399 and candidate centers y=100/500, implying B under these allocated rectangles. Exact native rectangles/result TBD. Other references' unequal-share variant outcomes TBD; do not infer them from the original equal-half cells |
 
 ### R-FOC-02: directional focus at a single-output edge
 
@@ -128,11 +129,11 @@ assertions are never evidence.
   crosses displays, and this leg has a single output). `S(S-pan-focus)` +
   `S(S-pan-cmds)`.
 - Then Ours KDE: A retained (`Edge`, no focus write on one output).
-  `S(S-ours-focus)`.
+  Confirmed User 2026-11-13, no wrap or setting; adjacent-output crossing
+  unchanged. Shared-core behavior, native journey TBD. `S(S-ours-focus)`.
 - Then Ours Windows: same Edge-retain leg as Ours KDE via the shared
   Engine. `S(S-ours-focus)`.
-- Variant hook: provisional/TBD (wrap-policy hook, to discuss; V-R4-DIR
-  covers moves, not focus).
+- Variant hook: no wrap setting selected; V-R4-DIR covers moves, not focus.
 
 | Fallback discriminator | Minimal action sequence | Source-implied result / remaining evidence |
 | --- | --- | --- |

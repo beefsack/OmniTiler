@@ -901,7 +901,8 @@ fn gap_prefix(engine: &mut WorldEngine) -> WorldReplyV4 {
 
 /// Gap then focus: incomplete inventory plus a held source domain on a
 /// genuine A -> B native change, then complete unchanged B. The observed
-/// rightward probe from B reaches C.
+/// rightward probe from B enters V[C,A] and selects A (most recently
+/// focused descendant).
 #[test]
 fn gap_held_incomplete_then_focus_acts_on_recovered_foreground() {
     let mut engine = engine();
@@ -914,7 +915,7 @@ fn gap_held_incomplete_then_focus_acts_on_recovered_foreground() {
     assert_eq!(settlements.len(), 1);
     assert_not_rejected(&settlements[0].result, "gap focus probe");
     let next = moved.focus_request.clone().expect("new decision retained");
-    assert_eq!(next.target.0, "win-c", "observed rightward probe from B");
+    assert_eq!(next.target.0, "win-a", "observed rightward probe from B");
     assert_eq!(next.cause, FocusRequestCause::ExplicitCommand);
     assert_eq!(next.cmd_seq, Some(7));
     assert_eq!(next.id, "focus-5");
@@ -2250,4 +2251,834 @@ fn failed_record_command_focus_clears_prior_cursor() {
     );
     assert_eq!(engine.logical_focus_cursor, None);
     assert_eq!(engine.execution_subject(), None);
+}
+
+fn engine_with_hover() -> WorldEngine {
+    WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            maximize: true,
+            fullscreen: true,
+            native_sticky: true,
+            above: true,
+            window_suppression: true,
+            ..HostCapabilities::default()
+        },
+        vec![("focusFollowsCursor".to_owned(), RawSettingValue::Bool(true))],
+    )
+    .expect("valid generation")
+}
+
+/// Admit `win-a`, `win-c`, then focus `win-a` and admit `win-b` on 800x560
+/// so the tiled tree is `H[V[win-a, win-b], win-c]`.
+fn admit_h_vab_c(engine: &mut WorldEngine) -> u64 {
+    let wa = fact("win-a", "out-a", 0);
+    let wb = fact("win-b", "out-a", 100);
+    let wc = fact("win-c", "out-a", 200);
+    engine
+        .handle_report_v4_for_test(&observe(1, vec![wa.clone()], "win-a"))
+        .expect("admit A");
+    engine
+        .handle_report_v4_for_test(&observe(2, vec![wa.clone(), wc.clone()], "win-a"))
+        .expect("admit C");
+    engine
+        .handle_report_v4_for_test(&observe(3, vec![wa, wb, wc], "win-a"))
+        .expect("admit B under A");
+    let key = engine.engine.domain_keys()[0].clone();
+    let tree = engine
+        .engine
+        .session(&key)
+        .and_then(|s| {
+            s.snapshot()
+                .domains
+                .into_iter()
+                .find(|d| d.output == key.output && d.workspace == key.workspace)
+                .and_then(|d| d.tree)
+        })
+        .expect("tree");
+    match &tree {
+        crate::directional::Node::Group { axis, children, .. } => {
+            assert_eq!(*axis, crate::directional::Axis::Horizontal);
+            assert_eq!(children.len(), 2);
+            match (&children[0], &children[1]) {
+                (
+                    crate::directional::Node::Group {
+                        axis: inner_axis,
+                        children: inner_children,
+                        ..
+                    },
+                    crate::directional::Node::Leaf { id: c_id },
+                ) => {
+                    assert_eq!(*inner_axis, crate::directional::Axis::Vertical);
+                    assert_eq!(inner_children.len(), 2);
+                    assert_eq!(c_id.0, "leaf-win-c");
+                }
+                other => panic!("expected H[V[A,B],C], got {other:?}"),
+            }
+        }
+        other => panic!("expected root group, got {other:?}"),
+    }
+    3
+}
+
+#[test]
+fn perpendicular_descent_both_histories_abc_vs_bac() {
+    let all = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            fact("win-c", "out-a", 200),
+        ]
+    };
+    // History A, B, C -> Left from C picks B.
+    let mut eng_abc = engine();
+    let mut seq = admit_h_vab_c(&mut eng_abc);
+    for fg in ["win-a", "win-b", "win-c"] {
+        seq += 1;
+        let _ = run_batched(&mut eng_abc, &observe(seq, all(), fg), &[]);
+    }
+    seq += 1;
+    let (reply_abc, settlements) = run_batched(
+        &mut eng_abc,
+        &observe(seq, all(), "win-c"),
+        &[(
+            1,
+            WorldCommand::FocusDirectional {
+                window: WindowId("win-c".to_owned()),
+                direction: "left".to_owned(),
+            },
+        )],
+    );
+    assert_not_rejected(&settlements[0].result, "focus left abc");
+    assert_eq!(
+        reply_abc
+            .focus_request
+            .as_ref()
+            .map(|r| r.target.0.as_str()),
+        Some("win-b"),
+        "H[V[A,B],C*] with A,B,C history must descend left to B"
+    );
+
+    // Fresh history B, A, C -> Left from C picks A.
+    let mut eng_bac = engine();
+    let mut seq = admit_h_vab_c(&mut eng_bac);
+    for fg in ["win-b", "win-a", "win-c"] {
+        seq += 1;
+        let _ = run_batched(&mut eng_bac, &observe(seq, all(), fg), &[]);
+    }
+    seq += 1;
+    let (reply_bac, settlements) = run_batched(
+        &mut eng_bac,
+        &observe(seq, all(), "win-c"),
+        &[(
+            1,
+            WorldCommand::FocusDirectional {
+                window: WindowId("win-c".to_owned()),
+                direction: "left".to_owned(),
+            },
+        )],
+    );
+    assert_not_rejected(&settlements[0].result, "focus left bac");
+    assert_eq!(
+        reply_bac
+            .focus_request
+            .as_ref()
+            .map(|r| r.target.0.as_str()),
+        Some("win-a"),
+        "H[V[A,B],C*] with B,A,C history must descend left to A"
+    );
+}
+
+#[test]
+fn perpendicular_descent_no_history_fallback_and_nested() {
+    use crate::directional::{Axis, Direction, FocusPlan, Node, NodeId};
+
+    // No-history fallback in pure plan_focus:
+    // H[V[A, B], C*] with no history -> Left from C falls back to stable first child A.
+    let tree = Node::Group {
+        id: NodeId::from("root"),
+        axis: Axis::Horizontal,
+        shares: vec![1, 1],
+        children: vec![
+            Node::Group {
+                id: NodeId::from("inner"),
+                axis: Axis::Vertical,
+                shares: vec![1, 1],
+                children: vec![
+                    Node::Leaf {
+                        id: NodeId::from("leaf-a"),
+                    },
+                    Node::Leaf {
+                        id: NodeId::from("leaf-b"),
+                    },
+                ],
+            },
+            Node::Leaf {
+                id: NodeId::from("leaf-c"),
+            },
+        ],
+    };
+    assert_eq!(
+        crate::directional::plan_focus(&tree, &NodeId::from("leaf-c"), Direction::Left),
+        Some(FocusPlan::Focused {
+            leaf: NodeId::from("leaf-a"),
+            route: vec![NodeId::from("inner"), NodeId::from("leaf-a")],
+        })
+    );
+
+    // Nested WorldEngine scenario: H[V[H2[win-a, win-d], win-b], win-c]
+    // (win-a is 400x280, so admitting win-d under win-a splits horizontally).
+    let mut eng = engine();
+    let mut seq = admit_h_vab_c(&mut eng);
+    let all_4 = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            fact("win-c", "out-a", 200),
+            fact("win-d", "out-a", 300),
+        ]
+    };
+    seq += 1;
+    let _ = run_batched(&mut eng, &observe(seq, all_4(), "win-a"), &[]);
+    // History: win-b, win-a, win-c -> Left from win-c enters V (perpendicular,
+    // picks H2[win-a, win-d] because win-a is more recent than win-b), then
+    // H2 is parallel Left so it stays on bordering edge win-d!
+    for fg in ["win-b", "win-a", "win-c"] {
+        seq += 1;
+        let _ = run_batched(&mut eng, &observe(seq, all_4(), fg), &[]);
+    }
+    seq += 1;
+    let (reply, settlements) = run_batched(
+        &mut eng,
+        &observe(seq, all_4(), "win-c"),
+        &[(
+            1,
+            WorldCommand::FocusDirectional {
+                window: WindowId("win-c".to_owned()),
+                direction: "left".to_owned(),
+            },
+        )],
+    );
+    assert_not_rejected(&settlements[0].result, "nested focus left");
+    assert_eq!(
+        reply.focus_request.as_ref().map(|r| r.target.0.as_str()),
+        Some("win-d"),
+        "perpendicular V picks H2 (MRU win-a), parallel H2 Left stays on bordering edge win-d"
+    );
+
+    // Flip MRU inside V to win-b -> Left from win-c now descends to win-b.
+    for fg in ["win-a", "win-b", "win-c"] {
+        seq += 1;
+        let _ = run_batched(&mut eng, &observe(seq, all_4(), fg), &[]);
+    }
+    seq += 1;
+    let (reply_b, settlements_b) = run_batched(
+        &mut eng,
+        &observe(seq, all_4(), "win-c"),
+        &[(
+            2,
+            WorldCommand::FocusDirectional {
+                window: WindowId("win-c".to_owned()),
+                direction: "left".to_owned(),
+            },
+        )],
+    );
+    assert_not_rejected(&settlements_b[0].result, "nested focus left flip");
+    assert_eq!(
+        reply_b.focus_request.as_ref().map(|r| r.target.0.as_str()),
+        Some("win-b"),
+        "flipping MRU in V to win-b must descend left to win-b"
+    );
+
+    // Perpendicular-into-perpendicular in WorldEngine:
+    // Admitting win-e under win-b (400x280) splits horizontally to H3[win-b, win-e].
+    // Down from win-d (in H2) enters V's next child H3[win-b, win-e] (perpendicular
+    // to Down) and selects MRU between win-b and win-e.
+    let all_5 = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            fact("win-c", "out-a", 200),
+            fact("win-d", "out-a", 300),
+            fact("win-e", "out-a", 400),
+        ]
+    };
+    seq += 1;
+    let _ = run_batched(&mut eng, &observe(seq, all_5(), "win-b"), &[]);
+    // History: win-b then win-e then win-d -> Down from win-d enters H3[win-b, win-e]
+    // (perpendicular to Down) and must pick MRU win-e (not first child win-b).
+    for fg in ["win-b", "win-e", "win-d"] {
+        seq += 1;
+        let _ = run_batched(&mut eng, &observe(seq, all_5(), fg), &[]);
+    }
+    seq += 1;
+    let (reply_perp, settlements_perp) = run_batched(
+        &mut eng,
+        &observe(seq, all_5(), "win-d"),
+        &[(
+            3,
+            WorldCommand::FocusDirectional {
+                window: WindowId("win-d".to_owned()),
+                direction: "down".to_owned(),
+            },
+        )],
+    );
+    assert_not_rejected(&settlements_perp[0].result, "nested perp-into-perp down");
+    assert_eq!(
+        reply_perp
+            .focus_request
+            .as_ref()
+            .map(|r| r.target.0.as_str()),
+        Some("win-e"),
+        "perpendicular-into-perpendicular Down from win-d into H3[win-b, win-e] must pick MRU win-e"
+    );
+}
+
+#[test]
+fn perpendicular_descent_explicit_focus_command_and_rejected_observation() {
+    let all = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            fact("win-c", "out-a", 200),
+        ]
+    };
+    let mut eng = engine();
+    let mut seq = admit_h_vab_c(&mut eng);
+    for fg in ["win-a", "win-b", "win-c"] {
+        seq += 1;
+        let _ = run_batched(&mut eng, &observe(seq, all(), fg), &[]);
+    }
+
+    // Rejected raw observation claiming win-a focused must NOT update history.
+    let mut bad = observe(seq + 1, all(), "win-a");
+    bad.core_generation = "stale-gen".to_owned();
+    assert!(
+        eng.handle_report_v4_for_test(&bad).is_err(),
+        "stale generation raw observation must reject"
+    );
+
+    // Explicit Focus(win-a) followed by Focus(win-c) updates history so Left
+    // from win-c now picks win-a.
+    seq += 1;
+    let (reply, settlements) = run_batched(
+        &mut eng,
+        &observe(seq, all(), "win-c"),
+        &[
+            (1, focus_cmd("win-a")),
+            (2, focus_cmd("win-c")),
+            (
+                3,
+                WorldCommand::FocusDirectional {
+                    window: WindowId("win-c".to_owned()),
+                    direction: "left".to_owned(),
+                },
+            ),
+        ],
+    );
+    assert_eq!(settlements.len(), 3);
+    assert_not_rejected(&settlements[2].result, "focus left after explicit Focus");
+    assert_eq!(
+        reply.focus_request.as_ref().map(|r| r.target.0.as_str()),
+        Some("win-a"),
+        "explicit Focus(win-a) must update perpendicular descent history"
+    );
+}
+
+#[test]
+fn perpendicular_descent_accepted_hover_focus_updates_history() {
+    let all = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            fact("win-c", "out-a", 200),
+        ]
+    };
+    let mut eng = engine_with_hover();
+    let mut seq = admit_h_vab_c(&mut eng);
+    for fg in ["win-a", "win-b", "win-c"] {
+        seq += 1;
+        let _ = run_batched(&mut eng, &observe(seq, all(), fg), &[]);
+    }
+
+    // Hover over win-a while win-c is still focused -> mints FocusFollowsCursor.
+    seq += 1;
+    let mut hover_report = observe(seq, all(), "win-c");
+    hover_report.cursor = Some((10, 10));
+    hover_report.cursor_hit = Some(WindowId("win-a".to_owned()));
+    let (hover_reply, _) = run_batched(&mut eng, &hover_report, &[]);
+    let hover_req = hover_reply.focus_request.expect("hover focus request");
+    assert_eq!(hover_req.target.0, "win-a");
+    assert_eq!(hover_req.cause, FocusRequestCause::FocusFollowsCursor);
+    assert_eq!(
+        eng.logical_focus_cursor,
+        Some(WindowId("win-a".to_owned())),
+        "accepted logical hover must advance logical_focus_cursor before host actuation"
+    );
+
+    // BEFORE host confirms hover (focused_global is STILL "win-c"), refocus
+    // win-c and descend Left -> must already select win-a (not win-b)!
+    seq += 1;
+    let (pre_confirm_reply, pre_confirm_settlements) = run_batched(
+        &mut eng,
+        &observe(seq, all(), "win-c"),
+        &[
+            (1, focus_cmd("win-c")),
+            (
+                2,
+                WorldCommand::FocusDirectional {
+                    window: WindowId("win-c".to_owned()),
+                    direction: "left".to_owned(),
+                },
+            ),
+        ],
+    );
+    assert_eq!(pre_confirm_settlements.len(), 2);
+    assert_not_rejected(
+        &pre_confirm_settlements[1].result,
+        "focus left after accepted hover before host confirmation",
+    );
+    assert_eq!(
+        pre_confirm_reply
+            .focus_request
+            .as_ref()
+            .map(|r| r.target.0.as_str()),
+        Some("win-a"),
+        "accepted hover focus must update perpendicular descent history BEFORE host confirms hover"
+    );
+}
+
+#[test]
+fn perpendicular_descent_accepted_hover_not_overwritten_by_lagging_foreground() {
+    let all_4 = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            fact("win-c", "out-a", 200),
+            fact("win-d", "out-a", 300),
+        ]
+    };
+    let mut eng = engine_with_hover();
+    let mut seq = admit_h_vab_c(&mut eng);
+    // Admit win-d under win-c -> H[V[win-a, win-b], V2[win-c, win-d]].
+    seq += 1;
+    let _ = run_batched(&mut eng, &observe(seq, all_4(), "win-c"), &[]);
+    // History: win-a, win-b, win-d, win-c (win-c is newest in V2, native fg = win-c).
+    for fg in ["win-a", "win-b", "win-d", "win-c"] {
+        seq += 1;
+        let _ = run_batched(&mut eng, &observe(seq, all_4(), fg), &[]);
+    }
+
+    // Hover over win-d while native foreground is still win-c -> mints FocusFollowsCursor.
+    seq += 1;
+    let mut hover_report = observe(seq, all_4(), "win-c");
+    hover_report.cursor = Some((500, 400));
+    hover_report.cursor_hit = Some(WindowId("win-d".to_owned()));
+    let (hover_reply, _) = run_batched(&mut eng, &hover_report, &[]);
+    let hover_req = hover_reply.focus_request.expect("hover focus request");
+    assert_eq!(hover_req.target.0, "win-d");
+    assert_eq!(hover_req.cause, FocusRequestCause::FocusFollowsCursor);
+
+    // Next report STILL carries lagging native focused_global = "win-c" (hover
+    // not yet confirmed by host): Focus(win-a) + FocusDirectional(win-a, right)
+    // enters V2[win-c, win-d] and must select win-d (not stale lagging win-c).
+    seq += 1;
+    let (reply, settlements) = run_batched(
+        &mut eng,
+        &observe(seq, all_4(), "win-c"),
+        &[
+            (1, focus_cmd("win-a")),
+            (
+                2,
+                WorldCommand::FocusDirectional {
+                    window: WindowId("win-a".to_owned()),
+                    direction: "right".to_owned(),
+                },
+            ),
+        ],
+    );
+    assert_eq!(settlements.len(), 2);
+    assert_not_rejected(
+        &settlements[1].result,
+        "focus right after unconfirmed hover",
+    );
+    assert_eq!(
+        reply.focus_request.as_ref().map(|r| r.target.0.as_str()),
+        Some("win-d"),
+        "lagging native foreground must not overwrite accepted hover in perpendicular descent history"
+    );
+}
+
+#[test]
+fn perpendicular_descent_closed_mru_falls_through_to_next_candidate() {
+    use crate::contract::{FocusCapabilities, Observation};
+    use crate::directional::{Direction, FocusPlan, WorkspaceId};
+    use crate::geometry::Rect;
+    use crate::ids::{CorrelationId, GenerationId};
+    use crate::session::{ObservedWindow, OutputDomain, Session, SessionObservation};
+
+    // H[V[A, H2[B, D]], C*]: focus A, B, D, C, then close D -> tree collapses
+    // to H[V[A, B], C*], MRU in V is B (not first child A).
+    let domain = OutputDomain {
+        id: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId("ws-1".to_owned()),
+        bounds: Rect {
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 560,
+        },
+        gap: 0,
+        adjacent: std::collections::BTreeMap::new(),
+    };
+    let key = domain.key();
+    let mut session = Session::new(
+        OwnerId::parse("adapter-1").unwrap(),
+        GenerationId::parse("gen-1").unwrap(),
+        0,
+        100,
+        vec![domain],
+    )
+    .expect("session");
+    let make_obs = |session: &Session, wins: &[&str]| {
+        let windows = wins
+            .iter()
+            .map(|id| ObservedWindow {
+                window: WindowId((*id).to_owned()),
+                output: key.output.clone(),
+                workspace: key.workspace.clone(),
+                floating: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            })
+            .collect();
+        let rev = session.accepted_revision();
+        SessionObservation {
+            observation: Observation::new(
+                OwnerId::parse("adapter-1").unwrap(),
+                GenerationId::parse("gen-1").unwrap(),
+                rev,
+                rev + 100,
+            ),
+            windows,
+        }
+    };
+    let obs1 = make_obs(&session, &["win-a", "win-c"]);
+    session
+        .converge_observation(&obs1, Some(&WindowId("win-a".to_owned())))
+        .unwrap();
+    let obs2 = make_obs(&session, &["win-a", "win-b", "win-c"]);
+    session
+        .converge_observation(&obs2, Some(&WindowId("win-b".to_owned())))
+        .unwrap();
+    let obs3 = make_obs(&session, &["win-a", "win-b", "win-c", "win-d"]);
+    session
+        .converge_observation(&obs3, Some(&WindowId("win-d".to_owned())))
+        .unwrap();
+    for w in ["win-a", "win-b", "win-d", "win-c"] {
+        assert!(session.remember_focus(&key, &WindowId(w.to_owned())));
+    }
+    let obs4 = make_obs(&session, &["win-a", "win-b", "win-c"]);
+    session
+        .converge_observation(&obs4, Some(&WindowId("win-c".to_owned())))
+        .unwrap();
+    let obs_after_close = make_obs(&session, &["win-a", "win-b", "win-c"]);
+    let plan = session
+        .propose_focus(
+            &key,
+            &WindowId("win-c".to_owned()),
+            Direction::Left,
+            &obs_after_close,
+            &CorrelationId::parse("corr-closed-mru").unwrap(),
+            &FocusCapabilities::full(),
+        )
+        .expect("propose_focus");
+    let b_leaf = session
+        .snapshot()
+        .windows
+        .iter()
+        .find(|w| w.window.0 == "win-b")
+        .unwrap()
+        .leaf
+        .clone();
+    assert_eq!(
+        plan.focus_plan,
+        FocusPlan::Focused {
+            leaf: b_leaf,
+            route: match &plan.focus_plan {
+                FocusPlan::Focused { route, .. } => route.clone(),
+                FocusPlan::Edge => panic!("expected Focused"),
+            },
+        },
+        "closed MRU D must fall through to next MRU candidate B, not first child A"
+    );
+
+    // WorldEngine closed/floated/moved MRU pruning at selection:
+    // H[V[win-a, H2[win-b, win-d]], win-c]
+    let all_4 = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            fact("win-c", "out-a", 200),
+            fact("win-d", "out-a", 300),
+        ]
+    };
+    let mut eng = engine();
+    let mut seq = admit_h_vab_c(&mut eng);
+    // Focus win-b before admitting win-d so H2[win-b, win-d] is under V's 2nd child.
+    seq += 1;
+    let _ = run_batched(
+        &mut eng,
+        &observe(
+            seq,
+            vec![
+                fact("win-a", "out-a", 0),
+                fact("win-b", "out-a", 100),
+                fact("win-c", "out-a", 200),
+            ],
+            "win-b",
+        ),
+        &[],
+    );
+    seq += 1;
+    let _ = run_batched(&mut eng, &observe(seq, all_4(), "win-d"), &[]);
+    // Float win-d -> pruned from tiled history, Left from win-c falls through to win-b (not win-a).
+    for fg in ["win-a", "win-b", "win-d", "win-c"] {
+        seq += 1;
+        let _ = run_batched(&mut eng, &observe(seq, all_4(), fg), &[]);
+    }
+    seq += 1;
+    let (float_reply, float_settlements) = run_batched(
+        &mut eng,
+        &observe(seq, all_4(), "win-c"),
+        &[
+            (
+                1,
+                WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
+                    window: "win-d".to_owned(),
+                    float_rect: None,
+                }),
+            ),
+            (
+                2,
+                WorldCommand::FocusDirectional {
+                    window: WindowId("win-c".to_owned()),
+                    direction: "left".to_owned(),
+                },
+            ),
+        ],
+    );
+    assert_not_rejected(&float_settlements[1].result, "focus left after float MRU");
+    assert_eq!(
+        float_reply
+            .focus_request
+            .as_ref()
+            .map(|r| r.target.0.as_str()),
+        Some("win-b"),
+        "floated MRU win-d must be pruned so Left falls through to next MRU win-b"
+    );
+
+    // Send win-b to out-b (left of out-a) -> moved MRU win-b is pruned and Left
+    // from win-c falls through to win-a.
+    seq += 1;
+    let mut two_out = observe(
+        seq,
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            fact("win-c", "out-a", 200),
+            fact("win-d", "out-a", 300),
+            fact("win-e", "out-b", -800),
+        ],
+        "win-c",
+    );
+    two_out.screens = vec![screen("out-a", 0), screen("out-b", -800)];
+    let _ = run_batched(&mut eng, &two_out, &[]);
+    seq += 1;
+    let mut send_rep = observe(
+        seq,
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            fact("win-c", "out-a", 200),
+            fact("win-d", "out-a", 300),
+            fact("win-e", "out-b", -800),
+        ],
+        "win-b",
+    );
+    send_rep.screens = vec![screen("out-a", 0), screen("out-b", -800)];
+    let (_, send_settlements) = run_batched(
+        &mut eng,
+        &send_rep,
+        &[(
+            3,
+            WorldCommand::SendDirectional {
+                window: WindowId("win-b".to_owned()),
+                direction: "left".to_owned(),
+                follow: false,
+            },
+        )],
+    );
+    assert_not_rejected(&send_settlements[0].result, "send win-b to out-b");
+    seq += 1;
+    let mut after_send = observe(
+        seq,
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-b", -700),
+            fact("win-c", "out-a", 200),
+            fact("win-d", "out-a", 300),
+            fact("win-e", "out-b", -800),
+        ],
+        "win-c",
+    );
+    after_send.screens = vec![screen("out-a", 0), screen("out-b", -800)];
+    let (move_reply, move_settlements) = run_batched(
+        &mut eng,
+        &after_send,
+        &[(
+            4,
+            WorldCommand::FocusDirectional {
+                window: WindowId("win-c".to_owned()),
+                direction: "left".to_owned(),
+            },
+        )],
+    );
+    assert_not_rejected(&move_settlements[0].result, "focus left after moved MRU");
+    assert_eq!(
+        move_reply
+            .focus_request
+            .as_ref()
+            .map(|r| r.target.0.as_str()),
+        Some("win-a"),
+        "moved MRU win-b must be pruned so Left falls through to remaining MRU win-a"
+    );
+}
+
+#[test]
+fn perpendicular_descent_leaves_move_and_send_unchanged() {
+    let all = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            fact("win-c", "out-a", 200),
+        ]
+    };
+    let run_move = |order: [&str; 3]| {
+        let mut eng = engine();
+        let mut seq = admit_h_vab_c(&mut eng);
+        for fg in order {
+            seq += 1;
+            let _ = run_batched(&mut eng, &observe(seq, all(), fg), &[]);
+        }
+        seq += 1;
+        let (reply, settlements) = run_batched(
+            &mut eng,
+            &observe(seq, all(), "win-c"),
+            &[(
+                1,
+                WorldCommand::MoveDirectional {
+                    window: WindowId("win-c".to_owned()),
+                    direction: "left".to_owned(),
+                    same_axis: SameAxisMove::GroupWithNeighbor,
+                },
+            )],
+        );
+        assert_not_rejected(&settlements[0].result, "move left");
+        reply
+            .windows
+            .iter()
+            .map(|w| (w.lifetime.0.clone(), w.allocation))
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        run_move(["win-a", "win-b", "win-c"]),
+        run_move(["win-b", "win-a", "win-c"]),
+        "MoveDirectional(GroupWithNeighbor) must be completely unaffected by perpendicular focus history"
+    );
+
+    let run_move_swap = |order: [&str; 3]| {
+        let mut eng = engine();
+        let mut seq = admit_h_vab_c(&mut eng);
+        for fg in order {
+            seq += 1;
+            let _ = run_batched(&mut eng, &observe(seq, all(), fg), &[]);
+        }
+        seq += 1;
+        let (reply, settlements) = run_batched(
+            &mut eng,
+            &observe(seq, all(), "win-c"),
+            &[(
+                1,
+                WorldCommand::MoveDirectional {
+                    window: WindowId("win-c".to_owned()),
+                    direction: "left".to_owned(),
+                    same_axis: SameAxisMove::SwapWithNeighbor,
+                },
+            )],
+        );
+        assert_not_rejected(&settlements[0].result, "move swap left");
+        (
+            reply
+                .windows
+                .iter()
+                .map(|w| (w.lifetime.0.clone(), w.allocation))
+                .collect::<Vec<_>>(),
+            reply.focus_request.map(|r| r.target),
+        )
+    };
+    assert_eq!(
+        run_move_swap(["win-a", "win-b", "win-c"]),
+        run_move_swap(["win-b", "win-a", "win-c"]),
+        "MoveDirectional(SwapWithNeighbor) must be completely unaffected by perpendicular focus history"
+    );
+
+    let run_send = |order: [&str; 3]| {
+        let mut eng = engine();
+        let mut seq = admit_h_vab_c(&mut eng);
+        let mut four = all();
+        four.push(fact("win-d", "out-b", 800));
+        let mut rep = observe(seq + 1, four.clone(), "win-c");
+        rep.screens = vec![screen("out-a", 0), screen("out-b", 800)];
+        let _ = run_batched(&mut eng, &rep, &[]);
+        seq += 1;
+        for fg in order {
+            seq += 1;
+            let mut r = observe(seq, four.clone(), fg);
+            r.screens = vec![screen("out-a", 0), screen("out-b", 800)];
+            let _ = run_batched(&mut eng, &r, &[]);
+        }
+        seq += 1;
+        let mut send_rep = observe(seq, four, "win-d");
+        send_rep.screens = vec![screen("out-a", 0), screen("out-b", 800)];
+        let (reply, settlements) = run_batched(
+            &mut eng,
+            &send_rep,
+            &[(
+                1,
+                WorldCommand::SendDirectional {
+                    window: WindowId("win-d".to_owned()),
+                    direction: "left".to_owned(),
+                    follow: false,
+                },
+            )],
+        );
+        assert_not_rejected(&settlements[0].result, "send left");
+        reply
+            .windows
+            .iter()
+            .map(|w| (w.lifetime.0.clone(), w.allocation))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        run_send(["win-a", "win-b", "win-c"]),
+        run_send(["win-b", "win-a", "win-c"]),
+        "SendRelative anchoring must be completely unaffected by perpendicular focus history"
+    );
 }

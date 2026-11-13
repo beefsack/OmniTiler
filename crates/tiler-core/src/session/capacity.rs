@@ -288,6 +288,7 @@ impl super::Session {
             &self.trees,
             &self.windows,
         );
+        self.prune_focus_history();
         self.last_active = self.updated_last_active(
             &self.focused_domain,
             &self.focused_leaf,

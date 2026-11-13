@@ -1,6 +1,6 @@
 # C9 product evidence
 
-- Status: fixed-largest and fixed-float removals implemented and independently reviewed offline. Shared Rust, exporter and KDE TypeScript gates pass; the native recovery fixture correction below closes the isolated native gate (37/37). Native adoption and unrelated requirement choices remain open.
+- Status: fixed-largest and fixed-float removals implemented and independently reviewed offline. Shared Rust, exporter and KDE TypeScript gates pass; the native recovery fixture correction below closes the isolated native gate (37/37). Requirement batch 1 is decided User 2026-11-13, implemented and independently reviewed with all shared offline gates passing below. Native adoption and 24 requirement choices remain open.
 - Goal: remove both capacity settings and their storage/UI/wire propagation, preserving ordinary-anchor-first then largest-splittable fallback and fixed float on exhaustion. Keep the remaining product evidence for subsequent decisions.
 - Scope: shared policy, settings surfaces, protocol witnesses and offline regressions. Preserve ordinary anchoring, B6 minimum handling, next-decision timing and `noSpace` result provenance. Retire selectable capacity overflow and proven-unreachable accepted-overlap machinery. Missing decision "Why" entries are not backfilled.
 - Acceptance/evidence: ordinary anchor wins when splittable; otherwise largest area descending, child-order DFS then lifetime ID. Removed input reports UnknownField without losing valid siblings; removed stored keys are not adopted. Retired alternate policies and controls disappear. Historical fixture families remain unchanged; active witnesses come from their real producers. Add before/after regression evidence, run shared Rust and KDE checks, and review the complete settings/policy diff. Native outcomes not established by source remain TBD.
@@ -280,16 +280,16 @@
 
 ## Part 2: exact OPEN inventory
 
-- **28 requirement rows** have Status `OPEN` in `docs/spec/functional-spec.md`; count is not every occurrence of the word OPEN (many normative rows have an open platform cell). No additional OPEN requirement IDs were found in the reference subfiles. The introductory evidence note (`functional-spec.md:103`) still calls R-MIN-04/R-INS-09 unselected, although D1-D10 now select their OmniTiler capacity/burst behavior; historical reference outcomes are not thereby resolved.
+- **24 requirement rows** have Status `OPEN` in `docs/spec/functional-spec.md` after batch 1's four User 2026-11-13 selections; the original inventory below had 28. Count is not every occurrence of OPEN (many normative rows have an open platform cell). No additional OPEN requirement IDs were found in the reference subfiles. The spec introduction now distinguishes selected R-MIN-04/R-INS-09 capacity/burst behavior from their still-unproved reference/native outcomes, and counts all 184 requirements (160 NORMATIVE including qualified REQ-OUT-05, 24 OPEN).
 - Table: spec citations use `F:` = `docs/spec/functional-spec.md` line. Reference citations use `R/` defined above and are existing revision-bound evidence, **not newly rechecked release evidence**, except batch 1 below. `Choice` means user product selection; `source` means further targeted latest-source work; `live` means user/native testing. "Absent" is bounded to inspected command/model surfaces, not a universal assertion about every adapter.
 - Code key **V**: complete command surfaces `C/world_report.rs:2009-2171` + `C/boundary.rs:41-149` contain no preselect, cycle, container-focus, equalize, rotate/mirror, master, layout-select or column/viewport verbs. **D**: `C/directional.rs:1179-1246` implements leaf directional focus, not viewport/container focus. **T**: absent column model/verbs on V/D; existing per-window sends `C/world_report.rs:2013-2018,2048-2066` do not implement whole-column semantics. These are code absence checks, not acceptance of the feature gap.
 
 | Batch | ID / F line | Plain open question | Existing evidence | Implemented behavior / remaining need |
 | --- | --- | --- | --- | --- |
-| 1 | REQ-FOC-01 / 148 | Directional tie: stable order or recent focus? | `R/focus.md:17-79`: COSMIC stable, other Tier 1 history | Stable first-child, `C/directional.rs:1199-1205`; Choice; exact latest COSMIC fixture live TBD |
-| 1 | REQ-FOC-02 / 149 | Single-output focus edge: stay or wrap? | `R/focus.md:81-123`: historical 2 stay / 2 wrap; latest Hyprland fallback contradicts retain for zero-gap variant (below) | Edge retain, `C/directional.rs:1213-1246`; Choice + shipped-geometry source/live check |
-| 1 | REQ-MOV-02 / 167 | Confirm in-group swap, retaining mover focus? | `R/move.md:47-81`: all Tier 1 swap | R2a `SwapNeighbor`, `C/directional.rs:874-886`; Choice; latest Hyprland exact geometry TBD |
-| 1 | REQ-MOV-05 / 170 | Confirm single-output edge move does nothing? | `R/move.md:168-211`: all Tier 1 visually unchanged | No adjacent output -> no-op, `C/directional.rs:1075-1088`; Choice; latest Hyprland exact rebuilt geometry TBD |
+| 1 DECIDED | REQ-FOC-01 / 148 | User 2026-11-13: recent focus | `R/focus.md:17-79`: COSMIC geometric/no history, other Tier 1 history | Focus-only core recency replaces first-child when history exists; exact latest COSMIC/native fixture TBD |
+| 1 DECIDED | REQ-FOC-02 / 149 | User 2026-11-13: stay, no wrap/setting | Historical tally is not a revalidated default vote; latest Hyprland explicit zero-gap variant wraps (below) | Existing edge retain confirmed; adjacent-output crossing unchanged; shipped Hyprland geometry/native result TBD |
+| 1 DECIDED | REQ-MOV-02 / 167 | User 2026-11-13: swap, retain mover focus | `R/move.md:47-81`: all Tier 1 swap | Existing R2a `SwapNeighbor` confirmed; latest Hyprland exact geometry TBD |
+| 1 DECIDED | REQ-MOV-05 / 170 | User 2026-11-13: single-output edge no-op | `R/move.md:168-211`: all Tier 1 visually unchanged | Existing no-adjacent-output no-op confirmed; latest Hyprland exact rebuilt geometry TBD |
 | 2 | REQ-FOC-03 / 150 | Need next/previous cycle; which order, wrap, floats? | `R/focus.md:125-196`: multiple Tier 1 cycle forms, COSMIC none | Cycle absent (V); Choice + source |
 | 2 | REQ-FOC-04 / 151 | Need parent/child container focus? | `R/focus.md:198-247`: COSMIC/i3/sway verbs, others differ | Leaf-only (D), container verb absent (V); Choice + source |
 | 2 | REQ-ACT-02 / 460 | Urgency clears on focus or stays? | `R/activation.md:165-233`: COSMIC retains, most clear | No urgency field in `C/world_report.rs:1833-1871` or `C/seed.rs:33-61`; F:460 records adapter signal gap; Choice + source + live |
@@ -317,7 +317,10 @@
 
 - Batch order: 1 settles already-running daily navigation/moves; 2 handles related focus/attention completeness; 3 admission/classification and observed-host correctness; 4 optional layout verbs; 5 composite overlay testing plus explicitly deferred items; 6-8 non-voting column mechanics. Maximum four rows per batch. More than 20 rows: investigation stops at this inventory plus batch 1, not all later source checks.
 
-## Requirement batch 1: evidence and options
+## Requirement batch 1: historical evidence and options
+
+- All four choices below were resolved User 2026-11-13; the tables retain the
+  pre-selection implementation/options and release-qualified evidence, not open decisions.
 
 - Existing shortest discriminators cover all four original questions. Added minimal R-FOC-01 unequal-share and R-FOC-02 fallback-variant rows where rechecking uncovered a finer ambiguity: geometric-nearest is not first-child, and a partial-width fallback miss is not a full-width stay. Evidence is about the exact fixtures, not a universal tree policy. Source mechanics below were checked at release tags; unchanged historical cells retain original versions.
 
@@ -337,9 +340,81 @@
 
 - Shared-core changes for either focus choice would affect all platforms; KDE/Windows/macOS native delivery remains independently unproved here. Spec platform cells are historical and cannot establish current macOS absence during its active port. New setting choices would require native controls/acquisition on each supported surface and shared conformance journeys; fixed choices need only behavioral fixtures, not new wire fields. MOV selections alone do not require new fixtures or protocol changes; existing journeys remain useful evidence, not retroactive live acceptance.
 
+## Requirement batch 1: decisions and implementation (2026-11-13)
+
+- Goal/acceptance: implement history-sensitive perpendicular focus and ratify
+  the three unchanged edge/swap behaviors, without changing eligibility,
+  move/send/admission anchors, cross-output entry ranking or persistence.
+  `H[V[A,B],C*]`: A,B,C then left selects B; fresh B,A,C selects A.
+  [Focus decisions](../decisions/focus.md#perpendicular-directional-focus) and
+  [move decisions](../decisions/layout-and-admission.md#in-group-move-and-single-output-edge)
+  own the four dated selections and reasons. All four spec rows are NORMATIVE.
+- Approach: use existing focus memory if adequate; otherwise minimal focus-only
+  history, then shared scenario regressions, integrated offline checks and
+  complete-diff review. Existing tiled `focus_stack` is inadequate: accepted
+  hover advances the logical cursor before that stack changes on native arrival.
+  Advancing the old stack earlier would also change unrelated anchor/close and
+  cross-output consumers. `Session::focus_history` therefore stores only tiled
+  leaf recency per workspace/domain, oldest first, with no wire or adapter state.
+- Recording: gated `record_canonical` records accepted explicit, hover,
+  admission, close and published focus choices before native effects. Accepted
+  changed foreground observations seed history through that same gated path;
+  unchanged lagging reports and rejected observations do not refresh it.
+  Direct Session `remember_focus` choices and verified focus commits also record;
+  `sync_focus_from_window` only synchronizes the execution subject and never
+  refreshes this history.
+  Topology commits prune; domain relocation and pair/unpair remap identities.
+  Closed, floated or moved-away entries cannot win selection. No persistence is
+  added: restart starts with no history, then accepted focus seeds it anew.
+- Selection: `plan_focus_with_history` chooses the child containing the newest
+  eligible descendant at every perpendicular level, falling back to stable first
+  child without history. Parallel descent keeps the bordering edge, even when
+  a different leaf in that child supplied recency. Only local directional focus
+  consumes this new history; pure callers without history keep stable order.
+  Cross-output focus continues its independent projected-edge candidate policy
+  and existing MRU/overlap/DFS ranking; workspace-return lifetime memory and
+  move/send/admission anchoring are unchanged. Hidden/held/float and overlay
+  eligibility rules are unchanged; no contract tie-rule text needed updating.
+- Regressions: the identical added tests fail when perpendicular selection is
+  temporarily returned to first-child (five failures, including both-history,
+  nested and closed-MRU coverage; the new history API is retained for compilation).
+  A further discriminator fails with legacy `focus_stack` selection: accepted
+  hover before native confirmation selects stale B instead of A. Final tests
+  cover both histories, no-history fallback, nesting, explicit command focus,
+  accepted hover and lagging foreground, closed/floated/moved MRU candidates,
+  and unchanged move/send geometry. Initial test syntax/setup failures are not
+  acceptance evidence; final integrated results follow below.
+- Fixtures: immutable `world-wire/v4`, `stage5` and existing `stage5-v4` remain
+  unchanged and pass the shared suite. No mutable fixture or recorder refresh
+  was needed. One existing scenario expectation changes: recovered foreground
+  in `H[B,V[C,A]]` enters remembered A rather than old first-child C.
+- Platform target: shared core changes KDE, macOS and Windows focus descent;
+  no adapter edits. Native actuation/adoption remains unverified. Follow-up KDE
+  fixture-only testing should establish both histories in fresh `H[V[A,B],C]`
+  fixtures, verify left chooses B/A, exercise explicit/hover recency, close MRU,
+  focus edge stay, in-group swap with mover focus and move-edge no-op. Check an
+  adjacent-output entry separately against the unchanged edge-ranking decision.
+- Final sequential verification: `cargo fmt --all -- --check`;
+  `cargo build -p tiler-core -p tiler-protocol -p omnitiler --all-targets`;
+  `cargo clippy -p tiler-core -p tiler-protocol -p omnitiler --all-targets -- -D warnings`;
+  `cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture`;
+  then in `kwin/`, `npm run typecheck` and `npm test`: all pass. Rust reports
+  3388 passed, zero failed/ignored, one filtered; KDE reports 1297 passed in
+  189 suites, zero failed/skipped. Complete-diff review and correction recheck
+  leave no blocking findings; whitespace review is clean. Native runtime and
+  Windows/macOS builds were not exercised for this change.
+- Review correction: execution-subject synchronization no longer writes the new
+  recency, and split sessions immediately prune stale source/target entries.
+  A direct Session discriminator fails with the sync writer restored and passes
+  without it. The proposed end-to-end lagging-foreground reproduction was not
+  established: report convergence resets the Session subject first, and refused
+  requests discard their cloned mutations. This correction separates accepted
+  focus authority; it is not proof of that proposed runtime failure.
+
 ## Verification, limits and next decision
 
 - Historical research verification: source reads, exact OPEN-status enumeration, tag-qualified local source inspection and docs diff/whitespace review. Inventory IDs exactly match all 28 OPEN rows; batch sizes are 4/3/4/4/3/4/3/3. New-note relative file links resolve, added matrix target exists, note is ASCII. A broader link check found pre-existing missing `docs/changes/retained-focus-requests.md` targets in the matrix (also present at the inspected base); those unrelated links are unchanged. Research alone claimed no live outcomes or test-suite results; implementation evidence is separate above. Investigation reports were checked against key source spans; over-broad "Tier 1 always tiles" and "COSMIC equals stable-first" claims were rejected.
 - C9 corrections: `core-v4-review.md:267-268` is accurate about absent reference citations, but not an absence of user authority; `:275` correctly counts 28 but incorrectly describes all as already implemented. Absent cycle/preselect/layout/column verbs and the explicitly parked LAY-04 contradict that characterization. Its 183-row total (`:265`) and the spec's draft total are also stale: current enumeration is 184 rows (155 literal NORMATIVE plus qualified-NORMATIVE REQ-OUT-05, 28 OPEN). This is not evidence that the remaining OPEN rows should automatically become normative. Separately, the source recheck contradicts R-FOC-02's historical Hyprland-retain claim in the explicit zero-gap variant; opposite-edge fallback is not a stay rule for a half-width A.
 - Unverified/TBD: exact tiny rectangles/client settlement on every WM; exact latest-tag COSMIC FOC-01 fixture, Hyprland shipped-gap FOC-02 and move reconstruction; native settings pickup/parity, especially Windows report defaults; later batches' latest-source checks. No source result here selects a new default or expands scope.
-- Next action: native adoption of fixed-largest/fixed-float behavior. Requirement batches remain inventoried and unselected.
+- Next action: native adoption of fixed-largest/fixed-float and batch-1 navigation.
+  Batches 2-8 retain 24 OPEN rows.

@@ -197,6 +197,11 @@ impl WorldEngine {
                 if !recorded {
                     return false;
                 }
+            } else if !sticky {
+                let _ = self
+                    .engine
+                    .session_mut(&home)
+                    .is_some_and(|session| session.record_focus_history(&home, window));
             }
             self.last_active_window.insert(effective, window.clone());
             self.logical_focus_cursor = Some(window.clone());

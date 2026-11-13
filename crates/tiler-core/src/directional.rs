@@ -1176,7 +1176,35 @@ fn check_focus_node(node: &Node, seen: &mut HashSet<NodeId>) -> bool {
     }
 }
 
-fn descend_focus_target(mut current: &Node, direction: Direction) -> Option<FocusPlan> {
+fn subtree_contains_leaf(node: &Node, target: &NodeId) -> bool {
+    match node {
+        Node::Leaf { id } => id == target,
+        Node::Group { children, .. } => children
+            .iter()
+            .any(|child| subtree_contains_leaf(child, target)),
+    }
+}
+
+fn select_perpendicular_child<'a>(
+    children: &'a [Node],
+    history_newest_first: &[NodeId],
+) -> Option<&'a Node> {
+    for leaf in history_newest_first {
+        if let Some(child) = children
+            .iter()
+            .find(|child| subtree_contains_leaf(child, leaf))
+        {
+            return Some(child);
+        }
+    }
+    children.first()
+}
+
+fn descend_focus_target(
+    mut current: &Node,
+    direction: Direction,
+    history_newest_first: &[NodeId],
+) -> Option<FocusPlan> {
     let mut route = vec![current.id().clone()];
     loop {
         match current {
@@ -1197,11 +1225,7 @@ fn descend_focus_target(mut current: &Node, direction: Direction) -> Option<Focu
                         children.last()
                     }
                 } else {
-                    // Deterministic adaptation: without compositor geometry,
-                    // descend perpendicular groups to their first child
-                    // deterministically (never claimed as upstream
-                    // geometric-nearest parity).
-                    children.first()
+                    select_perpendicular_child(children, history_newest_first)
                 };
                 current = child?;
                 route.push(current.id().clone());
@@ -1212,11 +1236,27 @@ fn descend_focus_target(mut current: &Node, direction: Direction) -> Option<Focu
 
 /// Tree-relative directional focus: climb ancestors until a matching-axis
 /// sibling exists in direction `direction`, then descend (same-axis edge
-/// child; perpendicular first child). Exhausted edges report [`FocusPlan::Edge`].
-/// Fail-closed (`None`) on malformed, duplicate, single-child, or missing-leaf
-/// topology. Analogue of `planCosmicFocus`.
+/// child; perpendicular most recently focused descendant or first child).
+/// Exhausted edges report [`FocusPlan::Edge`]. Fail-closed (`None`) on
+/// malformed, duplicate, single-child, or missing-leaf topology. Analogue of
+/// `planCosmicFocus`.
 #[must_use]
 pub fn plan_focus(tree: &Node, focused_leaf: &NodeId, direction: Direction) -> Option<FocusPlan> {
+    plan_focus_with_history(tree, focused_leaf, direction, &[])
+}
+
+/// Tree-relative directional focus with domain focus history (newest-first):
+/// same-axis descent stays on the bordering edge child; perpendicular descent
+/// at each perpendicular level selects the child containing the most recently
+/// focused eligible descendant in `history_newest_first`, falling back to the
+/// first child when no descendant has history.
+#[must_use]
+pub fn plan_focus_with_history(
+    tree: &Node,
+    focused_leaf: &NodeId,
+    direction: Direction,
+    history_newest_first: &[NodeId],
+) -> Option<FocusPlan> {
     if focused_leaf.0.is_empty() {
         return None;
     }
@@ -1240,7 +1280,7 @@ pub fn plan_focus(tree: &Node, focused_leaf: &NodeId, direction: Direction) -> O
             None
         };
         let Some(sibling) = sibling else { continue };
-        return descend_focus_target(sibling, direction);
+        return descend_focus_target(sibling, direction, history_newest_first);
     }
     Some(FocusPlan::Edge)
 }

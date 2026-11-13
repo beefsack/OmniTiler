@@ -41,6 +41,21 @@
 - Status: active, 2026-11-13; offline core/KDE verification; macOS adoption and native acceptance pending.
 - Evidence: [implementation and discriminator](../changes/retained-focus-requests.md#unavailable-pending-target-command-subject-2026-11-13).
 
+### Perpendicular directional focus
+- Decision (user 2026-11-13, REQ-FOC-01): directional focus into a perpendicular split selects the child containing the most recently core-accepted focused eligible descendant, at every perpendicular level. Parallel descent still takes the bordering edge child. Without candidate history, use stable first-child; recency is not persisted across restart. In `H[V[A,B],C*]`, histories A,B,C and B,A,C produce B and A respectively on left.
+- Why: history matches the qualifying Hyprland default, i3 and sway behavior rather than the old stable-first adaptation; COSMIC geometric descent is not generally stable-first.
+- Boundary: focus-only per-workspace core recency records accepted logical focus, including hover before native confirmation; existing tiled MRU cannot represent that without changing move/send/admission consumers. Those consumers, workspace active-window memory, cross-output edge ranking and all eligibility/overlay guards stay unchanged.
+- Rejected: stable-first when history exists; adding a setting or recency persistence.
+- Status: active, User 2026-11-13; shared-core offline implementation, native adoption pending.
+- Evidence / TBD: [batch 1](../changes/c9-product-evidence.md#requirement-batch-1-decisions-and-implementation-2026-11-13), [R-FOC-01](../spec/reference-outcomes/focus.md#r-foc-01-directional-tie-with-two-equally-placed-candidates); exact latest-release COSMIC/native fixtures remain TBD.
+
+### Single-output focus edge
+- Decision (user 2026-11-13, REQ-FOC-02): when directional focus exhausts the tree and there is no adjacent output in that direction, focus stays. No wrap or setting; existing adjacent-output crossing is unaffected.
+- Why: retain the current edge behavior, consistent with COSMIC and Hyprland's named no-fallback variant, not a claim of Hyprland shipped-default agreement.
+- Rejected: wrapping and a stay/wrap setting.
+- Status: active, User 2026-11-13; existing shared-core behavior confirmed, native acceptance pending.
+- Evidence / TBD: [R-FOC-02](../spec/reference-outcomes/focus.md#r-foc-02-directional-focus-at-a-single-output-edge). Hyprland v0.57.2 default false implies opposite-edge B only for the explicit zero-gap/no-reserved equal-half fixture; shipped-gap/reserved/native outcomes remain TBD.
+
 ### Cross-output directional focus
 - Decision: crossing output boundary selects a destination linked member nearest the crossed edge, not destination MRU; shared-core policy on all adapters, no setting. Candidates include nested leaves touching the canonical projected entry edge; most recently focused wins. Without history, greatest overlap against source perpendicular span, then DFS child order. Never use observed frames. Fullscreen and maximized destination members are eligible and retain their overlay state; they rank by retained allocation. Eligibility/safety gates are unchanged. Destination internal tiled last-active then focus stack newest-first; only currently linked/homed candidates; stale closed/floated/moved entries miss. Admission/convergence seed history. Preserve workspace-return lifetime slot.
 - Why: output crossing should reach an eligible overlay member without unmaximizing or exiting it.
