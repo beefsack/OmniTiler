@@ -14,6 +14,10 @@
 //! Reproduction route: this file. No outside producer, no absolute paths;
 //! scenario inputs resolve manifest-relative under
 //! `test-fixtures/world-wire/v4-active/scenarios/`.
+//! Opt-in recording replaces only adapter reply messages with fresh engine
+//! products; it never derives producer inputs from old reply bytes:
+//! `UPDATE_VISIBILITY_V4_FIXTURES=1 cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture`.
+//! Normal mode verifies the committed messages against the same producers.
 //!
 //! Offline only: no adapters, no live work.
 
@@ -25,11 +29,14 @@ use tiler_protocol::world_protocol::{
     DecodedReplyV4, ReplyWireOptionals, decode_reply_v4, decode_report_v4, encode_reply_v4,
 };
 
-fn scenario_value(id: &str) -> serde_json::Value {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+fn scenario_path(id: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../test-fixtures/world-wire/v4-active/scenarios")
-        .join(format!("{id}.json"));
-    serde_json::from_str(&std::fs::read_to_string(&path).expect("scenario JSON"))
+        .join(format!("{id}.json"))
+}
+
+fn scenario_value(id: &str) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(scenario_path(id)).expect("scenario JSON"))
         .expect("scenario JSON")
 }
 
@@ -435,8 +442,259 @@ fn produce_cross_output() -> Vec<(String, String)> {
     rec.out
 }
 
+fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\r' | b'\n') {
+        i += 1;
+    }
+    i
+}
+
+fn scan_string_end(bytes: &[u8], start: usize) -> usize {
+    assert_eq!(bytes[start], b'"', "expected JSON string");
+    let mut i = start + 1;
+    let mut escaped = false;
+    while i < bytes.len() {
+        if escaped {
+            escaped = false;
+        } else if bytes[i] == b'\\' {
+            escaped = true;
+        } else if bytes[i] == b'"' {
+            return i + 1;
+        }
+        i += 1;
+    }
+    panic!("unterminated JSON string");
+}
+
+fn scan_value_end(bytes: &[u8], start: usize) -> usize {
+    match bytes[start] {
+        b'"' => scan_string_end(bytes, start),
+        b'{' | b'[' => {
+            let mut i = start;
+            let mut depth = 0usize;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'"' => {
+                        i = scan_string_end(bytes, i);
+                        continue;
+                    }
+                    b'{' | b'[' => depth += 1,
+                    b'}' | b']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return i + 1;
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            panic!("unterminated JSON container");
+        }
+        _ => {
+            let mut i = start;
+            while i < bytes.len()
+                && !matches!(bytes[i], b',' | b'}' | b']' | b' ' | b'\t' | b'\r' | b'\n')
+            {
+                i += 1;
+            }
+            i
+        }
+    }
+}
+
+fn find_object_field_value_span(
+    bytes: &[u8],
+    obj_start: usize,
+    obj_end: usize,
+    key: &str,
+) -> Option<(usize, usize)> {
+    assert_eq!(bytes[obj_start], b'{', "expected JSON object");
+    let mut i = skip_ws(bytes, obj_start + 1);
+    while i < obj_end {
+        if bytes[i] == b'}' {
+            return None;
+        }
+        if bytes[i] == b',' {
+            i = skip_ws(bytes, i + 1);
+            continue;
+        }
+        let k_end = scan_string_end(bytes, i);
+        let k = &bytes[i + 1..k_end - 1];
+        i = skip_ws(bytes, k_end);
+        assert_eq!(bytes[i], b':', "expected ':' after object key");
+        let val_start = skip_ws(bytes, i + 1);
+        let val_end = scan_value_end(bytes, val_start);
+        if k == key.as_bytes() {
+            return Some((val_start, val_end));
+        }
+        i = skip_ws(bytes, val_end);
+    }
+    None
+}
+
+fn array_element_spans(bytes: &[u8], arr_start: usize, arr_end: usize) -> Vec<(usize, usize)> {
+    assert_eq!(bytes[arr_start], b'[', "expected JSON array");
+    let mut out = Vec::new();
+    let mut i = skip_ws(bytes, arr_start + 1);
+    while i < arr_end {
+        if bytes[i] == b']' {
+            break;
+        }
+        if bytes[i] == b',' {
+            i = skip_ws(bytes, i + 1);
+            continue;
+        }
+        let elem_end = scan_value_end(bytes, i);
+        out.push((i, elem_end));
+        i = skip_ws(bytes, elem_end);
+    }
+    out
+}
+
+/// Pretty-print compact JSON from `encode_reply_v4` with 2-space indents at
+/// `base_indent`, preserving the exact key order emitted by the encoder.
+fn pretty_compact_json_preserving_order(compact: &str, base_indent: usize) -> String {
+    let mut chars = compact.chars().peekable();
+    let mut out = String::with_capacity(compact.len() * 2);
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    let push_indent = |buf: &mut String, d: usize| {
+        for _ in 0..(base_indent + d * 2) {
+            buf.push(' ');
+        }
+    };
+
+    while let Some(ch) = chars.next() {
+        if in_string {
+            out.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => {
+                in_string = true;
+                out.push('"');
+            }
+            '{' => {
+                out.push('{');
+                if chars.peek() == Some(&'}') {
+                    chars.next();
+                    out.push('}');
+                    continue;
+                }
+                depth += 1;
+                out.push('\n');
+                push_indent(&mut out, depth);
+            }
+            '}' => {
+                depth -= 1;
+                out.push('\n');
+                push_indent(&mut out, depth);
+                out.push('}');
+            }
+            '[' => {
+                out.push('[');
+                if chars.peek() == Some(&']') {
+                    chars.next();
+                    out.push(']');
+                    continue;
+                }
+                depth += 1;
+                out.push('\n');
+                push_indent(&mut out, depth);
+            }
+            ']' => {
+                depth -= 1;
+                out.push('\n');
+                push_indent(&mut out, depth);
+                out.push(']');
+            }
+            ',' => {
+                out.push(',');
+                out.push('\n');
+                push_indent(&mut out, depth);
+            }
+            ':' => {
+                out.push_str(": ");
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn adapter_reply_message_spans(raw: &str) -> Vec<(String, usize, usize)> {
+    let bytes = raw.as_bytes();
+    let root_start = skip_ws(bytes, 0);
+    let root_end = scan_value_end(bytes, root_start);
+    let (steps_start, steps_end) =
+        find_object_field_value_span(bytes, root_start, root_end, "steps").expect("scenario steps");
+    let mut spans = Vec::new();
+    for (step_start, step_end) in array_element_spans(bytes, steps_start, steps_end) {
+        let step: serde_json::Value =
+            serde_json::from_slice(&bytes[step_start..step_end]).expect("step JSON");
+        if step["input"]["to"] != "adapter" || step["input"]["kind"] != "wire" {
+            continue;
+        }
+        let req = step["input"]["message"]["req"]
+            .as_str()
+            .expect("reply req")
+            .to_owned();
+        let (input_start, input_end) =
+            find_object_field_value_span(bytes, step_start, step_end, "input").expect("step input");
+        let (msg_start, msg_end) =
+            find_object_field_value_span(bytes, input_start, input_end, "message")
+                .expect("step input message");
+        spans.push((req, msg_start, msg_end));
+    }
+    spans
+}
+
+fn line_indent_at(raw: &str, offset: usize) -> usize {
+    raw[..offset].rfind('\n').map_or(0, |nl| {
+        raw[nl + 1..offset]
+            .bytes()
+            .take_while(|b| *b == b' ')
+            .count()
+    })
+}
+
+fn replace_adapter_reply_messages(raw: &str, fresh: &[(String, String)]) -> String {
+    let spans = adapter_reply_message_spans(raw);
+    assert_eq!(spans.len(), fresh.len(), "recorded reply count");
+    let mut out = String::with_capacity(raw.len());
+    let mut cursor = 0usize;
+    for ((req, msg_start, msg_end), (fresh_req, wire)) in spans.iter().zip(fresh.iter()) {
+        assert_eq!(req, fresh_req, "record order");
+        out.push_str(&raw[cursor..*msg_start]);
+        let indent = line_indent_at(raw, *msg_start);
+        out.push_str(&pretty_compact_json_preserving_order(wire, indent));
+        cursor = *msg_end;
+    }
+    out.push_str(&raw[cursor..]);
+    out
+}
+
 /// Adapter-directed scenario messages in record order for one family.
-fn expected_adapter_replies(scenario_id: &str) -> Vec<(String, String)> {
+fn expected_adapter_replies(
+    scenario_id: &str,
+    fresh: &[(String, String)],
+) -> Vec<(String, String)> {
+    let path = scenario_path(scenario_id);
+    if std::env::var("UPDATE_VISIBILITY_V4_FIXTURES").as_deref() == Ok("1") {
+        let raw = std::fs::read_to_string(&path).expect("scenario JSON");
+        let updated = replace_adapter_reply_messages(&raw, fresh);
+        std::fs::write(&path, updated).expect("scenario records");
+    }
     let scenario = scenario_value(scenario_id);
     scenario["steps"]
         .as_array()
@@ -466,6 +724,10 @@ fn assert_reproduces(fresh: Vec<(String, String)>, expected: Vec<(String, String
         // carry the same wire shape.
         let round_trip = encode_reply_v4(&expected_decoded).expect("expected reply re-encodes");
         assert_eq!(
+            round_trip, *fresh_wire,
+            "{req} committed message has the fresh encoder bytes"
+        );
+        assert_eq!(
             decode_reply_v4(&round_trip).expect("round-trip decodes"),
             expected_decoded,
             "{req} committed bytes are encoder-stable"
@@ -488,7 +750,7 @@ fn assert_reproduces(fresh: Vec<(String, String)>, expected: Vec<(String, String
 #[test]
 fn visibility_order_failure_replies_are_genuine_engine_products() {
     let fresh = produce_order_failure();
-    let expected = expected_adapter_replies("visibility-order-failure");
+    let expected = expected_adapter_replies("visibility-order-failure", &fresh);
     assert_eq!(fresh.len(), 4, "order-failure recorded count");
     assert_reproduces(fresh, expected);
 }
@@ -496,7 +758,115 @@ fn visibility_order_failure_replies_are_genuine_engine_products() {
 #[test]
 fn visibility_cross_output_supersession_replies_are_genuine_engine_products() {
     let fresh = produce_cross_output();
-    let expected = expected_adapter_replies("visibility-cross-output-supersession");
+    let expected = expected_adapter_replies("visibility-cross-output-supersession", &fresh);
     assert_eq!(fresh.len(), 6, "cross-output recorded count");
     assert_reproduces(fresh, expected);
+}
+
+#[test]
+fn visibility_update_preserves_non_reply_bytes_and_settings_key_order() {
+    let fresh_all = produce_order_failure();
+    let fresh_two = &fresh_all[..2];
+    let raw = r#"{
+  "driver": "core-and-adapter",
+  "id": "synthetic-preservation",
+  "initial": {
+    "adapter": "adapter-a",
+    "freshEngine": true,
+    "native": { "obs": "1", "foreground": "win-old" }
+  },
+  "steps": [
+    {
+      "id": "settings",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "type": "settings",
+          "values": {
+            "gap": 8,
+            "outer": 8,
+            "defaultTiled": true,
+            "borderEnabled": true
+          }
+        }
+      },
+      "expect": { "assertions": [".output.actions == []"], "status": "settled" }
+    },
+    {
+      "id": "prepare-1",
+      "input": {
+        "kind": "fixture-event",
+        "to": "adapter",
+        "event": { "kind": "prepare-request", "message": { "req": "apply-1" } }
+      }
+    },
+    {
+      "id": "reply-1",
+      "input": {
+        "kind": "wire",
+        "to": "adapter",
+        "message": { "req": "apply-1", "stale": true }
+      },
+      "expect": { "assertions": [".output.actions != []"], "status": "settled" },
+      "rules": ["normative-apply-rule"]
+    },
+    {
+      "id": "reply-2",
+      "input": {
+        "kind": "wire",
+        "to": "adapter",
+        "message": { "req": "apply-2", "stale": true }
+      },
+      "expect": { "assertions": [".output.actions == []"], "status": "settled" }
+    }
+  ]
+}
+"#;
+
+    let spans = adapter_reply_message_spans(raw);
+    assert_eq!(spans.len(), 2, "only adapter wire replies selected");
+    assert_eq!(spans[0].0, "apply-1");
+    assert_eq!(spans[1].0, "apply-2");
+
+    let updated = replace_adapter_reply_messages(raw, fresh_two);
+    let updated_spans = adapter_reply_message_spans(&updated);
+    assert_eq!(updated_spans.len(), 2);
+
+    // Every byte outside the two adapter-directed wire message spans is identical.
+    assert_eq!(&updated[..updated_spans[0].1], &raw[..spans[0].1]);
+    assert_eq!(
+        &updated[updated_spans[0].2..updated_spans[1].1],
+        &raw[spans[0].2..spans[1].1]
+    );
+    assert_eq!(&updated[updated_spans[1].2..], &raw[spans[1].2..]);
+
+    // The updated document is valid JSON and each replaced span encodes identically to fresh.
+    let parsed: serde_json::Value = serde_json::from_str(&updated).expect("updated JSON parses");
+    assert_eq!(parsed["steps"].as_array().unwrap().len(), 4);
+    for (idx, (_, start, end)) in updated_spans.iter().enumerate() {
+        let decoded = decode_reply_v4(&updated[*start..*end]).expect("replaced reply decodes");
+        let reencoded = encode_reply_v4(&decoded).expect("replaced reply re-encodes");
+        assert_eq!(reencoded, fresh_two[idx].1);
+    }
+}
+
+#[test]
+fn pretty_compact_json_preserves_utf8_and_escapes() {
+    let compact = concat!(
+        "{\"title\":\"caf\\\"",
+        "\u{00e9}",
+        "{[}]\",\"emptyObj\":{},\"emptyArr\":[],\"items\":[\"a\\\\b\",\"",
+        "\u{2603}",
+        "\"]}"
+    );
+    let pretty = pretty_compact_json_preserving_order(compact, 4);
+    let parsed: serde_json::Value = serde_json::from_str(&pretty).expect("pretty JSON parses");
+    assert_eq!(parsed["title"], "caf\"\u{00e9}{[}]");
+    assert_eq!(parsed["emptyObj"], serde_json::json!({}));
+    assert_eq!(parsed["emptyArr"], serde_json::json!([]));
+    assert_eq!(parsed["items"], serde_json::json!(["a\\b", "\u{2603}"]));
+    assert!(pretty.contains("\"emptyObj\": {}"));
+    assert!(pretty.contains("\"emptyArr\": []"));
 }

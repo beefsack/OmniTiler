@@ -132,7 +132,7 @@ function makeHarness() {
                     v: 4, adapter: "test-adapter", gen, req: body.source, obs: String(replyObs), rev: String(describeRev),
                     ready: true, consumed: false,
                     source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
-                    gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+                    gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
                     intentDesired: [], presentation: DISABLED_PRESENTATION,
                     switchSettled: [], diagnostics: [],
                     scopes: [{ scope: { kind: "workspace", out: "out-1", ws: "ws-1" }, auth: "controlled", reason: "" }],
@@ -374,7 +374,7 @@ describe("native effect presentation-facts waiter", () => {
                 mismatched = true;
                 call.callback(JSON.stringify({
                     v: 4, outcome: "rejected", kind: "generation-mismatch", message: "superseded",
-                    gen: "gen-1", source: body.source, nativeInvalid: body.nativeInvalid, clock: "1", gestureAssoc: null,
+                    gen: "gen-1", source: body.source, nativeInvalid: body.nativeInvalid, clock: "1", gestureAssoc: null, gestureSettledAssoc: null,
                 }));
                 return;
             }
@@ -385,7 +385,7 @@ describe("native effect presentation-facts waiter", () => {
                 v: 4, adapter: "test-adapter", gen: "gen-2", req: body.source, obs: rev, rev,
                 ready: true, consumed: false,
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
-                gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+                gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
                 intentDesired: [], presentation: DISABLED_PRESENTATION,
                 switchSettled: [], diagnostics: [],
                 scopes: [{ scope: { kind: "workspace", out: "out-1", ws: "ws-1" }, auth: "controlled", reason: "" }],
@@ -439,7 +439,7 @@ describe("native effect presentation-facts waiter", () => {
                 mismatched = true;
                 call.callback(JSON.stringify({
                     v: 4, outcome: "rejected", kind: "generation-mismatch", message: "superseded",
-                    gen: "gen-1", source: body.source, nativeInvalid: body.nativeInvalid, clock: "1", gestureAssoc: null,
+                    gen: "gen-1", source: body.source, nativeInvalid: body.nativeInvalid, clock: "1", gestureAssoc: null, gestureSettledAssoc: null,
                 }));
                 return;
             }
@@ -449,7 +449,7 @@ describe("native effect presentation-facts waiter", () => {
                 v: 4, adapter: "test-adapter", gen: "gen-2", req: body.source, obs: rev, rev,
                 ready: true, consumed: false,
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
-                gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+                gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
                 intentDesired: [], presentation: DISABLED_PRESENTATION,
                 switchSettled: [], diagnostics: [],
                 scopes: [{ scope: { kind: "workspace", out: "out-1", ws: "ws-1" }, auth: "controlled", reason: "" }],

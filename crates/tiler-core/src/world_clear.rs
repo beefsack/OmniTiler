@@ -50,10 +50,9 @@ fn clear_accepted(attempt: &ClearAttempt) -> bool {
 
 impl WorldEngine {
     /// One reused terminal-event emitter for every retained-operation
-    /// verdict (clear and float alike): the original operation id plus
-    /// window plus outcome (plus a narrow cause) rides the reply's one-shot
-    /// `operation_settled` carrier. Holds emit nothing; the binding simply
-    /// persists.
+    /// verdict (clear and float alike): updates the `(window, kind)` slot
+    /// in `operation_settled` latest-wins. Holds emit nothing; the binding
+    /// simply persists.
     pub(crate) fn emit_operation(
         &mut self,
         operation_id: String,
@@ -61,12 +60,91 @@ impl WorldEngine {
         outcome: OperationOutcome,
         cause: Option<&str>,
     ) {
-        self.operation_settled.push(OperationEvent {
+        let kind = outcome.kind();
+        let event = OperationEvent {
+            window: window.clone(),
+            kind,
             operation_id,
-            window,
             outcome,
             cause: cause.map(str::to_owned),
-        });
+        };
+        self.operation_settled.insert((window, kind), event);
+    }
+
+    /// Occupied plus pending-reserved `(window, kind)` operation slots across
+    /// the retained map, in-flight clear/float bindings, and any new
+    /// operation-capable commands in the inline/queued batch. Two phase slots
+    /// (`Clear`, `Float`) share the single [`MAX_REPLY_OPERATIONS`] cap.
+    #[must_use]
+    pub(crate) fn operation_settle_slot_count(
+        &self,
+        command: Option<&WorldCommand>,
+        queued: &[(u64, WorldCommand)],
+    ) -> usize {
+        use crate::boundary::CoreCommand;
+        use crate::world_report::OperationKind;
+        use std::collections::BTreeSet;
+        let mut slots: BTreeSet<(&str, OperationKind)> = BTreeSet::new();
+        for (window, kind) in self.operation_settled.keys() {
+            slots.insert((window.0.as_str(), *kind));
+        }
+        for retained in &self.retained_clears {
+            slots.insert((retained.window.0.as_str(), OperationKind::Clear));
+            if retained.float_route {
+                slots.insert((retained.window.0.as_str(), OperationKind::Float));
+            }
+        }
+        for retained in &self.retained_floats {
+            slots.insert((retained.window.0.as_str(), OperationKind::Float));
+        }
+        for retained in &self.retained_born {
+            slots.insert((retained.window.0.as_str(), OperationKind::Clear));
+        }
+        let mut implicit_slots = 0usize;
+        for cmd in command.into_iter().chain(queued.iter().map(|(_, c)| c)) {
+            if matches!(cmd, WorldCommand::Implicit(_)) {
+                match crate::world_report::unwrap_implicit(cmd) {
+                    WorldCommand::FocusDirectional { .. }
+                    | WorldCommand::MoveDirectional { .. } => {
+                        implicit_slots = implicit_slots.saturating_add(2);
+                    }
+                    WorldCommand::Operation(CoreCommand::ToggleFloat { .. })
+                    | WorldCommand::ToggleMaximize { .. }
+                    | WorldCommand::ToggleSticky { .. } => {
+                        implicit_slots = implicit_slots.saturating_add(1);
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            match cmd {
+                WorldCommand::FocusDirectional { window, .. }
+                | WorldCommand::MoveDirectional { window, .. } => {
+                    slots.insert((window.0.as_str(), OperationKind::Clear));
+                    slots.insert((window.0.as_str(), OperationKind::Float));
+                }
+                WorldCommand::Operation(CoreCommand::ToggleFloat { window, .. }) => {
+                    slots.insert((window.as_str(), OperationKind::Float));
+                }
+                WorldCommand::ToggleMaximize { window } | WorldCommand::ToggleSticky { window } => {
+                    slots.insert((window.0.as_str(), OperationKind::Float));
+                }
+                _ => {}
+            }
+        }
+        slots.len().saturating_add(implicit_slots)
+    }
+
+    /// Pre-mutation byte reserve for retained and pending operation outcomes.
+    #[must_use]
+    pub(crate) fn operation_settle_reserve(
+        &self,
+        command: Option<&WorldCommand>,
+        queued: &[(u64, WorldCommand)],
+    ) -> usize {
+        crate::world_sizing::max_operation_settle_reserve(
+            self.operation_settle_slot_count(command, queued),
+        )
     }
 }
 

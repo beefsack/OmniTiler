@@ -4235,7 +4235,7 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
     assert!(
         engine
             .operation_settled
-            .iter()
+            .values()
             .any(|event| event.operation_id == "op-1"
                 && event.window.0 == "win-a"
                 && event.outcome == OperationOutcome::ClearRefusedProven),
@@ -4386,7 +4386,7 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
         assert!(
             gated
                 .operation_settled
-                .iter()
+                .values()
                 .any(|event| event.operation_id == "op-1"
                     && event.outcome == OperationOutcome::ClearRefusedProven),
             "{what} recovery retires refused-proven"
@@ -4428,7 +4428,7 @@ fn settle_born_uses_staged_lane_with_gates_and_recovery() {
     assert!(
         engine
             .operation_settled
-            .iter()
+            .values()
             .any(|event| event.operation_id == "op-born-1"
                 && event.window.0 == "win-a"
                 && event.outcome == OperationOutcome::ClearRefusedProven),
@@ -4915,7 +4915,7 @@ fn settle_float_uses_staged_frames_with_replay_dpi_and_close() {
     assert!(
         engine
             .operation_settled
-            .iter()
+            .values()
             .any(|event| event.operation_id == "op-f"
                 && event.window.0 == "win-a"
                 && event.outcome == OperationOutcome::FloatFrameProven),
@@ -4979,7 +4979,7 @@ fn settle_float_uses_staged_frames_with_replay_dpi_and_close() {
     assert!(
         replayed
             .operation_settled
-            .iter()
+            .values()
             .any(|event| event.operation_id == "op-f"
                 && event.outcome == OperationOutcome::FloatAbandoned),
         "replay abandons as external"
@@ -5069,7 +5069,7 @@ fn settle_float_uses_staged_frames_with_replay_dpi_and_close() {
     assert!(dpi.retained_floats.is_empty(), "stable recovery confirms");
     assert!(
         dpi.operation_settled
-            .iter()
+            .values()
             .any(|event| event.operation_id == "op-f"
                 && event.outcome == OperationOutcome::FloatFrameProven),
         "stable recovery proves the frame"
@@ -5100,7 +5100,7 @@ fn settle_float_uses_staged_frames_with_replay_dpi_and_close() {
     assert!(
         closed
             .operation_settled
-            .iter()
+            .values()
             .any(|event| event.operation_id == "op-f"
                 && event.outcome == OperationOutcome::FloatAbandoned
                 && event.cause.as_deref() == Some("closed")),
@@ -5520,7 +5520,7 @@ fn settle_clear_focus_view_home_read_staged_not_passed_report() {
     assert!(
         engine
             .operation_settled
-            .iter()
+            .values()
             .any(|event| event.operation_id == "op-1"
                 && event.outcome == OperationOutcome::ClearAbandonedFocusChanged),
         "divergence abandons at the staged focus gate, got {:?}",
@@ -5561,7 +5561,7 @@ fn settle_clear_focus_view_home_read_staged_not_passed_report() {
     assert!(
         viewed
             .operation_settled
-            .iter()
+            .values()
             .any(|event| event.operation_id == "op-1"
                 && event.outcome == OperationOutcome::ClearAbandonedViewChanged),
         "divergence abandons at the staged view gate, got {:?}",
@@ -5598,7 +5598,7 @@ fn settle_clear_focus_view_home_read_staged_not_passed_report() {
     assert!(
         homed
             .operation_settled
-            .iter()
+            .values()
             .any(|event| event.operation_id == "op-1"
                 && event.outcome == OperationOutcome::ClearAbandonedHomingChanged),
         "divergence abandons at the staged home gate, got {:?}",
@@ -5644,7 +5644,7 @@ fn settle_clear_float_continuation_uses_staged_geometry() {
     assert!(
         engine
             .operation_settled
-            .iter()
+            .values()
             .any(|event| event.operation_id == "op-1"
                 && event.outcome == OperationOutcome::ClearContinuedFloat),
         "continuation rides the original op, got {:?}",
@@ -5742,7 +5742,7 @@ fn settle_float_receipt_before_gap_with_empty_lane_recovery() {
         assert!(
             engine
                 .operation_settled
-                .iter()
+                .values()
                 .any(|event| event.operation_id == "op-f"
                     && event.outcome == OperationOutcome::FloatFrameProven),
             "{what} recovery proves the frame"
@@ -6435,7 +6435,8 @@ fn staged_switch_receipt_and_close_win_over_passed_report() {
             && binding.is_none()
             && engine
                 .switch_settled
-                .first()
+                .values()
+                .next()
                 .is_some_and(|event| event.outcome == SwitchOutcome::CompletedWithFailures),
         "staged out-of-bracket verdict terminates failed"
     );
@@ -9664,7 +9665,11 @@ fn staged_selection_native_proof_success_refusal_and_latched_hold() {
     engine.settle_selection_switch();
     assert_eq!(engine.switch_settled.len(), 1, "staged echo proves");
     assert_eq!(
-        engine.switch_settled.first().map(|event| event.outcome),
+        engine
+            .switch_settled
+            .values()
+            .next()
+            .map(|event| event.outcome),
         Some(SwitchOutcome::Complete),
         "proven outcome"
     );
@@ -9724,7 +9729,11 @@ fn staged_selection_native_proof_success_refusal_and_latched_hold() {
     engine.settle_selection_switch();
     assert_eq!(engine.switch_settled.len(), 1, "refusal terminates");
     assert_eq!(
-        engine.switch_settled.first().map(|event| event.outcome),
+        engine
+            .switch_settled
+            .values()
+            .next()
+            .map(|event| event.outcome),
         Some(SwitchOutcome::CompletedWithFailures),
         "refused outcome"
     );
@@ -10357,7 +10366,11 @@ fn staged_selection_feedback_first_latch_across_restage() {
     engine.settle_selection_switch();
     assert_eq!(engine.switch_settled.len(), 1, "latched refusal terminates");
     assert_eq!(
-        engine.switch_settled.first().map(|event| event.outcome),
+        engine
+            .switch_settled
+            .values()
+            .next()
+            .map(|event| event.outcome),
         Some(SwitchOutcome::CompletedWithFailures),
         "refused outcome"
     );
@@ -10452,7 +10465,11 @@ fn staged_selection_feedback_first_latch_across_restage() {
         "proving raw completes without latch"
     );
     assert_eq!(
-        control.switch_settled.first().map(|event| event.outcome),
+        control
+            .switch_settled
+            .values()
+            .next()
+            .map(|event| event.outcome),
         Some(SwitchOutcome::Complete),
         "control proven outcome"
     );
@@ -10468,7 +10485,11 @@ fn staged_selection_feedback_first_latch_across_restage() {
     engine.settle_selection_switch();
     assert_eq!(engine.switch_settled.len(), 1, "fresh echo proves");
     assert_eq!(
-        engine.switch_settled.first().map(|event| event.outcome),
+        engine
+            .switch_settled
+            .values()
+            .next()
+            .map(|event| event.outcome),
         Some(SwitchOutcome::Complete),
         "proven outcome"
     );

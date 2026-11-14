@@ -226,7 +226,7 @@ function makeHarness(mode: ClearMode) {
             source,
             nativeInvalid,
             clock: "1",
-            gestureSettled: null, gestureAssoc: null,
+            gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
             focusRequest: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
@@ -556,7 +556,7 @@ describe("world B9 deferred maximized unfloat", () => {
             v: 4, outcome: "rejected", kind: "generation-mismatch", message: "poison", gen: "gen-2",
             source: "",
             nativeInvalid: "0",
-            clock: "0", gestureAssoc: null,
+            clock: "0", gestureAssoc: null, gestureSettledAssoc: null,
         }));
         assert.ok(h.logs.some((l) => l.includes("generation-mismatch")));
         assert.ok(h.logs.some((l) => l.includes("float-refused-maximize-clear") && l.includes("cause=generation-mismatch")));

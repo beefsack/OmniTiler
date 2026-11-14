@@ -93,14 +93,14 @@ use tiler_core::world_report::{
     MAX_REPLY_DIAGNOSTICS, MAX_REPLY_EFFECTS, MAX_REPLY_NATIVE_CREATIONS, MAX_REPLY_OPERATIONS,
     MAX_REPLY_OUTPUTS, MAX_REPLY_SCOPES, MAX_REPLY_SWITCH_EVENTS, MAX_REPLY_TRANSFERS,
     MAX_REPLY_WINDOWS, MAX_REPLY_WORKSPACES, MAX_STATE_TARGETS_PER_WINDOW, NativeCreationDesire,
-    NativeObservation, NativeWorkspaceFact, OneShotEffect, OperationEvent, OperationOutcome,
-    OutputDesire, OutputIdentity, PresentationIngressV4, PresentationPagerFrameV4,
-    PresentationRowV4, RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind,
-    RowDiagnosticLane, ScopeAuthority, ScopeStatus, ScreenReport, StateProperty, StateTarget,
-    SwitchEvent, SwitchFocus, SwitchOutcome, TilingMode, TransferKind, TransferTargetV4,
-    VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter, VisibilityTarget,
-    WindowDesire, WindowFact, WindowType, WorkspaceDesire, WorkspaceRef, WorldCommand,
-    WorldPresentationV4, WorldReplyV4, WorldReportV4, check_screen_structure,
+    NativeObservation, NativeWorkspaceFact, OneShotEffect, OperationEvent, OperationKind,
+    OperationOutcome, OutputDesire, OutputIdentity, PresentationIngressV4,
+    PresentationPagerFrameV4, PresentationRowV4, RenderTarget, RendererInput, RowDiagnostic,
+    RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScopeStatus, ScreenReport, StateProperty,
+    StateTarget, SwitchEvent, SwitchFocus, SwitchOutcome, TilingMode, TransferKind,
+    TransferTargetV4, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
+    VisibilityTarget, WindowDesire, WindowFact, WindowType, WorkspaceDesire, WorkspaceRef,
+    WorldCommand, WorldPresentationV4, WorldReplyV4, WorldReportV4, check_screen_structure,
     check_window_structure, push_raw_setting_value,
 };
 
@@ -5817,11 +5817,21 @@ fn decode_operation_cause(text: &str) -> Result<Option<String>> {
 
 fn decode_operation_event(value: &serde_json::Value) -> Result<OperationEvent> {
     let map = as_object(value)?;
-    check_keys(map, &["op", "win", "outcome", "cause"])?;
+    check_keys(map, &["win", "kind", "op", "outcome", "cause"])?;
+    let kind = match req_str(map, "kind")? {
+        "clear" => OperationKind::Clear,
+        "float" => OperationKind::Float,
+        _ => return Err(unknown_value()),
+    };
+    let outcome = decode_operation_outcome(req_str(map, "outcome")?)?;
+    if outcome.kind() != kind {
+        return Err(unknown_value());
+    }
     Ok(OperationEvent {
-        operation_id: req_id(map, "op")?,
         window: WindowId(req_id(map, "win")?),
-        outcome: decode_operation_outcome(req_str(map, "outcome")?)?,
+        kind,
+        operation_id: req_id(map, "op")?,
+        outcome,
         cause: decode_operation_cause(req_str(map, "cause")?)?,
     })
 }
@@ -5861,7 +5871,11 @@ fn decode_intent_desire(value: &serde_json::Value) -> Result<IntentDesire> {
 
 fn decode_switch_event(value: &serde_json::Value) -> Result<SwitchEvent> {
     let map = as_object(value)?;
-    check_keys(map, &["op", "outcome", "failed", "focus", "fallback"])?;
+    check_keys(
+        map,
+        &["out", "op", "outcome", "failed", "focus", "fallback"],
+    )?;
+    let output = OutputId(req_id(map, "out")?);
     let outcome = match req_str(map, "outcome")? {
         "complete" => SwitchOutcome::Complete,
         "completed-with-failures" => SwitchOutcome::CompletedWithFailures,
@@ -5887,6 +5901,7 @@ fn decode_switch_event(value: &serde_json::Value) -> Result<SwitchEvent> {
         _ => return Err(unknown_value()),
     };
     Ok(SwitchEvent {
+        output,
         operation_id: req_id(map, "op")?,
         outcome,
         failed,
@@ -6307,7 +6322,7 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
     let mut seen_operations = std::collections::BTreeSet::new();
     for item in operation_items {
         let event = decode_operation_event(item)?;
-        if !seen_operations.insert(event.operation_id.clone()) {
+        if !seen_operations.insert((event.window.clone(), event.kind)) {
             return Err(reply_snapshot("duplicate-operation"));
         }
         operation_settled.push(event);
@@ -6358,7 +6373,7 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
     let mut seen_switches = std::collections::BTreeSet::new();
     for item in switch_items {
         let event = decode_switch_event(item)?;
-        if !seen_switches.insert(event.operation_id.clone()) {
+        if !seen_switches.insert(event.output.clone()) {
             return Err(reply_snapshot("duplicate-switch"));
         }
         switch_settled.push(event);
@@ -6867,17 +6882,22 @@ fn valid_operation_cause(text: &str) -> bool {
 }
 
 fn encode_operation_event_v4(row: &OperationEvent, out: &mut String) -> Result<()> {
-    check_reply_id(&row.operation_id)?;
     check_reply_id(&row.window.0)?;
+    check_reply_id(&row.operation_id)?;
+    if row.outcome.kind() != row.kind {
+        return Err(unknown_value());
+    }
     if let Some(cause) = row.cause.as_deref()
         && !valid_operation_cause(cause)
     {
         return Err(unknown_value());
     }
-    out.push_str("{\"op\":");
-    push_json_string(out, &row.operation_id);
-    out.push_str(",\"win\":");
+    out.push_str("{\"win\":");
     push_json_string(out, &row.window.0);
+    out.push_str(",\"kind\":");
+    push_json_string(out, row.kind.as_str());
+    out.push_str(",\"op\":");
+    push_json_string(out, &row.operation_id);
     out.push_str(",\"outcome\":");
     push_json_string(out, row.outcome.as_str());
     out.push_str(",\"cause\":");
@@ -7020,12 +7040,15 @@ fn encode_intent_desire_v4(row: &IntentDesire, out: &mut String) -> Result<()> {
 }
 
 fn encode_switch_event_v4(row: &SwitchEvent, out: &mut String) -> Result<()> {
+    check_reply_id(&row.output.0)?;
     check_reply_id(&row.operation_id)?;
     check_reply_cap(row.failed.len(), MAX_REPLY_WINDOWS)?;
     for window in &row.failed {
         check_reply_id(&window.0)?;
     }
-    out.push_str("{\"op\":");
+    out.push_str("{\"out\":");
+    push_json_string(out, &row.output.0);
+    out.push_str(",\"op\":");
     push_json_string(out, &row.operation_id);
     out.push_str(",\"outcome\":");
     push_json_string(out, row.outcome.as_str());
@@ -7317,7 +7340,7 @@ pub fn encode_reply_v4(decoded: &DecodedReplyV4) -> Result<String> {
     }
     let mut seen_operations = std::collections::BTreeSet::new();
     for event in &reply.operation_settled {
-        if !seen_operations.insert(event.operation_id.clone()) {
+        if !seen_operations.insert((event.window.clone(), event.kind)) {
             return Err(reply_snapshot("duplicate-operation"));
         }
     }
@@ -7335,7 +7358,7 @@ pub fn encode_reply_v4(decoded: &DecodedReplyV4) -> Result<String> {
     }
     let mut seen_switches = std::collections::BTreeSet::new();
     for event in &reply.switch_settled {
-        if !seen_switches.insert(event.operation_id.clone()) {
+        if !seen_switches.insert(event.output.clone()) {
             return Err(reply_snapshot("duplicate-switch"));
         }
     }
@@ -8803,6 +8826,7 @@ mod tests {
         };
         let settled = vec![
             SwitchEvent {
+                output: tiler_core::directional::OutputId("HDMI-1".to_owned()),
                 operation_id: "op-3".to_owned(),
                 outcome: SwitchOutcome::Complete,
                 failed: Vec::new(),
@@ -8810,6 +8834,7 @@ mod tests {
                 fallback: false,
             },
             SwitchEvent {
+                output: tiler_core::directional::OutputId("o".repeat(128)),
                 operation_id: format!("op-{}", u64::MAX),
                 outcome: SwitchOutcome::CompletedWithFailures,
                 failed: vec![WindowId("w".repeat(128))],

@@ -2233,11 +2233,30 @@ pub enum WorldCommand {
     Implicit(Box<WorldCommand>),
 }
 
-/// Terminal retained-operation lifecycle outcome for one core-owned
-/// operation: a directional maximize-clear binding or an explicit
-/// float-placement target. Emitted once when the retained item retires
-/// (refusal, abandonment, supersession, continuation, continuation refusal,
-/// or frame-proven float completion), never retained across reports.
+/// Closed phase discriminator for retained operation settlement rows:
+/// directional maximize-clear vs float-frame settlement. Clear can resume a
+/// float under the same operation id, so `(win, kind)` is the unique owner
+/// key. Closed: no other token is encodable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OperationKind {
+    Clear,
+    Float,
+}
+
+impl OperationKind {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Clear => "clear",
+            Self::Float => "float",
+        }
+    }
+}
+
+/// Terminal retained-operation lifecycle outcome (maximize clear continuation
+/// or frame-proven float completion), retained latest-wins per `(win, kind)`
+/// until replacement or owner departure.
 /// Pending desire rides the `clear_operation`/`frame_operation` row, actual
 /// raw attempts ride the `world-apply` diag (`clears`/`frames`),
 /// ambiguous/gap holds emit nothing (the binding persists with its desire
@@ -2284,16 +2303,37 @@ impl OperationOutcome {
             Self::FloatAbandoned => "float-abandoned",
         }
     }
+
+    /// Phase discriminator corresponding to this outcome.
+    #[must_use]
+    pub const fn kind(self) -> OperationKind {
+        match self {
+            Self::ClearContinuedTiled
+            | Self::ClearContinuedFloat
+            | Self::ClearRefusedProven
+            | Self::ClearAbandonedExternalClear
+            | Self::ClearAbandonedFocusChanged
+            | Self::ClearAbandonedViewChanged
+            | Self::ClearAbandonedHomingChanged
+            | Self::ClearAbandonedClosed
+            | Self::ClearAbandonedFullscreen
+            | Self::ClearSuperseded
+            | Self::ClearContinuationRefused => OperationKind::Clear,
+            Self::FloatFrameProven | Self::FloatRefusedProven | Self::FloatAbandoned => {
+                OperationKind::Float
+            }
+        }
+    }
 }
 
-/// One terminal retained-operation lifecycle event: the original operation
-/// id plus window plus outcome (and a narrow cause for refusals and
-/// abandonments). At most one per retired item per report, bounded by the
-/// window inventory itself.
+/// One retained-operation lifecycle outcome: window owner plus phase
+/// discriminator (`(win, kind)` unique key), original operation id,
+/// outcome, and narrow cause for refusals and abandonments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationEvent {
-    pub operation_id: String,
     pub window: WindowId,
+    pub kind: OperationKind,
+    pub operation_id: String,
     pub outcome: OperationOutcome,
     pub cause: Option<String>,
 }
@@ -2351,18 +2391,16 @@ impl SwitchFocus {
     }
 }
 
-/// One terminal selection event: the existing parent
-/// transfer/view operation (`op-<cmdseq>`, never a new id), the terminal
-/// accounting outcome, the frozen switch target failures (empty on
-/// `Complete`), the core-derived foreground outcome (`Unproven` for
-/// focusless switches, which mint no focus effect), and whether
+/// One retained selection outcome: the output owner (`out` unique key),
+/// the existing parent transfer/view operation (`op-<cmdseq>`, never a new
+/// id), the terminal accounting outcome, the frozen switch target failures
+/// (empty on `Complete`), the core-derived foreground outcome (`Unproven`
+/// for focusless switches, which mint no focus effect), and whether
 /// separately authorized fallback hides ran (never on this lane).
-/// Covers both the native-free zero-obligation issuing terminal and
-/// host-owned native-obligated terminals. Emitted once on the existing
-/// parent when every frozen switch member has a verdict, never retained
-/// across reports.
+/// Retained latest-wins per output until replacement or output departure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwitchEvent {
+    pub output: OutputId,
     pub operation_id: String,
     pub outcome: SwitchOutcome,
     pub failed: Vec<WindowId>,

@@ -368,6 +368,32 @@ impl WorldEngine {
                 Vec::new(),
             );
         }
+        // Fresh reports carrying an already-consumed command sequence
+        // reconcile observation but never re-execute the command. The
+        // command-pair shape already passed the structural gate above, so
+        // the mismatch arm stays defensive. Compute this before the byte/row
+        // gates so an already-consumed inline command never reserves new
+        // operation or intent slots.
+        let consumed = match (report.command_seq, report.command.as_ref()) {
+            (Some(seq), Some(_)) => self.command_highwater.is_some_and(|mark| seq <= mark),
+            (Some(_), None) | (None, Some(_)) => {
+                return (
+                    V4RunOutcome::Rejected {
+                        kind: KIND_SNAPSHOT,
+                        message: "command-pair-invalid",
+                    },
+                    Vec::new(),
+                );
+            }
+            (None, None) => false,
+        };
+        let effective_command = if consumed {
+            None
+        } else {
+            report.command.as_ref()
+        };
+        let effective_queued: &[(u64, crate::world_report::WorldCommand)] =
+            if consumed { &[] } else { queued };
         // Conservative pre-mutation reply bound: no observation convergence,
         // slot cleanup, or command mutation runs when the worst-case reply
         // cannot fit. All v4 bounds ride here, including the retained
@@ -391,11 +417,12 @@ impl WorldEngine {
             self.retained_publish_footprint(),
         )
         .saturating_add(max_intent_desired_bound(self.intent_desired.len()))
+        .saturating_add(self.operation_settle_reserve(effective_command, effective_queued))
         .saturating_add(self.switch_settle_reserve())
         // A select-family command can mint one zero-obligation issuing
         // terminal while old bindings settle in the same report; reserve
         // it alongside the retained bindings, never from lane slack.
-        .saturating_add(self.switch_issuing_reserve(report.command.as_ref()))
+        .saturating_add(self.switch_issuing_reserve(effective_command))
         // Commandless policy views can mint at most one zero-obligation
         // terminal per fresh displaced/returned workspace at publish;
         // bound the placements knowable before convergence.
@@ -404,7 +431,7 @@ impl WorldEngine {
         // most the report command; queued intent-changing commands reserve
         // additional targets (distinct explicit plus implicit max-width).
         // These are admission bounds, not a publication/drain queue.
-        .saturating_add(max_intent_save_batch_bound_v4(queued))
+        .saturating_add(max_intent_save_batch_bound_v4(effective_queued))
             > WORLD_MAX_REPLY_BYTES
         {
             return (
@@ -442,7 +469,7 @@ impl WorldEngine {
                 .intent_desired
                 .len()
                 .saturating_add(import_new)
-                .saturating_add(self.intent_desired_new_rows(report.command.as_ref(), queued));
+                .saturating_add(self.intent_desired_new_rows(effective_command, effective_queued));
             if total_rows > crate::world_report::MAX_INTENT_DESIRED {
                 return (
                     V4RunOutcome::Rejected {
@@ -452,6 +479,17 @@ impl WorldEngine {
                     Vec::new(),
                 );
             }
+        }
+        if self.operation_settle_slot_count(effective_command, effective_queued)
+            > crate::world_report::MAX_REPLY_OPERATIONS
+        {
+            return (
+                V4RunOutcome::Rejected {
+                    kind: KIND_SNAPSHOT,
+                    message: "section-over-cap",
+                },
+                Vec::new(),
+            );
         }
         // Counter exhaustion refuses and re-bootstraps under a new
         // generation; it never wraps in place.
@@ -464,23 +502,6 @@ impl WorldEngine {
                 Vec::new(),
             );
         }
-        // Fresh reports carrying an already-consumed command sequence
-        // reconcile observation but never re-execute the command. The
-        // command-pair shape already passed the structural gate above, so
-        // the mismatch arm stays defensive.
-        let consumed = match (report.command_seq, report.command.as_ref()) {
-            (Some(seq), Some(_)) => self.command_highwater.is_some_and(|mark| seq <= mark),
-            (Some(_), None) | (None, Some(_)) => {
-                return (
-                    V4RunOutcome::Rejected {
-                        kind: KIND_SNAPSHOT,
-                        message: "command-pair-invalid",
-                    },
-                    Vec::new(),
-                );
-            }
-            (None, None) => false,
-        };
         // Readiness keys on the effective graded report, never the raw
         // input: an invalid-held screen alone is not a usable screen.
         let usable_initial_observation = usable_initial_observation_v4(effective);
@@ -604,6 +625,14 @@ impl WorldEngine {
                 message: reason,
             });
         }
+        if reply.operation_settled.len() > crate::world_report::MAX_REPLY_OPERATIONS
+            || reply.switch_settled.len() > crate::world_report::MAX_REPLY_SWITCH_EVENTS
+        {
+            return Some(V4RunOutcome::Rejected {
+                kind: KIND_SNAPSHOT,
+                message: "section-over-cap",
+            });
+        }
         if reply_estimate_v4(reply) > WORLD_MAX_REPLY_BYTES
             || reply_exact_bytes_v4(reply) > WORLD_MAX_REPLY_BYTES
         {
@@ -628,6 +657,32 @@ impl WorldEngine {
     ) -> V4RunOutcome {
         if let Some(refused) = Self::refuse_outbound_v4(&reply) {
             return refused;
+        }
+        // Staged runs can mint automatic born-clear obligations without a
+        // command; enforce the shared 1,024-slot cap and future terminal
+        // byte budget on `staged` before adoption without double-counting
+        // already-encoded `operation_settled`/`switch_settled` sections.
+        if staged.operation_settle_slot_count(None, &[]) > crate::world_report::MAX_REPLY_OPERATIONS
+        {
+            return V4RunOutcome::Rejected {
+                kind: KIND_SNAPSHOT,
+                message: "section-over-cap",
+            };
+        }
+        let future_op_delta = staged.operation_settle_reserve(None, &[]).saturating_sub(
+            crate::world_sizing::operation_settled_estimate(&reply.operation_settled),
+        );
+        let future_switch_delta = staged.switch_settle_reserve().saturating_sub(
+            crate::world_sizing::switch_settled_estimate(&reply.switch_settled),
+        );
+        let future_reserve = future_op_delta.saturating_add(future_switch_delta);
+        if reply_estimate_v4(&reply).saturating_add(future_reserve) > WORLD_MAX_REPLY_BYTES
+            || reply_exact_bytes_v4(&reply).saturating_add(future_reserve) > WORLD_MAX_REPLY_BYTES
+        {
+            return V4RunOutcome::Rejected {
+                kind: KIND_REPLY_SIZE,
+                message: MSG_REPLY_SIZE,
+            };
         }
         let consumed_reply = reply.command_consumed;
         *self = staged;

@@ -887,9 +887,9 @@ fn rapid_input_batch_saves_canonical_bytes_fit_reserve() {
     );
 
     // Real canonical bytes: the capture lane binds broker keys (`source`,
-    // `nativeInvalid`, `clock`, `gestureAssoc`) onto the canonical reply
-    // and nulls the requester-only `result`, so strip exactly those four
-    // broker keys and decode the remainder through the public strict
+    // `nativeInvalid`, `clock`, `gestureAssoc`, `gestureSettledAssoc`) onto the
+    // canonical reply and nulls the requester-only `result`, so strip exactly
+    // those five broker keys and decode the remainder through the public strict
     // codec. The surviving typed rows (including `intentDesired`) are the
     // real service-produced values; the section is then measured through
     // the public canonical encoder (no substring parsing). The `result`
@@ -899,7 +899,13 @@ fn rapid_input_batch_saves_canonical_bytes_fit_reserve() {
         serde_json::from_str(&encoded).expect("service reply is JSON");
     {
         let view = bound.as_object_mut().expect("service reply is an object");
-        for key in ["source", "nativeInvalid", "clock", "gestureAssoc"] {
+        for key in [
+            "source",
+            "nativeInvalid",
+            "clock",
+            "gestureAssoc",
+            "gestureSettledAssoc",
+        ] {
             assert!(
                 view.remove(key).is_some(),
                 "capture lane binds {key}: {encoded}"

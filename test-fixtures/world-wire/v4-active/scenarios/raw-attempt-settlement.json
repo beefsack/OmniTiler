@@ -2376,7 +2376,7 @@
       "expect": {
         "status": "settled",
         "assertions": [
-          ".output.message.operationSettled | all(.op != \"op-3\")"
+          "([.output.message.operationSettled[] | select(.op == \"op-3\")] | length == 1) and ([.output.message.operationSettled[] | select(.op == \"op-3\")] == [.history[\"immediate-arrival-proof\"].message.operationSettled[] | select(.op == \"op-3\")])"
         ]
       },
       "rules": [

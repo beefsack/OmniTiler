@@ -204,7 +204,7 @@ function acceptCapture(
         workspaces: [], outputs: [],
         windows: [windowRow(frame)],
         transfers: [], effects: [], focusRequest: null, result: null,
-        gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "7",
@@ -218,7 +218,7 @@ function generationMismatch(gen: string): string {
     return JSON.stringify({
         v: 4, outcome: "rejected", kind: "generation-mismatch",
         message: "generation mismatch", gen, source: "", nativeInvalid: "0", clock: "1",
-        gestureAssoc: null,
+        gestureAssoc: null, gestureSettledAssoc: null,
     });
 }
 

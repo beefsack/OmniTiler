@@ -253,8 +253,9 @@ export interface WorldFocusRequest {
 // observation confirmed the target; a clear continuation means the intent
 // resumed, never that the final frame arrived.
 export interface WorldReplyOperationSettlement {
-    op: string;
     win: string;
+    kind: "clear" | "float";
+    op: string;
     outcome:
     | "continued-tiled" | "continued-float" | "refused-proven"
     | "abandoned-external-clear" | "abandoned-focus-changed" | "abandoned-view-changed"
@@ -264,11 +265,12 @@ export interface WorldReplyOperationSettlement {
     // Empty, a closed reject kind, or one of 16 narrow settlement tokens.
     cause: string;
 }
-// One terminal selection event: the existing parent transfer/view
-// operation, the terminal accounting outcome, the frozen switch target
-// failures (empty on complete), the core-derived foreground outcome, and
-// whether separately authorized fallback hides ran (never on this lane).
+// One terminal selection event: the output owner, the existing parent
+// transfer/view operation, the terminal accounting outcome, the frozen switch
+// target failures (empty on complete), the core-derived foreground outcome,
+// and whether separately authorized fallback hides ran (never on this lane).
 export interface WorldReplySwitchEvent {
+    out: string;
     op: string;
     outcome: "complete" | "completed-with-failures";
     failed: string[];
@@ -563,14 +565,17 @@ export interface WorldReply {
     gestureSettled: { id: string; committed: boolean } | null;
     // Broker-only bound actuator association for the actual normalized
     // ingress (`{instance, serial, coreId}`), cached in the exact response
-    // replay; null on every omitted or unsupported lane. The script
-    // requires `gestureSettled.id === association.coreId` AND the flight
-    // native pair `=== association` native pair before any ack fires.
+    // replay; null on every omitted or unsupported lane.
     // Never a core/protocol field: the broker stamps it, the script vets it.
     gestureAssoc: { instance: string; serial: string; coreId: string } | null;
+    // Broker-only bound actuator association for the retained gesture
+    // terminal (`{instance, serial, coreId}`), independent of the current
+    // capture's ingress association; null when no retained terminal is pinned
+    // or on bootstrap/rejection envelopes. The script matches `gestureSettled`
+    // and `gestureSettledAssoc` against the current pending native FIFO head.
+    gestureSettledAssoc: { instance: string; serial: string; coreId: string } | null;
     operationSettled: WorldReplyOperationSettlement[];
-    // Terminal selection events, at most one entry per existing parent
-    // transfer/view operation.
+    // Terminal selection events, at most one entry per output (`out`).
     switchSettled: WorldReplySwitchEvent[];
     // Narrow-hold diagnostics: independent evidence rows, never deduped.
     diagnostics: WorldReplyDiagnostic[];
@@ -792,6 +797,9 @@ const MAX_FOCUS_MEMBERS = 10000;
 const MAX_FOCUS_VIEWS = 16;
 const MAX_FOCUS_SELECTED = 16;
 const MAX_FOCUS_DEPARTING = 16;
+const FLOAT_OPERATION_OUTCOMES = new Set([
+    "float-frame-proven", "float-refused-proven", "float-abandoned",
+]);
 const OPERATION_OUTCOMES = new Set([
     "continued-tiled", "continued-float", "refused-proven",
     "abandoned-external-clear", "abandoned-focus-changed", "abandoned-view-changed",
@@ -1103,10 +1111,11 @@ export function parseWorldReply(
     if (outcome === "rejected") {
         // Genuine v4 broker rejection (world_broker.rs `bind_response`):
         // the core 5-key error plus the bound source watermark, clock,
-        // and the broker-owned `gestureAssoc` (always null on rejections,
-        // never a fabricated binding). Missing or non-null gestureAssoc
-        // refuses: the wire shape is exact, never optional.
-        if (!hasExactKeys(r, ["v", "outcome", "kind", "message", "gen", "source", "nativeInvalid", "clock", "gestureAssoc"])) {
+        // and the broker-owned `gestureAssoc` / `gestureSettledAssoc`
+        // (always null on rejections, never a fabricated binding). Missing
+        // or non-null association refuses: the wire shape is exact, never
+        // optional.
+        if (!hasExactKeys(r, ["v", "outcome", "kind", "message", "gen", "source", "nativeInvalid", "clock", "gestureAssoc", "gestureSettledAssoc"])) {
             return null;
         }
         if (
@@ -1115,7 +1124,7 @@ export function parseWorldReply(
             (r["source"] !== "" && !isCorrelationId(r["source"])) ||
             typeof r["nativeInvalid"] !== "string" || typeof r["clock"] !== "string" ||
             !isCanonicalU64(r["nativeInvalid"]) || !isCanonicalU64(r["clock"]) ||
-            r["gestureAssoc"] !== null
+            r["gestureAssoc"] !== null || r["gestureSettledAssoc"] !== null
         ) {
             return null;
         }
@@ -1619,23 +1628,30 @@ function parseOperationSettledRow(e: unknown): WorldReplyOperationSettlement {
         throw new Error("op-settled-keys");
     }
     const o = e as Record<string, unknown>;
-    if (!hasExactKeys(o, ["op", "win", "outcome", "cause"])) {
+    if (!hasExactKeys(o, ["win", "kind", "op", "outcome", "cause"])) {
         throw new Error("op-settled-keys");
     }
     if (
-        !isOpaqueId(o["op"]) || !isOpaqueId(o["win"]) ||
+        !isOpaqueId(o["win"]) ||
+        (o["kind"] !== "clear" && o["kind"] !== "float") ||
+        !isOpaqueId(o["op"]) ||
         typeof o["outcome"] !== "string" || !OPERATION_OUTCOMES.has(o["outcome"] as string) ||
         typeof o["cause"] !== "string"
     ) {
         throw new Error("op-settled");
+    }
+    const kind = o["kind"] as "clear" | "float";
+    const outcome = o["outcome"] as WorldReplyOperationSettlement["outcome"];
+    const expectedKind = FLOAT_OPERATION_OUTCOMES.has(outcome) ? "float" : "clear";
+    if (kind !== expectedKind) {
+        throw new Error("op-settled-kind");
     }
     const cause = o["cause"] as string;
     if (cause !== "" && !REJECT_KINDS.has(cause) && !OPERATION_NARROW_CAUSES.has(cause)) {
         throw new Error("op-settled-cause");
     }
     return {
-        op: o["op"] as string, win: o["win"] as string,
-        outcome: o["outcome"] as WorldReplyOperationSettlement["outcome"], cause,
+        win: o["win"] as string, kind, op: o["op"] as string, outcome, cause,
     };
 }
 
@@ -1644,10 +1660,11 @@ function parseSwitchEventRow(e: unknown): WorldReplySwitchEvent {
         throw new Error("switch-keys");
     }
     const o = e as Record<string, unknown>;
-    if (!hasExactKeys(o, ["op", "outcome", "failed", "focus", "fallback"])) {
+    if (!hasExactKeys(o, ["out", "op", "outcome", "failed", "focus", "fallback"])) {
         throw new Error("switch-keys");
     }
     if (
+        !isOpaqueId(o["out"]) ||
         !isOpaqueId(o["op"]) ||
         typeof o["outcome"] !== "string" || !SWITCH_OUTCOMES.has(o["outcome"] as string) ||
         typeof o["focus"] !== "string" || !SWITCH_FOCUS.has(o["focus"] as string) ||
@@ -1661,6 +1678,7 @@ function parseSwitchEventRow(e: unknown): WorldReplySwitchEvent {
     }
     const failed = (failedRaw as ReadonlyArray<unknown>).map((item) => reqOpaqueId(item));
     return {
+        out: o["out"] as string,
         op: o["op"] as string, outcome: o["outcome"] as WorldReplySwitchEvent["outcome"],
         failed, focus: o["focus"] as WorldReplySwitchEvent["focus"],
         fallback: o["fallback"] as boolean,
@@ -1769,7 +1787,7 @@ const CORE_REPLY_KEYS = ["v", "adapter", "gen", "req", "obs", "rev", "ready", "c
     "scopes", "workspaces", "outputs", "windows", "transfers", "effects", "focusRequest", "result",
     "gestureSettled", "operationSettled", "nativeCreations", "warpCursor", "presentation",
     "intentDesired", "switchSettled", "diagnostics"] as const;
-const BOUND_REPLY_KEYS = [...CORE_REPLY_KEYS, "source", "nativeInvalid", "clock", "gestureAssoc"] as const;
+const BOUND_REPLY_KEYS = [...CORE_REPLY_KEYS, "source", "nativeInvalid", "clock", "gestureAssoc", "gestureSettledAssoc"] as const;
 
 function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): WorldReply | null {
     const want: ReadonlyArray<string> = allowUnbound ? CORE_REPLY_KEYS : BOUND_REPLY_KEYS;
@@ -1853,11 +1871,11 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
         // Effects lane is required empty: any row refuses the whole reply.
         const effects: never[] = [];
         const operationSettled: WorldReplyOperationSettlement[] = opSettledRaw.map(parseOperationSettledRow);
-        unique(operationSettled, (o) => o.op, "duplicate-operation");
+        unique(operationSettled, (o) => `${o.win}\u0000${o.kind}`, "duplicate-operation");
         const nativeCreations: WorldNativeCreation[] = creationsRaw.map(parseNativeCreationRow);
         unique(nativeCreations, (c) => c.op, "duplicate-native-creation");
         const switchSettled: WorldReplySwitchEvent[] = switchRaw.map(parseSwitchEventRow);
-        unique(switchSettled, (s) => s.op, "duplicate-switch");
+        unique(switchSettled, (s) => s.out, "duplicate-switch");
         // Diagnostics are independent evidence rows: no dedup.
         const diagnostics: WorldReplyDiagnostic[] = diagRaw.map(parseDiagnosticRow);
         // Required nullable retained focus request: null carries
@@ -1888,29 +1906,50 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
             }
             gestureSettled = { id: g["id"] as string, committed: g["committed"] as boolean };
         }
-        // Broker-only bound actuator association: null on omitted lanes,
-        // otherwise exactly {instance, serial, coreId} with canonical
+        // Broker-only bound actuator associations: null on omitted/bootstrap
+        // lanes, otherwise exactly {instance, serial, coreId} with canonical
         // counters. Malformed shapes refuse like any other binding.
-        const assocRaw = r["gestureAssoc"] ?? (allowUnbound ? null : null);
-        let gestureAssoc: WorldReply["gestureAssoc"] = null;
-        if (assocRaw !== null && assocRaw !== undefined) {
-            const a = assocRaw as Record<string, unknown>;
+        const parseGestureAssoc = (
+            raw: unknown,
+            missingErr: string,
+            badErr: string,
+        ): { instance: string; serial: string; coreId: string } | null => {
+            if (raw === undefined) {
+                if (!allowUnbound) {
+                    throw new Error(missingErr);
+                }
+                return null;
+            }
+            if (raw === null) {
+                return null;
+            }
+            if (typeof raw !== "object" || Array.isArray(raw)) {
+                throw new Error(badErr);
+            }
+            const a = raw as Record<string, unknown>;
+            if (!hasExactKeys(a, ["instance", "serial", "coreId"])) {
+                throw new Error(badErr);
+            }
             if (
                 typeof a["instance"] !== "string" || (a["instance"] as string) === "" ||
                 typeof a["serial"] !== "string" || !isCanonicalU64(a["serial"] as string) ||
                 typeof a["coreId"] !== "string" || !isCanonicalU64(a["coreId"] as string) ||
                 (a["coreId"] as string) === "0"
             ) {
-                throw new Error("gesture-assoc");
+                throw new Error(badErr);
             }
-            gestureAssoc = {
+            return {
                 instance: a["instance"] as string,
                 serial: a["serial"] as string,
                 coreId: a["coreId"] as string,
             };
-        } else if (!allowUnbound && (r["gestureAssoc"] === undefined)) {
-            throw new Error("gesture-assoc-missing");
-        }
+        };
+        const gestureAssoc = parseGestureAssoc(r["gestureAssoc"], "gesture-assoc-missing", "gesture-assoc");
+        const gestureSettledAssoc = parseGestureAssoc(
+            r["gestureSettledAssoc"],
+            "gesture-settled-assoc-missing",
+            "gesture-settled-assoc",
+        );
         const warpRaw = r["warpCursor"];
         let warpCursor: WorldReply["warpCursor"] = null;
         if (warpRaw !== null && warpRaw !== undefined) {
@@ -1939,7 +1978,7 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
             adapter, gen, req, obs, rev,
             ready: r["ready"] as boolean, consumed: r["consumed"] as boolean,
             scopes, workspaces, outputs, windows, transfers, effects, focusRequest, result,
-            gestureSettled, gestureAssoc, operationSettled, nativeCreations, warpCursor, intentDesired, presentation,
+            gestureSettled, gestureAssoc, gestureSettledAssoc, operationSettled, nativeCreations, warpCursor, intentDesired, presentation,
             switchSettled, diagnostics,
             source, nativeInvalid, clock,
         };

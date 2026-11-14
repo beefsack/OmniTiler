@@ -171,7 +171,7 @@ function acceptCapture(gen: string, envelope: Record<string, unknown>, rev: stri
             state: [],
         }],
         transfers: [], effects: [], focusRequest: null, result: null,
-        gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "7",
@@ -446,7 +446,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         const dir = join("..", "test-fixtures", "world-wire", "v4-active", "messages");
         const floatBody = JSON.parse(readFileSync(join(dir, "reply-result-float-placed.json"), "utf8")) as Record<string, unknown>;
         assert.ok(!("noSpace" in (floatBody["result"] as Record<string, unknown>)), "success omits noSpace on the wire");
-        const boundFloat = JSON.stringify({ ...floatBody, source: "src-a", nativeInvalid: "1", clock: "2", gestureAssoc: null });
+        const boundFloat = JSON.stringify({ ...floatBody, source: "src-a", nativeInvalid: "1", clock: "2", gestureAssoc: null, gestureSettledAssoc: null });
         const parsedFloat = parseWorldReply(boundFloat);
         assert.ok(parsedFloat !== null && isCoreWorldReply(parsedFloat));
         if (!isCoreWorldReply(parsedFloat)) {
@@ -454,7 +454,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
             return;
         }
         assert.deepEqual(parsedFloat.result, { op: "toggle-float", win: "win-a", rect: [10, 20, 640, 480], noSpace: false });
-        const strippedFloat = JSON.stringify({ ...floatBody, result: null, source: "src-a", nativeInvalid: "1", clock: "2", gestureAssoc: null });
+        const strippedFloat = JSON.stringify({ ...floatBody, result: null, source: "src-a", nativeInvalid: "1", clock: "2", gestureAssoc: null, gestureSettledAssoc: null });
         const parsedStripped = parseWorldReply(strippedFloat);
         assert.ok(parsedStripped !== null && isCoreWorldReply(parsedStripped));
         if (!isCoreWorldReply(parsedStripped)) {
@@ -772,7 +772,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         const vector = JSON.parse(readFileSync(join(dir, "reply-observe.json"), "utf8")) as Record<string, unknown>;
         const bound = (): Record<string, unknown> => ({
             ...JSON.parse(JSON.stringify(vector)) as Record<string, unknown>,
-            source: "src-a", nativeInvalid: "1", clock: "2", gestureAssoc: null,
+            source: "src-a", nativeInvalid: "1", clock: "2", gestureAssoc: null, gestureSettledAssoc: null,
         });
         const stale = bound();
         for (const row of stale["workspaces"] as Array<Record<string, unknown>>) {
@@ -807,7 +807,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         const vector = JSON.parse(readFileSync(join(dir, "reply-observe.json"), "utf8")) as Record<string, unknown>;
         const clone = (): Record<string, unknown> => ({
             ...JSON.parse(JSON.stringify(vector)) as Record<string, unknown>,
-            source: "src-a", nativeInvalid: "1", clock: "2", gestureAssoc: null,
+            source: "src-a", nativeInvalid: "1", clock: "2", gestureAssoc: null, gestureSettledAssoc: null,
         });
         const pagerRows = (boundReply: Record<string, unknown>): Array<Record<string, unknown>> => {
             const out: Array<Record<string, unknown>> = [];

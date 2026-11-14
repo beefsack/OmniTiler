@@ -966,7 +966,7 @@ describe("world genuine-producer workspace selection journeys", () => {
             // stays empty and no proven focus is ever fabricated.
             assert.deepEqual(
                 reply["switchSettled"],
-                [{ op: "op-1", outcome: "completed-with-failures", focus: "unproven", failed: [], fallback: false }],
+                [{ out: "out", op: "op-1", outcome: "completed-with-failures", focus: "unproven", failed: [], fallback: false }],
                 "focus-bearing binding without feedback stays unproven",
             );
             const ids = ((reply["windows"] as Array<Record<string, unknown>>).map((w) => w["win"] as string)).sort();
@@ -984,7 +984,11 @@ describe("world genuine-producer workspace selection journeys", () => {
             assert.deepEqual(admIds, ["win-a", "win-b", "win-c", "win-d", "win-e"], "published window set exact after admission");
             const newcomer = (admitted["windows"] as Array<Record<string, unknown>>).find((w) => w["win"] === "win-e");
             assert.equal(newcomer?.["ws"], selectedLogical(admitted, "ws2"), "newcomer lands on the selected workspace");
-            assert.deepEqual(admitted["switchSettled"], [], "terminal never replays on later captures");
+            assert.deepEqual(
+                admitted["switchSettled"],
+                [{ out: "out", op: "op-1", outcome: "completed-with-failures", focus: "unproven", failed: [], fallback: false }],
+                "retained switch outcome remains readable on later captures",
+            );
             appliedMatchesReply(h, admitted);
             const at = h.wins.findIndex((w) => w.internalId === "win-d");
             assert.ok(at >= 0, "win-d present before close");
@@ -995,7 +999,11 @@ describe("world genuine-producer workspace selection journeys", () => {
             const closed = lastDescribeReply(h);
             const closedIds = ((closed["windows"] as Array<Record<string, unknown>>).map((w) => w["win"] as string)).sort();
             assert.deepEqual(closedIds, ["win-a", "win-b", "win-c", "win-e"], "published window set exact after close");
-            assert.deepEqual(closed["switchSettled"], [], "terminal never replays after close");
+            assert.deepEqual(
+                closed["switchSettled"],
+                [{ out: "out", op: "op-1", outcome: "completed-with-failures", focus: "unproven", failed: [], fallback: false }],
+                "retained switch outcome remains readable after window close",
+            );
             appliedMatchesReply(h, closed);
         } finally {
             await h.stop();
@@ -1035,7 +1043,7 @@ describe("world genuine-producer workspace selection journeys", () => {
             // evidence.
             assert.deepEqual(
                 reply["switchSettled"],
-                [{ op: "op-1", outcome: "complete", focus: "unproven", failed: [], fallback: false }],
+                [{ out: "out", op: "op-1", outcome: "complete", focus: "unproven", failed: [], fallback: false }],
                 "focusless binding settles one terminal",
             );
             assert.deepEqual(reply["effects"], [], "no focus effect is invented for an empty target");

@@ -13,10 +13,10 @@ const FROZEN_DIR = join("..", "test-fixtures", "world-wire", "v4", "messages");
 const raw = (name: string): string => readFileSync(join(DIR, name), "utf8");
 const frozenRaw = (name: string): string => readFileSync(join(FROZEN_DIR, name), "utf8");
 const doc = (name: string): Record<string, unknown> => JSON.parse(raw(name));
-// Broker bind_response semantics: quoted-decimal watermark/clock plus a
-// null gestureAssoc default on the bound capture lane.
+// Broker bind_response semantics: quoted-decimal watermark/clock plus null
+// gestureAssoc / gestureSettledAssoc defaults on the bound capture lane.
 const boundText = (body: Record<string, unknown>): string =>
-    JSON.stringify({ ...body, source: "src-a", nativeInvalid: "1", clock: "2", gestureAssoc: null });
+    JSON.stringify({ ...body, source: "src-a", nativeInvalid: "1", clock: "2", gestureAssoc: null, gestureSettledAssoc: null });
 const clone = (name: string): Record<string, unknown> => JSON.parse(raw(name));
 
 describe("world-reply-v4", () => {
@@ -59,7 +59,7 @@ describe("world-reply-v4", () => {
         const sw = parseWorldReply(boundText(doc("reply-switch-proven.json")));
         assert.ok(isCoreWorldReply(sw));
         assert.deepEqual(sw.switchSettled, [
-            { op: "view-a", outcome: "complete", failed: [], focus: "proven", fallback: false },
+            { out: "out-a", op: "view-a", outcome: "complete", failed: [], focus: "proven", fallback: false },
         ]);
         const dg = parseWorldReply(boundText(doc("reply-row-diagnostics.json")));
         assert.ok(isCoreWorldReply(dg));
@@ -264,7 +264,7 @@ describe("world-reply-v4", () => {
         assert.equal(parsed.result, null);
         // Broker-owned actuator association round-trips verbatim.
         const assoc = { instance: "inst-a", serial: "1", coreId: "1" };
-        const withAssoc = JSON.stringify({ ...clone("reply-observe.json"), source: "src-a", nativeInvalid: "1", clock: "2", gestureAssoc: assoc });
+        const withAssoc = JSON.stringify({ ...clone("reply-observe.json"), source: "src-a", nativeInvalid: "1", clock: "2", gestureAssoc: assoc, gestureSettledAssoc: null });
         const assocParsed = parseWorldReply(withAssoc);
         assert.ok(isCoreWorldReply(assocParsed));
         assert.deepEqual(assocParsed.gestureAssoc, assoc);

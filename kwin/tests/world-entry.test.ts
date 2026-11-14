@@ -590,7 +590,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         v: 4, adapter: "test-adapter", gen, req: source, obs: rev, rev,
         ready: true, consumed: false,
         source, nativeInvalid, clock: "1",
-        gestureSettled: null, gestureAssoc: null,
+        gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
         focusRequest: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
@@ -889,7 +889,7 @@ describe("world entry discovery and observation", () => {
         const callsBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
         h.lastCall("DescribeWorld").callback(JSON.stringify({
             v: 4, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
-            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null,
+            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null, gestureSettledAssoc: null,
         }));
         // A fresh discovery goes out; the dropped command is NOT redispatched
         // as a DescribeWorld (only the new DiscoverWorld handshake; the
@@ -1365,7 +1365,7 @@ describe("world entry discovery and observation", () => {
         h.runTimers();
         h.lastCall("DescribeWorld").callback(JSON.stringify({
             v: 4, outcome: "rejected", kind: "busy", message: "busy", gen: "gen-1",
-            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null,
+            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null, gestureSettledAssoc: null,
         }));
         // No timer-driven retry was scheduled beyond the debounce/timeout
         // pair: recovery waits for the next native event (dirty flag set).
@@ -1725,7 +1725,7 @@ describe("world entry rapid directional FIFO", () => {
         // survives for the next drain.
         h.lastCall("DescribeWorld").callback(JSON.stringify({
             v: 4, outcome: "rejected", kind: "busy", message: "busy", gen: "gen-1",
-            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null,
+            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null, gestureSettledAssoc: null,
         }));
         // No native event and no new press: the terminal failure alone
         // redrains the parked tail.
@@ -1785,7 +1785,7 @@ describe("world entry rapid directional FIFO", () => {
         // belongs to the dead generation.
         h.lastCall("DescribeWorld").callback(JSON.stringify({
             v: 4, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
-            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null,
+            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null, gestureSettledAssoc: null,
         }));
         assert.ok(h.logs.some((l) => l.includes("queue-dropped reason=generation-mismatch depth=2")));
         assert.equal(handshakeCount(h), 2);
@@ -4869,7 +4869,7 @@ describe("world entry focus feedback production regression", () => {
             runTimers();
             const later = await flushNextDescribe();
             const laterSwitchEvents = (later.reply["switchSettled"] ?? []) as Array<Record<string, unknown>>;
-            assert.equal(laterSwitchEvents.length, 0, `no switch event after the terminal one: ${later.rawReply.slice(0, 500)}`);
+            assert.deepEqual(laterSwitchEvents, switchEvents, `retained switch event stays stable after settlement: ${later.rawReply.slice(0, 500)}`);
             const laterInner = (later.req["report"] ?? later.req) as Record<string, unknown>;
             const laterFeedbackWire = (laterInner["focusFeedback"] ?? []) as Array<Record<string, unknown>>;
             assert.ok(
@@ -4915,10 +4915,10 @@ describe("world entry focus feedback production regression", () => {
         assert.equal(driven.feedbackWire[0]!["setter"], "accepted", "production setter accepted");
         assert.equal(driven.feedbackWire[0]!["foregroundProven"], true, "genuine foreground proof rides");
         assert.ok(Array.isArray(driven.feedbackWire[0]!["arrival"]) && (driven.feedbackWire[0]!["arrival"] as Array<unknown>).length >= 1, "populated grant carries arrival brackets");
-        // Deterministic no-replay proof (driven inside the helper, never
-        // vacuous): a real post-settlement capture carried no further
-        // switch event, no new feedback row, and no second setter call.
-        assert.equal(driven.laterSwitchEvents.length, 0, "no switch event after the terminal one");
+        // Deterministic retention proof (driven inside the helper, never
+        // vacuous): a real post-settlement capture retains the identical
+        // switch outcome, with no new feedback row and no second setter call.
+        assert.deepEqual(driven.laterSwitchEvents, driven.switchEvents, "retained switch event stays stable after settlement");
         assert.equal(driven.focusSets, 1, "exactly one focus setter call end to end");
     });
 
@@ -4939,10 +4939,10 @@ describe("world entry focus feedback production regression", () => {
         assert.equal(driven.feedbackWire[0]!["setter"], "accepted", "resumed production setter accepted");
         assert.equal(driven.feedbackWire[0]!["foregroundProven"], true, "genuine foreground proof rides on resume");
         assert.ok(Array.isArray(driven.feedbackWire[0]!["arrival"]) && (driven.feedbackWire[0]!["arrival"] as Array<unknown>).length >= 1, "resumed grant carries arrival brackets");
-        // Deterministic no-replay proof (driven inside the helper, never
-        // vacuous): a real post-settlement capture carried no further
-        // switch event, no new feedback row, and no second setter call.
-        assert.equal(driven.laterSwitchEvents.length, 0, "no switch event after the terminal one");
+        // Deterministic retention proof (driven inside the helper, never
+        // vacuous): a real post-settlement capture retains the identical
+        // switch outcome, with no new feedback row and no second setter call.
+        assert.deepEqual(driven.laterSwitchEvents, driven.switchEvents, "retained switch event stays stable after settlement");
         assert.equal(driven.focusSets, 1, "exactly one focus setter call end to end");
     });
 
@@ -4975,7 +4975,7 @@ describe("world entry focus feedback production regression", () => {
         assert.equal(driven.switchEvents.length, 1, "one terminal switch event");
         assert.equal(driven.switchEvents[0]!["outcome"], "complete", "healthy own echoes complete");
         assert.equal(driven.switchEvents[0]!["focus"], "proven", "healthy own echoes prove focus");
-        assert.equal(driven.laterSwitchEvents.length, 0, "no switch event after the terminal one");
+        assert.deepEqual(driven.laterSwitchEvents, driven.switchEvents, "retained switch event stays stable after settlement");
         assert.ok(!driven.laterFeedbackWire.some((row) => row["id"] !== driven.feedbackId), "no new feedback rows after settlement");
         for (const row of driven.laterFeedbackWire) {
             assert.equal(row["attemptMs"], driven.feedbackAttemptMs, "re-carried row retains the original stamp");
@@ -5474,7 +5474,7 @@ describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
         const headBody = JSON.parse(head.payload) as Record<string, unknown>;
         head.callback(JSON.stringify({
             v: 4, outcome: "rejected", kind: "busy", message: "busy",
-            gen: "gen-1", source: "", nativeInvalid: "0", clock: "1", gestureAssoc: null,
+            gen: "gen-1", source: "", nativeInvalid: "0", clock: "1", gestureAssoc: null, gestureSettledAssoc: null,
         }));
         assert.equal(queueCalls(h).length, 1, "no inline resubmit after a nonpermanent refusal");
         assert.equal(

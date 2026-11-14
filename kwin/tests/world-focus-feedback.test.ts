@@ -75,7 +75,7 @@ function replyText(opts: {
         v: 4, adapter: "test-adapter", gen: "gen-1", req: "req-1",
         obs: opts.obs ?? "1", rev: opts.rev ?? "1", ready: true, consumed: false,
         source: "req-1", nativeInvalid: "1", clock: opts.clock ?? "1",
-        gestureSettled: null, gestureAssoc: null,
+        gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
         focusRequest: opts.focusRequest,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,

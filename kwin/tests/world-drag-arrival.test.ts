@@ -19,7 +19,7 @@ function arrivalReply(): WorldReply {
         source: "req-1",
         nativeInvalid: "1",
         clock: "0",
-        gestureSettled: null, gestureAssoc: null,
+        gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
         focusRequest: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,

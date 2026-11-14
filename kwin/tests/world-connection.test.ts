@@ -40,7 +40,7 @@ function boundMismatch(gen: string): string {
     return JSON.stringify({
         v: 4, outcome: "rejected", kind: "generation-mismatch",
         message: "generation-mismatch", gen,
-        source: "", nativeInvalid: "0", clock: "7", gestureAssoc: null,
+        source: "", nativeInvalid: "0", clock: "7", gestureAssoc: null, gestureSettledAssoc: null,
     });
 }
 

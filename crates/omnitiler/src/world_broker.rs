@@ -807,6 +807,34 @@ impl WorldBroker {
             .back()
             .is_some_and(|queued| command_is_drag_preview(&queued.command));
         let (outcome, settlements) = self.engine.handle_report(&plain_report, &batch);
+        self.finish_capture_outcome(
+            &parsed,
+            envelope,
+            clock,
+            covered,
+            staged_gesture_map,
+            gesture_assoc,
+            drained,
+            last_drag_command,
+            outcome,
+            settlements,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_capture_outcome(
+        &mut self,
+        parsed: &ParsedCapture,
+        envelope: &str,
+        clock: u64,
+        covered: Option<CoverWitness>,
+        mut staged_gesture_map: crate::kde_gesture::KdeGestureMap,
+        gesture_assoc: Option<crate::kde_gesture::GestureAssoc>,
+        drained: VecDeque<QueuedCommand>,
+        last_drag_command: bool,
+        outcome: WorldOutcome,
+        settlements: Vec<tiler_core::world_report::BatchSettlement>,
+    ) -> Result<String, BrokerError> {
         // Settle FIFO from the per-command settlements: a typed `Rejected`
         // result settles that command terminally as failed with the core
         // kind, any other result readies it with the encoded outcome.
@@ -815,7 +843,11 @@ impl WorldBroker {
         // duplicate/consumed verdict): they repark at the head in order,
         // ahead of arrivals filed during this dispatch, so nothing parked
         // is ever silently lost.
-        let (outcome, command_produced_preview) = match outcome {
+        // `CommandConsumed` is a genuine accepted observation progression
+        // (it can open, settle, or close an active gesture), so pins must
+        // reconcile there just like `Accepted`, while still reparking any
+        // drained batch. `Duplicate` is a cached replay with no transition.
+        let (outcome, command_produced_preview, reply_gesture_settled) = match outcome {
             WorldOutcome::Accepted(reply) => {
                 let encoded = encode_world_reply(&reply)?;
                 let produced = last_drag_command
@@ -824,16 +856,35 @@ impl WorldBroker {
                         Some(tiler_core::world_report::CommandResult::DragPreview { .. })
                     );
                 self.settle_batch(&drained, &settlements)?;
-                (FreshOutcome::Reply(encoded), produced)
+                staged_gesture_map.reconcile_pins(
+                    self.engine.active_gesture_id(),
+                    reply.gesture_settled.map(|settled| settled.id),
+                    gesture_assoc.as_ref(),
+                );
+                (
+                    FreshOutcome::Reply(encoded),
+                    produced,
+                    reply.gesture_settled,
+                )
             }
-            WorldOutcome::Duplicate(reply) | WorldOutcome::CommandConsumed(reply) => {
+            WorldOutcome::CommandConsumed(reply) => {
                 let encoded = encode_world_reply(&reply)?;
                 self.repark_batch(drained);
-                (FreshOutcome::Reply(encoded), false)
+                staged_gesture_map.reconcile_pins(
+                    self.engine.active_gesture_id(),
+                    reply.gesture_settled.map(|settled| settled.id),
+                    gesture_assoc.as_ref(),
+                );
+                (FreshOutcome::Reply(encoded), false, reply.gesture_settled)
+            }
+            WorldOutcome::Duplicate(reply) => {
+                let encoded = encode_world_reply(&reply)?;
+                self.repark_batch(drained);
+                (FreshOutcome::Reply(encoded), false, reply.gesture_settled)
             }
             WorldOutcome::Rejected { kind, message } => {
                 self.repark_batch(drained);
-                (FreshOutcome::Rejected { kind, message }, false)
+                (FreshOutcome::Rejected { kind, message }, false, None)
             }
         };
         match outcome {
@@ -843,7 +894,7 @@ impl WorldBroker {
                 // (last accepted projection only) nor the watermark floor,
                 // so a failed drain can never wedge or poison the cached
                 // full reply. The batch already reparks and stays untouched.
-                self.remember_rejection(&parsed, envelope, kind, message, clock)
+                self.remember_rejection(parsed, envelope, kind, message, clock)
             }
             FreshOutcome::Reply(encoded) => {
                 // Staged gesture map installs only on the accepted reply:
@@ -852,6 +903,10 @@ impl WorldBroker {
                 // above discarded their staged mutation by reaching this
                 // arm selectively.
                 self.gesture_map = staged_gesture_map;
+                let settled_assoc = self
+                    .gesture_map
+                    .terminal_assoc_for(reply_gesture_settled.map(|settled| settled.id))
+                    .cloned();
                 // The actuator lane never carries the terminal result
                 // (requester-only even when the actuator is the issuer); the
                 // projection cache keeps the snapshot plus presentation only,
@@ -888,14 +943,18 @@ impl WorldBroker {
                     _ => CarriedPreview::unproven(preview_geometry),
                 };
                 let stripped = strip_result(&encoded);
-                let with_assoc = inject_gesture_assoc(&stripped, gesture_assoc.as_ref());
+                let with_assoc = inject_gesture_assocs(
+                    &stripped,
+                    gesture_assoc.as_ref(),
+                    settled_assoc.as_ref(),
+                );
                 let bound =
                     bind_response(&with_assoc, &parsed.source, parsed.native_invalid, clock);
                 if bound.len() > WORLD_MAX_REPLY_BYTES {
                     return Err(BrokerError::Oversized);
                 }
                 self.presentation = Some(project_reply(&stripped, preview.as_ref()));
-                self.presentation_covered = covered.clone();
+                self.presentation_covered = covered;
                 self.watermarks
                     .insert(parsed.adapter.clone(), parsed.native_invalid);
                 self.remember_response(&parsed.source, envelope.as_bytes(), &bound);
@@ -1852,42 +1911,46 @@ fn bind_response(reply: &str, source: &str, watermark: u64, clock: u64) -> Strin
             json_string(&watermark.to_string()),
         );
         map.insert("clock".to_owned(), json_string(&clock.to_string()));
-        // Broker-owned bound actuator association defaults to null here;
-        // the accepted-reply path overwrites it via `inject_gesture_assoc`
+        // Broker-owned bound actuator associations default to null here;
+        // the accepted-reply path overwrites them via `inject_gesture_assocs`
         // before binding. Rejections and errors always carry null (never a
         // fabricated binding), so the script can require the association
         // without a separate absence proof.
         if !map.contains_key("gestureAssoc") {
             map.insert("gestureAssoc".to_owned(), serde_json::Value::Null);
         }
+        if !map.contains_key("gestureSettledAssoc") {
+            map.insert("gestureSettledAssoc".to_owned(), serde_json::Value::Null);
+        }
     }
     value.to_string()
 }
 
-/// Attach the broker-only bound actuator association for the actual
-/// normalized ingress (`{instance, serial, coreId}`) to one stripped
-/// accepted reply, or an explicit null when the lane omitted. The key is
-/// broker-owned (never core/protocol): the exact response replay caches
-/// it verbatim, so an unrelated settled id can never alias the current
-/// ingress. Pure over the strings.
-fn inject_gesture_assoc(reply: &str, assoc: Option<&crate::kde_gesture::GestureAssoc>) -> String {
+fn assoc_json(assoc: Option<&crate::kde_gesture::GestureAssoc>) -> serde_json::Value {
+    match assoc {
+        Some(a) => serde_json::json!({
+            "instance": a.instance,
+            "serial": a.serial,
+            "coreId": a.core_id.to_string(),
+        }),
+        None => serde_json::Value::Null,
+    }
+}
+
+/// Attach the broker-only bound actuator associations for the actual
+/// normalized ingress (`gestureAssoc`) and the retained gesture terminal
+/// (`gestureSettledAssoc`) to one stripped accepted reply, or explicit nulls
+/// when absent. Both keys are broker-owned (never core/protocol): the exact
+/// response replay caches them verbatim. Pure over the strings.
+fn inject_gesture_assocs(
+    reply: &str,
+    assoc: Option<&crate::kde_gesture::GestureAssoc>,
+    settled_assoc: Option<&crate::kde_gesture::GestureAssoc>,
+) -> String {
     let mut value: serde_json::Value = serde_json::from_str(reply).unwrap_or_default();
     if let Some(map) = value.as_object_mut() {
-        match assoc {
-            Some(a) => {
-                map.insert(
-                    "gestureAssoc".to_owned(),
-                    serde_json::json!({
-                        "instance": a.instance,
-                        "serial": a.serial,
-                        "coreId": a.core_id.to_string(),
-                    }),
-                );
-            }
-            None => {
-                map.insert("gestureAssoc".to_owned(), serde_json::Value::Null);
-            }
-        }
+        map.insert("gestureAssoc".to_owned(), assoc_json(assoc));
+        map.insert("gestureSettledAssoc".to_owned(), assoc_json(settled_assoc));
     }
     value.to_string()
 }
@@ -2982,5 +3045,207 @@ mod tests {
         let broker = WorldBroker::new();
         let first = broker.monotonic_ms();
         assert!(broker.monotonic_ms() >= first);
+    }
+
+    #[test]
+    fn command_consumed_close_reconciles_pinned_settled_assoc_and_reparks_batch() {
+        let mut broker = WorldBroker::new();
+        let adapter = "kwin-actuator-1";
+        let hs = format!(
+            "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"hs-1\",\
+              \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\
+              \"processId\":\"pid-own-1\"}},\
+              \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
+              \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
+              \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+        );
+        let _ = broker.discover_connection(&hs).expect("handshake");
+        let generation = broker.generation().to_owned();
+        let _ = broker
+            .discover_connection(&settings_message(adapter, &generation, "set-1"))
+            .expect("settings");
+
+        let win_a = "{\"win\":\"win-a\",\"out\":\"DP-1\",\"rect\":[0,0,200,200],\
+            \"fullscreen\":false,\"maximized\":false,\"sticky\":false,\"minimized\":false,\
+            \"hints\":{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null},\
+            \"hostHidden\":false,\"privileged\":false,\"managed\":true,\"acceptsInput\":true,\
+            \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\
+            \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\"owner\":null,\
+            \"parent\":null,\"role\":null,\"appId\":null,\"executable\":null,\
+            \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
+            \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
+            \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"lastWrite\":null}";
+        // Seed one observation-only capture so win-a is admitted and ready
+        // before opening the gesture.
+        let seed_inner = format!(
+            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+            \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
+            \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
+            \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
+            \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
+            \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
+            \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
+            \"witness\":null,\"foregroundOut\":null}},\
+            \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}"
+        );
+        let seed_env = format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+            \"source\":\"src-0-t\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\
+            \"report\":{seed_inner}}}"
+        );
+        let _ = broker.dispatch_capture(&seed_env).expect("seed");
+
+        let open_inner = format!(
+            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+            \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
+            \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
+            \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
+            \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
+            \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
+            \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
+            \"witness\":null,\"foregroundOut\":null}},\
+            \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"gestureIngress\":null,\
+            \"nativeGesture\":{{\"v\":1,\"instance\":\"gesture-1\",\"serial\":\"1\",\"revision\":\"1\",\
+            \"phase\":\"started\",\"win\":\"win-a\",\"kind\":\"move\",\"startRect\":[0,0,200,200],\
+            \"startCursor\":[10,10],\"cursor\":[150,50],\"modalMove\":1,\"changed\":1,\
+            \"superseded\":0,\"available\":1}},\"cursorWindow\":null,\"nativeInvalidWitness\":null}}"
+        );
+        let open_env = format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+            \"source\":\"src-1-t\",\"sourceSeq\":\"2\",\"nativeInvalid\":\"2\",\
+            \"report\":{open_inner}}}"
+        );
+        let opened: serde_json::Value =
+            serde_json::from_str(&broker.dispatch_capture(&open_env).expect("open")).expect("JSON");
+        let assoc1 = serde_json::json!({"instance": "gesture-1", "serial": "1", "coreId": "1"});
+        assert_eq!(opened["gestureAssoc"], assoc1);
+        assert_eq!(broker.engine.active_gesture_id(), Some(1));
+
+        // Advance engine command_highwater to 1 via a normal command report.
+        let mut cmd_inner: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str::<serde_json::Value>(&open_inner)
+                .expect("obj")
+                .as_object()
+                .expect("map")
+                .clone();
+        cmd_inner.remove("nativeGesture");
+        cmd_inner.remove("cursorWindow");
+        cmd_inner.remove("nativeInvalidWitness");
+        let cmd_obs = broker.take_observation_seq().expect("obs").to_string();
+        let cmd_req = broker.take_request_seq().expect("req").to_string();
+        cmd_inner.insert("adapter".to_owned(), json_string(adapter));
+        cmd_inner.insert("gen".to_owned(), json_string(&generation));
+        cmd_inner.insert("obs".to_owned(), json_string(&cmd_obs));
+        cmd_inner.insert("reqSeq".to_owned(), json_string(&cmd_req));
+        cmd_inner.insert("req".to_owned(), json_string("src-2-t"));
+        cmd_inner.insert("cmdSeq".to_owned(), json_string("1"));
+        cmd_inner.insert(
+            "command".to_owned(),
+            serde_json::json!({"op":"select-numbered","out":null,"index":1}),
+        );
+        cmd_inner.insert("monotonicMs".to_owned(), json_string("3"));
+        let cmd_report = decode_request(&serde_json::Value::Object(cmd_inner.clone()).to_string())
+            .expect("valid command report");
+        let (cmd_outcome, _) = broker.engine.handle_report(&cmd_report, &[]);
+        assert!(matches!(cmd_outcome, WorldOutcome::Accepted(_)));
+
+        // Queue a pending command that must be reparked on CommandConsumed.
+        let parked = QueuedCommand {
+            global_seq: 99,
+            sender: ":1.1".to_owned(),
+            client: "client-1".to_owned(),
+            client_cmd: "cmd-parked".to_owned(),
+            command: serde_json::json!({"op":"select-numbered","out":null,"index":1}),
+        };
+        let mut drained = VecDeque::new();
+        drained.push_back(parked);
+
+        // Fresh report with already-consumed cmdSeq=1 closes win-a with omitted
+        // gesture ingress -> WorldOutcome::CommandConsumed settles gesture 1.
+        let consumed_obs = broker.take_observation_seq().expect("obs").to_string();
+        let consumed_req = broker.take_request_seq().expect("req").to_string();
+        cmd_inner.insert("obs".to_owned(), json_string(&consumed_obs));
+        cmd_inner.insert("reqSeq".to_owned(), json_string(&consumed_req));
+        cmd_inner.insert("req".to_owned(), json_string("src-3-t"));
+        cmd_inner.insert("windows".to_owned(), serde_json::json!([]));
+        cmd_inner.insert("closed".to_owned(), serde_json::json!(["win-a"]));
+        let consumed_report = decode_request(&serde_json::Value::Object(cmd_inner).to_string())
+            .expect("valid consumed close report");
+        let (consumed_outcome, consumed_settlements) =
+            broker.engine.handle_report(&consumed_report, &[]);
+        assert!(matches!(consumed_outcome, WorldOutcome::CommandConsumed(_)));
+
+        let parsed = ParsedCapture {
+            adapter: adapter.to_owned(),
+            generation: generation.clone(),
+            source: "src-3-t".to_owned(),
+            source_seq: 4,
+            native_invalid: 4,
+            inner: serde_json::Map::new(),
+        };
+        let staged_map = broker.gesture_map.clone();
+        let reply_str = broker
+            .finish_capture_outcome(
+                &parsed,
+                "{\"synthetic\":true}",
+                4,
+                None,
+                staged_map,
+                None,
+                drained,
+                false,
+                consumed_outcome,
+                consumed_settlements,
+            )
+            .expect("consumed outcome finishes");
+        let reply: serde_json::Value = serde_json::from_str(&reply_str).expect("JSON");
+        assert!(reply["gestureAssoc"].is_null());
+        assert_eq!(reply["gestureSettled"]["id"], serde_json::json!("1"));
+        assert_eq!(
+            reply["gestureSettled"]["committed"],
+            serde_json::json!(false)
+        );
+        assert_eq!(reply["gestureSettledAssoc"], assoc1);
+        assert_eq!(
+            broker.pending.len(),
+            1,
+            "drained batch reparks on CommandConsumed"
+        );
+        assert_eq!(broker.pending[0].global_seq, 99);
+
+        // Subsequent idle capture retains the pinned gestureSettledAssoc.
+        broker.pending.clear();
+        let idle_env = format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+            \"source\":\"src-4-t\",\"sourceSeq\":\"5\",\"nativeInvalid\":\"5\",\
+            \"report\":{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+            \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
+            \"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
+            \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
+            \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
+            \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\
+            \"witness\":null,\"foregroundOut\":null}},\
+            \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\
+            \"nativeInvalidWitness\":null}}}}"
+        );
+        let idle_reply: serde_json::Value =
+            serde_json::from_str(&broker.dispatch_capture(&idle_env).expect("idle")).expect("JSON");
+        assert!(idle_reply["gestureAssoc"].is_null());
+        assert_eq!(idle_reply["gestureSettled"]["id"], serde_json::json!("1"));
+        assert_eq!(idle_reply["gestureSettledAssoc"], assoc1);
     }
 }

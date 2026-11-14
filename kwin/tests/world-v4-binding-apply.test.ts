@@ -24,7 +24,7 @@ const doc = (name: string): Record<string, unknown> =>
 // with request correlation: the test flight source names the reply req,
 // so source-correlation binds exactly.
 const boundText = (body: Record<string, unknown>, source: string): string =>
-    JSON.stringify({ ...body, req: source, source, nativeInvalid: "1", clock: "2", gestureAssoc: null });
+    JSON.stringify({ ...body, req: source, source, nativeInvalid: "1", clock: "2", gestureAssoc: null, gestureSettledAssoc: null });
 
 function parseBound(name: string, source: string): WorldReply {
     const parsed = parseWorldReply(boundText(doc(name), source));

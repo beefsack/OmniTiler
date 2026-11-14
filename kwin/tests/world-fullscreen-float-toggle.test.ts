@@ -357,7 +357,7 @@ function makeHarness(initial: LiveSpec[]) {
             source,
             nativeInvalid,
             clock: "1",
-            gestureSettled: null, gestureAssoc: null,
+            gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
             focusRequest: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
@@ -1479,7 +1479,7 @@ describe("world native pending settlement", () => {
         h.runTimers();
         h.lastCall("DescribeWorld").callback(JSON.stringify({
             v: 4, outcome: "rejected", kind: "busy", message: "busy", gen: "gen-1",
-            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null,
+            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null, gestureSettledAssoc: null,
         }));
         assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [], "rejection writes nothing");
         assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "rejection never fails the shortcut label");
@@ -1535,7 +1535,7 @@ describe("world native pending settlement", () => {
         h.runTimers();
         h.lastCall("DescribeWorld").callback(JSON.stringify({
             v: 4, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
-            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null,
+            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null, gestureSettledAssoc: null,
         }));
         assert.ok(h.logs.some((l) => l.includes("generation-mismatch recovery=rediscover")), "mismatch rediscovers");
         assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "mismatch never fails the shortcut label");

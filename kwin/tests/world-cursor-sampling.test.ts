@@ -50,7 +50,7 @@ function acceptedReply(source: string, nativeInvalid: string, rev: string, extra
         v: 4, adapter: "test-adapter", gen: GEN, req: source, obs: rev, rev,
         ready: true, consumed: false,
         source, nativeInvalid, clock: "1",
-        gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [],
+        gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null, operationSettled: [], nativeCreations: [],
         warpCursor: null,
         intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,

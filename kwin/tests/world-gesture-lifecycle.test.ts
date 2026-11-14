@@ -141,13 +141,18 @@ describe("native gesture lifecycle transport", () => {
                             coreId: (globalThis as Record<string, unknown>)["__gestureCoreId"] as string ?? "1",
                         }
                         : null;
+                    const gestureSettled = ((globalThis as Record<string, unknown>)["__gestureSettled"] ?? null) as { id?: string } | null;
+                    const gestureSettledAssoc =
+                        ((globalThis as Record<string, unknown>)["__gestureSettledAssoc"] as typeof assoc | undefined) ??
+                        (gestureSettled !== null && assoc !== null && gestureSettled.id === assoc.coreId ? assoc : null);
                     // Strict v4 synthetic accept: producer adapter, serving generation, source/watermark binding, hidden presentation, null take-lane result.
                     const text = JSON.stringify({
                         v: 4, adapter: "test-adapter", gen: "gen-1", req: body.source, obs: String(describeRev), rev: String(describeRev),
                         ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
                         windows: [], transfers: [], effects: [], result: null,
-                        gestureSettled: (globalThis as Record<string, unknown>)["__gestureSettled"] ?? null,
+                        gestureSettled,
                         gestureAssoc: assoc,
+                        gestureSettledAssoc,
                         focusRequest: null,
                         operationSettled: [], nativeCreations: [], warpCursor: null,
                         intentDesired: [], switchSettled: [], diagnostics: [],
@@ -278,6 +283,7 @@ describe("native gesture broker cutover", () => {
         globalCalls: Array<{ method: string; payload: string }>;
         heldDescribes: Array<{ payload: string; callback: (reply: unknown) => void }>;
         answerHeld: (index?: number) => void;
+        logs: string[];
         stop: () => void;
     } {
         const ws1 = { id: "ws1", name: "Workspace 1" };
@@ -317,18 +323,21 @@ describe("native gesture broker cutover", () => {
         const calls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }> = [];
         const gestureCalls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }> = [];
         const heldDescribes: Array<{ payload: string; callback: (reply: unknown) => void }> = [];
+        const logs: string[] = [];
         const answerDescribePayload = (payload: string, callback: (reply: unknown) => void): void => {
             const body = JSON.parse(payload) as { source: string; nativeInvalid: string };
             describeRev += 1;
             const report = JSON.parse(payload).report as Record<string, unknown>;
             const assoc = harnessAssocFor(report);
             const settled = opts.settledHook?.(report, assoc) ?? null;
+            const settledAssoc =
+                settled !== null && assoc !== null && settled.id === assoc.coreId ? assoc : null;
             // Strict v4 synthetic accept: producer adapter, serving generation, source/watermark binding, hidden presentation, null take-lane result.
             const text = JSON.stringify({
                 v: 4, adapter: "test-adapter", gen: "gen-1", req: body.source, obs: String(describeRev), rev: String(describeRev),
                 ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
                 windows: [], transfers: [], effects: [], focusRequest: null, result: null,
-                gestureSettled: settled, gestureAssoc: assoc, operationSettled: [], nativeCreations: [], warpCursor: null,
+                gestureSettled: settled, gestureAssoc: assoc, gestureSettledAssoc: settledAssoc, operationSettled: [], nativeCreations: [], warpCursor: null,
                 intentDesired: [], switchSettled: [], diagnostics: [],
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
                 presentation: DISABLED_PRESENTATION,
@@ -422,7 +431,9 @@ describe("native gesture broker cutover", () => {
                 timers.push({ delay, cb });
                 return () => undefined;
             },
-            log: () => undefined,
+            log: (line) => {
+                logs.push(line);
+            },
         });
         assert.ok(handle !== null);
         const fireDelay = (delay: number): void => {
@@ -437,7 +448,7 @@ describe("native gesture broker cutover", () => {
         // Synchronous mocks already answered discovery during startup; flush the debounce.
         fireDelay(120);
         return {
-            calls, gestureCalls, fireDelay, globalCalls, heldDescribes, answerHeld,
+            calls, gestureCalls, fireDelay, globalCalls, heldDescribes, answerHeld, logs,
         fireNativeInvalidation: () => {
                 for (const handler of [...invalidateHandlers]) {
                     handler();
@@ -1176,15 +1187,12 @@ describe("native gesture broker cutover", () => {
         }
     });
 
-    // Faithful consume-once broker: the first processed source for a
-    // terminal identity settles it and its byte-identical response is
-    // cached; a byte-identical redelivery replays the cached response
-    // (even when stale), while a fresh source carrying the consumed
-    // terminal settles nothing. Mirrors the Rust
-    // exact_envelope_replay_recovers_byte_identical_settled_response
-    // contract. The settledHook blind-settle pattern must never be used
-    // for terminal-recovery tests: it settles every fresh source, which
-    // the real broker never does for a consumed terminal.
+    // Faithful retained-settlements broker: the first processed source for a
+    // terminal identity incorporates and retains gestureSettled and its
+    // originating gestureSettledAssoc independently of current ingress. A
+    // byte-identical redelivery replays the cached response (even when
+    // stale), while a fresh source carrying a consumed terminal does not
+    // re-execute it and continues projecting the retained outcome.
     function startFaithfulBroker(): {
         replyFor: (payload: string) => string;
     } {
@@ -1193,6 +1201,8 @@ describe("native gesture broker cutover", () => {
         const coreIds = new Map<string, string>();
         let nextCore = 1;
         const settledKeys = new Set<string>();
+        let retainedSettled: { id: string; committed: boolean } | null = null;
+        let retainedSettledAssoc: { instance: string; serial: string; coreId: string } | null = null;
         const cachedBySource = new Map<string, string>();
         const presentation = DISABLED_PRESENTATION;
         const replyFor = (payload: string): string => {
@@ -1206,7 +1216,6 @@ describe("native gesture broker cutover", () => {
             const report = (JSON.parse(payload) as { report: Record<string, unknown> }).report;
             const raw = report["nativeGesture"] as Record<string, unknown> | null;
             let assoc: { instance: string; serial: string; coreId: string } | null = null;
-            let settled: { id: string; committed: boolean } | null = null;
             if (
                 raw !== null && raw !== undefined &&
                 typeof raw["instance"] === "string" && typeof raw["serial"] === "string" &&
@@ -1223,16 +1232,17 @@ describe("native gesture broker cutover", () => {
                 if (raw["phase"] === "released" || raw["phase"] === "cancelled") {
                     if (!settledKeys.has(key)) {
                         settledKeys.add(key);
-                        settled = { id, committed: true };
+                        retainedSettled = { id, committed: true };
+                        retainedSettledAssoc = assoc;
                     }
                 }
             }
-            // Strict v4 synthetic faithful-broker accept: consume-once settlement with byte-identical cached replay, null take-lane result.
+            // Strict v4 synthetic faithful-broker accept: retained terminal projection with byte-identical cached replay, null take-lane result.
             const text = JSON.stringify({
                 v: 4, adapter: "test-adapter", gen: body.gen, req: body.source, obs: String(obs), rev: String(rev),
                 ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
                 windows: [], transfers: [], effects: [], focusRequest: null, result: null,
-                gestureSettled: settled, gestureAssoc: assoc, operationSettled: [], nativeCreations: [], warpCursor: null,
+                gestureSettled: retainedSettled, gestureAssoc: assoc, gestureSettledAssoc: retainedSettledAssoc, operationSettled: [], nativeCreations: [], warpCursor: null,
                 intentDesired: [], switchSettled: [], diagnostics: [],
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
                 presentation,
@@ -1243,6 +1253,17 @@ describe("native gesture broker cutover", () => {
             return text;
         };
         return { replyFor };
+    }
+
+    // Separate synthetic refusal seam: models a pre-processing busy rejection
+    // from the wire without invoking startFaithfulBroker() on the capture.
+    function nonDischargingBusyRejection(payload: string): string {
+        const body = JSON.parse(payload) as { gen: string; source: string; nativeInvalid: string };
+        return JSON.stringify({
+            v: 4, outcome: "rejected", kind: "busy", message: "busy",
+            gen: body.gen, source: body.source, nativeInvalid: body.nativeInvalid,
+            clock: "1", gestureAssoc: null, gestureSettledAssoc: null,
+        });
     }
 
     function driveOpenToTerminal(h: {
@@ -1288,11 +1309,14 @@ describe("native gesture broker cutover", () => {
 
     it("REGRESSION: reply loss after the broker settled the terminal recovers via exact same-envelope replay", () => {
         // Processed-reply-lost: the broker settles the terminal but the
-        // response never arrives. A later invalidation plus a fresh capture
-        // (which settles nothing: the terminal is consumed) must not kill
-        // the pending exact envelope. The bounded cadence replays the
-        // byte-identical bytes and the cached settlement acks the native
-        // FIFO exactly once, with no actuation from any stale snapshot.
+        // response never arrives. Two native invalidations advance the current
+        // watermark past the original envelope while a fresh capture receives
+        // a synthetic non-discharging busy rejection (without the faithful
+        // broker processing that capture), which must not kill the pending
+        // exact envelope. The bounded cadence replays the byte-identical
+        // original envelope; because its nativeInvalid watermark is now stale,
+        // entry suppresses snapshot actuation (logging superseded-during-flight)
+        // while the cached settlement still acks the native FIFO exactly once.
         const h = startCutoverHarness({ manualDescribe: true });
         const broker = startFaithfulBroker();
         const answerFaithful = (index: number): void => {
@@ -1308,7 +1332,8 @@ describe("native gesture broker cutover", () => {
             // The broker settles the terminal but the response is lost on
             // the wire: process (consume + cache) without delivering.
             const settledBytes = broker.replyFor(first.payload);
-            assert.ok((JSON.parse(settledBytes) as Record<string, unknown>)["gestureSettled"] !== null, "broker settled the terminal");
+            const settledParsed = JSON.parse(settledBytes) as Record<string, unknown>;
+            assert.ok(settledParsed["gestureSettled"] !== null, "broker settled the terminal");
             // Native input lands while the original capture is outstanding:
             // the watermark advances under the pending retry.
             h.fireNativeInvalidation();
@@ -1327,22 +1352,21 @@ describe("native gesture broker cutover", () => {
             assert.equal(h.heldDescribes.length, 1, "fresh re-carry goes out while the retry waits");
             const freshBytes = h.heldDescribes[0]?.payload as string;
             assert.ok(freshBytes !== firstBytes, "re-carry mints a fresh envelope, never the stale bytes");
-            // The fresh carry answers before its own timeout: the consumed
-            // terminal settles nothing, so no ack fires and the original
-            // envelope stays owed.
+            const firstEnv = JSON.parse(firstBytes) as { source: string; nativeInvalid: string };
+            const freshEnv = JSON.parse(freshBytes) as { source: string; nativeInvalid: string };
+            assert.notEqual(firstEnv.nativeInvalid, freshEnv.nativeInvalid, "original watermark differs from current native watermark");
+            // Separate synthetic refusal seam: the entry receives a
+            // non-discharging busy rejection on the fresh capture (without the
+            // faithful broker processing it), so the pending retry stays owed.
             const fresh = h.heldDescribes[0];
             assert.ok(fresh !== undefined);
             h.heldDescribes.splice(0, 1);
-            const freshReply = broker.replyFor(fresh.payload);
-            assert.equal((JSON.parse(freshReply) as Record<string, unknown>)["gestureSettled"], null, "consumed terminal never re-settles on a fresh source");
-            fresh.callback(freshReply);
-            assert.equal(h.gestureCalls.filter((c) => c.method === "AckGesture").length, 0, "no ack from the null-settlement fresh carry");
+            fresh.callback(nonDischargingBusyRejection(fresh.payload));
+            assert.equal(h.gestureCalls.filter((c) => c.method === "AckGesture").length, 0, "no ack from non-discharging busy rejection");
             // The retained retry now replays the byte-identical original
-            // envelope; the broker answers from cache (stale rev: a newer
-            // reply was already accepted, so only the ack-only lane may
-            // act, never stale snapshot setters).
+            // envelope; the broker answers from cache.
             h.fireDelay(2000);
-            assert.equal(h.heldDescribes.length, 1, "exact replay goes out after the fresh carry lands");
+            assert.equal(h.heldDescribes.length, 1, "exact replay goes out after the non-discharging carry lands");
             const replayBytes = h.heldDescribes[0]?.payload as string;
             assert.equal(replayBytes, firstBytes, "replay keeps the exact original bytes");
             const replay = h.heldDescribes[0];
@@ -1350,7 +1374,12 @@ describe("native gesture broker cutover", () => {
             h.heldDescribes.splice(0, 1);
             const replayReply = broker.replyFor(replay.payload);
             assert.equal(replayReply, settledBytes, "broker replays the byte-identical cached response");
+            const logCountBeforeReplay = h.logs.length;
             replay.callback(replayReply);
+            assert.ok(
+                h.logs.slice(logCountBeforeReplay).includes("omnitiler:world:stale reason=superseded-during-flight recovery=catchup"),
+                "stale-watermark replay suppresses snapshot actuation on the superseded-during-flight path",
+            );
             const acks = h.gestureCalls.filter((c) => c.method === "AckGesture");
             assert.equal(acks.length, 1, "cached settlement acks exactly once");
             assert.deepEqual(JSON.parse(acks[0]?.payload as string), { instance: "gesture-1", serial: "1" });
@@ -1364,8 +1393,10 @@ describe("native gesture broker cutover", () => {
         // Two losses in a row: the original terminal flight times out while
         // invalidated, then the fresh re-carry is lost too. The retry must
         // keep owning the OLDEST unrecovered envelope (never the newer
-        // re-carry, which can never retrieve the cached settlement) and the
-        // busy-wire fire must re-arm the same cadence instead of dropping.
+        // re-carry: while a fresh accepted reply can retrieve a matching
+        // retained outcome, only the exact original envelope retrieves the
+        // byte-identical cached response) and the busy-wire fire must re-arm
+        // the same cadence instead of dropping.
         const h = startCutoverHarness({ manualDescribe: true });
         const broker = startFaithfulBroker();
         const answerFaithful = (index: number): void => {
@@ -1411,22 +1442,21 @@ describe("native gesture broker cutover", () => {
             // because the envelope still replays below.
             h.fireDelay(25000);
             assert.equal(h.heldDescribes.length, 1, "busy wire re-arms instead of sending");
-            // The fresh carry answers: the consumed terminal settles
-            // nothing, so no ack fires and the oldest envelope stays owed
-            // (its loss must not replace the owned envelope either).
+            // Separate synthetic refusal seam: the fresh carry fails with a
+            // non-discharging busy rejection (without the broker processing
+            // it), so no ack fires and the oldest envelope stays owed (its
+            // failure must not replace the owned envelope either).
             const fresh = h.heldDescribes[0];
             assert.ok(fresh !== undefined);
             h.heldDescribes.splice(0, 1);
-            const freshReply = broker.replyFor(fresh.payload);
-            assert.equal((JSON.parse(freshReply) as Record<string, unknown>)["gestureSettled"], null, "consumed terminal never re-settles on a fresh source");
-            fresh.callback(freshReply);
-            assert.equal(h.gestureCalls.filter((c) => c.method === "AckGesture").length, 0, "no ack from the null-settlement fresh carry");
+            fresh.callback(nonDischargingBusyRejection(fresh.payload));
+            assert.equal(h.gestureCalls.filter((c) => c.method === "AckGesture").length, 0, "no ack from non-discharging busy rejection");
             // The retained oldest envelope replays byte-identically and the
             // cached settlement acks exactly once. A wait-lane host
             // timeout may win the wire first with one more fresh re-carry
             // (the harness never answers the wait lane, so its 25 s
-            // watchdog re-arms every round): each such carry settles
-            // nothing, and the owned envelope replays on the next round.
+            // watchdog re-arms every round): when that re-carry also gets a
+            // non-discharging response, the owned envelope replays next.
             for (let i = 0; i < 3; i += 1) {
                 h.fireDelay(25000);
                 const top: { payload: string; callback: (reply: unknown) => void } | undefined =
@@ -1436,11 +1466,9 @@ describe("native gesture broker cutover", () => {
                     break;
                 }
                 assert.ok(i < 2, "owned envelope replays after at most one wait-lane interleave");
-                const extra = broker.replyFor(top.payload);
-                assert.equal((JSON.parse(extra) as Record<string, unknown>)["gestureSettled"], null, "wait-lane re-carry settles nothing");
                 h.heldDescribes.splice(h.heldDescribes.length - 1, 1);
-                top.callback(extra);
-                assert.equal(h.gestureCalls.filter((c) => c.method === "AckGesture").length, 0, "no ack from a null-settlement re-carry");
+                top.callback(nonDischargingBusyRejection(top.payload));
+                assert.equal(h.gestureCalls.filter((c) => c.method === "AckGesture").length, 0, "no ack from non-discharging wait-lane re-carry");
             }
             assert.equal(h.heldDescribes.length, 1, "oldest envelope replays after the busy hold");
             const replayBytes = h.heldDescribes[0]?.payload as string;

@@ -1577,7 +1577,7 @@ fn reply_operation_settled_matches_core_sizing() {
     // only a float frame-proven event means observation confirmed the
     // float target.
     use tiler_core::directional::WindowId;
-    use tiler_core::world_report::{OperationEvent, OperationOutcome};
+    use tiler_core::world_report::{OperationEvent, OperationKind, OperationOutcome};
     let report = decode_request(&one_window_request()).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
     let mut reply = match engine.handle_report(&report, &[]).0 {
@@ -1586,26 +1586,30 @@ fn reply_operation_settled_matches_core_sizing() {
     };
     reply.operation_settled = vec![
         OperationEvent {
-            operation_id: "op-13".to_owned(),
             window: WindowId("win-max".to_owned()),
+            kind: OperationKind::Clear,
+            operation_id: "op-13".to_owned(),
             outcome: OperationOutcome::ClearContinuedTiled,
             cause: None,
         },
         OperationEvent {
-            operation_id: "op-14".to_owned(),
             window: WindowId("win-other".to_owned()),
+            kind: OperationKind::Clear,
+            operation_id: "op-14".to_owned(),
             outcome: OperationOutcome::ClearContinuationRefused,
             cause: Some("constraints".to_owned()),
         },
         OperationEvent {
-            operation_id: "op-15".to_owned(),
             window: WindowId("win-float".to_owned()),
+            kind: OperationKind::Float,
+            operation_id: "op-15".to_owned(),
             outcome: OperationOutcome::FloatFrameProven,
             cause: None,
         },
         OperationEvent {
-            operation_id: "op-16".to_owned(),
             window: WindowId("win-gone".to_owned()),
+            kind: OperationKind::Float,
+            operation_id: "op-16".to_owned(),
             outcome: OperationOutcome::FloatAbandoned,
             cause: Some("closed".to_owned()),
         },

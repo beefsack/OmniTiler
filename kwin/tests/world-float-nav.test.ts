@@ -301,7 +301,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         v: 4, adapter: "test-adapter", gen, req: source, obs: rev, rev,
         ready: true, consumed: false,
         source, nativeInvalid, clock: "1",
-        gestureSettled: null, gestureAssoc: null,
+        gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
         focusRequest: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,

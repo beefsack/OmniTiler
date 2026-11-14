@@ -226,6 +226,8 @@ pub struct KdeGestureMap {
     instance_order: VecDeque<String>,
     latest_instance: Option<String>,
     retired: HashSet<String>,
+    active_assoc: Option<GestureAssoc>,
+    terminal_assoc: Option<GestureAssoc>,
 }
 
 impl KdeGestureMap {
@@ -240,7 +242,74 @@ impl KdeGestureMap {
             instance_order: VecDeque::new(),
             latest_instance: None,
             retired: HashSet::new(),
+            active_assoc: None,
+            terminal_assoc: None,
         }
+    }
+
+    /// Pinned association for the currently retained core active gesture, if any.
+    #[cfg(test)]
+    #[must_use]
+    pub fn active_assoc(&self) -> Option<&GestureAssoc> {
+        self.active_assoc.as_ref()
+    }
+
+    /// Pinned association matching the given retained core terminal id, if any.
+    #[must_use]
+    pub fn terminal_assoc_for(&self, settled_id: Option<u64>) -> Option<&GestureAssoc> {
+        let id = settled_id?;
+        self.terminal_assoc
+            .as_ref()
+            .filter(|assoc| assoc.core_id == id)
+    }
+
+    /// Reconcile the two pinned associations after an accepted core
+    /// transition. Never infers active binding from `ingress_assoc` alone:
+    /// `active_id` comes from `WorldEngine::active_gesture_id()`, and
+    /// `settled_id` comes from the accepted `WorldReplyV4::gesture_settled`.
+    pub fn reconcile_pins(
+        &mut self,
+        active_id: Option<u64>,
+        settled_id: Option<u64>,
+        ingress_assoc: Option<&GestureAssoc>,
+    ) {
+        let prior_active = self.active_assoc.take();
+        self.terminal_assoc = match settled_id {
+            None => None,
+            Some(id) => {
+                if self
+                    .terminal_assoc
+                    .as_ref()
+                    .is_some_and(|assoc| assoc.core_id == id)
+                {
+                    self.terminal_assoc.clone()
+                } else if prior_active
+                    .as_ref()
+                    .is_some_and(|assoc| assoc.core_id == id)
+                {
+                    prior_active.clone()
+                } else if ingress_assoc.is_some_and(|assoc| assoc.core_id == id) {
+                    ingress_assoc.cloned()
+                } else {
+                    None
+                }
+            }
+        };
+        self.active_assoc = match active_id {
+            None => None,
+            Some(id) => {
+                if prior_active
+                    .as_ref()
+                    .is_some_and(|assoc| assoc.core_id == id)
+                {
+                    prior_active
+                } else if ingress_assoc.is_some_and(|assoc| assoc.core_id == id) {
+                    ingress_assoc.cloned()
+                } else {
+                    None
+                }
+            }
+        };
     }
 
     /// Normalize one inner report in place: validate the capture-only raw
@@ -747,5 +816,73 @@ mod tests {
             .expect("stale");
         assert_eq!(assoc, None);
         assert_eq!(evicted_replay["gestureIngress"], Value::Null);
+    }
+
+    #[test]
+    fn pinned_active_survives_256_eviction_and_resolves_omitted_terminal() {
+        let mut map = KdeGestureMap::new();
+        let mut first = inner_with(
+            native_open("gesture-1", "1", "1", serde_json::json!([150, 50])),
+            Value::Null,
+            Value::Null,
+            Value::Null,
+        );
+        let assoc1 = map
+            .normalize_gesture_lane(&mut first)
+            .expect("maps")
+            .expect("assoc1");
+        map.reconcile_pins(Some(assoc1.core_id), None, Some(&assoc1));
+        assert_eq!(map.active_assoc(), Some(&assoc1));
+        assert_eq!(map.terminal_assoc_for(Some(assoc1.core_id)), None);
+
+        // 256 unbindable newcomers evict (gesture-1, "1") from by_key, but
+        // core still reports active_id == 1, so active_assoc stays pinned.
+        for i in 0..MAX_GESTURE_IDENTITIES {
+            let serial = format!("{}", 2 + i);
+            let mut inner = inner_with(
+                native_open("gesture-1", &serial, "1", serde_json::json!([150, 50])),
+                Value::Null,
+                Value::Null,
+                Value::Null,
+            );
+            let newcomer = map
+                .normalize_gesture_lane(&mut inner)
+                .expect("maps")
+                .expect("newcomer");
+            map.reconcile_pins(Some(assoc1.core_id), None, Some(&newcomer));
+            assert_eq!(map.active_assoc(), Some(&assoc1));
+        }
+        assert!(
+            !map.by_key
+                .contains_key(&("gesture-1".to_owned(), "1".to_owned()))
+        );
+
+        // Close with omitted ingress settles active_id 1 -> terminal_assoc
+        // resolves from the pinned active_assoc, and active_assoc clears.
+        map.reconcile_pins(None, Some(assoc1.core_id), None);
+        assert_eq!(map.active_assoc(), None);
+        assert_eq!(map.terminal_assoc_for(Some(assoc1.core_id)), Some(&assoc1));
+    }
+
+    #[test]
+    fn reconcile_pins_resolves_one_shot_terminal_and_ignores_unrelated_ingress() {
+        let mut map = KdeGestureMap::new();
+        let assoc5 = GestureAssoc {
+            instance: "gesture-1".to_owned(),
+            serial: "5".to_owned(),
+            core_id: 5,
+        };
+        let assoc6 = GestureAssoc {
+            instance: "gesture-1".to_owned(),
+            serial: "6".to_owned(),
+            core_id: 6,
+        };
+        map.reconcile_pins(None, Some(5), Some(&assoc5));
+        assert_eq!(map.terminal_assoc_for(Some(5)), Some(&assoc5));
+        assert_eq!(map.terminal_assoc_for(Some(6)), None);
+
+        // Unrelated ingress while terminal 5 stays retained leaves pin intact.
+        map.reconcile_pins(None, Some(5), Some(&assoc6));
+        assert_eq!(map.terminal_assoc_for(Some(5)), Some(&assoc5));
     }
 }

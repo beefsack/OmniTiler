@@ -1763,9 +1763,10 @@ mod tests {
             vec![WindowId("win-a".to_owned()), WindowId("win-b".to_owned())]
         );
         assert_eq!(event.focus, SwitchFocus::Unproven);
+        let first_settled = reply.switch_settled.clone();
         // A second ordinary observation retries nothing: the spent desire
-        // is never re-emitted, the latched terminal never redelivers, and
-        // no second terminal follows from a retry.
+        // is never re-emitted, and the retained terminal stays unchanged
+        // with no second terminal from a retry.
         submit_v4(
             &case,
             mode,
@@ -1782,9 +1783,9 @@ mod tests {
             report.windows.iter().all(|w| w.last_write.is_none()),
             "spent verdicts are not re-emitted"
         );
-        assert!(
-            reply.switch_settled.is_empty(),
-            "no second terminal from a retry"
+        assert_eq!(
+            reply.switch_settled, first_settled,
+            "retains prior terminal without a second terminal from a retry"
         );
         assert!(sim.grants.is_empty(), "desire stays spent");
     }

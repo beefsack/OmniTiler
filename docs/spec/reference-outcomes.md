@@ -19,6 +19,13 @@ New reference-WM findings use latest stable release tags and inline source-versi
 labels under the [reference source policy](../decisions/reference-and-shortcuts.md#reference-outcome-authority).
 Existing citation keys retain historical pins until relied on again; KDE policy is unchanged.
 
+### Retained settlement lifetime discriminators
+
+| Minimal action sequence | Selected OmniTiler outcome | Unsupported outcome |
+| --- | --- | --- |
+| Complete float placement P1 for A; skip its terminal reply; admit P2 for A without native frame proof; consume only latest | User 2026-11-14, Q1 A: retain P1's float outcome while P2 is pending, replacing it only at P2's terminal. Match identity; P1 never completes P2 or grants another setter | Reference-WM and native KDE/macOS/Windows outcomes TBD; [contract](../porting/world-contract.md#retained-settlement-outcomes) |
+| Start clear or float placement for A; close A; skip the close reply and two publications; consume latest; admit a replacement using the old native handle. Repeat output departure for the switch owner | User 2026-11-14, Q2 A: remove outcome with departed owner, including final abandonment; emit trace diagnostic carrying the final dropped outcome. No replacement-window/output authority. Gesture outcome remains generation-scoped | Reference-WM and native KDE/macOS/Windows outcomes TBD; close/departure terminal delivery is explicitly retired, not claimed as retained delivery |
+
 ### Inventory hold and pending execution subject
 
 | Minimal action sequence | Current core evidence | Unsupported outcome / decision |

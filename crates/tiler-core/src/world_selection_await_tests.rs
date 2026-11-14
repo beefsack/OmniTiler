@@ -1565,7 +1565,10 @@ fn selection_without_suppression_caps_binds_focusless_with_direct_effect() {
             "",
         ),
     );
-    assert!(again.switch_settled.is_empty(), "terminal never replays");
+    assert_eq!(
+        again.switch_settled, done.switch_settled,
+        "retained terminal stays unchanged without re-settling"
+    );
 }
 
 #[test]
@@ -2283,9 +2286,9 @@ fn follow_send_settles_membership_before_selection_terminal() {
             "",
         ),
     );
-    assert!(
-        again.switch_settled.is_empty(),
-        "next report publishes empty"
+    assert_eq!(
+        again.switch_settled, done.switch_settled,
+        "next report retains prior terminal unchanged"
     );
 }
 
@@ -4695,9 +4698,9 @@ fn switch_all_confirmed_completes_with_proven_focus() {
             "",
         ),
     );
-    assert!(
-        again.switch_settled.is_empty(),
-        "next report publishes empty"
+    assert_eq!(
+        again.switch_settled, reply.switch_settled,
+        "next report retains prior terminal unchanged"
     );
 }
 
@@ -5310,8 +5313,10 @@ fn switch_estimate_and_reserve_cover_maximum_ids() {
         switch_settled_estimate,
     };
     let long_window = "w".repeat(128);
+    let long_output = "o".repeat(128);
     let long_op = format!("op-{}", u64::MAX);
     let event = SwitchEvent {
+        output: OutputId(long_output),
         operation_id: long_op,
         outcome: SwitchOutcome::CompletedWithFailures,
         failed: vec![WindowId(long_window)],
@@ -5345,6 +5350,7 @@ fn switch_marginal_empty_event_reserve_covers_worst_tokens() {
     use crate::world_report::{SwitchEvent, SwitchFocus, SwitchOutcome};
     use crate::world_sizing::{max_switch_settle_reserve, switch_settled_estimate};
     let worst = || SwitchEvent {
+        output: OutputId("o".repeat(128)),
         operation_id: format!("op-{}", u64::MAX),
         outcome: SwitchOutcome::CompletedWithFailures,
         failed: Vec::new(),
@@ -5354,12 +5360,12 @@ fn switch_marginal_empty_event_reserve_covers_worst_tokens() {
     for events in [vec![worst()], vec![worst(), worst()]] {
         let n = events.len();
         let estimated = switch_settled_estimate(&events);
-        // Exact content: 116 bytes per worst-token empty event
-        // (51 + 25 + 25 + 10 + 5), one comma between rows, plus the
+        // Exact content: 253 bytes per worst-token empty event
+        // (58 + 130 + 25 + 25 + 10 + 5), one comma between rows, plus the
         // 19-byte section key.
         assert_eq!(
             estimated,
-            19 + n * 116 + (n - 1),
+            19 + n * 253 + (n - 1),
             "exact estimate for empty events"
         );
         let mut wire = String::new();
@@ -5374,6 +5380,7 @@ fn switch_marginal_empty_event_reserve_covers_worst_tokens() {
     // Failed-list maximum: one 128-char id plus the fixed row above stays
     // covered by the per-id reserve term.
     let failed_event = SwitchEvent {
+        output: OutputId("o".repeat(128)),
         operation_id: format!("op-{}", u64::MAX),
         outcome: SwitchOutcome::CompletedWithFailures,
         failed: vec![WindowId("w".repeat(128))],
@@ -5383,11 +5390,11 @@ fn switch_marginal_empty_event_reserve_covers_worst_tokens() {
     let estimated = switch_settled_estimate(std::slice::from_ref(&failed_event));
     let mut wire = String::new();
     crate::world_sizing::encode_switch_settled(&mut wire, std::slice::from_ref(&failed_event));
-    // Exact: section key (19) + one worst-token event (116) + one
+    // Exact: section key (19) + one worst-token event (253) + one
     // 128-char failed id quoted (130); writer omits the key, keeps brackets.
     assert_eq!(
         estimated,
-        19 + 116 + 130,
+        19 + 253 + 130,
         "exact estimate for max failed list"
     );
     assert_eq!(wire.len(), estimated - 17, "section key accounts the gap");
@@ -5596,7 +5603,10 @@ fn switch_rejected_command_keeps_presettled_terminal_and_consumes_seq() {
         .0
     {
         WorldOutcome::CommandConsumed(consumed) => {
-            assert!(consumed.switch_settled.is_empty(), "no revived terminal");
+            assert_eq!(
+                consumed.switch_settled, reply.switch_settled,
+                "consumed replay retains presettled terminal unchanged"
+            );
         }
         other => panic!("expected consumed replay, got {other:?}"),
     }
@@ -5892,14 +5902,14 @@ fn switch_two_output_bindings_settle_two_events_in_one_report() {
             screens.clone(),
         ),
     );
-    assert!(
-        steady.switch_settled.is_empty(),
-        "next report publishes empty"
+    assert_eq!(
+        steady.switch_settled, reply.switch_settled,
+        "next report retains both terminals unchanged"
     );
 }
 
 #[test]
-fn switch_duplicate_replays_identical_event_then_next_report_empties() {
+fn switch_duplicate_replays_identical_outcome_then_next_report_retains() {
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
     let effect = granted
@@ -5951,9 +5961,9 @@ fn switch_duplicate_replays_identical_event_then_next_report_empties() {
             "",
         ),
     );
-    assert!(
-        again.switch_settled.is_empty(),
-        "next report publishes empty"
+    assert_eq!(
+        again.switch_settled, reply.switch_settled,
+        "next report retains prior terminal unchanged"
     );
 }
 
@@ -6088,8 +6098,8 @@ fn switch_nocall_hide_terminates_without_retry_and_preserves_state() {
         assert_eq!(entry.rev, rev, "{window} keeps its revision");
         assert_eq!(&entry.home, home, "{window} keeps its home");
     }
-    // No retry after the terminal: a later observation publishes empty
-    // with the same preserved targets and no new effects.
+    // No retry after the terminal: a later observation retains the same
+    // terminal with preserved targets and no new effects.
     let again = accepted(
         &mut engine,
         &report(
@@ -6102,7 +6112,10 @@ fn switch_nocall_hide_terminates_without_retry_and_preserves_state() {
             "",
         ),
     );
-    assert!(again.switch_settled.is_empty(), "no second terminal");
+    assert_eq!(
+        again.switch_settled, reply.switch_settled,
+        "retains terminal without re-settling"
+    );
     assert!(
         again.effects.iter().all(|effect| !effect.await_shown),
         "no resurrected grant"
@@ -6301,8 +6314,8 @@ fn switch_partial_hide_failure_with_proven_arrival_and_focus() {
         "scopes survive failure"
     );
     // No retry, no fresh grant, no admission or history disturbance on the
-    // next report: the published view is unchanged and the terminal never
-    // repeats.
+    // next report: the published view is unchanged and the retained terminal
+    // stays identical without re-settling.
     let grant_view = granted
         .outputs
         .iter()
@@ -6312,7 +6325,10 @@ fn switch_partial_hide_failure_with_proven_arrival_and_focus() {
         &mut engine,
         &report(5, three_facts("out-a"), vec![], None, None, vec![], ""),
     );
-    assert!(again.switch_settled.is_empty(), "no second terminal");
+    assert_eq!(
+        again.switch_settled, reply.switch_settled,
+        "retains terminal without re-settling"
+    );
     assert!(
         again.effects.iter().all(|effect| !effect.await_shown),
         "no resurrected grant"
@@ -6461,9 +6477,9 @@ fn focusless_occupied_to_empty_freezes_hide_and_completes_unproven() {
             "",
         ),
     );
-    assert!(
-        again.switch_settled.is_empty(),
-        "next report publishes empty"
+    assert_eq!(
+        again.switch_settled, settled.switch_settled,
+        "next report retains prior terminal unchanged"
     );
 }
 
@@ -7376,7 +7392,7 @@ fn host_owned_focus_bearing_refusal_without_feedback_pends_until_feedback() {
             .all(|r| r.target.operation_id != "op-3"),
         "actual parent retires"
     );
-    // Replaying the same feedback emits nothing twice.
+    // Replaying the same feedback retains the settled terminal without re-settling.
     let replay = accepted(
         &mut engine,
         &host_native_report(7, host_proof_windows(true), "n0", None, None),
@@ -7386,9 +7402,9 @@ fn host_owned_focus_bearing_refusal_without_feedback_pends_until_feedback() {
     replay_with_feedback.focus_feedback = vec![row];
     let _ = replay;
     let again = accepted(&mut engine, &replay_with_feedback);
-    assert!(
-        again.switch_settled.is_empty(),
-        "no second event: {again:?}"
+    assert_eq!(
+        again.switch_settled, settled.switch_settled,
+        "replayed feedback retains prior terminal unchanged: {again:?}"
     );
 }
 
@@ -9455,7 +9471,7 @@ fn host_owned_focusless_refused_command_keeps_staged_terminal() {
 }
 
 #[test]
-fn focusless_issuing_terminal_duplicate_replays_cached_then_empties() {
+fn focusless_issuing_terminal_duplicate_replays_cached_then_retains() {
     let mut engine = engine();
     let mut w1 = sfact("w1", "out-a", 0);
     w1.minimized = Some(true);
@@ -9515,14 +9531,14 @@ fn focusless_issuing_terminal_duplicate_replays_cached_then_empties() {
             "",
         ),
     );
-    assert!(
-        again.switch_settled.is_empty(),
-        "next report publishes empty"
+    assert_eq!(
+        again.switch_settled, reply.switch_settled,
+        "next report retains prior terminal unchanged"
     );
 }
 
 #[test]
-fn focusless_issuing_terminal_consumed_replay_reconciles_empty() {
+fn focusless_issuing_terminal_consumed_replay_reconciles_retained_outcome() {
     let mut engine = engine();
     let mut w1 = sfact("w1", "out-a", 0);
     w1.minimized = Some(true);
@@ -9585,9 +9601,9 @@ fn focusless_issuing_terminal_consumed_replay_reconciles_empty() {
         .0
     {
         WorldOutcome::CommandConsumed(consumed) => {
-            assert!(
-                consumed.switch_settled.is_empty(),
-                "no revived terminal: {consumed:?}"
+            assert_eq!(
+                consumed.switch_settled, reply.switch_settled,
+                "consumed replay retains prior terminal unchanged: {consumed:?}"
             );
             assert!(
                 consumed.command_consumed,
@@ -9698,6 +9714,7 @@ fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
     // Worst case on one report: the retained binding's full-failure
     // terminal plus one worst-token empty issuing event.
     let old = SwitchEvent {
+        output: OutputId("o".repeat(128)),
         operation_id: format!("op-{}", u64::MAX),
         outcome: SwitchOutcome::CompletedWithFailures,
         failed: (0..member_count)
@@ -9707,6 +9724,7 @@ fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
         fallback: true,
     };
     let new = SwitchEvent {
+        output: OutputId("o".repeat(128)),
         operation_id: format!("op-{}", u64::MAX),
         outcome: SwitchOutcome::CompletedWithFailures,
         failed: Vec::new(),
@@ -9720,7 +9738,7 @@ fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
         reserve >= estimated,
         "no undercount: reserve {reserve} covers estimate {estimated}"
     );
-    assert_eq!(MAX_SWITCH_EVENT_FIXED_BYTES, 117, "fixed event bound stays");
+    assert_eq!(MAX_SWITCH_EVENT_FIXED_BYTES, 254, "fixed event bound stays");
     assert_eq!(MAX_SWITCH_FAILED_ROW_BYTES, 131, "failed id bound stays");
 }
 
@@ -10668,7 +10686,7 @@ fn migration_focused_producer_binds_both_outputs_and_settles_terminal() {
                 .contains_key(&OutputId("out-b".to_owned())),
         "scopes survive"
     );
-    // A repeat report emits nothing: first-latched evidence stays settled.
+    // A repeat report retains the first-latched terminal unchanged.
     let again = accepted(
         &mut engine,
         &mreport(
@@ -10681,9 +10699,9 @@ fn migration_focused_producer_binds_both_outputs_and_settles_terminal() {
             "w2",
         ),
     );
-    assert!(
-        again.switch_settled.is_empty(),
-        "next report publishes empty"
+    assert_eq!(
+        again.switch_settled, done.switch_settled,
+        "next report retains prior terminals unchanged"
     );
     let _ = away;
 }
@@ -10762,7 +10780,10 @@ fn migration_zero_member_issues_unproven_and_retires_parent_echoless() {
         "no Migration flight was ever retained: {:?}",
         next.transfers
     );
-    assert!(next.switch_settled.is_empty());
+    assert_eq!(
+        next.switch_settled, reply.switch_settled,
+        "retains issuing terminal without re-settling"
+    );
     let mut gapped = mreport(4, vec![], vec![], None, None, vec![], "");
     gapped.inventory_complete = false;
     let gap_held = accepted(&mut engine, &gapped);
@@ -11267,9 +11288,9 @@ fn migration_source_output_bracket_never_proves_arrival() {
             "w2",
         ),
     );
-    assert!(
-        again.switch_settled.is_empty(),
-        "corrected replay emits nothing: {again:?}"
+    assert_eq!(
+        again.switch_settled, held.switch_settled,
+        "corrected late bracket never upgrades the retained failure terminal: {again:?}"
     );
 }
 

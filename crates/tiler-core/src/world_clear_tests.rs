@@ -2336,12 +2336,12 @@ fn sticky_maximize_publishes_clear_before_attempt() {
 }
 
 #[test]
-fn float_settled_events_are_one_shot_and_replay_cached() {
-    // Float verdicts ride the same one-shot `operation_settled`
+fn float_settled_outcomes_retain_and_replay_cached() {
+    // Float verdicts ride the retained `operation_settled`
     // carrier: native observation at the retained target confirms with
     // a `float-frame-proven` event (never setter success alone); the
-    // next unrelated report publishes empty; a duplicate delivery
-    // repeats the cached reply with its events.
+    // next unrelated report retains the outcome; a duplicate delivery
+    // repeats the cached reply.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(
         &mut engine,
@@ -2416,9 +2416,9 @@ fn float_settled_events_are_one_shot_and_replay_cached() {
         }
         other => panic!("expected duplicate, got {other:?}"),
     }
-    // The next unrelated observation publishes empty: one-shot, never
-    // retained across reports.
-    let reply = accepted(
+    // The next unrelated observation retains the completed operation
+    // outcome while the subject window remains present.
+    let next_reply = accepted(
         &mut engine,
         &report(
             4,
@@ -2429,10 +2429,10 @@ fn float_settled_events_are_one_shot_and_replay_cached() {
             None,
         ),
     );
-    assert!(
-        reply.operation_settled.is_empty(),
-        "one-shot events never leak, got {:?}",
-        reply.operation_settled
+    assert_eq!(
+        next_reply.operation_settled, reply.operation_settled,
+        "retained operation outcome stays visible across subsequent reports, got {:?}",
+        next_reply.operation_settled
     );
 }
 

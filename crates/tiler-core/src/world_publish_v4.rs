@@ -31,8 +31,8 @@ pub(crate) struct PublishEnvelopeV4 {
 impl WorldEngine {
     /// Assemble a genuine v4 reply from staged/retained state: shared scope
     /// and window rows, planner-owned workspace and output rows, retained
-    /// transfer correlation, verbatim staged diagnostics, and exactly-once
-    /// terminal takes. The producer style hold (if any) merges its output
+    /// transfer correlation, verbatim staged diagnostics, and retained
+    /// latest-wins settlement projections. The producer style hold (if any) merges its output
     /// domains into a local held set only: the caller's retained
     /// `hold_reasons`/staged state are untouched, and the held projection
     /// (output/workspace rows, transfer `held`, suppressed write lanes)
@@ -145,8 +145,9 @@ impl WorldEngine {
         }
         let windows = rows.windows;
         let cursor_warp = self.warp_for_publish(&effects, &windows, &local_held);
-        let gesture_settled = self.gesture_terminal.take();
-        let operation_settled = std::mem::take(&mut self.operation_settled);
+        self.prune_settled_outcomes();
+        let gesture_settled = self.gesture_terminal;
+        let operation_settled = self.operation_settled.values().cloned().collect();
         let native_creations = self
             .native_creation_desires()
             .into_iter()
@@ -157,7 +158,7 @@ impl WorldEngine {
             })
             .collect();
         let intent_desired = self.project_intent_desired();
-        let switch_settled = std::mem::take(&mut self.switch_settled);
+        let switch_settled = self.switch_settled.values().cloned().collect();
         // Retained transfer projection: the explicit originating command
         // correlation rides verbatim (never parsed from operation ids), with
         // `held` set when the style-held output is the transfer source or

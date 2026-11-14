@@ -51,20 +51,30 @@ conformance target.
   equality in normal mode and re-records under
   `UPDATE_SETTINGS_V4_FIXTURES=1`.
 - Reply witnesses (138 WorldReply: 113 valid-wire, 25 reject-wire) are
-  current-shape vectors recorded through the genuine strict reply codec
-  (`decode_reply_v4` then `encode_reply_v4`, never string-patched):
+  typed schema witnesses (not engine-produced behavioral evidence) recorded
+  from explicit typed Rust values through the genuine strict reply encoder
+  (`encode_reply_v4`, never decoded from old fixture replies or string-patched):
   - The 113 valid-wire witnesses plus the 3 handshake-contextual rejects
-    decode context-free; each was re-encoded from its typed value with
-    byte-identical output, re-decode stability and exact writer
-    round-trip.
-  - The 22 context-free rejects are deliberate mutations of the freshly
-    encoded valid witnesses at the manifest `invalid.pointer`, preserving
-    the manifest exact kind/message and the counterfactual-repair oracle
-    (copying the source witness value at that pointer back decodes): all
-    are single-pointer mutations.
+    start as explicit typed `DecodedReplyV4` values in
+    `crates/tiler-protocol/tests/active_reply_v4_record/valid_cases.rs`
+    and round-trip strictly through `decode_reply_v4`.
+  - The 22 context-free rejects are deliberate mutations of freshly encoded
+    typed witnesses at the manifest `invalid.pointer` in
+    `crates/tiler-protocol/tests/active_reply_v4_record/invalid_cases.rs`,
+    preserving the manifest exact kind/message and single-pointer
+    counterfactual-repair oracle (copying the source witness value at that
+    pointer back restores the source and decodes).
     `invalid-above-unsupported` shares wire bytes with `reply-above-true`
     (contextual only); the warp and sticky rejects decode context-free
     and refuse only under their declared handshake capabilities.
+  - Reproduction route: `crates/tiler-protocol/tests/active_reply_v4_record.rs`
+    verifies committed `messages/*.json` bytes against the same typed
+    producers in normal mode, and writes only local active `WorldReply`
+    messages under `UPDATE_ACTIVE_REPLY_V4_FIXTURES=1 cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture`.
+    Combined active-reply, visibility, and retained-intent recording runs with:
+    `UPDATE_ACTIVE_REPLY_V4_FIXTURES=1 UPDATE_VISIBILITY_V4_FIXTURES=1 UPDATE_INTENT_RETAINED_FIXTURE=1 cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture`
+    (existing visibility and intent recorders remain separate genuine
+    `WorldEngine` producers).
   - Frozen `../v4` reply bytes are untouched history. The retired
     `raise`/`stack` effect shapes refuse as unknown values; their former
     valid-wire witnesses and effect-lane reject derivatives are retired
@@ -89,16 +99,17 @@ conformance target.
   is pinned by the `visibility_driver_fallback_true_consumer_edge` unit
   test (genuine codec round-trip of the no-focus hide reply) rather than
   by scenario bytes.
+  Opt-in re-recording replaces those adapter messages from fresh engine
+  products, preserving the scenario inputs and assertions:
+  `UPDATE_VISIBILITY_V4_FIXTURES=1 cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture`.
+  Normal mode verifies the committed messages against the same producers.
 - Retained intent-desire amendment: the required `intentWrites` lane is now
   `intentDesired` (typed `IntentDesire`, unique by `win`, opaque canonical
-  string or null, no alias). All 138 active reply witnesses plus the ten
-  embedded scenario adapter replies were converted through the genuine
-  strict reply codec: each valid-wire (plus the three contextual) witness
-  decodes under the new schema and re-encodes byte-identical
-  (`decode_reply_v4` then `encode_reply_v4`); the 22 context-free rejects
-  keep their deliberate single-pointer mutations with unchanged kind/message
-  and repair oracle. Scenario jq assertions now read
-  `.output.message.intentDesired`. Frozen `../v4` bytes are untouched.
+  string or null, no alias). The 138 active reply witnesses are recorded by
+  the typed schema recorder (`active_reply_v4_record.rs`), while the ten
+  embedded scenario adapter replies are recorded by the genuine engine
+  visibility producer (`visibility_engine_record.rs`). Scenario jq assertions
+  now read `.output.message.intentDesired`. Frozen `../v4` bytes are untouched.
 - Retained intent journey (`scenarios/intent-retained-journey.json`): the
   save, two skipped commandless retained publications, proven-refusal null
   clear and retained clear are genuine `WorldEngine` products: each step

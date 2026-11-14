@@ -23,7 +23,7 @@
 //! adapter keeps only native lifetime/freshness/input fences plus the
 //! render-hide acknowledgement around the committed reply; at-most-once
 //! and completion effects are core-owned through the stable gesture id
-//! and the drained terminal record.
+//! and the retained terminal outcome.
 
 use std::collections::{BTreeMap, BTreeSet};
 

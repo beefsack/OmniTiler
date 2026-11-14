@@ -11,12 +11,14 @@
 //! explicit offline host-evidence driver for native/request lifecycle;
 //! no adapter code changes.
 //!
-//! Fixtures carry exactly two approved input-only exceptions, assertions
-//! unchanged: the `persistent-above` capacity-float-acquire step input
-//! (small-geometry anchor/capacity pair with 1x1 hints) and the
-//! `visibility-order-failure` final accounting-step win-a shown LastWrite
-//! evidence. A `persistent-above` capacity prefix test pins the actual
-//! amended input geometry and runs the strict ordered prefix through it.
+//! Fixtures carry two approved input-only exceptions (`persistent-above`
+//! capacity-float-acquire small-geometry anchor/capacity pair with 1x1
+//! hints and `visibility-order-failure` final accounting-step win-a shown
+//! LastWrite evidence) and one active assertion amendment (`raw-attempt-settlement`
+//! `redeliver-spent-evidence` asserts exact retained `op-3` identity/payload
+//! equality to `immediate-arrival-proof` rather than take-once absence). A
+//! `persistent-above` capacity prefix test pins the actual amended input
+//! geometry and runs the strict ordered prefix through it.
 //! `linked-selectors-warp` workspace row identity is the (output, id)
 //! pair, so shared rings repeat logical ids across outputs.
 //! Native-only evidence stays labelled as modeled, never as core proof.

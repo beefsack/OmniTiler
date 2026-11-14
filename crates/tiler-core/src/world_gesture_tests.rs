@@ -2297,7 +2297,10 @@ fn repeat_updated_and_released_same_id_has_no_replay() {
         released.gesture_settled.map(|t| (t.id, t.committed)),
         Some((1, true))
     );
-    assert!(engine.gesture_terminal.is_none());
+    assert_eq!(
+        engine.gesture_terminal.map(|t| (t.id, t.committed)),
+        Some((1, true))
+    );
     // Exact Updated replay: no session, no overlay.
     let stale_update = accepted(
         &mut engine,
@@ -2504,9 +2507,9 @@ fn reply_carries_terminal_and_bounds_wire_bytes() {
 }
 
 #[test]
-fn terminal_does_not_leak_into_next_report() {
-    // Per accepted report only: a duplicate repeats the cached terminal,
-    // but the next unrelated report publishes `None`.
+fn terminal_retains_into_next_report() {
+    // Retained latest-wins: a duplicate repeats the cached terminal,
+    // and the next unrelated report retains the prior terminal unchanged.
     let (mut engine, ra, rb) = rig();
     let moved_a = rect(100, 0, 40, 90);
     let terminal_report = report(
@@ -2549,17 +2552,17 @@ fn terminal_does_not_leak_into_next_report() {
             true,
         ),
     );
-    assert!(
-        next.gesture_settled.is_none(),
-        "unrelated report carries no terminal"
+    assert_eq!(
+        next.gesture_settled, released.gesture_settled,
+        "unrelated report retains prior terminal unchanged"
     );
 }
 
 #[test]
-fn terminal_replay_on_new_report_records_nothing() {
+fn terminal_replay_on_new_report_preserves_original_outcome() {
     // Same id on a new observation is a consumed replay: no rebind, no
-    // recommit, and the fresh reply carries no terminal of its own. The
-    // id/observation fences stay safe without repeating the record.
+    // recommit, and the fresh reply retains the original terminal unchanged.
+    // The id/observation fences stay safe without repeating the record.
     let (mut engine, ra, rb) = rig();
     let moved_a = rect(100, 0, 40, 90);
     let released = accepted(
@@ -2602,7 +2605,10 @@ fn terminal_replay_on_new_report_records_nothing() {
             true,
         ),
     );
-    assert!(replay.gesture_settled.is_none());
+    assert_eq!(
+        replay.gesture_settled, released.gesture_settled,
+        "consumed replay retains original terminal without re-settling"
+    );
     assert!(replay.command_result.is_none());
     assert!(replay.transfers.is_empty());
 }

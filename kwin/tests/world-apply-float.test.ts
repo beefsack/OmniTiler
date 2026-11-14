@@ -33,7 +33,7 @@ function loadReply(): WorldReply {
     const parsed = parseWorldReply(JSON.stringify({
         v: 4, adapter: "broker-1", gen: "gen-1", req: "req-2",
         obs: "1", rev: "1", ready: true, consumed: false,
-        source: "req-2", nativeInvalid: "1", clock: "0", gestureAssoc: null,
+        source: "req-2", nativeInvalid: "1", clock: "0", gestureAssoc: null, gestureSettledAssoc: null,
         scopes: [
             { scope: { kind: "workspace", out: "out", ws: "ws-1" }, auth: "controlled", reason: "" },
             { scope: { kind: "workspace", out: "out", ws: "ws-2" }, auth: "controlled", reason: "" },

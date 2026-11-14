@@ -130,7 +130,7 @@ describe("world v4 contract", () => {
         );
         assert.notEqual(
             parseWorldReply(
-                `{"v":4,"outcome":"rejected","kind":"k","message":"m","gen":"abc","source":"","nativeInvalid":"0","clock":"0","gestureAssoc":null}`,
+                `{"v":4,"outcome":"rejected","kind":"k","message":"m","gen":"abc","source":"","nativeInvalid":"0","clock":"0","gestureAssoc":null,"gestureSettledAssoc":null}`,
             ),
             null,
         );

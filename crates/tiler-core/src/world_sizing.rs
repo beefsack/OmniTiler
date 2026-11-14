@@ -366,8 +366,9 @@ pub fn gesture_settled_estimate(settled: &Option<GestureSettled>) -> usize {
 
 /// Structural size estimate for the operation-settled section:
 /// `,"operationSettled":[]` (21) when empty; each event
-/// `{"op":,"win":,"outcome":,"cause":}` counts its fixed punctuation plus
-/// the operation id, window, outcome token and cause widths.
+/// `{"win":,"kind":,"op":,"outcome":,"cause":}` counts its fixed
+/// punctuation plus the window, phase kind, operation id, outcome token,
+/// and cause widths.
 #[must_use]
 pub fn operation_settled_estimate(settled: &[crate::world_report::OperationEvent]) -> usize {
     // `,"operationSettled":[` (20) plus `]` (1) when empty = 21.
@@ -376,21 +377,42 @@ pub fn operation_settled_estimate(settled: &[crate::world_report::OperationEvent
         if i > 0 {
             bytes += 1;
         }
-        // {"op":,"win":,"outcome":,"cause":} = 34 punctuation.
-        bytes += 34
-            + json_string_len(&event.operation_id)
+        // {"win":,"kind":,"op":,"outcome":,"cause":} = 42 punctuation.
+        bytes += 42
             + json_string_len(&event.window.0)
+            + json_string_len(event.kind.as_str())
+            + json_string_len(&event.operation_id)
             + json_string_len(event.outcome.as_str())
             + json_string_len(event.cause.as_deref().unwrap_or_default());
     }
     bytes
 }
 
+/// Worst-case bytes per operation-settled event row: 42 punctuation plus
+/// the longest opaque window id (130 quoted), the phase kind (`"clear"` or
+/// `"float"`, 7 quoted), the longest opaque operation id (130 quoted), the
+/// longest outcome (`"abandoned-external-clear"`, 26 quoted), the longest
+/// cause (`"refused-with-unmaximized"`, 26 quoted), plus one array comma
+/// (overcounts the final row, conservatively). 42 + 130 + 7 + 130 + 26 + 26 + 1 = 362.
+pub const MAX_OPERATION_EVENT_BYTES: usize = 362;
+
+/// Pre-mutation reserve for retained and pending operation outcomes: 21-byte
+/// section wrapper plus one [`MAX_OPERATION_EVENT_BYTES`] per occupied or
+/// reserved `(win, kind)` slot. Zero when no slot is occupied or reserved.
+#[must_use]
+pub fn max_operation_settle_reserve(slot_count: usize) -> usize {
+    if slot_count == 0 {
+        return 0;
+    }
+    21 + slot_count.saturating_mul(MAX_OPERATION_EVENT_BYTES)
+}
+
 /// Structural size estimate for the switch-settled section:
 /// `,"switchSettled":[]` (19) when empty; each event
-/// `{"op":,"outcome":,"failed":[],"focus":,"fallback":}` counts 51 fixed
-/// punctuation plus the parent operation id, outcome/focus tokens, the
-/// fallback bool, and every failed window id (one comma between rows).
+/// `{"out":,"op":,"outcome":,"failed":[],"focus":,"fallback":}` counts 58
+/// fixed punctuation plus the owner output id, parent operation id,
+/// outcome/focus tokens, the fallback bool, and every failed window id (one
+/// comma between rows).
 #[must_use]
 pub fn switch_settled_estimate(settled: &[crate::world_report::SwitchEvent]) -> usize {
     // `,"switchSettled":[` (18) plus `]` (1) when empty = 19.
@@ -399,8 +421,9 @@ pub fn switch_settled_estimate(settled: &[crate::world_report::SwitchEvent]) -> 
         if i > 0 {
             bytes += 1;
         }
-        // {"op":,"outcome":,"failed":[],"focus":,"fallback":} = 51 fixed.
-        bytes += 51
+        // {"out":,"op":,"outcome":,"failed":[],"focus":,"fallback":} = 58 fixed.
+        bytes += 58
+            + json_string_len(&event.output.0)
             + json_string_len(&event.operation_id)
             + json_string_len(event.outcome.as_str())
             + json_string_len(event.focus.as_str())
@@ -415,13 +438,14 @@ pub fn switch_settled_estimate(settled: &[crate::world_report::SwitchEvent]) -> 
     bytes
 }
 
-/// Worst-case fixed bytes per switch-settled event row: 51 punctuation
-/// plus the longest parent operation id (`op-<u64>`, 23 raw / 25 quoted),
-/// the longest outcome (`completed-with-failures`, 23 raw / 25 quoted),
-/// the longest focus token (`unproven`, 8 raw / 10 quoted), and the
-/// longer bool (`false`, 5), plus one array comma (overcounts the final
-/// row, conservatively). 51 + 25 + 25 + 10 + 5 + 1 = 117.
-pub const MAX_SWITCH_EVENT_FIXED_BYTES: usize = 117;
+/// Worst-case fixed bytes per switch-settled event row: 58 punctuation
+/// plus the longest opaque output id (128 raw / 130 quoted), the longest
+/// parent operation id (`op-<u64>`, 23 raw / 25 quoted), the longest outcome
+/// (`completed-with-failures`, 23 raw / 25 quoted), the longest focus token
+/// (`unproven`, 8 raw / 10 quoted), and the longer bool (`false`, 5), plus
+/// one array comma (overcounts the final row, conservatively).
+/// 58 + 130 + 25 + 25 + 10 + 5 + 1 = 254.
+pub const MAX_SWITCH_EVENT_FIXED_BYTES: usize = 254;
 
 /// Worst-case bytes per failed window id in a switch event: the longest
 /// opaque window id (128 raw bytes, never escaped, so 130 quoted) plus one
@@ -1507,16 +1531,18 @@ pub fn encode_screen_canonical(
 
 /// Exact canonical encoding for the switch-settled section, with frozen
 /// key order (mirrored by [`switch_settled_estimate`] and the protocol
-/// codec): `[]` when no switch settled, else one object per settled parent
-/// `{"op":..,"outcome":..,"failed":..,"focus":..,"fallback":..}` where a
-/// `complete` outcome carries an empty `failed` list.
+/// codec): `[]` when no switch settled, else one object per settled output
+/// `{"out":..,"op":..,"outcome":..,"failed":..,"focus":..,"fallback":..}`
+/// where a `complete` outcome carries an empty `failed` list.
 pub fn encode_switch_settled(out: &mut String, settled: &[crate::world_report::SwitchEvent]) {
     out.push('[');
     for (i, event) in settled.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
-        out.push_str("{\"op\":");
+        out.push_str("{\"out\":");
+        push_json_string(out, &event.output.0);
+        out.push_str(",\"op\":");
         push_json_string(out, &event.operation_id);
         out.push_str(",\"outcome\":");
         push_json_string(out, event.outcome.as_str());

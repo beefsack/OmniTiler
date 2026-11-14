@@ -264,7 +264,7 @@ function acceptCapture(
         v: 4, adapter: "test-adapter", gen, req: envelope["source"], obs: rev, rev,
         ready: true, consumed: false,
         source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "7",
-        gestureSettled: null, gestureAssoc: null,
+        gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
         focusRequest: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
@@ -285,7 +285,7 @@ function captureRejection(gen: string, envelope: Record<string, unknown>): strin
         v: 4, outcome: "rejected", kind: "snapshot-invalid",
         message: "snapshot is invalid", gen,
         source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "7",
-        gestureAssoc: null,
+        gestureAssoc: null, gestureSettledAssoc: null,
     });
 }
 
@@ -301,7 +301,7 @@ function generationMismatch(gen: string): string {
     return JSON.stringify({
         v: 4, outcome: "rejected", kind: "generation-mismatch",
         message: "generation mismatch", gen, source: "", nativeInvalid: "0", clock: "1",
-        gestureAssoc: null,
+        gestureAssoc: null, gestureSettledAssoc: null,
     });
 }
 
@@ -587,7 +587,7 @@ describe("external-command wait wake delivery", () => {
                         v: 4, outcome: "rejected", kind: "unknown-adapter",
                         message: "unknown adapter", gen: "gen-1",
                         source: "", nativeInvalid: "0", clock: "1",
-                        gestureAssoc: null,
+                        gestureAssoc: null, gestureSettledAssoc: null,
                     }));
                 }
             }

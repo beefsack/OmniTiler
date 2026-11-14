@@ -63,7 +63,7 @@ const ACCEPTED = (
     transfers: [],
     effects: [],
     result: null,
-    gestureSettled: null, gestureAssoc: null,
+    gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
     focusRequest: null,
     operationSettled: [], nativeCreations: [],
     warpCursor: null,
@@ -141,7 +141,7 @@ describe("world-report commands and reply parsing", () => {
             assert.equal(parsed.clock, "0");
             assert.equal(parsed.result, null);
         }
-        const rejection = parseWorldReply('{"v":4,"outcome":"rejected","kind":"busy","message":"busy","gen":"gen-1","source":"","nativeInvalid":"0","clock":"0","gestureAssoc":null}');
+        const rejection = parseWorldReply('{"v":4,"outcome":"rejected","kind":"busy","message":"busy","gen":"gen-1","source":"","nativeInvalid":"0","clock":"0","gestureAssoc":null,"gestureSettledAssoc":null}');
         assert.ok(isWorldRejection(rejection));
         // v1 and v2 refuse: no compatibility route.
         assert.equal(parseWorldReply(ACCEPTED().replace('"v":4', '"v":1')), null);

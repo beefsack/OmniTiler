@@ -372,6 +372,7 @@ fn selection_reply_carries_switch_terminal_through_v4_writer() {
     );
     assert_eq!(settled.switch_settled.len(), 1, "one terminal: {settled:?}");
     let event = &settled.switch_settled[0];
+    assert_eq!(event.output, OutputId("out-a".to_owned()));
     assert_eq!(event.operation_id, "op-3");
     assert_eq!(
         event.outcome,
@@ -386,7 +387,7 @@ fn selection_reply_carries_switch_terminal_through_v4_writer() {
     let wire = reply_wire(&settled);
     assert!(
         wire.contains(
-            "\"switchSettled\":[{\"op\":\"op-3\",\"outcome\":\"complete\",\
+            "\"switchSettled\":[{\"out\":\"out-a\",\"op\":\"op-3\",\"outcome\":\"complete\",\
              \"failed\":[],\"focus\":\"proven\",\"fallback\":false}]"
         ),
         "exact canonical event row in frozen key order"
@@ -406,10 +407,7 @@ fn selection_reply_carries_switch_terminal_through_v4_writer() {
         reply_estimate_v4(&settled) >= wire.len(),
         "estimate covers the terminal reply"
     );
-    // The terminal never repeats: the next report publishes empty.
+    // A later commandless report retains the same completed outcome.
     let again = accepted(&mut engine, &report(5, None, None, ""));
-    assert!(
-        again.switch_settled.is_empty(),
-        "next report publishes empty"
-    );
+    assert_eq!(again.switch_settled, settled.switch_settled);
 }

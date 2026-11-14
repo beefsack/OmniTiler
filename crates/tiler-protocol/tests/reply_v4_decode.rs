@@ -899,7 +899,7 @@ fn v4_reply_structural_regression() {
         ),
         (
             "operationSettled",
-            serde_json::json!({"op":"operation-a","win":"win-a","outcome":"continued-tiled","cause":""}),
+            serde_json::json!({"win":"win-a","kind":"clear","op":"operation-a","outcome":"continued-tiled","cause":""}),
             "duplicate-operation",
         ),
         (
@@ -914,7 +914,7 @@ fn v4_reply_structural_regression() {
         ),
         (
             "switchSettled",
-            serde_json::json!({"op":"view-a","outcome":"complete","failed":[],"focus":"proven","fallback":false}),
+            serde_json::json!({"out":"out-a","op":"view-a","outcome":"complete","failed":[],"focus":"proven","fallback":false}),
             "duplicate-switch",
         ),
     ] {
@@ -1173,8 +1173,9 @@ fn v4_reply_writer_refuses_unspellable() {
         .reply
         .operation_settled
         .push(tiler_core::world_report::OperationEvent {
-            operation_id: "operation-a".to_owned(),
             window: tiler_core::directional::WindowId("win-a".to_owned()),
+            kind: tiler_core::world_report::OperationKind::Clear,
+            operation_id: "operation-a".to_owned(),
             outcome: tiler_core::world_report::OperationOutcome::ClearContinuedTiled,
             cause: Some("bogus-cause".to_owned()),
         });
@@ -1417,4 +1418,159 @@ fn v4_reply_historical_close_focus_rejects() {
             fixture.id
         );
     }
+}
+
+#[test]
+fn v4_reply_operation_and_switch_settled_strict_keys_and_round_trip() {
+    // Same op under distinct (win, kind) phases is accepted; duplicate (win, kind)
+    // or kind/outcome mismatch or duplicate switch out is rejected.
+    let mut doc = valid_reply_value();
+    doc["operationSettled"] = serde_json::json!([
+        {"win":"win-a","kind":"clear","op":"op-1","outcome":"continued-float","cause":""},
+        {"win":"win-a","kind":"float","op":"op-1","outcome":"float-frame-proven","cause":""}
+    ]);
+    doc["switchSettled"] = serde_json::json!([
+        {"out":"out-a","op":"op-2","outcome":"complete","failed":[],"focus":"proven","fallback":false},
+        {"out":"out-b","op":"op-3","outcome":"completed-with-failures","failed":["win-c"],"focus":"unproven","fallback":false}
+    ]);
+    let decoded = decode_value(&doc).expect("distinct phase/output keys decode");
+    let wire = encode_reply_v4(&decoded).expect("encodes");
+    assert_eq!(
+        tiler_core::world_sizing_v4::reply_exact_bytes_v4(&decoded.reply),
+        wire.len()
+    );
+    let redecoded = decode_reply_v4(&wire).expect("re-decodes");
+    assert_eq!(redecoded, decoded);
+
+    let mut dup_op = doc.clone();
+    dup_op["operationSettled"] = serde_json::json!([
+        {"win":"win-a","kind":"clear","op":"op-1","outcome":"continued-tiled","cause":""},
+        {"win":"win-a","kind":"clear","op":"op-2","outcome":"superseded","cause":""}
+    ]);
+    let err = decode_value(&dup_op).expect_err("duplicate (win, kind) rejects");
+    assert_eq!(err.message, "duplicate-operation");
+
+    let mut mismatch = doc.clone();
+    mismatch["operationSettled"] = serde_json::json!([
+        {"win":"win-a","kind":"clear","op":"op-1","outcome":"float-frame-proven","cause":""}
+    ]);
+    let err = decode_value(&mismatch).expect_err("kind/outcome mismatch rejects");
+    assert_eq!(err.kind, "unknown-value");
+
+    let mut dup_switch = doc;
+    dup_switch["switchSettled"] = serde_json::json!([
+        {"out":"out-a","op":"op-2","outcome":"complete","failed":[],"focus":"proven","fallback":false},
+        {"out":"out-a","op":"op-3","outcome":"complete","failed":[],"focus":"unproven","fallback":false}
+    ]);
+    let err = decode_value(&dup_switch).expect_err("duplicate out rejects");
+    assert_eq!(err.message, "duplicate-switch");
+}
+
+#[test]
+fn v4_reply_cap_valid_near_4mib_windows_encodes_and_roundtrips() {
+    use tiler_core::directional::{OutputId, WindowId};
+    use tiler_core::geometry::Rect;
+    use tiler_core::world_report::{
+        MAX_INTENT_DESIRED, MAX_REPLY_DIAGNOSTICS, MAX_REPLY_NATIVE_CREATIONS,
+        MAX_REPLY_OPERATIONS, MAX_REPLY_OUTPUTS, MAX_REPLY_SCOPES, MAX_REPLY_SWITCH_EVENTS,
+        MAX_REPLY_TRANSFERS, MAX_REPLY_WINDOWS, MAX_REPLY_WORKSPACES, OperationEvent,
+        OperationKind, OperationOutcome, ScopeAuthority, StateProperty, StateTarget,
+        WORLD_MAX_REPLY_BYTES, WindowDesire,
+    };
+    use tiler_core::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
+
+    // Paired with `staged_pending_operation_future_budget_rejects_over_4mib_transactionally`
+    // in `crates/tiler-core/src/world_publish_v4_tests.rs`: same deterministic
+    // cap-valid `WindowDesire` padding recipe, proved through production `encode_reply_v4`.
+    let mut decoded = decode_value(&valid_reply_value()).expect("base reply decodes");
+    decoded.reply.windows.clear();
+    decoded.reply.operation_settled = vec![OperationEvent {
+        window: WindowId("w-0".to_owned()),
+        kind: OperationKind::Clear,
+        operation_id: "op-0".to_owned(),
+        outcome: OperationOutcome::ClearContinuedTiled,
+        cause: None,
+    }];
+
+    let pad_win = |i: usize| WindowDesire {
+        lifetime: WindowId(format!("w-{i:05}-{}", "x".repeat(120))),
+        output: OutputId(format!("o-{}", "y".repeat(126))),
+        workspace: format!("ws-{}", "z".repeat(125)),
+        allocation: Some(Rect {
+            x: 100,
+            y: 100,
+            w: 1000,
+            h: 1000,
+        }),
+        effective_frame: Some(Rect {
+            x: 100,
+            y: 100,
+            w: 1000,
+            h: 1000,
+        }),
+        frame_authority: ScopeAuthority::Controlled,
+        membership_authority: ScopeAuthority::Controlled,
+        floating: false,
+        float_origin: None,
+        frame_operation: Some(format!("op-f-{i:05}-{}", "f".repeat(115))),
+        clear_operation: Some(format!("op-c-{i:05}-{}", "c".repeat(115))),
+        command_seq: None,
+        visibility: None,
+        visibility_authority: ScopeAuthority::Untouched,
+        state: vec![
+            StateTarget {
+                property: StateProperty::Fullscreen,
+                value: false,
+                authority: ScopeAuthority::Untouched,
+                command_seq: None,
+            },
+            StateTarget {
+                property: StateProperty::Maximized,
+                value: false,
+                authority: ScopeAuthority::Untouched,
+                command_seq: None,
+            },
+            StateTarget {
+                property: StateProperty::Sticky,
+                value: false,
+                authority: ScopeAuthority::Untouched,
+                command_seq: None,
+            },
+            StateTarget {
+                property: StateProperty::Above,
+                value: false,
+                authority: ScopeAuthority::Untouched,
+                command_seq: None,
+            },
+        ],
+    };
+
+    decoded.reply.windows.push(pad_win(0));
+    let after_one = reply_estimate_v4(&decoded.reply).max(reply_exact_bytes_v4(&decoded.reply));
+    decoded.reply.windows.push(pad_win(1));
+    let after_two = reply_estimate_v4(&decoded.reply).max(reply_exact_bytes_v4(&decoded.reply));
+    let row_step = after_two - after_one;
+    let target_bytes = WORLD_MAX_REPLY_BYTES - 500;
+    let extra = target_bytes.saturating_sub(after_two) / row_step;
+    decoded.reply.windows.extend((2..2 + extra).map(pad_win));
+
+    assert!(decoded.reply.scopes.len() <= MAX_REPLY_SCOPES);
+    assert!(decoded.reply.workspaces.len() <= MAX_REPLY_WORKSPACES);
+    assert!(decoded.reply.outputs.len() <= MAX_REPLY_OUTPUTS);
+    assert!(decoded.reply.windows.len() <= MAX_REPLY_WINDOWS);
+    assert!(decoded.reply.transfers.len() <= MAX_REPLY_TRANSFERS);
+    assert!(decoded.reply.effects.is_empty());
+    assert!(decoded.reply.operation_settled.len() <= MAX_REPLY_OPERATIONS);
+    assert!(decoded.reply.native_creations.len() <= MAX_REPLY_NATIVE_CREATIONS);
+    assert!(decoded.reply.intent_desired.len() <= MAX_INTENT_DESIRED);
+    assert!(decoded.reply.switch_settled.len() <= MAX_REPLY_SWITCH_EVENTS);
+    assert!(decoded.reply.diagnostics.len() <= MAX_REPLY_DIAGNOSTICS);
+    assert!(reply_estimate_v4(&decoded.reply) <= WORLD_MAX_REPLY_BYTES);
+    assert!(reply_exact_bytes_v4(&decoded.reply) <= WORLD_MAX_REPLY_BYTES);
+
+    let wire = encode_reply_v4(&decoded).expect("cap-valid ~4 MiB reply encodes");
+    assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
+    assert_eq!(wire.len(), reply_exact_bytes_v4(&decoded.reply));
+    let redecoded = decode_reply_v4(&wire).expect("encoded ~4 MiB reply re-decodes");
+    assert_eq!(redecoded, decoded);
 }

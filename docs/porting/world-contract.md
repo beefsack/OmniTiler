@@ -887,7 +887,7 @@ acceptance or adopt the separate close-focus amendment.
 | | `kind` | CommandRejectKind | no | Closed reason, no adapter fallback. |
 | `CommandResult::Directional` | `op,outcome` | `directional`, DirectionalOutcome | no | Existing variant/tokens. |
 | | `win,rect,cause` | WindowId, Rect, DirectionalCause | yes | Existing nullable fields; cause now closed. |
-| `OperationEvent` | `op,win,outcome` | Id, WindowId, OperationOutcome | no | Existing clear/float terminal event. |
+| `OperationEvent` | `win,kind,op,outcome` | WindowId, `clear/float`, Id, OperationOutcome | no | Latest completed phase, unique by `(win,kind)`; kind must agree with outcome. |
 | | `cause` | OperationCause | empty | Existing empty sentinel, closed nonempty values. |
 | `RowDiagnostic` | `scope` | AuthorityScope | no | Narrow held scope. |
 | | `row` | `screen/window/native/attempt/presentation` | no | Affected lane. |
@@ -926,13 +926,13 @@ acceptance or adopt the separate close-focus amendment.
 | `effects` | empty array | no | No admissible entries or actuation authority; reserved raise/stack shapes are removed. |
 | `focusRequest` | FocusRequest | yes | Required nullable retained request for every cause, independent of effects. |
 | `result` | CommandResult | yes | Issuing-reply-only result. |
-| `gestureSettled` | GestureSettled | yes | Core mutation acknowledgement, not native completion. |
-| `operationSettled` | OperationEvent[] | no | Existing clear/float terminals. |
+| `gestureSettled` | GestureSettled | yes | Retained latest core mutation outcome, not native completion. |
+| `operationSettled` | OperationEvent[] | no | Complete retained latest clear/float outcomes keyed by `(win,kind)`. |
 | `nativeCreations` | NativeCreationDesire[] | no | Only authorization for native desktop creation. |
 | `warpCursor` | Point | yes | Core-decided cursor target. |
 | `presentation` | WorldPresentation | no | Full accepted rendering publication. |
 | `intentDesired` | IntentDesire[] | no | Complete retained per-window storage targets, including explicit clears. |
-| `switchSettled` | SwitchEvent[] | no | Terminal event on existing transfer/view parent. |
+| `switchSettled` | SwitchEvent[] | no | Complete retained latest transfer/view parent outcomes keyed by `out`. |
 | `diagnostics` | RowDiagnostic[] | no | Narrow held-row errors. |
 
 - Only controlled property authority authorizes that property's writes. Held,
@@ -995,6 +995,61 @@ acceptance or adopt the separate close-focus amendment.
   controlled frame lane, never a maximized target, attempt or projected native
   fact. `CommandResult::Maximize` remains the existing shape and describes the
   core-resolved toggle, not native completion or independent write permission.
+
+### Retained settlement outcomes
+
+- User 2026-11-14: the required `gestureSettled`, `operationSettled` and
+  `switchSettled` fields project complete current outcome state without draining.
+  Bootstrap is null/empty. Gesture is one nullable `{id,committed}` slot per
+  `(adapter,gen)`; only a newly incorporated terminal replaces it. Consumed/stale
+  replay cannot regress identity or change its original verdict; preserve genuine
+  first unbound terminals and existing active-gesture cancellation predicates.
+- Operation rows are `{win,kind,op,outcome,cause}`, unique by `(win,kind)`,
+  with closed `kind:"clear"|"float"` agreeing with the existing outcome vocabulary.
+  Clear and resumed float can share an `op` and retain both phase outcomes.
+  Switch rows are `{out,op,outcome,failed,focus,fallback}`, unique by the existing
+  terminal stager's owning output, not a claim that only one output is affected.
+  No id parsing, new operation identity or synthetic superseded-success outcome.
+- Q1 A: starting pending successor work leaves the preceding completion readable;
+  only the successor's terminal replaces it. Match `id/op`, never infer completion
+  of pending work from an older outcome. Different keys cannot erase one another.
+  Repeated/consumed commands and commandless publications retain outcomes in stable
+  key order; latest-wins is not a guarantee of every historical terminal.
+- Q2 A: retain through holds, minimize and incomplete omission; remove operation
+  outcomes with proven window lifetime end and switch outcomes with output departure.
+  Close/departure terminals may never be visible: that part of the previous
+  terminal-delivery contract is explicitly retired. Core emits trace-level
+  diagnostics carrying final dropped outcomes without eager disabled-trace
+  formatting. No departed summaries. Absence proves no verdict and grants no
+  authority over replacement lifetimes. Gesture survives subject close within its
+  generation. Fresh handshake/new generation clears all outcomes.
+- The existing 1,024 operation-row and 1,024 switch-row section caps and independent
+  4 MiB reply bound cover whole retained projections, failed lists and pending
+  reservations. Both operation phases share the cap. Reserve before admission,
+  refuse overflow transactionally, never truncate or evict unrelated outcomes.
+  Reservations budget accepted obligations, not another delivery owner.
+- Outcomes describe completed core accounting only. They never authorize setters,
+  unspend dispatches, release arrival barriers, replace raw attempt receipts or
+  strengthen existing native-completion predicates.
+- KDE broker accepted envelopes require nullable
+  `gestureSettledAssoc:{instance,serial,coreId}`, distinct from current-ingress
+  `gestureAssoc`; rejected/connection-error envelopes require it null. Core payloads
+  contain no native identity. Broker pins the verified active gesture association
+  and latest terminal association independently of normalization-cache eviction,
+  reconciles only accepted transitions and preserves them on transport reconnect.
+  Fresh handshake resets both. Missing originating identity stays null, never
+  recovered from id prefixes or unrelated ingress.
+- Every KDE settlement consumer matches retained terminal/association against the
+  currently pending native FIFO head, not the issuing flight. Keep exact current
+  adapter/generation/request/source/nativeInvalid binding. The acknowledgement-only
+  stale-snapshot path may retire that exact head but applies no desires or paint.
+  Redelivery and late callbacks are exact-identity/idempotent; idle capture cannot
+  clear an unrelated unresolved terminal-capture retry. Existing native FIFO
+  acknowledgement remains, with no publication-delivery acknowledgement or sequence.
+- This is a coordinated in-place pre-release v4 amendment across core, protocol,
+  broker and KDE, without alias, fallback or version bump. Other ports must adopt
+  retained identity matching before claiming compatibility; offline KDE proofs
+  establish no native acceptance.
 
 <a id="retained-positive-close-focus"></a>
 
@@ -1361,7 +1416,7 @@ acceptance or adopt the separate close-focus amendment.
 | | `foregroundProven` | bool | no | Actual foreground equality proof, never setter success. |
 | | `arrival` | ArrivalBracket[] | no | Readiness brackets; blocked subjects use their LastWrite no-call evidence, not a different array arm. |
 | | `attemptMs` | Counter | no | Original dispatch/no-call stamp. |
-| `SwitchEvent` | `op` | Id | no | Existing parent transfer/view operation. |
+| `SwitchEvent` | `out,op` | OutputId, Id | no | Retained owner key and existing parent transfer/view operation. |
 | | `outcome` | `complete/completed-with-failures` | no | Core terminal accounting, not native per-entry verdict ingress. |
 | | `failed` | WindowId[] | no | Frozen switch target failures. |
 | | `focus` | `proven/refused/unproven` | no | Core-derived foreground outcome. |
@@ -1480,9 +1535,10 @@ acceptance or adopt the separate close-focus amendment.
   observations and sets `consumed`, never re-executes. Commandless reports do
   not move command watermark. Transport timeout is not an engine verdict or
   permission to mint a new duplicate command. [Sequencing](world-contract-v3.md#3-identity-sequencing-and-dedup).
-- Effects are spent before dispatch, never replayed by subscribers or reconnect;
-  retained transfers remain until observed, externally superseded or proven
-  refused. Issuing-only result/terminal delivery is not a snapshot cache.
+- `effects` is required empty; retained transfers remain until observed,
+  externally superseded or proven refused. Command `result` remains issuing-only;
+  [settlement outcomes](#retained-settlement-outcomes) are latest-completed state,
+  not issuing-only delivery or native-write authority.
   The separate retained `focusRequest` lane follows its
   [latest-only, once-per-id rules](#one-retained-focus-request), not one-shot
   delivery: skipping its issuing publication cannot drop or renew the request.

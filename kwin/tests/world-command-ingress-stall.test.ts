@@ -382,7 +382,7 @@ describe("kde command ingress stall", () => {
             assert.equal(probeReply["outcome"], "rejected", `retired token refuses on the real decoder${tail()}`);
             assert.equal(probeReply["kind"], "unknown-value", "retired source fails command decoding");
             broker.bindReply(probeText, template);
-            heldQueue[0]!.callback(JSON.stringify({ v: 4, outcome: "rejected", kind: "snapshot-invalid", message: "command-invalid", gen, source: "", nativeInvalid: "0", clock: "1", gestureAssoc: null }));
+            heldQueue[0]!.callback(JSON.stringify({ v: 4, outcome: "rejected", kind: "snapshot-invalid", message: "command-invalid", gen, source: "", nativeInvalid: "0", clock: "1", gestureAssoc: null, gestureSettledAssoc: null }));
             heldQueue.length = 0;
             holdQueue = false;
             assert.ok(logs.some((l) => l.includes("command-dropped")), `shape refusal drops the head${tail()}`);

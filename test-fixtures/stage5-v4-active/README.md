@@ -23,6 +23,10 @@ New keys versus frozen `../stage5-v4` (all producer-genuine, never patched):
 - Every capture report carries the required `foregroundKnown` bit.
 - Every capture reply carries the required nullable `focusRequest` lane
   (`null` here: no close intent rides these chains).
+- Capture replies also carry nullable broker `gestureSettledAssoc`, pinned
+  independently of current ingress. Retained gesture outcomes remain present
+  on later fresh publications; operation/switch outcomes use the current
+  `(win,kind)`/`out` keys.
 
 The projections carry the genuine visible anchored border (7 keys, `win-a`
 subject with a joining witness) and the found `win-a` underlay, matching the

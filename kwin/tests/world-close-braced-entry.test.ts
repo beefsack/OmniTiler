@@ -180,7 +180,7 @@ function makeHarness() {
             source,
             nativeInvalid,
             clock: "0",
-            gestureSettled: null, gestureAssoc: null,
+            gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
             focusRequest: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,

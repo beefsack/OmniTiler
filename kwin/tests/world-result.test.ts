@@ -34,7 +34,7 @@ function baseCapture(result: string): string {
         `"subject":null,"outsets":null,"width":null,"radius":null,"witness":null},` +
         `"underlay":{"status":"hidden","reason":"disabled","baseRev":null},"pager":[]},` +
         `"intentDesired":[],"switchSettled":[],"diagnostics":[],` +
-        `"source":"req-1","nativeInvalid":"1","clock":"0","gestureAssoc":null}`;
+        `"source":"req-1","nativeInvalid":"1","clock":"0","gestureAssoc":null,"gestureSettledAssoc":null}`;
 }
 
 function unwrapTake(text: string): WorldTakeReply {

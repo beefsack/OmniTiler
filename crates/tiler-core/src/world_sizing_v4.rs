@@ -795,10 +795,11 @@ pub fn reply_exact_bytes_v4(reply: &WorldReplyV4) -> usize {
         22 + u64_len(terminal.id) + bool_len(terminal.committed)
     });
     for event in &reply.operation_settled {
-        // {"op":,"win":,"outcome":,"cause":} = 34 punctuation.
-        bytes += 34
-            + json_string_len(&event.operation_id)
+        // {"win":,"kind":,"op":,"outcome":,"cause":} = 42 punctuation.
+        bytes += 42
             + json_string_len(&event.window.0)
+            + json_string_len(event.kind.as_str())
+            + json_string_len(&event.operation_id)
             + json_string_len(event.outcome.as_str())
             + json_string_len(event.cause.as_deref().unwrap_or_default());
     }
@@ -825,8 +826,9 @@ pub fn reply_exact_bytes_v4(reply: &WorldReplyV4) -> usize {
     }
     bytes += reply.intent_desired.len().saturating_sub(1);
     for event in &reply.switch_settled {
-        // {"op":,"outcome":,"failed":[],"focus":,"fallback":} = 51 fixed.
-        bytes += 51
+        // {"out":,"op":,"outcome":,"failed":[],"focus":,"fallback":} = 58 fixed.
+        bytes += 58
+            + json_string_len(&event.output.0)
             + json_string_len(&event.operation_id)
             + json_string_len(event.outcome.as_str())
             + json_string_len(event.focus.as_str())

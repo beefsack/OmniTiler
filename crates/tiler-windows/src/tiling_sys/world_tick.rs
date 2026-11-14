@@ -3298,25 +3298,28 @@ mod apply_diag_tests {
         // never frame proof), clear refusals, and float frame-proven
         // completions share the one carrier. Bounds stay honest.
         use tiler_core::world_report::{
-            ClearAttempt, FrameSetter, OperationEvent, OperationOutcome,
+            ClearAttempt, FrameSetter, OperationEvent, OperationKind, OperationOutcome,
         };
         let mut reply = reply_shell();
         reply.operation_settled = vec![
             OperationEvent {
-                operation_id: "op-13".to_owned(),
                 window: WindowId("w1".to_owned()),
+                kind: OperationKind::Clear,
+                operation_id: "op-13".to_owned(),
                 outcome: OperationOutcome::ClearContinuedTiled,
                 cause: None,
             },
             OperationEvent {
-                operation_id: "op-14".to_owned(),
                 window: WindowId("w2".to_owned()),
+                kind: OperationKind::Clear,
+                operation_id: "op-14".to_owned(),
                 outcome: OperationOutcome::ClearContinuationRefused,
                 cause: Some("constraints".to_owned()),
             },
             OperationEvent {
-                operation_id: "op-15".to_owned(),
                 window: WindowId("w3".to_owned()),
+                kind: OperationKind::Float,
+                operation_id: "op-15".to_owned(),
                 outcome: OperationOutcome::FloatFrameProven,
                 cause: None,
             },
@@ -3810,8 +3813,9 @@ mod apply_diag_tests {
         settled_reply
             .operation_settled
             .push(tiler_core::world_report::OperationEvent {
-                operation_id: "op-14".to_owned(),
                 window: WindowId("w2".to_owned()),
+                kind: tiler_core::world_report::OperationKind::Clear,
+                operation_id: "op-14".to_owned(),
                 outcome: tiler_core::world_report::OperationOutcome::ClearContinuationRefused,
                 cause: Some("constraints".to_owned()),
             });
@@ -5323,8 +5327,9 @@ mod apply_diag_tests {
             clear_operation: Some("op-21".to_owned()),
         });
         reply.operation_settled.push(OperationEvent {
-            operation_id: "op-21".to_owned(),
             window: WindowId("w-max".to_owned()),
+            kind: tiler_core::world_report::OperationKind::Clear,
+            operation_id: "op-21".to_owned(),
             outcome: OperationOutcome::ClearRefusedProven,
             cause: Some("settler".to_owned()),
         });
@@ -6060,8 +6065,9 @@ mod apply_diag_tests {
         // Settlement with zero attempts emits through the real throttle.
         let mut settled = reply_shell();
         settled.operation_settled.push(OperationEvent {
-            operation_id: "op-14".to_owned(),
             window: WindowId("w2".to_owned()),
+            kind: tiler_core::world_report::OperationKind::Clear,
+            operation_id: "op-14".to_owned(),
             outcome: OperationOutcome::ClearContinuationRefused,
             cause: Some("constraints".to_owned()),
         });

@@ -42,6 +42,8 @@ Current-shape lanes (never patched): every reply carries the required
 and the required nullable `focusRequest` lane (`null` here, no close
 intent rides this scenario). The report carries the required
 `foregroundKnown` bit.
+Bound replies also carry required nullable `gestureSettledAssoc` (null:
+the MiniBroker strips native gesture ingress and fabricates no association).
 
 Volatile normalization (mechanical, world-bytes precedent): only the exact
 per-run entry `source` nonce and its bound `req` echo are rewritten to the

@@ -303,7 +303,7 @@ describe("world presentation subscriber", () => {
         // 5-key error plus source/clock bindings and a null gestureAssoc.
         const notReady = JSON.stringify({
             v: 4, outcome: "rejected", kind: "not-ready", message: "no accepted capture",
-            gen: GEN, source: "", nativeInvalid: "0", clock: "7", gestureAssoc: null,
+            gen: GEN, source: "", nativeInvalid: "0", clock: "7", gestureAssoc: null, gestureSettledAssoc: null,
         });
         const parsed = parseWorldReply(notReady);
         assert.ok(parsed !== null && isWorldRejection(parsed));
@@ -317,7 +317,7 @@ describe("world presentation subscriber", () => {
         assert.equal(parseWorldReply(JSON.stringify({
             v: 4, outcome: "rejected", kind: "not-ready", message: "no accepted capture",
             gen: GEN, source: "", nativeInvalid: "0", clock: "7",
-            gestureAssoc: { instance: "gesture-1", serial: "1", coreId: "1" },
+            gestureAssoc: { instance: "gesture-1", serial: "1", coreId: "1" }, gestureSettledAssoc: null,
         })), null);
         const h = setup();
         h.sub.notifyGeneration(GEN);
@@ -344,7 +344,7 @@ describe("world presentation subscriber", () => {
         // and the next event retries.
         const unexpected = JSON.stringify({
             v: 4, outcome: "rejected", kind: "malformed", message: "request is malformed",
-            gen: GEN, source: "", nativeInvalid: "0", clock: "8", gestureAssoc: null,
+            gen: GEN, source: "", nativeInvalid: "0", clock: "8", gestureAssoc: null, gestureSettledAssoc: null,
         });
         assert.ok(parseWorldReply(unexpected) !== null && isWorldRejection(parseWorldReply(unexpected)));
         h.sub.notifyInvalidated();
@@ -373,7 +373,7 @@ describe("world presentation subscriber", () => {
         // answer: hide display-only and retry on the next event.
         const foreign = JSON.stringify({
             v: 4, outcome: "rejected", kind: "not-ready", message: "no accepted capture",
-            gen: "gen-2", source: "", nativeInvalid: "0", clock: "9", gestureAssoc: null,
+            gen: "gen-2", source: "", nativeInvalid: "0", clock: "9", gestureAssoc: null, gestureSettledAssoc: null,
         });
         h.sub.notifyInvalidated();
         h.answerAll(() => foreign);

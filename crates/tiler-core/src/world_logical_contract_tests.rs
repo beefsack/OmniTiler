@@ -4581,8 +4581,8 @@ fn floating_select_workspace_completes_empty_at_issuing() {
         0,
         "issuing terminal retires the view parent"
     );
-    // A stale report with no echo keeps the logical view intact with no
-    // duplicate terminal and no resurrected flight.
+    // A stale report with no echo keeps the logical view intact with the
+    // retained issuing terminal and no resurrected flight.
     let stale = accepted(
         &mut engine,
         &report(
@@ -4600,7 +4600,10 @@ fn floating_select_workspace_completes_empty_at_issuing() {
         ),
     );
     assert!(stale.transfers.is_empty(), "no resurrected flight");
-    assert!(stale.switch_settled.is_empty(), "no duplicate terminal");
+    assert_eq!(
+        stale.switch_settled, selected.switch_settled,
+        "retains issuing terminal without re-settling"
+    );
     assert_eq!(
         output_view(&stale, "out-a").as_deref(),
         Some(other.as_str())

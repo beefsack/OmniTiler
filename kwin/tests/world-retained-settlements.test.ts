@@ -1,0 +1,899 @@
+// Retained latest settlement outcomes: strict wire validation, KDE
+// current-head FIFO discharge independent of issuing flight, idle-retry
+// preservation, diagnostic-only operation/switch lanes, and genuine
+// engine->codec->broker->entry latest-only & 256-eviction journeys.
+
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+
+import { parseConnectionError } from "../src/world-connection";
+import { startWorldAdapterEntry } from "../src/world-entry";
+import { isCoreWorldReply, isWorldRejection, parseWorldReply } from "../src/world-report";
+import { WorldBridge } from "./world-producer-harness";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
+
+function makeBaseReply(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+        v: 4,
+        adapter: "test-adapter",
+        gen: "gen-1",
+        req: "src-1",
+        obs: "1",
+        rev: "1",
+        ready: true,
+        consumed: false,
+        scopes: [],
+        workspaces: [],
+        outputs: [],
+        windows: [],
+        transfers: [],
+        effects: [],
+        focusRequest: null,
+        result: null,
+        gestureSettled: null,
+        operationSettled: [],
+        nativeCreations: [],
+        warpCursor: null,
+        presentation: DISABLED_PRESENTATION,
+        intentDesired: [],
+        switchSettled: [],
+        diagnostics: [],
+        source: "src-1",
+        nativeInvalid: "1",
+        clock: "1",
+        gestureAssoc: null,
+        gestureSettledAssoc: null,
+        ...over,
+    };
+}
+
+function makeBaseRejection(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+        v: 4,
+        outcome: "rejected",
+        kind: "busy",
+        message: "busy",
+        gen: "gen-1",
+        source: "",
+        nativeInvalid: "0",
+        clock: "1",
+        gestureAssoc: null,
+        gestureSettledAssoc: null,
+        ...over,
+    };
+}
+
+function gestureJson(over: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+        v: 1,
+        instance: "gesture-1",
+        serial: "1",
+        revision: "1",
+        phase: "started",
+        win: "win-a",
+        kind: "move",
+        startRect: [0, 0, 200, 200],
+        startCursor: [10, 10],
+        cursor: [20, 20],
+        modalMove: 1,
+        changed: 1,
+        superseded: 0,
+        available: 1,
+        ...over,
+    });
+}
+
+function idleGestureJson(revision = "99"): string {
+    return JSON.stringify({
+        v: 1,
+        instance: "gesture-1",
+        serial: "0",
+        revision,
+        phase: "idle",
+        win: "",
+        kind: "",
+        startRect: null,
+        startCursor: null,
+        cursor: null,
+        modalMove: 0,
+        changed: 1,
+        superseded: 0,
+        available: 1,
+    });
+}
+
+function setupEntryHarness(opts: {
+    wins?: Array<{ id: string; rect: { x: number; y: number; width: number; height: number } }>;
+} = {}) {
+    const timers: Array<{ delay: number; cb: () => void; cancelled: boolean }> = [];
+    const logs: string[] = [];
+    const calls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }> = [];
+    const gestureCalls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }> = [];
+    const geometryWrites: string[] = [];
+    const desktop = { id: "ws1", name: "ws1" };
+    const out = { name: "out-a", geometry: { x: 0, y: 0, width: 1920, height: 1080 } };
+    const wins = (opts.wins ?? [{ id: "win-a", rect: { x: 0, y: 0, width: 400, height: 400 } }]).map((w) => {
+        let liveRect = { ...w.rect };
+        const win = {
+            internalId: w.id,
+            managed: true,
+            deleted: false,
+            transient: false,
+            transientFor: null,
+            dialog: false,
+            modal: false,
+            wantsInput: true,
+            normalWindow: true,
+            output: out,
+            desktops: [desktop],
+            minimized: false,
+            hidden: false,
+            fullScreen: false,
+            maximizeMode: 0,
+            onAllDesktops: false,
+            minSize: { width: 100, height: 100 },
+            maxSize: { width: 2147483647, height: 2147483647 },
+            pid: 1234,
+            resourceClass: "Example",
+            caption: w.id,
+            windowRole: "normal",
+            desktopFileName: "example.app",
+            resizeable: true,
+            keepAbove: false,
+            keepBelow: false,
+            outputChanged: { connect: () => undefined, disconnect: () => undefined },
+            desktopsChanged: { connect: () => undefined, disconnect: () => undefined },
+            hiddenChanged: { connect: () => undefined, disconnect: () => undefined },
+            frameGeometryChanged: { connect: () => undefined, disconnect: () => undefined },
+        } as Record<string, unknown>;
+        Object.defineProperty(win, "frameGeometry", {
+            configurable: true,
+            get: () => liveRect,
+            set: (rect: { x: number; y: number; width: number; height: number }) => {
+                liveRect = { ...rect };
+                geometryWrites.push(`${w.id}@${rect.x},${rect.y},${rect.width},${rect.height}`);
+                return true;
+            },
+        });
+        Object.defineProperty(win, "clientGeometry", {
+            configurable: true,
+            get: () => liveRect,
+        });
+        return win;
+    });
+    const activatedListeners: Array<() => void> = [];
+    const workspace = {
+        windowList: () => wins,
+        screens: [out],
+        desktops: [desktop],
+        currentDesktop: desktop,
+        activeScreen: out,
+        cursorPos: { x: 20, y: 20 },
+        currentDesktopForScreen: () => desktop,
+        activeWindow: wins[0] ?? null,
+        clientArea: () => ({ x: 0, y: 0, width: 1920, height: 1080 }),
+        windowAdded: { connect: () => undefined, disconnect: () => undefined },
+        windowRemoved: { connect: () => undefined, disconnect: () => undefined },
+        currentDesktopChanged: { connect: () => undefined, disconnect: () => undefined },
+        desktopsChanged: { connect: () => undefined, disconnect: () => undefined },
+        screensChanged: { connect: () => undefined, disconnect: () => undefined },
+        windowActivated: {
+            connect: (fn: () => void) => {
+                activatedListeners.push(fn);
+            },
+            disconnect: (fn: () => void) => {
+                const idx = activatedListeners.indexOf(fn);
+                if (idx >= 0) {
+                    activatedListeners.splice(idx, 1);
+                }
+            },
+        },
+    };
+    const fireWindowActivated = (): void => {
+        for (const fn of [...activatedListeners]) {
+            fn();
+        }
+    };
+    const handle = startWorldAdapterEntry({
+        workspace: workspace as never,
+        owner: "owner-a",
+        adapter: "test-adapter",
+        callDbus: (_s, _p, _i, method, payload, callback) => {
+            calls.push({ method, payload, callback });
+        },
+        gestureCallDbus: (_s, _p, _i, method, payload, callback) => {
+            gestureCalls.push({ method, payload, callback });
+        },
+        scheduleOnce: (delay, cb) => {
+            const entry = { delay, cb, cancelled: false };
+            timers.push(entry);
+            return () => {
+                entry.cancelled = true;
+            };
+        },
+        log: (line) => {
+            logs.push(line);
+        },
+    });
+    assert.ok(handle !== null);
+
+    const runTimers = (filterDelay?: number): void => {
+        const len = timers.length;
+        for (let i = 0; i < len; i += 1) {
+            const t = timers[i]!;
+            if (t.cancelled) {
+                continue;
+            }
+            if (filterDelay === undefined ? t.delay <= 120 : t.delay === filterDelay) {
+                t.cancelled = true;
+                t.cb();
+            }
+        }
+    };
+
+    const connectScripted = (adapter = "test-adapter", gen = "gen-1"): void => {
+        const hs = calls.find((c) => c.method === "DiscoverWorld");
+        assert.ok(hs !== undefined, "handshake DiscoverWorld pending");
+        calls.splice(calls.indexOf(hs), 1);
+        const hsBody = JSON.parse(hs.payload) as { req: string };
+        hs.callback(JSON.stringify({
+            type: "handshake-reply", v: 4, adapter, req: hsBody.req, gen, ready: false, kind: "",
+        }));
+        const st = calls.find((c) => c.method === "DiscoverWorld");
+        assert.ok(st !== undefined, "settings DiscoverWorld pending");
+        calls.splice(calls.indexOf(st), 1);
+        const stBody = JSON.parse(st.payload) as { req: string; rev: string };
+        st.callback(JSON.stringify({
+            type: "settings-reply", v: 4, adapter, gen, req: stBody.req, rev: stBody.rev, status: "accepted", diagnostics: [],
+        }));
+        runTimers();
+    };
+
+    const popDescribe = () => {
+        const idx = calls.findIndex((c) => c.method === "DescribeWorld");
+        assert.ok(idx >= 0, "DescribeWorld call pending");
+        const call = calls.splice(idx, 1)[0]!;
+        const body = JSON.parse(call.payload) as { adapter: string; gen: string; source: string; nativeInvalid: string; report: Record<string, unknown> };
+        return { call, body };
+    };
+
+    const popWaitGesture = () => {
+        const idx = gestureCalls.findIndex((c) => c.method === "WaitGesture");
+        assert.ok(idx >= 0, "WaitGesture call pending");
+        return gestureCalls.splice(idx, 1)[0]!;
+    };
+
+    const ackCalls = () => gestureCalls.filter((c) => c.method === "AckGesture");
+
+    return { handle, timers, logs, calls, gestureCalls, geometryWrites, runTimers, fireWindowActivated, connectScripted, popDescribe, popWaitGesture, ackCalls };
+}
+
+describe("retained settlements strict codec & key validation", () => {
+    it("requires exact gestureSettledAssoc on bound replies and rejects malformed/missing", () => {
+        const goodNull = parseWorldReply(JSON.stringify(makeBaseReply()));
+        assert.ok(isCoreWorldReply(goodNull));
+        assert.equal(goodNull.gestureSettledAssoc, null);
+
+        const assoc = { instance: "g-1", serial: "4", coreId: "2" };
+        const goodPresent = parseWorldReply(JSON.stringify(makeBaseReply({
+            gestureSettled: { id: "2", committed: true },
+            gestureSettledAssoc: assoc,
+        })));
+        assert.ok(isCoreWorldReply(goodPresent));
+        assert.deepEqual(goodPresent.gestureSettledAssoc, assoc);
+
+        // Missing gestureSettledAssoc on bound reply refuses.
+        const missing = makeBaseReply();
+        delete missing["gestureSettledAssoc"];
+        assert.equal(parseWorldReply(JSON.stringify(missing)), null);
+
+        // Extra key on gestureSettledAssoc refuses.
+        assert.equal(parseWorldReply(JSON.stringify(makeBaseReply({
+            gestureSettledAssoc: { instance: "g-1", serial: "4", coreId: "2", extra: "x" },
+        }))), null);
+
+        // Zero coreId or empty instance or non-canonical serial refuses.
+        assert.equal(parseWorldReply(JSON.stringify(makeBaseReply({
+            gestureSettledAssoc: { instance: "g-1", serial: "4", coreId: "0" },
+        }))), null);
+        assert.equal(parseWorldReply(JSON.stringify(makeBaseReply({
+            gestureSettledAssoc: { instance: "", serial: "4", coreId: "1" },
+        }))), null);
+        assert.equal(parseWorldReply(JSON.stringify(makeBaseReply({
+            gestureSettledAssoc: { instance: "g-1", serial: "01", coreId: "1" },
+        }))), null);
+    });
+
+    it("requires null gestureSettledAssoc on rejection and connection-error envelopes", () => {
+        const goodRej = parseWorldReply(JSON.stringify(makeBaseRejection()));
+        assert.ok(goodRej !== null && isWorldRejection(goodRej));
+        const goodConnErr = parseConnectionError(JSON.stringify(makeBaseRejection({ kind: "generation-mismatch" })));
+        assert.ok(goodConnErr !== null);
+
+        // Missing gestureSettledAssoc refuses on both.
+        const missing = makeBaseRejection();
+        delete missing["gestureSettledAssoc"];
+        assert.equal(parseWorldReply(JSON.stringify(missing)), null);
+        assert.equal(parseConnectionError(JSON.stringify(missing)), null);
+
+        // Non-null gestureSettledAssoc refuses on both.
+        const nonNull = makeBaseRejection({
+            gestureSettledAssoc: { instance: "g-1", serial: "1", coreId: "1" },
+        });
+        assert.equal(parseWorldReply(JSON.stringify(nonNull)), null);
+        assert.equal(parseConnectionError(JSON.stringify(nonNull)), null);
+    });
+
+    it("validates operationSettled exact keys, kind/outcome agreement, and (win, kind) uniqueness", () => {
+        // Same win + same op with BOTH clear and float phases is valid.
+        const bothPhases = parseWorldReply(JSON.stringify(makeBaseReply({
+            operationSettled: [
+                { win: "win-a", kind: "clear", op: "op-1", outcome: "continued-float", cause: "" },
+                { win: "win-a", kind: "float", op: "op-1", outcome: "float-frame-proven", cause: "" },
+            ],
+        })));
+        assert.ok(isCoreWorldReply(bothPhases));
+        assert.equal(bothPhases.operationSettled.length, 2);
+
+        // Kind/outcome disagreement refuses.
+        assert.equal(parseWorldReply(JSON.stringify(makeBaseReply({
+            operationSettled: [{ win: "win-a", kind: "float", op: "op-1", outcome: "continued-tiled", cause: "" }],
+        }))), null);
+        assert.equal(parseWorldReply(JSON.stringify(makeBaseReply({
+            operationSettled: [{ win: "win-a", kind: "clear", op: "op-1", outcome: "float-frame-proven", cause: "" }],
+        }))), null);
+
+        // Duplicate (win, kind) refuses even with different op.
+        assert.equal(parseWorldReply(JSON.stringify(makeBaseReply({
+            operationSettled: [
+                { win: "win-a", kind: "clear", op: "op-1", outcome: "continued-tiled", cause: "" },
+                { win: "win-a", kind: "clear", op: "op-2", outcome: "refused-proven", cause: "constraints" },
+            ],
+        }))), null);
+
+        // Missing kind refuses.
+        assert.equal(parseWorldReply(JSON.stringify(makeBaseReply({
+            operationSettled: [{ win: "win-a", op: "op-1", outcome: "continued-tiled", cause: "" }],
+        }))), null);
+    });
+
+    it("validates switchSettled exact keys and out uniqueness", () => {
+        // Distinct out with same op is valid.
+        const multiOut = parseWorldReply(JSON.stringify(makeBaseReply({
+            switchSettled: [
+                { out: "out-a", op: "op-1", outcome: "complete", failed: [], focus: "proven", fallback: false },
+                { out: "out-b", op: "op-1", outcome: "completed-with-failures", failed: ["win-x"], focus: "unproven", fallback: false },
+            ],
+        })));
+        assert.ok(isCoreWorldReply(multiOut));
+        assert.equal(multiOut.switchSettled.length, 2);
+
+        // Duplicate out refuses.
+        assert.equal(parseWorldReply(JSON.stringify(makeBaseReply({
+            switchSettled: [
+                { out: "out-a", op: "op-1", outcome: "complete", failed: [], focus: "proven", fallback: false },
+                { out: "out-a", op: "op-2", outcome: "complete", failed: [], focus: "proven", fallback: false },
+            ],
+        }))), null);
+
+        // Missing out refuses.
+        assert.equal(parseWorldReply(JSON.stringify(makeBaseReply({
+            switchSettled: [{ op: "op-1", outcome: "complete", failed: [], focus: "proven", fallback: false }],
+        }))), null);
+    });
+});
+
+describe("KDE retained settlement discharge & retry isolation", () => {
+    it("matches current pending FIFO head on stale-snapshot ack-only path and ignores redelivery", () => {
+        const h = setupEntryHarness();
+        try {
+            h.connectScripted();
+            const init = h.popDescribe();
+            init.call.callback(JSON.stringify(makeBaseReply({
+                adapter: init.body.adapter, req: init.body.source, obs: "1", rev: "1",
+                source: init.body.source, nativeInvalid: init.body.nativeInvalid,
+            })));
+
+            // Terminal arrives on WaitGesture.
+            h.popWaitGesture().callback(gestureJson({ phase: "released", serial: "7", win: "win-a" }));
+            h.runTimers();
+            const issuing = h.popDescribe();
+            // Issuing reply returns WITHOUT gestureSettled (withheld/not yet settled).
+            issuing.call.callback(JSON.stringify(makeBaseReply({
+                adapter: issuing.body.adapter, req: issuing.body.source, obs: "2", rev: "2",
+                source: issuing.body.source, nativeInvalid: issuing.body.nativeInvalid,
+                gestureSettled: null, gestureAssoc: { instance: "gesture-1", serial: "7", coreId: "3" },
+                gestureSettledAssoc: null,
+            })));
+            assert.equal(h.ackCalls().length, 0, "no ack before settlement");
+
+            // Fire the 2000ms retry timer and deliver a stale rev ("1" <= "2") reply carrying the retained terminal.
+            h.runTimers(2000);
+            const retry = h.popDescribe();
+            // Deliver a STALE rev ("1" <= "2") reply carrying the retained terminal!
+            retry.call.callback(JSON.stringify(makeBaseReply({
+                adapter: retry.body.adapter, req: retry.body.source, obs: "3", rev: "1",
+                source: retry.body.source, nativeInvalid: retry.body.nativeInvalid,
+                gestureSettled: { id: "3", committed: true },
+                gestureAssoc: null,
+                gestureSettledAssoc: { instance: "gesture-1", serial: "7", coreId: "3" },
+                operationSettled: [
+                    { win: "win-a", kind: "clear", op: "op-1", outcome: "continued-tiled", cause: "" },
+                    { win: "win-a", kind: "float", op: "op-1", outcome: "float-frame-proven", cause: "" },
+                ],
+                switchSettled: [
+                    { out: "out-a", op: "op-2", outcome: "complete", failed: [], focus: "proven", fallback: false },
+                ],
+            })));
+            assert.equal(h.ackCalls().length, 1, "stale-snapshot ack-only path discharges pending FIFO head");
+            assert.equal(h.geometryWrites.length, 0, "operationSettled/switchSettled and stale reply cause zero writes");
+
+            // Complete AckGesture with idle -> retires gestureTerminalPending.
+            const ack = h.ackCalls()[0]!;
+            assert.equal(JSON.parse(ack.payload).serial, "7");
+            ack.callback(idleGestureJson("10"));
+            h.runTimers();
+
+            // Redelivery of the same gestureSettled + gestureSettledAssoc after retirement is inert.
+            const after = h.popDescribe();
+            after.call.callback(JSON.stringify(makeBaseReply({
+                adapter: after.body.adapter, req: after.body.source, obs: "4", rev: "4",
+                source: after.body.source, nativeInvalid: after.body.nativeInvalid,
+                gestureSettled: { id: "3", committed: true },
+                gestureAssoc: null,
+                gestureSettledAssoc: { instance: "gesture-1", serial: "7", coreId: "3" },
+            })));
+            assert.equal(h.ackCalls().length, 1, "redelivery after retirement is inert");
+        } finally {
+            h.handle.stop();
+        }
+    });
+
+    it("unrelated non-discharging capture does NOT clear earlier unresolved terminalCaptureRetry", () => {
+        const h = setupEntryHarness();
+        try {
+            h.connectScripted();
+            const init = h.popDescribe();
+            init.call.callback(JSON.stringify(makeBaseReply({
+                adapter: init.body.adapter, req: init.body.source, obs: "1", rev: "1",
+                source: init.body.source, nativeInvalid: init.body.nativeInvalid,
+            })));
+
+            // Terminal capture T1 (serial 1) is sent and times out -> arms terminalCaptureRetry.
+            h.popWaitGesture().callback(gestureJson({ phase: "released", serial: "1", win: "win-a" }));
+            h.runTimers();
+            const t1 = h.popDescribe();
+            const t1Source = t1.body.source;
+            // Time out T1 (do not invoke t1.call.callback) -> arms terminalCaptureRetry.
+            h.runTimers(2000);
+            assert.equal(h.calls.filter((c) => c.method === "DescribeWorld").length, 0, "retry timer armed, not fired yet");
+
+            // Fire an unrelated non-discharging capture while terminalCaptureRetry is armed,
+            // and answer it with gestureSettled: null. terminalCaptureRetry must NOT be cleared.
+            h.fireWindowActivated();
+            h.runTimers();
+            const intervening = h.popDescribe();
+            assert.notEqual(intervening.body.source, t1Source, "fresh capture has distinct source");
+            intervening.call.callback(JSON.stringify(makeBaseReply({
+                adapter: intervening.body.adapter, req: intervening.body.source, obs: "2", rev: "2",
+                source: intervening.body.source, nativeInvalid: intervening.body.nativeInvalid,
+                gestureSettled: null, gestureSettledAssoc: null,
+            })));
+            assert.equal(h.ackCalls().length, 0, "no ack from non-discharging capture");
+
+            // Advance 2000ms -> T1's exact envelope retries!
+            h.runTimers(2000);
+            const retry = h.popDescribe();
+            assert.equal(retry.body.source, t1Source, "terminalCaptureRetry fires with T1 exact source");
+        } finally {
+            h.handle.stop();
+        }
+    });
+
+    it("refuses ack on wrong serial, null gestureSettledAssoc, or mismatched coreId", () => {
+        const h = setupEntryHarness();
+        try {
+            h.connectScripted();
+            const init = h.popDescribe();
+            init.call.callback(JSON.stringify(makeBaseReply({
+                adapter: init.body.adapter, req: init.body.source, obs: "1", rev: "1",
+                source: init.body.source, nativeInvalid: init.body.nativeInvalid,
+            })));
+
+            h.popWaitGesture().callback(gestureJson({ phase: "released", serial: "5", win: "win-a" }));
+            h.runTimers();
+            const cap = h.popDescribe();
+
+            // Wrong serial in gestureSettledAssoc -> no ack.
+            cap.call.callback(JSON.stringify(makeBaseReply({
+                adapter: cap.body.adapter, req: cap.body.source, obs: "2", rev: "2",
+                source: cap.body.source, nativeInvalid: cap.body.nativeInvalid,
+                gestureSettled: { id: "1", committed: true },
+                gestureSettledAssoc: { instance: "gesture-1", serial: "4", coreId: "1" },
+            })));
+            assert.equal(h.ackCalls().length, 0);
+
+            // Missing gestureSettledAssoc (null) -> no ack.
+            h.runTimers(2000);
+            const cap2 = h.popDescribe();
+            cap2.call.callback(JSON.stringify(makeBaseReply({
+                adapter: cap2.body.adapter, req: cap2.body.source, obs: "3", rev: "3",
+                source: cap2.body.source, nativeInvalid: cap2.body.nativeInvalid,
+                gestureSettled: { id: "1", committed: true },
+                gestureSettledAssoc: null,
+            })));
+            assert.equal(h.ackCalls().length, 0);
+
+            // Mismatched coreId (settled.id !== gestureSettledAssoc.coreId) -> no ack.
+            h.runTimers(2000);
+            const cap3 = h.popDescribe();
+            cap3.call.callback(JSON.stringify(makeBaseReply({
+                adapter: cap3.body.adapter, req: cap3.body.source, obs: "4", rev: "4",
+                source: cap3.body.source, nativeInvalid: cap3.body.nativeInvalid,
+                gestureSettled: { id: "2", committed: true },
+                gestureSettledAssoc: { instance: "gesture-1", serial: "5", coreId: "1" },
+            })));
+            assert.equal(h.ackCalls().length, 0);
+        } finally {
+            h.handle.stop();
+        }
+    });
+});
+
+describe("genuine broker_world_eval -> production entry retained gesture journeys", () => {
+    async function makeBrokerEntry() {
+        const bridge = WorldBridge.start();
+        const timers: Array<{ delay: number; cb: () => void; cancelled: boolean }> = [];
+        const gestureCalls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }> = [];
+        const logs: string[] = [];
+        const desktop1 = { id: "ws1", name: "ws1" };
+        const desktop2 = { id: "ws2", name: "ws2" };
+        const out = { name: "out-a", geometry: { x: 0, y: 0, width: 1920, height: 1080 } };
+        const makeWin = (id: string, rect: { x: number; y: number; width: number; height: number }) => {
+            let liveRect = { ...rect };
+            const w = {
+                internalId: id,
+                managed: true,
+                deleted: false,
+                transient: false,
+                transientFor: null,
+                dialog: false,
+                modal: false,
+                wantsInput: true,
+                normalWindow: true,
+                output: out,
+                desktops: [desktop1],
+                minimized: false,
+                hidden: false,
+                fullScreen: false,
+                maximizeMode: 0,
+                onAllDesktops: false,
+                minSize: { width: 100, height: 100 },
+                maxSize: { width: 2147483647, height: 2147483647 },
+                pid: 1234,
+                resourceClass: "Example",
+                caption: id,
+                windowRole: "normal",
+                desktopFileName: "example.app",
+                resizeable: true,
+                keepAbove: false,
+                keepBelow: false,
+                outputChanged: { connect: () => undefined, disconnect: () => undefined },
+                desktopsChanged: { connect: () => undefined, disconnect: () => undefined },
+                hiddenChanged: { connect: () => undefined, disconnect: () => undefined },
+                frameGeometryChanged: { connect: () => undefined, disconnect: () => undefined },
+            } as Record<string, unknown>;
+            Object.defineProperty(w, "frameGeometry", {
+                configurable: true,
+                get: () => liveRect,
+                set: (r: { x: number; y: number; width: number; height: number }) => {
+                    liveRect = { ...r };
+                    return true;
+                },
+            });
+            Object.defineProperty(w, "clientGeometry", {
+                configurable: true,
+                get: () => liveRect,
+            });
+            return w;
+        };
+        const wins = [
+            makeWin("win-a", { x: 0, y: 0, width: 960, height: 1080 }),
+            makeWin("win-b", { x: 960, y: 0, width: 960, height: 1080 }),
+        ];
+        const removedListeners: Array<(w: unknown) => void> = [];
+        const workspace = {
+            windowList: () => wins,
+            screens: [out],
+            desktops: [desktop1, desktop2],
+            currentDesktop: desktop1,
+            activeScreen: out,
+            cursorPos: { x: 20, y: 20 },
+            currentDesktopForScreen: () => desktop1,
+            activeWindow: wins[0],
+            clientArea: () => ({ x: 0, y: 0, width: 1920, height: 1080 }),
+            windowAdded: { connect: () => undefined, disconnect: () => undefined },
+            windowRemoved: {
+                connect: (fn: (w: unknown) => void) => {
+                    removedListeners.push(fn);
+                },
+                disconnect: (fn: (w: unknown) => void) => {
+                    const idx = removedListeners.indexOf(fn);
+                    if (idx >= 0) {
+                        removedListeners.splice(idx, 1);
+                    }
+                },
+            },
+            currentDesktopChanged: { connect: () => undefined, disconnect: () => undefined },
+            desktopsChanged: { connect: () => undefined, disconnect: () => undefined },
+            screensChanged: { connect: () => undefined, disconnect: () => undefined },
+            windowActivated: { connect: () => undefined, disconnect: () => undefined },
+        };
+        const removeWin = (id: string): void => {
+            const idx = wins.findIndex((w) => w["internalId"] === id);
+            assert.ok(idx >= 0, `window ${id} exists`);
+            const removed = wins.splice(idx, 1)[0]!;
+            for (const fn of [...removedListeners]) {
+                fn(removed);
+            }
+        };
+        let holdNextDescribe = false;
+        let lastNativeInvalid = "0";
+        let lastDescribePayload = "";
+        let lastDescribeReply = "";
+        const heldReplies: Array<{ replyText: string; callback: (reply: unknown) => void }> = [];
+        const inflight: Promise<void>[] = [];
+        const handle = startWorldAdapterEntry({
+            workspace: workspace as never,
+            owner: "owner-a",
+            adapter: "test-adapter",
+            callDbus: (_s, _p, _i, method, payload, callback) => {
+                if (method === "DescribeWorld") {
+                    lastDescribePayload = payload;
+                    const env = JSON.parse(payload) as { nativeInvalid?: string };
+                    if (typeof env.nativeInvalid === "string") {
+                        lastNativeInvalid = env.nativeInvalid;
+                    }
+                }
+                const p = bridge.send(method, payload).then((replyText) => {
+                    if (method === "DescribeWorld") {
+                        lastDescribeReply = replyText;
+                    }
+                    if (method === "DescribeWorld" && holdNextDescribe) {
+                        heldReplies.push({ replyText, callback });
+                    } else {
+                        callback(replyText);
+                    }
+                });
+                inflight.push(p);
+            },
+            gestureCallDbus: (_s, _p, _i, method, payload, callback) => {
+                gestureCalls.push({ method, payload, callback });
+            },
+            scheduleOnce: (delay, cb) => {
+                const entry = { delay, cb, cancelled: false };
+                timers.push(entry);
+                return () => {
+                    entry.cancelled = true;
+                };
+            },
+            log: (line) => {
+                logs.push(line);
+            },
+        });
+        if (handle === null) {
+            await bridge.close();
+            assert.fail("startWorldAdapterEntry returned null");
+        }
+
+        const flush = async (): Promise<void> => {
+            while (inflight.length > 0) {
+                const batch = inflight.splice(0, inflight.length);
+                await Promise.all(batch);
+            }
+        };
+        const runTimers = (filterDelay?: number): void => {
+            const len = timers.length;
+            for (let i = 0; i < len; i += 1) {
+                const t = timers[i]!;
+                if (t.cancelled) {
+                    continue;
+                }
+                if (filterDelay === undefined ? t.delay <= 120 : t.delay === filterDelay) {
+                    t.cancelled = true;
+                    t.cb();
+                }
+            }
+        };
+        const runNextLongestTimer = (): void => {
+            const active = timers.filter((t) => !t.cancelled);
+            assert.ok(active.length > 0, "expected a pending timer");
+            const chosen = active.reduce((a, b) => (b.delay >= a.delay ? b : a));
+            chosen.cancelled = true;
+            chosen.cb();
+        };
+        const settle = async (): Promise<void> => {
+            for (let i = 0; i < 6; i += 1) {
+                runTimers();
+                await flush();
+            }
+        };
+        const setHoldDescribe = (hold: boolean): void => {
+            holdNextDescribe = hold;
+        };
+        const popWaitGesture = () => {
+            const idx = gestureCalls.findIndex((c) => c.method === "WaitGesture");
+            assert.ok(idx >= 0, "WaitGesture pending");
+            return gestureCalls.splice(idx, 1)[0]!;
+        };
+        const ackCalls = () => gestureCalls.filter((c) => c.method === "AckGesture");
+        const stop = async (): Promise<void> => {
+            handle.stop();
+            await bridge.close();
+        };
+
+        return { bridge, wins, removeWin, workspace, handle, timers, gestureCalls, logs, heldReplies, lastNativeInvalid: () => lastNativeInvalid, lastDescribePayload: () => lastDescribePayload, lastDescribeReply: () => lastDescribeReply, flush, runTimers, runNextLongestTimer, settle, setHoldDescribe, popWaitGesture, ackCalls, stop };
+    }
+
+    it("withholds issuing + 2 intermediates, first delivers 4th retry reply, retires once, and ignores redelivery", { timeout: 60000 }, async () => {
+        const h = await makeBrokerEntry();
+        try {
+            await h.settle();
+            assert.equal(h.ackCalls().length, 0);
+
+            // Start gesture on win-a (tiled at [964, 8, 948, 1064]), move toward win-b's center ([400, 500]), then release.
+            h.popWaitGesture().callback(gestureJson({
+                instance: "g-1", serial: "1", revision: "1", phase: "started", win: "win-a",
+                startRect: [964, 8, 948, 1064], startCursor: [1400, 500], cursor: [1400, 500],
+            }));
+            await h.settle();
+
+            h.wins[0]!["frameGeometry"] = { x: 8, y: 8, width: 948, height: 1064 };
+            h.popWaitGesture().callback(gestureJson({
+                instance: "g-1", serial: "1", revision: "2", phase: "updated", win: "win-a",
+                startRect: [964, 8, 948, 1064], startCursor: [1400, 500], cursor: [50, 500],
+            }));
+            await h.settle();
+
+            // Hold DescribeWorld replies for the issuing terminal and 2 intermediates!
+            h.setHoldDescribe(true);
+            h.popWaitGesture().callback(gestureJson({
+                instance: "g-1", serial: "1", revision: "3", phase: "released", win: "win-a",
+                startRect: [964, 8, 948, 1064], startCursor: [1400, 500], cursor: [50, 500],
+            }));
+            h.runTimers();
+            await h.flush();
+            assert.equal(h.heldReplies.length, 1, "issuing terminal reply withheld from entry");
+            const issuingParsed = parseWorldReply(h.heldReplies[0]!.replyText);
+            assert.ok(isCoreWorldReply(issuingParsed) && issuingParsed.gestureSettled !== null);
+            assert.equal(issuingParsed.gestureSettled.committed, true, `issuing reply committed: ${JSON.stringify(issuingParsed.gestureSettled)} logs=${JSON.stringify(h.logs.slice(-15))}`);
+
+            // Time out the issuing capture and withhold 2 intermediate retries from entry;
+            // verify the broker retains gestureSettled + gestureSettledAssoc across all of them.
+            for (let i = 1; i <= 2; i += 1) {
+                h.runTimers(2000); // timeout current flight -> arm retry
+                h.runTimers(2000); // fire retry -> held in heldReplies
+                await h.flush();
+                assert.equal(h.heldReplies.length, 1 + i, `intermediate ${i} withheld from entry`);
+                const interReply = parseWorldReply(h.heldReplies[i]!.replyText);
+                assert.ok(isCoreWorldReply(interReply));
+                assert.deepEqual(interReply.gestureSettled, issuingParsed.gestureSettled, `intermediate ${i} retains gestureSettled`);
+                assert.deepEqual(interReply.gestureSettledAssoc, issuingParsed.gestureSettledAssoc, `intermediate ${i} retains gestureSettledAssoc`);
+            }
+            assert.equal(h.ackCalls().length, 0, "entry has not acked while issuing + 2 intermediates withheld");
+
+            // Deliver ONLY the 4th reply (never delivering issuing or intermediates 1..2).
+            h.setHoldDescribe(false);
+            h.runTimers(2000); // timeout intermediate 2 -> escalates to host-deadline timer
+            h.runNextLongestTimer(); // fire 4th capture -> delivered to entry!
+            await h.flush();
+            assert.equal(h.ackCalls().length, 1, "one exact AckGesture retirement on first delivered reply");
+            h.ackCalls()[0]!.callback(idleGestureJson("10"));
+            await h.settle();
+            assert.equal(h.ackCalls().length, 1, "redelivery after retirement is inert");
+            // Redelivering a withheld earlier reply after retirement is also inert.
+            h.heldReplies[0]!.callback(h.heldReplies[0]!.replyText);
+            assert.equal(h.ackCalls().length, 1, "late redelivery of withheld issuing reply is inert");
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("256 eviction close end-to-end: evicts 256 normalization mappings while G1 active, then closes win-a with G1 cancelled and retires G1", { timeout: 60000 }, async () => {
+        const h = await makeBrokerEntry();
+        try {
+            await h.settle();
+            // Open gesture G1 on win-a.
+            h.popWaitGesture().callback(gestureJson({
+                instance: "g-1", serial: "1", revision: "1", phase: "started", win: "win-a",
+                startRect: [0, 0, 960, 1080], startCursor: [100, 100], cursor: [120, 120],
+            }));
+            await h.settle();
+            assert.equal(h.ackCalls().length, 0, "open gesture does not ack");
+
+            // Capture G1's initial gestureAssoc from an updated snapshot while active.
+            h.setHoldDescribe(true);
+            h.popWaitGesture().callback(gestureJson({
+                instance: "g-1", serial: "1", revision: "2", phase: "updated", win: "win-a",
+                startRect: [0, 0, 960, 1080], startCursor: [100, 100], cursor: [130, 130],
+            }));
+            h.runTimers();
+            await h.flush();
+            const held = h.heldReplies.shift()!;
+            const probeParsed = parseWorldReply(held.replyText);
+            assert.ok(isCoreWorldReply(probeParsed));
+            const g1Assoc = probeParsed.gestureAssoc;
+            assert.ok(g1Assoc !== null && g1Assoc.instance === "g-1" && g1Assoc.serial === "1");
+            h.setHoldDescribe(false);
+            held.callback(held.replyText);
+            await h.settle();
+
+            // Send 256 unbindable newcomers through the production entry -> genuine broker
+            // (distinct serials "2".."257" on a different instance "g-evict"),
+            // evicting G1 from the 256-entry normalization map while G1 stays active.
+            for (let i = 2; i <= 257; i += 1) {
+                h.popWaitGesture().callback(gestureJson({
+                    instance: "g-evict", serial: String(i), revision: String(i), phase: "started", win: "win-missing",
+                    startRect: [8, 8, 948, 1064], startCursor: [400, 500], cursor: [410, 500],
+                }));
+                await h.settle();
+            }
+            assert.equal(h.ackCalls().length, 0, "G1 still active during eviction");
+
+            // Remove win-a and deliver cancelled for G1 on WaitGesture: the broker's
+            // pinned active_assoc resolves G1's gestureSettledAssoc and entry retires G1 once.
+            h.removeWin("win-a"); // win-a departs with explicit windowRemoved signal
+            h.popWaitGesture().callback(gestureJson({
+                instance: "g-1", serial: "1", revision: "3", phase: "cancelled", win: "win-a",
+                startRect: [0, 0, 960, 1080], startCursor: [100, 100], cursor: [130, 130],
+            }));
+            await h.settle();
+            assert.equal(h.ackCalls().length, 1, `G1 retires after 256-entry eviction; lastReply=${h.lastDescribeReply()}`);
+            const ackPayload = JSON.parse(h.ackCalls()[0]!.payload) as { instance: string; serial: string };
+            assert.equal(ackPayload.instance, "g-1");
+            assert.equal(ackPayload.serial, "1");
+            h.ackCalls()[0]!.callback(idleGestureJson("20"));
+            await h.settle();
+            assert.equal(h.ackCalls().length, 1, "no duplicate ack after retirement");
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("settles cancelled gesture as committed=false through genuine broker and retires once", { timeout: 60000 }, async () => {
+        const h = await makeBrokerEntry();
+        try {
+            await h.settle();
+            // Start gesture on win-a, then cancel without moving to another cell.
+            h.popWaitGesture().callback(gestureJson({
+                instance: "g-cancel", serial: "1", revision: "1", phase: "started", win: "win-a",
+                startRect: [0, 0, 960, 1080], startCursor: [100, 100], cursor: [100, 100],
+            }));
+            await h.settle();
+
+            h.setHoldDescribe(true);
+            h.popWaitGesture().callback(gestureJson({
+                instance: "g-cancel", serial: "1", revision: "2", phase: "cancelled", win: "win-a",
+                startRect: [0, 0, 960, 1080], startCursor: [100, 100], cursor: [100, 100],
+            }));
+            h.runTimers();
+            await h.flush();
+            assert.equal(h.heldReplies.length, 1);
+            const held = h.heldReplies.shift()!;
+            const parsed = parseWorldReply(held.replyText);
+            assert.ok(isCoreWorldReply(parsed));
+            assert.ok(parsed.gestureSettled !== null);
+            assert.equal(parsed.gestureSettled.committed, false, "cancelled gesture settles committed=false");
+            assert.deepEqual(parsed.gestureSettledAssoc, { instance: "g-cancel", serial: "1", coreId: parsed.gestureSettled.id });
+
+            h.setHoldDescribe(false);
+            held.callback(held.replyText);
+            assert.equal(h.ackCalls().length, 1, "cancelled terminal retires once");
+            h.ackCalls()[0]!.callback(idleGestureJson("3"));
+            await h.settle();
+            assert.equal(h.ackCalls().length, 1, "inert after retirement");
+        } finally {
+            await h.stop();
+        }
+    });
+});

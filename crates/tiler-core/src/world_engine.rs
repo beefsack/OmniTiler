@@ -1427,12 +1427,11 @@ pub struct WorldEngine {
     /// Superseded only by incarnation reset, never cleared otherwise (not
     /// on Updated/Started replays).
     pub(crate) consumed_gesture_seq: u64,
-    /// Precise result of the latest incorporated gesture terminal, staged
-    /// for the reply being published ([`WorldEngine::publish_v4`] takes it
-    /// into [`WorldReplyV4::gesture_settled`](crate::world_report::WorldReplyV4)). Single slot: each terminal
-    /// overwrites; each publish takes. Never drained by the adapter; the
-    /// reply carries the per-report result and the next unrelated report
-    /// publishes `None`.
+    /// Retained latest incorporated gesture terminal per `(adapter, gen)`.
+    /// Each newly incorporated non-stale terminal replaces it; consumed or
+    /// stale replays cannot regress its identity or replace its original
+    /// `committed` value. Generation-scoped (including after its subject
+    /// closes); fresh handshake/new generation clears it.
     pub(crate) gesture_terminal: Option<GestureSettled>,
     /// Fresh-placement bootstrap phase: false until the first accepted
     /// complete inventory establishes the startup lifetime set (including
@@ -1454,19 +1453,21 @@ pub struct WorldEngine {
     /// Cleared at the start of every staged run so a previous command's
     /// result never leaks into an unrelated reply.
     pub(crate) command_result: Option<CommandResult>,
-    /// Terminal retained-operation lifecycle events staged by settlement
-    /// ([`WorldEngine::settle_clears`], [`WorldEngine::settle_floats`]) and
-    /// consumed once by [`WorldEngine::publish_v4`] for the reply being built.
-    /// Empty on holds and on replies with no operation settlement. Cleared
-    /// at the start of every staged run so a previous report's events never
-    /// leak.
-    pub(crate) operation_settled: Vec<crate::world_report::OperationEvent>,
-    /// Terminal selection events staged by switch settlement
-    /// and consumed once by [`WorldEngine::publish_v4`] for the reply being
-    /// built. Empty on holds and on reports with no switch settlement.
-    /// Cleared at the start of every staged run so a previous report's
-    /// events never leak.
-    pub(crate) switch_settled: Vec<crate::world_report::SwitchEvent>,
+    /// Retained latest-wins operation lifecycle outcomes keyed by
+    /// `(window, kind)` (`Clear` vs `Float`). Retained across reports
+    /// through held/minimized/incomplete omissions; pruned on proven
+    /// window lifetime departure (explicit close or complete-inventory
+    /// absence). Fresh handshake/new generation clears all owners.
+    pub(crate) operation_settled: BTreeMap<
+        (WindowId, crate::world_report::OperationKind),
+        crate::world_report::OperationEvent,
+    >,
+    /// Retained latest-wins selection outcomes keyed by `OutputId`.
+    /// Retained across reports through held outputs and incomplete
+    /// inventories; pruned on proven output departure (complete-inventory
+    /// absence from live and held screens). Fresh handshake/new generation
+    /// clears all owners.
+    pub(crate) switch_settled: BTreeMap<OutputId, crate::world_report::SwitchEvent>,
     /// Fresh-admission focus intents already emitted, by window id (D4):
     /// at-most-once per lifetime, pruned on close so a reused id focuses
     /// again as a fresh newcomer. Survives incarnation resets within the
@@ -1927,8 +1928,8 @@ impl WorldEngine {
             hold_reasons: BTreeMap::new(),
             pending_forget: Vec::new(),
             command_result: None,
-            operation_settled: Vec::new(),
-            switch_settled: Vec::new(),
+            operation_settled: BTreeMap::new(),
+            switch_settled: BTreeMap::new(),
             placement_bootstrapped: false,
             admission_focus_spent: BTreeSet::new(),
             automatic_focus_tokens: BTreeMap::new(),
@@ -2274,6 +2275,12 @@ impl WorldEngine {
         &self.core_generation_str
     }
 
+    /// Currently active retained gesture id, if any.
+    #[must_use]
+    pub fn active_gesture_id(&self) -> Option<u64> {
+        self.gesture.as_ref().map(|retained| retained.id)
+    }
+
     /// Advance the consumed gesture id watermark to at least `id`.
     /// Monotonic: replays can never move it backward.
     pub(crate) fn consume_gesture_id(&mut self, id: u64) {
@@ -2281,13 +2288,24 @@ impl WorldEngine {
     }
 
     /// Record one incorporated gesture terminal and advance the watermark.
-    /// Called exactly once per incorporated terminal ingress (release with
-    /// or without commit, cancel, Esc, explicit-close clear), including
-    /// terminals that refuse without binding: the identity is consumed so
-    /// a retry can never commit. Stages the result for the reply being
-    /// published; [`WorldEngine::publish_v4`] takes it exactly once.
+    /// Called per incorporated terminal ingress (release with or without
+    /// commit, cancel, Esc, explicit-close clear), including genuine first
+    /// terminals that refuse without binding. Guarded against consumed or
+    /// stale replays: an already-consumed id (`<= consumed_gesture_seq`) or
+    /// an id older than an active retained session never overwrites the
+    /// retained terminal slot.
     pub(crate) fn record_gesture_terminal(&mut self, id: u64, committed: bool) {
+        if self.gesture_replayed(id) {
+            return;
+        }
         self.consume_gesture_id(id);
+        if self
+            .gesture
+            .as_ref()
+            .is_some_and(|retained| id < retained.id)
+        {
+            return;
+        }
         self.gesture_terminal = Some(GestureSettled { id, committed });
     }
 
@@ -3512,6 +3530,122 @@ impl WorldEngine {
                     || held_ref.contains(window)
                     || excluded.contains(window)
                     || known.contains(window)
+            });
+        }
+    }
+
+    /// Prune retained `operation_settled` and `switch_settled` outcomes when
+    /// their owner departs (Q2 A): runs before `publish_v4` projects the
+    /// reply so departed/closed owners' final outcomes are never published on
+    /// the wire. Emits a trace-level diagnostic carrying the final dropped
+    /// outcome when `OMNITILER_TRACE=1` (`core_trace_enabled()`). Held,
+    /// minimized, and incomplete omissions retain their owners; `gesture_terminal`
+    /// is generation-scoped and is never pruned here.
+    pub(crate) fn prune_settled_outcomes(&mut self) {
+        let trace = core_trace_enabled();
+        if !self.staged.observation.closed.is_empty() && !self.operation_settled.is_empty() {
+            let closed: BTreeSet<WindowId> =
+                self.staged.observation.closed.iter().cloned().collect();
+            let generation = &self.core_generation_str;
+            let obs = self.staged.observation.observation_seq;
+            self.operation_settled.retain(|(win, _), event| {
+                if closed.contains(win) {
+                    if trace {
+                        emit_focus_trace(format!(
+                            "omnitiler:core:trace ev=operation-settled-dropped gen={} obs={} win={} kind={} op={} outcome={} cause={}",
+                            diag_id(generation),
+                            obs,
+                            diag_id(&event.window.0),
+                            event.kind.as_str(),
+                            diag_id(&event.operation_id),
+                            event.outcome.as_str(),
+                            event.cause.as_deref().map_or("-", diag_id),
+                        ));
+                    }
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        if !self.staged.observation.inventory_complete {
+            return;
+        }
+        if !self.operation_settled.is_empty() {
+            let live: BTreeSet<&WindowId> = self
+                .staged
+                .observation
+                .raw_windows
+                .iter()
+                .map(|fact| &fact.window)
+                .collect();
+            let held: BTreeSet<&WindowId> = self
+                .staged
+                .held_windows
+                .iter()
+                .map(|held| &held.window)
+                .collect();
+            let excluded = &self.staged.excluded;
+            let known: BTreeSet<WindowId> = self
+                .operation_settled
+                .keys()
+                .map(|(win, _)| win)
+                .filter(|win| self.engine_knows_window_any(win))
+                .cloned()
+                .collect();
+            let generation = &self.core_generation_str;
+            let obs = self.staged.observation.observation_seq;
+            self.operation_settled.retain(|(win, _), event| {
+                let keep = live.contains(win)
+                    || held.contains(win)
+                    || excluded.contains(win)
+                    || known.contains(win);
+                if !keep && trace {
+                    emit_focus_trace(format!(
+                        "omnitiler:core:trace ev=operation-settled-dropped gen={} obs={} win={} kind={} op={} outcome={} cause={}",
+                        diag_id(generation),
+                        obs,
+                        diag_id(&event.window.0),
+                        event.kind.as_str(),
+                        diag_id(&event.operation_id),
+                        event.outcome.as_str(),
+                        event.cause.as_deref().map_or("-", diag_id),
+                    ));
+                }
+                keep
+            });
+        }
+        if !self.switch_settled.is_empty() {
+            let live_outputs: BTreeSet<OutputId> = self
+                .staged
+                .screens
+                .iter()
+                .map(|screen| screen.output.clone())
+                .chain(
+                    self.staged
+                        .held_screens
+                        .iter()
+                        .map(|held| held.output.clone()),
+                )
+                .collect();
+            let generation = &self.core_generation_str;
+            let obs = self.staged.observation.observation_seq;
+            self.switch_settled.retain(|output, event| {
+                let keep = live_outputs.contains(output);
+                if !keep && trace {
+                    emit_focus_trace(format!(
+                        "omnitiler:core:trace ev=switch-settled-dropped gen={} obs={} out={} op={} outcome={} focus={} fallback={} failed={}",
+                        diag_id(generation),
+                        obs,
+                        diag_id(&event.output.0),
+                        diag_id(&event.operation_id),
+                        event.outcome.as_str(),
+                        event.focus.as_str(),
+                        event.fallback,
+                        event.failed.iter().map(|win| diag_id(&win.0)).collect::<Vec<_>>().join(","),
+                    ));
+                }
+                keep
             });
         }
     }

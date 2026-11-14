@@ -229,7 +229,7 @@ function accept(gen: string, source: string, nativeInvalid: string, rev: string)
         source,
         nativeInvalid,
         clock: "1",
-        gestureSettled: null, gestureAssoc: null,
+        gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
         focusRequest: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,

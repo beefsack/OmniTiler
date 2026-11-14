@@ -283,7 +283,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         v: 4, adapter: "test-adapter", gen, req: source, obs: rev, rev,
         ready: true, consumed: false,
         source, nativeInvalid, clock: "1",
-        gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [],
+        gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null, operationSettled: [], nativeCreations: [],
         warpCursor: null, intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
@@ -598,7 +598,7 @@ describe("production-entry FrameWitness fence", () => {
         // boundary: the old effect cover must not cross it.
         h.rejectNext.payload = JSON.stringify({
             v: 4, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
-            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null,
+            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null, gestureSettledAssoc: null,
         });
         fire(h, "screensChanged");
         h.runTimers();

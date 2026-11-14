@@ -32,8 +32,9 @@
 //   take). Queue/take answers are per-command correlated (monotonic global
 //   seq, one terminal settlement per filed command): pending only while
 //   nothing drained, ready (possibly null) once settled, never a stale last
-//   result reused. `gestureAssoc` stays null here (the seam carries no
-//   broker gesture map; never a fabricated binding).
+//   result reused. `gestureAssoc` and `gestureSettledAssoc` stay null here
+//   (the seam strips `nativeGesture` and carries no broker gesture map;
+//   never a fabricated binding).
 //
 // The inner report arrives as genuine v4 producer bytes (strict codec owned
 // shapes including `rendererInput`, `views` refused, no v3 conversion, no
@@ -230,6 +231,7 @@ export function createMiniBroker(): MiniBroker {
                 ...core,
                 result: null,
                 gestureAssoc: null,
+                gestureSettledAssoc: null,
                 source: envelope["source"],
                 nativeInvalid: envelope["nativeInvalid"],
                 clock,
@@ -244,7 +246,7 @@ export function createMiniBroker(): MiniBroker {
                 return JSON.stringify({
                     v: 4, outcome: "rejected", kind: "generation-mismatch",
                     message: "generation mismatch", gen, source: "",
-                    nativeInvalid: "0", clock, gestureAssoc: null,
+                    nativeInvalid: "0", clock, gestureAssoc: null, gestureSettledAssoc: null,
                 });
             }
             const key = queueKey(body["client"], body["clientCmd"]);
@@ -276,7 +278,7 @@ export function createMiniBroker(): MiniBroker {
                 return JSON.stringify({
                     v: 4, outcome: "rejected", kind: "generation-mismatch",
                     message: "generation mismatch", gen, source: "",
-                    nativeInvalid: "0", clock, gestureAssoc: null,
+                    nativeInvalid: "0", clock, gestureAssoc: null, gestureSettledAssoc: null,
                 });
             }
             const open = settlements.find((s) => !s.collected && s.settled);

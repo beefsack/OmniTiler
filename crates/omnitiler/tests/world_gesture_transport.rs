@@ -304,7 +304,7 @@ fn stale_serial_never_gets_a_newer_core_id() {
     assert_eq!(settled["gestureSettled"]["id"], serde_json::json!("1"));
 
     // Older unseen serial arriving later never mints a newer core id: the
-    // terminal omits truthfully and settles nothing.
+    // terminal omits ingress and retains the prior settled outcome unchanged.
     let stale = with_raw(
         &inner_report(&[window_json("win-a", &moved_a), window_json("win-b", &rb)]),
         &raw_terminal("1", "3", "[150,50]"),
@@ -314,8 +314,16 @@ fn stale_serial_never_gets_a_newer_core_id() {
     let omitted = capture(&service, &generation, 3, &stale);
     assert_eq!(omitted["outcome"], serde_json::Value::Null);
     assert!(
-        omitted["gestureSettled"].is_null(),
-        "stale serial settles nothing, got {omitted}"
+        omitted["gestureAssoc"].is_null(),
+        "stale serial omits ingress, got {omitted}"
+    );
+    assert_eq!(
+        omitted["gestureSettled"], settled["gestureSettled"],
+        "stale serial retains prior settlement unchanged, got {omitted}"
+    );
+    assert_eq!(
+        omitted["gestureSettledAssoc"], settled["gestureSettledAssoc"],
+        "stale serial retains prior settled association unchanged, got {omitted}"
     );
 }
 
@@ -521,8 +529,16 @@ fn retired_source_instance_never_rebinds_late_replies() {
     );
     let omitted_terminal = capture(&service, &generation, 6, &a_late_terminal);
     assert!(
-        omitted_terminal["gestureSettled"].is_null(),
-        "retired terminal settles nothing, got {omitted_terminal}"
+        omitted_terminal["gestureAssoc"].is_null(),
+        "retired terminal omits ingress, got {omitted_terminal}"
+    );
+    assert_eq!(
+        omitted_terminal["gestureSettled"], settled_b["gestureSettled"],
+        "retired terminal retains live instance b settlement unchanged, got {omitted_terminal}"
+    );
+    assert_eq!(
+        omitted_terminal["gestureSettledAssoc"], settled_b["gestureSettledAssoc"],
+        "retired terminal retains live instance b settled association unchanged, got {omitted_terminal}"
     );
 
     // The map keeps working after retirement handling: a fresh serial on
@@ -722,11 +738,16 @@ fn broker_carries_native_lifecycle_without_second_lifecycle() {
         "first terminal settles with frozen start facts"
     );
 
-    // Exact replay of the consumed terminal stays dead: no second commit.
+    // Re-sending the consumed terminal on a fresh source stays dead: no
+    // second commit, retained settlement and association remain unchanged.
     let replay = capture(&service, &generation, 4, &terminal);
-    assert!(
-        replay["gestureSettled"].is_null(),
-        "consumed terminal replays dead, got {replay}"
+    assert_eq!(
+        replay["gestureSettled"], settled["gestureSettled"],
+        "consumed terminal retains original settlement unchanged, got {replay}"
+    );
+    assert_eq!(
+        replay["gestureSettledAssoc"], settled["gestureSettledAssoc"],
+        "consumed terminal retains original settled association unchanged, got {replay}"
     );
 }
 
@@ -1063,7 +1084,8 @@ fn identity_map_stays_bounded_without_replay() {
     }
 
     // An ancient evicted identity replayed under a fresh source stays dead:
-    // bounded retirement never rebinds it to a newer core id.
+    // bounded retirement never rebinds it to a newer core id and retains
+    // serial 300's settlement.
     let ancient = with_raw(
         &inner_report(&[window_json("win-a", &moved_a), window_json("win-b", &rb)]),
         &raw_terminal("1", "999999", "[150,50]"),
@@ -1072,8 +1094,18 @@ fn identity_map_stays_bounded_without_replay() {
     );
     let replayed = capture(&service, &generation, next(), &ancient);
     assert!(
-        replayed["gestureSettled"].is_null(),
-        "evicted identities never rebind, got {replayed}"
+        replayed["gestureAssoc"].is_null(),
+        "evicted identities omit ingress, got {replayed}"
+    );
+    assert_eq!(
+        replayed["gestureSettled"],
+        serde_json::json!({"id": "300", "committed": false}),
+        "evicted identities retain last settled terminal, got {replayed}"
+    );
+    assert_eq!(
+        replayed["gestureSettledAssoc"],
+        serde_json::json!({"instance": "gesture-1", "serial": "300", "coreId": "300"}),
+        "evicted identities retain last settled association, got {replayed}"
     );
 }
 
@@ -1118,11 +1150,16 @@ fn exact_envelope_replay_recovers_byte_identical_settled_response() {
     let replayed: serde_json::Value = serde_json::from_str(&second).expect("reply is JSON");
     assert_eq!(replayed["gestureSettled"]["id"], serde_json::json!("1"));
     assert_eq!(replayed["gestureAssoc"], settled["gestureAssoc"]);
-    // Fresh-source re-execution of the consumed terminal settles nothing.
+    // Fresh-source re-execution of the consumed terminal does not re-settle
+    // or mint a newer id; the retained terminal and association remain unchanged.
     let fresh = capture(&service, &generation, 3, &terminal);
-    assert!(
-        fresh["gestureSettled"].is_null(),
-        "consumed terminal never re-settles on a fresh source, got {fresh}"
+    assert_eq!(
+        fresh["gestureSettled"], settled["gestureSettled"],
+        "consumed terminal retains prior settlement on a fresh source, got {fresh}"
+    );
+    assert_eq!(
+        fresh["gestureSettledAssoc"], settled["gestureSettledAssoc"],
+        "consumed terminal retains prior settled association on a fresh source, got {fresh}"
     );
 }
 
@@ -1233,7 +1270,8 @@ fn bound_assoc_absent_on_omitted_and_proves_settled_binding() {
     let moved_a = "[100,0,200,200]".to_owned();
 
     // Omitted lane (stale serial below floor after a newer serial mapped):
-    // accepted with null settlement AND null association.
+    // accepted with null current-ingress association while retaining the
+    // prior terminal and its settled association.
     let open2 = with_raw(
         &inner_report(&[window_json("win-a", &ra), window_json("win-b", &rb)]),
         &raw_open("2", "1", "[150,50]"),
@@ -1257,14 +1295,18 @@ fn bound_assoc_absent_on_omitted_and_proves_settled_binding() {
     );
     let omitted = capture(&service, &generation, 3, &stale);
     assert_eq!(omitted["outcome"], serde_json::Value::Null);
-    assert!(omitted["gestureSettled"].is_null());
+    assert_eq!(omitted["gestureSettled"], settled["gestureSettled"]);
+    assert_eq!(
+        omitted["gestureSettledAssoc"],
+        settled["gestureSettledAssoc"]
+    );
     assert!(
         omitted["gestureAssoc"].is_null(),
         "omitted lanes carry no association, got {omitted}"
     );
 
-    // Open accepted reply carries the association for the next package even
-    // with no terminal settlement.
+    // Open accepted reply carries the association for the next package while
+    // retaining the prior completed settlement until the successor settles.
     let open3 = with_raw(
         &inner_report(&[window_json("win-a", &ra), window_json("win-b", &rb)]),
         &raw_open("3", "4", "[150,50]"),
@@ -1273,10 +1315,199 @@ fn bound_assoc_absent_on_omitted_and_proves_settled_binding() {
     );
     let opened = capture(&service, &generation, 4, &open3);
     assert_eq!(opened["outcome"], serde_json::Value::Null);
-    assert!(opened["gestureSettled"].is_null());
+    assert_eq!(opened["gestureSettled"], settled["gestureSettled"]);
+    assert_eq!(
+        opened["gestureSettledAssoc"],
+        settled["gestureSettledAssoc"]
+    );
     assert_eq!(
         opened["gestureAssoc"],
         serde_json::json!({"instance": "gesture-1", "serial": "3", "coreId": "2"}),
         "open carries proven binding without terminal, got {opened}"
     );
+}
+
+#[test]
+fn gesture_settled_assoc_retains_terminal_distinct_from_current_ingress_and_resets_on_handshake() {
+    let service = WorldService::new();
+    let generation = discover(&service);
+    let ra = "[0,0,200,200]".to_owned();
+    let rb = "[300,0,200,200]".to_owned();
+    let moved_a = "[100,0,200,200]".to_owned();
+
+    let open1 = with_raw(
+        &inner_report(&[window_json("win-a", &ra), window_json("win-b", &rb)]),
+        &raw_open("1", "1", "[150,50]"),
+        "null",
+        "null",
+    );
+    let opened1 = capture(&service, &generation, 1, &open1);
+    assert_eq!(
+        opened1["gestureAssoc"],
+        serde_json::json!({"instance": "gesture-1", "serial": "1", "coreId": "1"}),
+    );
+    assert!(opened1["gestureSettledAssoc"].is_null());
+
+    let terminal1 = with_raw(
+        &inner_report(&[window_json("win-a", &moved_a), window_json("win-b", &rb)]),
+        &raw_terminal("1", "2", "[150,50]"),
+        "null",
+        "null",
+    );
+    let settled1 = capture(&service, &generation, 2, &terminal1);
+    let assoc1 = serde_json::json!({"instance": "gesture-1", "serial": "1", "coreId": "1"});
+    assert_eq!(settled1["gestureSettled"]["id"], serde_json::json!("1"));
+    assert_eq!(settled1["gestureAssoc"], assoc1);
+    assert_eq!(settled1["gestureSettledAssoc"], assoc1);
+
+    // Idle capture: gestureAssoc is null while gestureSettledAssoc retains terminal 1.
+    let idle = inner_report(&[window_json("win-a", &moved_a), window_json("win-b", &rb)]);
+    let idle_reply = capture(&service, &generation, 3, &idle);
+    assert!(idle_reply["gestureAssoc"].is_null());
+    assert_eq!(idle_reply["gestureSettled"]["id"], serde_json::json!("1"));
+    assert_eq!(idle_reply["gestureSettledAssoc"], assoc1);
+
+    // Opening successor gesture 2 keeps terminal 1's gestureSettledAssoc distinct
+    // from current-ingress gestureAssoc (Q1 A).
+    let open2 = with_raw(
+        &inner_report(&[window_json("win-a", &moved_a), window_json("win-b", &rb)]),
+        &raw_open("2", "1", "[150,50]"),
+        "null",
+        "null",
+    );
+    let opened2 = capture(&service, &generation, 4, &open2);
+    assert_eq!(
+        opened2["gestureAssoc"],
+        serde_json::json!({"instance": "gesture-1", "serial": "2", "coreId": "2"}),
+    );
+    assert_eq!(opened2["gestureSettled"]["id"], serde_json::json!("1"));
+    assert_eq!(opened2["gestureSettledAssoc"], assoc1);
+
+    // Fresh handshake resets both active and terminal associations.
+    let generation2 = discover(&service);
+    let after_reset = capture(&service, &generation2, 1, &idle);
+    assert!(after_reset["gestureAssoc"].is_null());
+    assert!(after_reset["gestureSettled"].is_null());
+    assert!(after_reset["gestureSettledAssoc"].is_null());
+}
+
+#[test]
+fn broker_rejections_and_connection_errors_carry_null_gesture_settled_assoc() {
+    let service = WorldService::new();
+    let generation = discover(&service);
+    let ra = "[0,0,200,200]".to_owned();
+    let rb = "[300,0,200,200]".to_owned();
+    let moved_a = "[100,0,200,200]".to_owned();
+
+    // Connection-error envelope carries null gestureAssoc and null gestureSettledAssoc.
+    let err_env: serde_json::Value =
+        serde_json::from_str(&service.error_body("malformed", "request is malformed"))
+            .expect("error JSON");
+    assert_eq!(err_env["outcome"], "rejected");
+    assert!(err_env["gestureAssoc"].is_null());
+    assert!(err_env["gestureSettledAssoc"].is_null());
+
+    // Settle a gesture first so terminal_assoc is populated.
+    let open1 = with_raw(
+        &inner_report(&[window_json("win-a", &ra), window_json("win-b", &rb)]),
+        &raw_open("1", "1", "[150,50]"),
+        "null",
+        "null",
+    );
+    let _ = capture(&service, &generation, 1, &open1);
+    let terminal1 = with_raw(
+        &inner_report(&[window_json("win-a", &moved_a), window_json("win-b", &rb)]),
+        &raw_terminal("1", "2", "[150,50]"),
+        "null",
+        "null",
+    );
+    let settled = capture(&service, &generation, 2, &terminal1);
+    let assoc1 = serde_json::json!({"instance": "gesture-1", "serial": "1", "coreId": "1"});
+    assert_eq!(settled["gestureSettledAssoc"], assoc1);
+
+    // Generation-mismatch rejection carries null gestureSettledAssoc.
+    let wrong_gen = capture(&service, "wrong-gen", 3, &terminal1);
+    assert_eq!(wrong_gen["outcome"], "rejected");
+    assert!(wrong_gen["gestureAssoc"].is_null());
+    assert!(wrong_gen["gestureSettledAssoc"].is_null());
+
+    // Malformed capture rejection carries null gestureSettledAssoc and does
+    // not disturb the pinned terminal association.
+    let malformed = terminal1.replacen(
+        "\"rendererInput\":null",
+        "\"rendererInput\":null,\"bogusField\":1",
+        1,
+    );
+    let refused = capture(&service, &generation, 3, &malformed);
+    assert_eq!(refused["outcome"], "rejected");
+    assert!(refused["gestureAssoc"].is_null());
+    assert!(refused["gestureSettledAssoc"].is_null());
+
+    // Subsequent accepted idle capture still carries the pinned terminal association.
+    let idle = inner_report(&[window_json("win-a", &moved_a), window_json("win-b", &rb)]);
+    let idle_reply = capture(&service, &generation, 4, &idle);
+    assert_eq!(idle_reply["gestureSettledAssoc"], assoc1);
+}
+
+#[test]
+fn close_with_omitted_ingress_resolves_old_active_terminal_after_256_unbindable_newcomers() {
+    let service = WorldService::new();
+    let generation = discover(&service);
+    let ra = "[0,0,200,200]".to_owned();
+    let rb = "[300,0,200,200]".to_owned();
+
+    let open1 = with_raw(
+        &inner_report(&[window_json("win-a", &ra), window_json("win-b", &rb)]),
+        &raw_open("1", "1", "[150,50]"),
+        "null",
+        "null",
+    );
+    let opened1 = capture(&service, &generation, 1, &open1);
+    let assoc1 = serde_json::json!({"instance": "gesture-1", "serial": "1", "coreId": "1"});
+    assert_eq!(opened1["gestureAssoc"], assoc1);
+
+    // 256 unbindable newcomers (unknown window) evict (gesture-1, "1") from
+    // the 256-entry normalization map without replacing core's active gesture.
+    for i in 0..256u64 {
+        let serial = format!("{}", 2 + i);
+        let newcomer = with_raw(
+            &inner_report(&[window_json("win-a", &ra), window_json("win-b", &rb)]),
+            &raw_native_full(
+                "gesture-1",
+                &serial,
+                "1",
+                "started",
+                "win-missing",
+                "move",
+                "[0,0,200,200]",
+                "[10,10]",
+                "[150,50]",
+                1,
+                1,
+                0,
+                1,
+            ),
+            "null",
+            "null",
+        );
+        let reply = capture(&service, &generation, 2 + i, &newcomer);
+        assert_eq!(reply["outcome"], serde_json::Value::Null);
+    }
+
+    // Close win-a with omitted ingress: core settles active gesture 1
+    // (committed = false), and broker resolves gestureSettledAssoc from the
+    // pinned active association.
+    let closed_inner = inner_report(&[window_json("win-b", &rb)]).replacen(
+        "\"closed\":[]",
+        "\"closed\":[\"win-a\"]",
+        1,
+    );
+    let closed_reply = capture(&service, &generation, 300, &closed_inner);
+    assert!(closed_reply["gestureAssoc"].is_null());
+    assert_eq!(closed_reply["gestureSettled"]["id"], serde_json::json!("1"));
+    assert_eq!(
+        closed_reply["gestureSettled"]["committed"],
+        serde_json::json!(false)
+    );
+    assert_eq!(closed_reply["gestureSettledAssoc"], assoc1);
 }

@@ -1381,7 +1381,8 @@ impl WorldEngine {
         // No evidence latches here: same-report raw facts would guess a
         // future issuing revision.
         if let Some(binding) = self.retained_selection.get(&focus_output).cloned()
-            && let Some(event) = selection_terminal(&binding, NativeSelectionProof::Pending)
+            && let Some(event) =
+                selection_terminal(&focus_output, &binding, NativeSelectionProof::Pending)
         {
             self.stage_selection_terminal(&focus_output, event);
         }
@@ -1599,7 +1600,7 @@ impl WorldEngine {
             // terminates, confirmed or failed, without retry.
             let proof = native_proof;
             let event = match self.retained_selection.get(&output) {
-                Some(current) => selection_terminal(current, proof),
+                Some(current) => selection_terminal(&output, current, proof),
                 None => continue,
             };
             let Some(event) = event else {
@@ -1685,9 +1686,10 @@ impl WorldEngine {
     }
 
     /// Stage one settled switch terminal: release the finite feedback
-    /// binding, retire the actual retained view parent flight, and push the
-    /// event into the take-once store. The single stager for both the
-    /// normal settle path and the zero-obligation issuing point.
+    /// binding, retire the actual retained view parent flight, and update
+    /// the output's retained `switch_settled` slot latest-wins. The single
+    /// stager for both the normal settle path and the zero-obligation
+    /// issuing point.
     fn stage_selection_terminal(&mut self, output: &OutputId, event: SwitchEvent) {
         let parent = event.operation_id.clone();
         self.retained_selection.remove(output);
@@ -1695,7 +1697,7 @@ impl WorldEngine {
             !(retained.target.operation_id == parent
                 && matches!(retained.target.kind, TransferKind::View))
         });
-        self.switch_settled.push(event);
+        self.switch_settled.insert(output.clone(), event);
     }
 
     /// First raw visibility write for one frozen switch member: live staged
@@ -1719,20 +1721,32 @@ impl WorldEngine {
         None
     }
 
-    /// Pre-mutation worst-case reserve for simultaneous switch completions:
-    /// at most one terminal event per retained selection binding, each
-    /// failed list a subset of its frozen switch members. Zero when no
-    /// binding is retained.
+    /// Pre-mutation worst-case reserve for retained and simultaneous switch
+    /// outcomes: covers the union of `switch_settled` (already retained) and
+    /// `retained_selection` (pending bindings that may settle or replace
+    /// their output's slot with a failed list up to `switch_members.len()`).
+    /// Zero when neither map holds any entry.
     pub(crate) fn switch_settle_reserve(&self) -> usize {
-        if self.retained_selection.is_empty() {
+        if self.retained_selection.is_empty() && self.switch_settled.is_empty() {
             return 0;
         }
-        let failed: usize = self
-            .retained_selection
-            .values()
-            .map(|binding| binding.switch_members.len())
-            .sum();
-        crate::world_sizing::max_switch_settle_reserve(self.retained_selection.len(), failed)
+        let mut count = 0usize;
+        let mut failed = 0usize;
+        for (output, binding) in &self.retained_selection {
+            count += 1;
+            let existing = self
+                .switch_settled
+                .get(output)
+                .map_or(0, |event| event.failed.len());
+            failed = failed.saturating_add(binding.switch_members.len().max(existing));
+        }
+        for (output, event) in &self.switch_settled {
+            if !self.retained_selection.contains_key(output) {
+                count += 1;
+                failed = failed.saturating_add(event.failed.len());
+            }
+        }
+        crate::world_sizing::max_switch_settle_reserve(count, failed)
     }
 
     /// Pre-mutation reserve for the at-most-one zero-obligation issuing
@@ -1990,6 +2004,7 @@ impl WorldEngine {
 /// iff nothing failed, no focus proof was required-or-missing, and no
 /// native refusal latched.
 fn selection_terminal(
+    output: &OutputId,
     binding: &RetainedSelection,
     native: NativeSelectionProof,
 ) -> Option<SwitchEvent> {
@@ -2031,6 +2046,7 @@ fn selection_terminal(
         SwitchOutcome::CompletedWithFailures
     };
     Some(SwitchEvent {
+        output: output.clone(),
         operation_id: binding.parent_op.clone(),
         outcome,
         failed,

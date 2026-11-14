@@ -225,7 +225,7 @@ function makeHarness(initial: LiveSpec[]) {
             source,
             nativeInvalid,
             clock: "1",
-            gestureSettled: null, gestureAssoc: null,
+            gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
             focusRequest: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,

@@ -764,7 +764,7 @@ describe("world rejection log vocabulary", () => {
         replyCall(flow, "DescribeWorld")(JSON.stringify({
             v: 4, outcome: "rejected", kind: "snapshot-invalid", message, gen,
             source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "0",
-            gestureAssoc: null,
+            gestureAssoc: null, gestureSettledAssoc: null,
         }));
         const logs = [...flow.logs];
         flow.handle.stop();

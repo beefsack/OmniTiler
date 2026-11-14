@@ -654,9 +654,9 @@ fn empty_focusless_issues_terminal_without_echo_resurrection() {
         "missing stays retired: {:?}",
         held.transfers
     );
-    assert!(
-        held.switch_settled.is_empty(),
-        "no duplicate terminal: {:?}",
+    assert_eq!(
+        held.switch_settled, reply.switch_settled,
+        "retains issuing terminal unchanged: {:?}",
         held.switch_settled
     );
     // Empty observation: settled parent stays retired, no duplicate.
@@ -678,9 +678,9 @@ fn empty_focusless_issues_terminal_without_echo_resurrection() {
         "empty stays retired: {:?}",
         held.transfers
     );
-    assert!(
-        held.switch_settled.is_empty(),
-        "no duplicate terminal: {:?}",
+    assert_eq!(
+        held.switch_settled, reply.switch_settled,
+        "retains issuing terminal unchanged: {:?}",
         held.switch_settled
     );
     // Stale observation: settled parent stays retired, no duplicate.
@@ -702,9 +702,9 @@ fn empty_focusless_issues_terminal_without_echo_resurrection() {
         "stale stays retired: {:?}",
         held.transfers
     );
-    assert!(
-        held.switch_settled.is_empty(),
-        "no duplicate terminal: {:?}",
+    assert_eq!(
+        held.switch_settled, reply.switch_settled,
+        "retains issuing terminal unchanged: {:?}",
         held.switch_settled
     );
     // External unknown observation: settled parent stays retired, no duplicate.
@@ -726,9 +726,9 @@ fn empty_focusless_issues_terminal_without_echo_resurrection() {
         "unknown stays retired: {:?}",
         held.transfers
     );
-    assert!(
-        held.switch_settled.is_empty(),
-        "no duplicate terminal: {:?}",
+    assert_eq!(
+        held.switch_settled, reply.switch_settled,
+        "retains issuing terminal unchanged: {:?}",
         held.switch_settled
     );
     // Exact observation: settled parent stays retired, no duplicate.
@@ -750,9 +750,9 @@ fn empty_focusless_issues_terminal_without_echo_resurrection() {
         "exact stays retired: {:?}",
         settled.transfers
     );
-    assert!(
-        settled.switch_settled.is_empty(),
-        "no duplicate terminal: {:?}",
+    assert_eq!(
+        settled.switch_settled, reply.switch_settled,
+        "retains issuing terminal unchanged: {:?}",
         settled.switch_settled
     );
 }
