@@ -424,6 +424,7 @@ KDE (`__OMNITILER_TRACE__="1"`, `kwin/src/world-entry.ts`):
   - Original nonce provenance is preserved with bounded 8-entry correlation records; unknown, evicted, or reset correlation renders `-`, and late callbacks must not relabel newer acks. The last-retired slot clears on generation/handshake reset (no historical event log).
 - `omnitiler:world:trace ev=reply-skipped stage=<accept|flight|take|post-accept|intent-hold|intent-persist|intent-gate> <corr> reason=<reason>`
   - Carries per-reply identity omitted by ordinary `stale` lines across acceptance (`generation-mismatch`, `adapter-mismatch`, `stale-req`, `not-ready`, `malformed-counter`, `stale-rev`), in-flight supersession (`superseded-during-flight`), async generation change (`generation-mismatch`), held-reply replacement/clear (`replaced-by-newer-reply`, `stopped`, `dropped-by-superseded-reply`), persist failure (`intent-write-failed`), and intent-gate skips (`stopped`, `generation-mismatch`, `settings-gen-mismatch`, `settings-pending`, `settings-rev-mismatch`, `superseded-rev`, `superseded-watermark`).
+- Avoid `WeakMap` in KWin trace paths; use bounded explicit correlation storage or lifecycle-managed caches.
 
 ### KDE open-animation timing probe (trace only)
 

@@ -27,9 +27,11 @@ import { WorldAdapterState, type FocusRequestRecord } from "./world-state";
 
 declare const __OMNITILER_TRACE__: string | undefined;
 
-let focusTraceLast: WeakMap<WorldAdapterState, { record: FocusRequestRecord | null; key: string }>;
+// Bounded diagnostic cache (avoid WeakMap due to the QV4 WeakMap.set crash
+// hazard observed on asynchronous reply trace paths).
+let focusTraceLast: Map<WorldAdapterState, { record: FocusRequestRecord | null; key: string }>;
 if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
-    focusTraceLast = new WeakMap();
+    focusTraceLast = new Map();
 }
 
 function traceFocusEval(
@@ -44,6 +46,14 @@ function traceFocusEval(
     const prev = focusTraceLast.get(env.state);
     if (record !== null && prev !== undefined && prev.record === record && prev.key === key) {
         return;
+    }
+    focusTraceLast.delete(env.state);
+    while (focusTraceLast.size >= 8) {
+        const oldest = focusTraceLast.keys().next();
+        if (oldest.done) {
+            break;
+        }
+        focusTraceLast.delete(oldest.value as WorldAdapterState);
     }
     focusTraceLast.set(env.state, { record, key });
     try {

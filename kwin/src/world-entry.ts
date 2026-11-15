@@ -91,11 +91,14 @@ interface WorldTraceProbe {
         adapter: string,
     ): void;
     noteGestureAckArmed(
-        ack: object,
+        ack: { readonly instance: string; readonly serial: string; readonly gen: string },
         parsed: WorldReply,
         matched: { instance: string; serial: string; coreId: string },
     ): void;
-    noteGestureAckSend(ack: object, nonce: number): void;
+    noteGestureAckSend(
+        ack: { readonly instance: string; readonly serial: string; readonly gen: string },
+        nonce: number,
+    ): void;
     noteGestureAckResponse(
         nonce: number,
         status: "fenced" | "unproven" | "retired",
@@ -105,16 +108,29 @@ interface WorldTraceProbe {
     ): void;
     noteGestureReset(): void;
     noteReplySkipped(stage: string, gen: string, req: string, rev: string, obs: string, reason: string): void;
-    noteIntentHeld(next: object, prev: object | null, parsed: WorldReply): void;
-    noteIntentCleared(prev: object | null, stage: "intent-hold" | "intent-persist", reason: string): void;
-    noteIntentGateSkipped(next: object, reason: string): void;
+    noteIntentHeld(
+        next: { readonly gen: string; readonly rev: string },
+        prev: { readonly gen: string; readonly rev: string } | null,
+        parsed: WorldReply,
+    ): void;
+    noteIntentCleared(
+        prev: { readonly gen: string; readonly rev: string } | null,
+        stage: "intent-hold" | "intent-persist",
+        reason: string,
+    ): void;
+    noteIntentGateSkipped(
+        next: { readonly gen: string; readonly rev: string },
+        reason: string,
+    ): void;
     stop(): void;
 }
-// A weak key preserves per-adapter isolation without leaving an unused local
-// initializer in ordinary bundles; all references below are compile-gated.
-let worldTraceProbes: WeakMap<WorldAdapterState, WorldTraceProbe>;
+// Lifecycle-managed Map keyed by adapter state (cleaned up in stop()) without
+// leaving an unused local initializer in ordinary bundles; all references
+// below are compile-gated. Avoid WeakMap here due to the QV4 WeakMap.set
+// crash hazard observed on asynchronous reply trace paths.
+let worldTraceProbes: Map<WorldAdapterState, WorldTraceProbe>;
 if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
-    worldTraceProbes = new WeakMap();
+    worldTraceProbes = new Map();
 }
 
 const SOURCE_REV_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -590,13 +606,17 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
         };
         let traceLastRetiredGesture: { gen: string; instance: string; serial: string; coreId: string } | null = null;
-        const traceAckByPending = new WeakMap<object, {
+        // Bounded explicit correlation storage (avoid WeakMap due to the QV4
+        // WeakMap.set crash hazard on asynchronous reply trace paths).
+        const traceAckByPending = new Map<string, {
+            ackRef: { readonly instance: string; readonly serial: string; readonly gen: string };
             gen: string; req: string; rev: string; obs: string; instance: string; serial: string; coreId: string;
         }>();
         const traceAckCorrelations = new Map<number, {
             gen: string; req: string; rev: string; obs: string; instance: string; serial: string; coreId: string;
         }>();
-        const traceIntentMeta = new WeakMap<object, {
+        const traceIntentMeta = new Map<string, {
+            ref: { readonly gen: string; readonly rev: string };
             gen: string; req: string; rev: string; obs: string;
         }>();
         const traceEmitSettlementSnapshot = (phase: "receipt" | "apply", parsed: WorldReply): void => {
@@ -1613,7 +1633,17 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 );
             },
             noteGestureAckArmed: (ack, parsed, matched) => {
-                traceAckByPending.set(ack, {
+                const key = `${ack.gen}\u0000${ack.instance}\u0000${ack.serial}`;
+                traceAckByPending.delete(key);
+                while (traceAckByPending.size >= 8) {
+                    const oldest = traceAckByPending.keys().next();
+                    if (oldest.done) {
+                        break;
+                    }
+                    traceAckByPending.delete(oldest.value as string);
+                }
+                traceAckByPending.set(key, {
+                    ackRef: ack,
                     gen: parsed.gen,
                     req: parsed.req,
                     rev: parsed.rev,
@@ -1624,8 +1654,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 });
             },
             noteGestureAckSend: (ack, nonce) => {
-                const corr = traceAckByPending.get(ack);
-                if (corr === undefined) {
+                const key = `${ack.gen}\u0000${ack.instance}\u0000${ack.serial}`;
+                const corr = traceAckByPending.get(key);
+                if (corr === undefined || corr.ackRef !== ack) {
                     return;
                 }
                 traceAckCorrelations.delete(nonce);
@@ -1636,7 +1667,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     traceAckCorrelations.delete(oldest.value as number);
                 }
-                traceAckCorrelations.set(nonce, corr);
+                traceAckCorrelations.set(nonce, {
+                    gen: corr.gen,
+                    req: corr.req,
+                    rev: corr.rev,
+                    obs: corr.obs,
+                    instance: corr.instance,
+                    serial: corr.serial,
+                    coreId: corr.coreId,
+                });
             },
             noteGestureAckResponse: (nonce, status, reason, ack, parsed) => {
                 const corr = traceAckCorrelations.get(nonce) ?? null;
@@ -1665,6 +1704,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             },
             noteGestureReset: () => {
                 traceLastRetiredGesture = null;
+                traceAckByPending.clear();
                 traceAckCorrelations.clear();
             },
             noteReplySkipped: (stage, gen, req, rev, obs, reason) => {
@@ -1676,17 +1716,29 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             },
             noteIntentHeld: (next, prev, parsed) => {
                 if (prev !== null) {
-                    const prevMeta = traceIntentMeta.get(prev);
-                    if (prevMeta !== undefined) {
+                    const prevKey = `${prev.gen}\u0000${prev.rev}`;
+                    const prevMeta = traceIntentMeta.get(prevKey);
+                    if (prevMeta !== undefined && prevMeta.ref === prev) {
                         traceLogSafe(
                             `omnitiler:world:trace ev=reply-skipped stage=intent-hold ` +
                             `gen=${traceDiagId(prevMeta.gen)} req=${traceDiagId(prevMeta.req)} ` +
                             `rev=${traceDiagId(prevMeta.rev)} obs=${traceDiagId(prevMeta.obs)} ` +
                             `reason=replaced-by-newer-reply`,
                         );
+                        traceIntentMeta.delete(prevKey);
                     }
                 }
-                traceIntentMeta.set(next, {
+                const nextKey = `${next.gen}\u0000${next.rev}`;
+                traceIntentMeta.delete(nextKey);
+                while (traceIntentMeta.size >= 8) {
+                    const oldest = traceIntentMeta.keys().next();
+                    if (oldest.done) {
+                        break;
+                    }
+                    traceIntentMeta.delete(oldest.value as string);
+                }
+                traceIntentMeta.set(nextKey, {
+                    ref: next,
                     gen: parsed.gen,
                     req: parsed.req,
                     rev: parsed.rev,
@@ -1697,10 +1749,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 if (prev === null) {
                     return;
                 }
-                const prevMeta = traceIntentMeta.get(prev);
-                if (prevMeta === undefined) {
+                const prevKey = `${prev.gen}\u0000${prev.rev}`;
+                const prevMeta = traceIntentMeta.get(prevKey);
+                if (prevMeta === undefined || prevMeta.ref !== prev) {
                     return;
                 }
+                traceIntentMeta.delete(prevKey);
                 traceLogSafe(
                     `omnitiler:world:trace ev=reply-skipped stage=${stage} ` +
                     `gen=${traceDiagId(prevMeta.gen)} req=${traceDiagId(prevMeta.req)} ` +
@@ -1709,10 +1763,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 );
             },
             noteIntentGateSkipped: (next, reason) => {
-                const meta = traceIntentMeta.get(next);
-                if (meta === undefined) {
+                const nextKey = `${next.gen}\u0000${next.rev}`;
+                const meta = traceIntentMeta.get(nextKey);
+                if (meta === undefined || meta.ref !== next) {
                     return;
                 }
+                traceIntentMeta.delete(nextKey);
                 traceLogSafe(
                     `omnitiler:world:trace ev=reply-skipped stage=intent-gate ` +
                     `gen=${traceDiagId(meta.gen)} req=${traceDiagId(meta.req)} ` +
@@ -1731,7 +1787,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     traceFlightCmds.clear();
                     traceAttemptSnap = [];
                     traceLastRetiredGesture = null;
+                    traceAckByPending.clear();
                     traceAckCorrelations.clear();
+                    traceIntentMeta.clear();
                 } catch (error) {
                     void error;
                 }
