@@ -675,8 +675,8 @@ function runSubscriberCase(spec: SubscriberCase, where: string): void {
     assert.equal(proj.coveredInstance, "effect-1", `${where} genuine coverage instance`);
     assert.equal(proj.coveredInvalid, covered, `${where} genuine coverage witness`);
     // Gesture-barrier oracle (unweakened): every window row holds on the
-    // gesture barrier exactly while a preview is live, else holds nothing.
-    const wantHold = proj.preview === null ? "" : "gesture-barrier";
+    // gesture barrier while a gesture is live (not merely retained), else holds nothing.
+    const wantHold = spec.gesture === null ? "" : "gesture-barrier";
     assert.ok(proj.windows.length > 0, `${where} genuine projection carries window rows`);
     for (const row of proj.windows) {
         assert.equal(row.frame_hold, wantHold, `${where} row ${row.win} frame_hold`);
@@ -770,12 +770,12 @@ function runV2DispatchCase(spec: V2DispatchCase, where: string): void {
     const proj = JSON.parse(activeFixture(spec.chain, spec.projection)) as V4Projection;
     assert.equal(proj.coveredInstance, "effect-1", `${where} genuine coverage instance`);
     assert.equal(proj.coveredInvalid, spec.witness, `${where} genuine coverage witness`);
-    const wantHold = proj.preview === null ? "" : "gesture-barrier";
+    const step = spec.projection.replace("projection-", "").replace(".json", "");
+    const wantHold = dispatchLiveGesture(step, "normal") === null ? "" : "gesture-barrier";
     assert.ok(proj.windows.length > 0, `${where} genuine projection carries window rows`);
     for (const row of proj.windows) {
         assert.equal(row.frame_hold, wantHold, `${where} row ${row.win} frame_hold`);
     }
-    const step = spec.projection.replace("projection-", "").replace(".json", "");
     const variant = spec.dispatch === "dispatch-a3-b.json" ? "crossed-b" as const : "normal" as const;
     const live = dispatchLiveGesture(step, variant);
     assert.deepEqual(live, spec.gesture, `${where} shared live-gesture mapping matches the case`);

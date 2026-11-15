@@ -27,7 +27,7 @@ import {
     isCoreWorldReply,
     parseWorldReply,
 } from "../src/world-report";
-import { createMiniBroker } from "./world-wire-harness";
+import { createMiniBroker, parseRawEvalWithSettlements } from "./world-wire-harness";
 import { createWorldApplyHost, type WorldApplyHost } from "../src/world-native";
 
 class WorldBridge {
@@ -256,8 +256,8 @@ async function roundtrip(
     assert.ok(inner !== null, "genuine v4 producer bytes encode");
     const envelope = JSON.stringify({ v: 4, adapter: "test-adapter", gen, source: src, nativeInvalid: "0", report: JSON.parse(inner) });
     const stamped = broker.stampCapture(envelope);
-    const coreRaw = await bridge.send("DescribeWorld", stamped);
-    const bound = broker.bindReply(coreRaw, envelope);
+    const { reply: coreRaw, settlements } = parseRawEvalWithSettlements(await bridge.send("DescribeWorldWithSettlements", stamped));
+    const bound = broker.bindReply(coreRaw, envelope, settlements);
     const parsed = JSON.parse(bound) as { outcome?: unknown };
     assert.equal(parsed["outcome"] ?? "accepted", "accepted", `core accepts, got ${bound.slice(0, 400)}`);
     // Converge adapter bindings from the accepted reply for the next capture.

@@ -30,20 +30,17 @@
 //! Window rows carry normalized native v4 facts, never adapter verdicts:
 //! retired membership verdict keys hold the identifiable row fail-closed.
 //! Attempt lanes carry mechanical write/readback facts only; the core owns
-//! every verdict, and a typed `Rejected` command result is an accepted
-//! observation that settles the command terminally as failed for the
-//! requester. No legacy shapes remain: v4 is the sole wire shape.
+//! every verdict. No legacy shapes remain: v4 is the sole wire shape.
 //!
 //! Reply keys are exactly the core canonical reply encoding (`v`, `adapter`,
 //! `gen`, `req`, `obs`/`rev` as decimal strings, `ready`, `consumed`,
 //! `scopes`, `workspaces`, `outputs`, `windows`, `transfers`, `effects`,
-//! `result`: null or the correlated per-command outcome that the snapshot
-//! alone cannot express - drag-preview rect+hover, toggle-float placement,
-//! migrate-workspace provenance; move, resize, tiled-admit, focus, and send
-//! results ride the snapshot, transfers, and effects with `result: null` -
+//! `focusRequest`, `dragPreview`: null or the retained active drag-preview
+//! overlay state `{"id","rev","domainOut","domainWs","sourceOut","sourceWs","rect","hover","win"}`,
 //! plus `gestureSettled`:
-//! null or the `{"id":"N","committed":B}` terminal incorporated by this
-//! report (never retained across reports), plus `operationSettled`: [] or one
+//! null or the retained latest `{"id":"N","committed":B}` terminal
+//! incorporated in this generation (never cleared by commandless or
+//! consumed/stale replays), plus `operationSettled`: [] or one
 //! `{"op","win","outcome","cause"}` object per retired retained operation
 //! (directional maximize-clear verdict or explicit float-placement verdict:
 //! original op/window/outcome; a clear continuation means the intent
@@ -69,7 +66,7 @@ use tiler_core::bounds::{is_opaque_id, valid_carried_rect};
 use tiler_core::connection::RawSettingValue;
 use tiler_core::connection::{HostCapabilities, valid_identity_text, valid_process_identity_text};
 use tiler_core::contract::DragSide;
-use tiler_core::directional::{Direction, NodeId, OutputId, WindowId, WorkspaceId};
+use tiler_core::directional::{NodeId, OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::gesture::GestureSettled;
 use tiler_core::ids::{
@@ -78,14 +75,13 @@ use tiler_core::ids::{
 use tiler_core::intent_data::MAX_INTENT_DATA_BYTES;
 use tiler_core::policy::PriorGroupEdge;
 use tiler_core::session::{DomainKey, DragHoverPrior};
-use tiler_core::world_directional::DirectionalOutcome;
 use tiler_core::world_presentation::{
     GroupHideReason, PagerScreen, PagerWindow, PagerWorkspace, PresentationUnderlay,
 };
 use tiler_core::world_report::{
     ActivationPolicy, AfterShown, AfterShownMember, AfterShownScope, ArrivalBracket,
     ArrivalLocation, AttemptLaneV4, AuthorityScope, BorderHideReasonV4, BorderPresentationV4,
-    CommandRejectKind, CommandResult, EffectKind, FloatOrigin, FocusFeedback, FocusRequest,
+    CommandRejectKind, DragPreviewV4, EffectKind, FloatOrigin, FocusFeedback, FocusRequest,
     FocusRequestCause, FrameWitness, FullscreenOwner, HeldAttemptRow, HeldNativeRow,
     HeldPresentationRow, HeldScreenRow, HeldWindowRow, HoldReason, IntentDesire, IntentRecord,
     LastWrite, LastWritePath, LastWriteProperty, MAX_FOCUS_DEPARTING, MAX_FOCUS_MEMBERS,
@@ -5576,182 +5572,38 @@ fn decode_drag_hover(value: &serde_json::Value) -> Result<DragHoverPrior> {
     })
 }
 
-fn decode_direction_token(text: &str) -> Result<Direction> {
-    match text {
-        "left" => Ok(Direction::Left),
-        "right" => Ok(Direction::Right),
-        "up" => Ok(Direction::Up),
-        "down" => Ok(Direction::Down),
-        _ => Err(unknown_value()),
-    }
-}
-
-fn decode_directional_outcome(text: &str) -> Result<DirectionalOutcome> {
-    match text {
-        "focus-refused-floating" => Ok(DirectionalOutcome::FocusRefusedFloating),
-        "move-refused-floating" => Ok(DirectionalOutcome::MoveRefusedFloating),
-        "focus-refused-workspace-floating" => Ok(DirectionalOutcome::FocusRefusedWorkspaceFloating),
-        "move-refused-workspace-floating" => Ok(DirectionalOutcome::MoveRefusedWorkspaceFloating),
-        "move-refused-fullscreen" => Ok(DirectionalOutcome::MoveRefusedFullscreen),
-        "focus-refused-maximize" => Ok(DirectionalOutcome::FocusRefusedMaximize),
-        "focus-float-retained" => Ok(DirectionalOutcome::FocusFloatRetained),
-        "focus-unfocused-retained" => Ok(DirectionalOutcome::FocusUnfocusedRetained),
-        "focus-float-refused-stale" => Ok(DirectionalOutcome::FocusFloatRefusedStale),
-        "move-float-refused-stale" => Ok(DirectionalOutcome::MoveFloatRefusedStale),
-        "move-float-refused-invalid-geometry" => {
-            Ok(DirectionalOutcome::MoveFloatRefusedInvalidGeometry)
-        }
-        "move-float-refused-constraints" => Ok(DirectionalOutcome::MoveFloatRefusedConstraints),
-        "move-float-unknown-output" => Ok(DirectionalOutcome::MoveFloatRefusedUnknownOutput),
-        "focus-float-applied" => Ok(DirectionalOutcome::FocusFloatApplied),
-        "move-float-applied" => Ok(DirectionalOutcome::MoveFloatApplied),
-        "move-maximize-clear" => Ok(DirectionalOutcome::NeedClear),
-        _ => Err(unknown_value()),
-    }
-}
-
-fn decode_command_result(value: &serde_json::Value) -> Result<Option<CommandResult>> {
+fn decode_drag_preview(value: &serde_json::Value) -> Result<Option<DragPreviewV4>> {
     if value.is_null() {
         return Ok(None);
     }
     let map = as_object(value)?;
-    let op = req_str(map, "op")?;
-    match op {
-        "drag-preview" => {
-            check_keys(
-                map,
-                &[
-                    "op",
-                    "rev",
-                    "domainOut",
-                    "domainWs",
-                    "sourceOut",
-                    "sourceWs",
-                    "rect",
-                    "hover",
-                    "win",
-                ],
-            )?;
-            Ok(Some(CommandResult::DragPreview {
-                rect: req_rect_value(map.get("rect").ok_or_else(malformed)?)?,
-                hover: match map.get("hover") {
-                    None => return Err(malformed()),
-                    Some(serde_json::Value::Null) => None,
-                    Some(value) => Some(decode_drag_hover(value)?),
-                },
-                domain: decode_domain_key(map, "domainOut", "domainWs")?,
-                source: decode_domain_key(map, "sourceOut", "sourceWs")?,
-                target: WindowId(req_id(map, "win")?),
-                revision: req_u64_str(map, "rev")?,
-            }))
-        }
-        "toggle-float" => {
-            check_keys_with_optional(map, &["op", "win", "rect"], &["noSpace"])?;
-            let no_space = match map.get("noSpace") {
-                None => false,
-                Some(serde_json::Value::Bool(true)) => true,
-                Some(serde_json::Value::Bool(false)) => {
-                    return Err(reply_snapshot("result-float-false-marker"));
-                }
-                Some(_) => return Err(malformed()),
-            };
-            Ok(Some(CommandResult::Float {
-                window: WindowId(req_id(map, "win")?),
-                rect: opt_rect_or_null(map, "rect")?,
-                no_space,
-            }))
-        }
-        "migrate-workspace" => {
-            check_keys(
-                map,
-                &[
-                    "op",
-                    "direction",
-                    "sourceOut",
-                    "sourceWs",
-                    "targetOut",
-                    "targetWs",
-                    "members",
-                    "floats",
-                ],
-            )?;
-            let members_value = map.get("members").ok_or_else(malformed)?;
-            let member_items = members_value.as_array().ok_or_else(malformed)?;
-            if member_items.len() > MAX_REPLY_WINDOWS {
-                return Err(reply_snapshot("section-over-cap"));
-            }
-            let mut members = Vec::with_capacity(member_items.len());
-            for item in member_items {
-                let id = item.as_str().ok_or_else(malformed)?;
-                if !is_opaque_id(id) {
-                    return Err(unknown_value());
-                }
-                members.push(WindowId(id.to_owned()));
-            }
-            let floats = map
-                .get("floats")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|floats| usize::try_from(floats).ok())
-                .ok_or_else(malformed)?;
-            Ok(Some(CommandResult::Migration {
-                direction: decode_direction_token(req_str(map, "direction")?)?,
-                source: decode_domain_key(map, "sourceOut", "sourceWs")?,
-                target: decode_domain_key(map, "targetOut", "targetWs")?,
-                members,
-                floats,
-            }))
-        }
-        "directional" => {
-            check_keys(map, &["op", "outcome", "win", "rect", "cause"])?;
-            let target = match map.get("win") {
-                None => return Err(malformed()),
-                Some(serde_json::Value::Null) => None,
-                Some(serde_json::Value::String(text)) => {
-                    if !is_opaque_id(text) {
-                        return Err(unknown_value());
-                    }
-                    Some(WindowId(text.clone()))
-                }
-                Some(_) => return Err(malformed()),
-            };
-            let cause = match map.get("cause") {
-                None => return Err(malformed()),
-                Some(serde_json::Value::Null) => None,
-                Some(serde_json::Value::String(text)) => match text.as_str() {
-                    "no-target" | "unknown-window" | "focus-present" | "no-source"
-                    | "no-adjacent-output" => Some(text.clone()),
-                    _ => return Err(unknown_value()),
-                },
-                Some(_) => return Err(malformed()),
-            };
-            Ok(Some(CommandResult::Directional {
-                outcome: decode_directional_outcome(req_str(map, "outcome")?)?,
-                target,
-                rect: opt_rect_or_null(map, "rect")?,
-                cause,
-            }))
-        }
-        "maximize" => {
-            check_keys(
-                map,
-                &["op", "win", "maximized", "clearFullscreen", "wasMaximized"],
-            )?;
-            Ok(Some(CommandResult::Maximize {
-                window: WindowId(req_id(map, "win")?),
-                maximized: req_bool(map, "maximized")?,
-                clear_fullscreen: req_bool(map, "clearFullscreen")?,
-                was_maximized: req_bool(map, "wasMaximized")?,
-            }))
-        }
-        "rejected" => {
-            check_keys(map, &["op", "kind"])?;
-            match CommandRejectKind::parse(req_str(map, "kind")?) {
-                Some(kind) => Ok(Some(CommandResult::Rejected { kind })),
-                None => Err(unknown_value()),
-            }
-        }
-        _ => Err(unknown_value()),
-    }
+    check_keys(
+        map,
+        &[
+            "id",
+            "rev",
+            "domainOut",
+            "domainWs",
+            "sourceOut",
+            "sourceWs",
+            "rect",
+            "hover",
+            "win",
+        ],
+    )?;
+    Ok(Some(DragPreviewV4 {
+        id: req_u64_str(map, "id")?,
+        rect: req_rect_value(map.get("rect").ok_or_else(malformed)?)?,
+        hover: match map.get("hover") {
+            None => return Err(malformed()),
+            Some(serde_json::Value::Null) => None,
+            Some(value) => Some(decode_drag_hover(value)?),
+        },
+        domain: decode_domain_key(map, "domainOut", "domainWs")?,
+        source: decode_domain_key(map, "sourceOut", "sourceWs")?,
+        target: WindowId(req_id(map, "win")?),
+        revision: req_u64_str(map, "rev")?,
+    }))
 }
 
 fn decode_gesture_settled(value: &serde_json::Value) -> Result<Option<GestureSettled>> {
@@ -6195,7 +6047,7 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
             "transfers",
             "effects",
             "focusRequest",
-            "result",
+            "dragPreview",
             "gestureSettled",
             "operationSettled",
             "nativeCreations",
@@ -6311,7 +6163,7 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
         }
         effects.push(effect);
     }
-    let command_result = decode_command_result(map.get("result").ok_or_else(malformed)?)?;
+    let drag_preview = decode_drag_preview(map.get("dragPreview").ok_or_else(malformed)?)?;
     let gesture_settled = decode_gesture_settled(map.get("gestureSettled").ok_or_else(malformed)?)?;
     let operations_value = map.get("operationSettled").ok_or_else(malformed)?;
     let operation_items = operations_value.as_array().ok_or_else(malformed)?;
@@ -6407,7 +6259,7 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
             transfers,
             effects,
             focus_request: decode_focus_request(map.get("focusRequest").ok_or_else(malformed)?)?,
-            command_result,
+            drag_preview,
             gesture_settled,
             operation_settled,
             native_creations,
@@ -6920,99 +6772,87 @@ fn encode_native_creation_v4(row: &NativeCreationDesire, out: &mut String) -> Re
     Ok(())
 }
 
-fn valid_directional_cause(text: &str) -> bool {
-    matches!(
-        text,
-        "no-target" | "unknown-window" | "focus-present" | "no-source" | "no-adjacent-output"
-    )
-}
-
-fn encode_command_result_v4(result: &Option<CommandResult>, out: &mut String) -> Result<()> {
-    match result {
+fn encode_drag_preview_v4(preview: &Option<DragPreviewV4>, out: &mut String) -> Result<()> {
+    let Some(preview) = preview else {
+        out.push_str("null");
+        return Ok(());
+    };
+    if !valid_carried_rect(
+        preview.rect.x,
+        preview.rect.y,
+        preview.rect.w,
+        preview.rect.h,
+    ) {
+        return Err(unknown_value());
+    }
+    check_reply_id(&preview.domain.output.0)?;
+    check_reply_id(&preview.domain.workspace.0)?;
+    check_reply_id(&preview.source.output.0)?;
+    check_reply_id(&preview.source.workspace.0)?;
+    check_reply_id(&preview.target.0)?;
+    if let Some(hover) = &preview.hover {
+        check_reply_id(&hover.domain.output.0)?;
+        check_reply_id(&hover.domain.workspace.0)?;
+        check_reply_id(&hover.source_leaf.0)?;
+        check_reply_id(&hover.source_window.0)?;
+        if let Some(prior) = hover.prior.as_ref() {
+            check_reply_id(&prior.group.0)?;
+        }
+        check_reply_id(&hover.prior_domain.output.0)?;
+        check_reply_id(&hover.prior_domain.workspace.0)?;
+    }
+    out.push_str("{\"id\":\"");
+    out.push_str(&preview.id.to_string());
+    out.push_str("\",\"rev\":\"");
+    out.push_str(&preview.revision.to_string());
+    out.push_str("\",\"domainOut\":");
+    push_json_string(out, &preview.domain.output.0);
+    out.push_str(",\"domainWs\":");
+    push_json_string(out, &preview.domain.workspace.0);
+    out.push_str(",\"sourceOut\":");
+    push_json_string(out, &preview.source.output.0);
+    out.push_str(",\"sourceWs\":");
+    push_json_string(out, &preview.source.workspace.0);
+    out.push_str(",\"rect\":[");
+    out.push_str(&format!(
+        "{},{},{},{}",
+        preview.rect.x, preview.rect.y, preview.rect.w, preview.rect.h
+    ));
+    out.push_str("],\"hover\":");
+    match &preview.hover {
         None => out.push_str("null"),
-        Some(CommandResult::DragPreview {
-            rect,
-            hover,
-            domain,
-            source,
-            target,
-            revision: _,
-        }) => {
-            if !valid_carried_rect(rect.x, rect.y, rect.w, rect.h) {
-                return Err(unknown_value());
-            }
-            check_reply_id(&domain.output.0)?;
-            check_reply_id(&domain.workspace.0)?;
-            check_reply_id(&source.output.0)?;
-            check_reply_id(&source.workspace.0)?;
-            check_reply_id(&target.0)?;
-            if let Some(hover) = hover {
-                check_reply_id(&hover.domain.output.0)?;
-                check_reply_id(&hover.domain.workspace.0)?;
-                check_reply_id(&hover.source_leaf.0)?;
-                check_reply_id(&hover.source_window.0)?;
-                if let Some(prior) = hover.prior.as_ref() {
-                    check_reply_id(&prior.group.0)?;
+        Some(hover) => {
+            out.push_str("{\"domainOut\":");
+            push_json_string(out, &hover.domain.output.0);
+            out.push_str(",\"domainWs\":");
+            push_json_string(out, &hover.domain.workspace.0);
+            out.push_str(",\"leaf\":");
+            push_json_string(out, &hover.source_leaf.0);
+            out.push_str(",\"win\":");
+            push_json_string(out, &hover.source_window.0);
+            out.push_str(",\"rev\":\"");
+            out.push_str(&hover.revision.to_string());
+            out.push_str("\",\"prior\":");
+            match &hover.prior {
+                None => out.push_str("null"),
+                Some(prior) => {
+                    out.push_str("{\"group\":");
+                    push_json_string(out, &prior.group.0);
+                    out.push_str(",\"edge\":");
+                    push_json_string(out, prior.edge.as_str());
+                    out.push('}');
                 }
-                check_reply_id(&hover.prior_domain.output.0)?;
-                check_reply_id(&hover.prior_domain.workspace.0)?;
             }
-            tiler_core::world_sizing::encode_command_result(out, result);
-        }
-        Some(CommandResult::Float { window, rect, .. }) => {
-            check_reply_id(&window.0)?;
-            if let Some(rect) = rect
-                && !valid_carried_rect(rect.x, rect.y, rect.w, rect.h)
-            {
-                return Err(unknown_value());
-            }
-            tiler_core::world_sizing::encode_command_result(out, result);
-        }
-        Some(CommandResult::Migration {
-            source,
-            target,
-            members,
-            ..
-        }) => {
-            check_reply_cap(members.len(), MAX_REPLY_WINDOWS)?;
-            check_reply_id(&source.output.0)?;
-            check_reply_id(&source.workspace.0)?;
-            check_reply_id(&target.output.0)?;
-            check_reply_id(&target.workspace.0)?;
-            for member in members {
-                check_reply_id(&member.0)?;
-            }
-            tiler_core::world_sizing::encode_command_result(out, result);
-        }
-        Some(CommandResult::Directional {
-            target,
-            rect,
-            cause,
-            ..
-        }) => {
-            if let Some(target) = target {
-                check_reply_id(&target.0)?;
-            }
-            if let Some(rect) = rect
-                && !valid_carried_rect(rect.x, rect.y, rect.w, rect.h)
-            {
-                return Err(unknown_value());
-            }
-            if let Some(cause) = cause
-                && !valid_directional_cause(cause)
-            {
-                return Err(unknown_value());
-            }
-            tiler_core::world_sizing::encode_command_result(out, result);
-        }
-        Some(CommandResult::Maximize { window, .. }) => {
-            check_reply_id(&window.0)?;
-            tiler_core::world_sizing::encode_command_result(out, result);
-        }
-        Some(CommandResult::Rejected { .. }) => {
-            tiler_core::world_sizing::encode_command_result(out, result);
+            out.push_str(",\"priorOut\":");
+            push_json_string(out, &hover.prior_domain.output.0);
+            out.push_str(",\"priorWs\":");
+            push_json_string(out, &hover.prior_domain.workspace.0);
+            out.push('}');
         }
     }
+    out.push_str(",\"win\":");
+    push_json_string(out, &preview.target.0);
+    out.push('}');
     Ok(())
 }
 
@@ -7441,8 +7281,8 @@ pub fn encode_reply_v4(decoded: &DecodedReplyV4) -> Result<String> {
         None => out.push_str("null"),
         Some(request) => encode_focus_request_v4(request, &mut out)?,
     }
-    out.push_str(",\"result\":");
-    encode_command_result_v4(&reply.command_result, &mut out)?;
+    out.push_str(",\"dragPreview\":");
+    encode_drag_preview_v4(&reply.drag_preview, &mut out)?;
     out.push_str(",\"gestureSettled\":");
     encode_gesture_settled_v4(&reply.gesture_settled, &mut out);
     out.push_str(",\"operationSettled\":[");
@@ -8860,7 +8700,7 @@ mod tests {
             transfers: Vec::new(),
             effects: Vec::new(),
             focus_request: None,
-            command_result: None,
+            drag_preview: None,
             gesture_settled: None,
             operation_settled: Vec::new(),
             native_creations: Vec::new(),

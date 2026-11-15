@@ -1409,24 +1409,6 @@
       "canonical": true
     },
     {
-      "id": "reply-result-float-no-space",
-      "file": "messages/reply-result-float-no-space.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-result-migration",
-      "file": "messages/reply-result-migration.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
       "id": "reply-result-maximize",
       "file": "messages/reply-result-maximize.json",
       "family": "WorldReply",
@@ -1434,365 +1416,6 @@
       "expectation": "valid-wire",
       "json": true,
       "canonical": true
-    },
-    {
-      "id": "reply-directional-focus-refused-floating",
-      "file": "messages/reply-directional-focus-refused-floating.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-move-refused-floating",
-      "file": "messages/reply-directional-move-refused-floating.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-focus-refused-workspace-floating",
-      "file": "messages/reply-directional-focus-refused-workspace-floating.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-move-refused-workspace-floating",
-      "file": "messages/reply-directional-move-refused-workspace-floating.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-move-refused-fullscreen",
-      "file": "messages/reply-directional-move-refused-fullscreen.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-focus-refused-maximize",
-      "file": "messages/reply-directional-focus-refused-maximize.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-focus-float-retained",
-      "file": "messages/reply-directional-focus-float-retained.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-focus-float-refused-stale",
-      "file": "messages/reply-directional-focus-float-refused-stale.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-focus-unfocused-retained",
-      "file": "messages/reply-directional-focus-unfocused-retained.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-move-float-refused-stale",
-      "file": "messages/reply-directional-move-float-refused-stale.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-move-float-refused-invalid-geometry",
-      "file": "messages/reply-directional-move-float-refused-invalid-geometry.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-move-float-refused-constraints",
-      "file": "messages/reply-directional-move-float-refused-constraints.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-move-float-unknown-output",
-      "file": "messages/reply-directional-move-float-unknown-output.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-focus-float-applied",
-      "file": "messages/reply-directional-focus-float-applied.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-move-float-applied",
-      "file": "messages/reply-directional-move-float-applied.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-move-maximize-clear",
-      "file": "messages/reply-directional-move-maximize-clear.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-cause-no-target",
-      "file": "messages/reply-directional-cause-no-target.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-cause-unknown-window",
-      "file": "messages/reply-directional-cause-unknown-window.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-cause-focus-present",
-      "file": "messages/reply-directional-cause-focus-present.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-cause-no-source",
-      "file": "messages/reply-directional-cause-no-source.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-directional-cause-no-adjacent-output",
-      "file": "messages/reply-directional-cause-no-adjacent-output.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true
-    },
-    {
-      "id": "reply-rejected-focus-unknown",
-      "file": "messages/reply-rejected-focus-unknown.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true,
-      "note": "The report is accepted; result rejects only its command. This is not an envelope error."
-    },
-    {
-      "id": "reply-rejected-send-target-unknown",
-      "file": "messages/reply-rejected-send-target-unknown.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true,
-      "note": "The report is accepted; result rejects only its command. This is not an envelope error."
-    },
-    {
-      "id": "reply-rejected-send-window-unknown",
-      "file": "messages/reply-rejected-send-window-unknown.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true,
-      "note": "The report is accepted; result rejects only its command. This is not an envelope error."
-    },
-    {
-      "id": "reply-rejected-send-refused",
-      "file": "messages/reply-rejected-send-refused.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true,
-      "note": "The report is accepted; result rejects only its command. This is not an envelope error."
-    },
-    {
-      "id": "reply-rejected-view-output-unknown",
-      "file": "messages/reply-rejected-view-output-unknown.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true,
-      "note": "The report is accepted; result rejects only its command. This is not an envelope error."
-    },
-    {
-      "id": "reply-rejected-view-target-unknown",
-      "file": "messages/reply-rejected-view-target-unknown.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true,
-      "note": "The report is accepted; result rejects only its command. This is not an envelope error."
-    },
-    {
-      "id": "reply-rejected-transfer-in-flight",
-      "file": "messages/reply-rejected-transfer-in-flight.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true,
-      "note": "The report is accepted; result rejects only its command. This is not an envelope error."
-    },
-    {
-      "id": "reply-rejected-direction-invalid",
-      "file": "messages/reply-rejected-direction-invalid.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true,
-      "note": "The report is accepted; result rejects only its command. This is not an envelope error."
-    },
-    {
-      "id": "reply-rejected-scope-held",
-      "file": "messages/reply-rejected-scope-held.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true,
-      "note": "The report is accepted; result rejects only its command. This is not an envelope error."
-    },
-    {
-      "id": "reply-rejected-selection-unknown",
-      "file": "messages/reply-rejected-selection-unknown.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true,
-      "note": "The report is accepted; result rejects only its command. This is not an envelope error."
-    },
-    {
-      "id": "reply-rejected-migration-refused",
-      "file": "messages/reply-rejected-migration-refused.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true,
-      "note": "The report is accepted; result rejects only its command. This is not an envelope error."
-    },
-    {
-      "id": "reply-rejected-operation-refused",
-      "file": "messages/reply-rejected-operation-refused.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true,
-      "note": "The report is accepted; result rejects only its command. This is not an envelope error."
-    },
-    {
-      "id": "reply-rejected-tiling-target-unknown",
-      "file": "messages/reply-rejected-tiling-target-unknown.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true,
-      "note": "The report is accepted; result rejects only its command. This is not an envelope error."
-    },
-    {
-      "id": "reply-rejected-state-unsupported",
-      "file": "messages/reply-rejected-state-unsupported.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true,
-      "note": "The report is accepted; result rejects only its command. This is not an envelope error."
-    },
-    {
-      "id": "reply-rejected-state-unknown",
-      "file": "messages/reply-rejected-state-unknown.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true,
-      "note": "The report is accepted; result rejects only its command. This is not an envelope error."
-    },
-    {
-      "id": "reply-rejected-fullscreen-not-exitable",
-      "file": "messages/reply-rejected-fullscreen-not-exitable.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true,
-      "note": "The report is accepted; result rejects only its command. This is not an envelope error."
-    },
-    {
-      "id": "reply-rejected-stale-render-target",
-      "file": "messages/reply-rejected-stale-render-target.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "valid-wire",
-      "json": true,
-      "canonical": true,
-      "note": "The report is accepted; result rejects only its command. This is not an envelope error."
     },
     {
       "id": "reply-operation-continued-tiled",
@@ -4529,66 +4152,6 @@
       }
     },
     {
-      "id": "invalid-result-applied-wrapper",
-      "file": "messages/invalid-result-applied-wrapper.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "reject-wire",
-      "json": true,
-      "canonical": true,
-      "note": "Invalid value at /result.",
-      "invalid": {
-        "pointer": "/result",
-        "rule": "result-applied-wrapper",
-        "source": "reply-result-maximize"
-      }
-    },
-    {
-      "id": "invalid-result-noop-wrapper",
-      "file": "messages/invalid-result-noop-wrapper.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "reject-wire",
-      "json": true,
-      "canonical": true,
-      "note": "Invalid value at /result.",
-      "invalid": {
-        "pointer": "/result",
-        "rule": "result-noop-wrapper",
-        "source": "reply-observe"
-      }
-    },
-    {
-      "id": "invalid-result-float-false-marker",
-      "file": "messages/invalid-result-float-false-marker.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "reject-wire",
-      "json": true,
-      "canonical": true,
-      "note": "Invalid value at /result/noSpace.",
-      "invalid": {
-        "pointer": "/result/noSpace",
-        "rule": "result-float-false-marker",
-        "source": "reply-result-float-placed"
-      }
-    },
-    {
-      "id": "invalid-directional-cause-string-empty",
-      "file": "messages/invalid-directional-cause-string-empty.json",
-      "family": "WorldReply",
-      "direction": "core-to-adapter",
-      "expectation": "reject-wire",
-      "json": true,
-      "canonical": true,
-      "note": "Invalid value at /result/cause.",
-      "invalid": {
-        "pointer": "/result/cause",
-        "rule": "directional-cause-string-empty",
-        "source": "reply-directional-focus-unfocused-retained"
-      }
-    },
-    {
       "id": "invalid-operation-cause-null",
       "file": "messages/invalid-operation-cause-null.json",
       "family": "WorldReply",
@@ -7067,63 +6630,11 @@
       "automatic-admission",
       "focus-follows-cursor"
     ],
-    "CommandResult.op": [
-      "drag-preview",
-      "toggle-float",
-      "migrate-workspace",
-      "directional",
-      "maximize",
-      "rejected"
-    ],
     "DragSide": [
       "left",
       "right",
       "top",
       "bottom"
-    ],
-    "DirectionalOutcome": [
-      "focus-refused-floating",
-      "move-refused-floating",
-      "focus-refused-workspace-floating",
-      "move-refused-workspace-floating",
-      "move-refused-fullscreen",
-      "focus-refused-maximize",
-      "focus-float-retained",
-      "focus-float-refused-stale",
-      "focus-unfocused-retained",
-      "move-float-refused-stale",
-      "move-float-refused-invalid-geometry",
-      "move-float-refused-constraints",
-      "move-float-unknown-output",
-      "focus-float-applied",
-      "move-float-applied",
-      "move-maximize-clear"
-    ],
-    "DirectionalCause": [
-      "no-target",
-      "unknown-window",
-      "focus-present",
-      "no-source",
-      "no-adjacent-output"
-    ],
-    "CommandRejectKind": [
-      "focus-unknown",
-      "send-target-unknown",
-      "send-window-unknown",
-      "send-refused",
-      "view-output-unknown",
-      "view-target-unknown",
-      "transfer-in-flight",
-      "direction-invalid",
-      "scope-held",
-      "selection-unknown",
-      "migration-refused",
-      "operation-refused",
-      "tiling-target-unknown",
-      "state-unsupported",
-      "state-unknown",
-      "fullscreen-not-exitable",
-      "stale-render-target"
     ],
     "OperationOutcome": [
       "continued-tiled",
@@ -8250,244 +7761,68 @@
           "pointer": "/intentDesired/1"
         }
       ],
-      "CommandResult": [
+      "DragPreviewV4": [
         {
           "fixture": "reply-result-drag-left",
-          "pointer": "/result"
+          "pointer": "/dragPreview"
         },
         {
           "fixture": "reply-result-drag-right",
-          "pointer": "/result"
+          "pointer": "/dragPreview"
         },
         {
           "fixture": "reply-result-drag-top",
-          "pointer": "/result"
+          "pointer": "/dragPreview"
         },
         {
           "fixture": "reply-result-drag-bottom",
-          "pointer": "/result"
-        }
-      ],
-      "CommandResult::DragPreview": [
-        {
-          "fixture": "reply-result-drag-left",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-result-drag-right",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-result-drag-top",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-result-drag-bottom",
-          "pointer": "/result"
+          "pointer": "/dragPreview"
         }
       ],
       "DragHoverPrior": [
         {
           "fixture": "reply-result-drag-left",
-          "pointer": "/result/hover"
+          "pointer": "/dragPreview/hover"
         },
         {
           "fixture": "reply-result-drag-right",
-          "pointer": "/result/hover"
+          "pointer": "/dragPreview/hover"
         },
         {
           "fixture": "reply-result-drag-top",
-          "pointer": "/result/hover"
+          "pointer": "/dragPreview/hover"
         },
         {
           "fixture": "reply-result-drag-bottom",
-          "pointer": "/result/hover"
+          "pointer": "/dragPreview/hover"
         }
       ],
       "PriorGroupEdge": [
         {
           "fixture": "reply-result-drag-left",
-          "pointer": "/result/hover/prior"
+          "pointer": "/dragPreview/hover/prior"
         },
         {
           "fixture": "reply-result-drag-right",
-          "pointer": "/result/hover/prior"
+          "pointer": "/dragPreview/hover/prior"
         },
         {
           "fixture": "reply-result-drag-top",
-          "pointer": "/result/hover/prior"
+          "pointer": "/dragPreview/hover/prior"
         },
         {
           "fixture": "reply-result-drag-bottom",
-          "pointer": "/result/hover/prior"
-        }
-      ],
-      "CommandResult::Float": [
-        {
-          "fixture": "reply-result-float-placed",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-result-float-no-space",
-          "pointer": "/result"
+          "pointer": "/dragPreview/hover/prior"
         }
       ],
       "DomainKey": [
         {
-          "fixture": "reply-result-migration",
-          "pointer": "/result",
+          "fixture": "reply-result-drag-left",
+          "pointer": "/dragPreview",
           "projection": [
-            "sourceOut",
-            "sourceWs"
+            "domainOut",
+            "domainWs"
           ]
-        }
-      ],
-      "CommandResult::Migration": [
-        {
-          "fixture": "reply-result-migration",
-          "pointer": "/result"
-        }
-      ],
-      "CommandResult::Maximize": [
-        {
-          "fixture": "reply-result-maximize",
-          "pointer": "/result"
-        }
-      ],
-      "CommandResult::Directional": [
-        {
-          "fixture": "reply-directional-focus-refused-floating",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-directional-move-refused-floating",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-directional-focus-refused-workspace-floating",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-directional-move-refused-workspace-floating",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-directional-move-refused-fullscreen",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-directional-focus-refused-maximize",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-directional-focus-float-retained",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-directional-focus-float-refused-stale",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-directional-focus-unfocused-retained",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-directional-move-float-refused-stale",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-directional-move-float-refused-invalid-geometry",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-directional-move-float-refused-constraints",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-directional-move-float-unknown-output",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-directional-focus-float-applied",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-directional-move-float-applied",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-directional-move-maximize-clear",
-          "pointer": "/result"
-        }
-      ],
-      "CommandResult::Rejected": [
-        {
-          "fixture": "reply-rejected-focus-unknown",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-rejected-send-target-unknown",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-rejected-send-window-unknown",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-rejected-send-refused",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-rejected-view-output-unknown",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-rejected-view-target-unknown",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-rejected-transfer-in-flight",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-rejected-direction-invalid",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-rejected-scope-held",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-rejected-selection-unknown",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-rejected-migration-refused",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-rejected-operation-refused",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-rejected-tiling-target-unknown",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-rejected-state-unsupported",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-rejected-state-unknown",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-rejected-fullscreen-not-exitable",
-          "pointer": "/result"
-        },
-        {
-          "fixture": "reply-rejected-stale-render-target",
-          "pointer": "/result"
         }
       ],
       "OperationEvent": [
@@ -10054,524 +9389,33 @@
           }
         ]
       },
-      "CommandResult.op": {
-        "drag-preview": [
-          {
-            "fixture": "reply-result-drag-left",
-            "pointer": "/result/op",
-            "value": "drag-preview"
-          },
-          {
-            "fixture": "reply-result-drag-right",
-            "pointer": "/result/op",
-            "value": "drag-preview"
-          },
-          {
-            "fixture": "reply-result-drag-top",
-            "pointer": "/result/op",
-            "value": "drag-preview"
-          },
-          {
-            "fixture": "reply-result-drag-bottom",
-            "pointer": "/result/op",
-            "value": "drag-preview"
-          }
-        ],
-        "toggle-float": [
-          {
-            "fixture": "reply-result-float-placed",
-            "pointer": "/result/op",
-            "value": "toggle-float"
-          },
-          {
-            "fixture": "reply-result-float-no-space",
-            "pointer": "/result/op",
-            "value": "toggle-float"
-          }
-        ],
-        "migrate-workspace": [
-          {
-            "fixture": "reply-result-migration",
-            "pointer": "/result/op",
-            "value": "migrate-workspace"
-          }
-        ],
-        "maximize": [
-          {
-            "fixture": "reply-result-maximize",
-            "pointer": "/result/op",
-            "value": "maximize"
-          }
-        ],
-        "directional": [
-          {
-            "fixture": "reply-directional-focus-refused-floating",
-            "pointer": "/result/op",
-            "value": "directional"
-          },
-          {
-            "fixture": "reply-directional-move-refused-floating",
-            "pointer": "/result/op",
-            "value": "directional"
-          },
-          {
-            "fixture": "reply-directional-focus-refused-workspace-floating",
-            "pointer": "/result/op",
-            "value": "directional"
-          },
-          {
-            "fixture": "reply-directional-move-refused-workspace-floating",
-            "pointer": "/result/op",
-            "value": "directional"
-          },
-          {
-            "fixture": "reply-directional-move-refused-fullscreen",
-            "pointer": "/result/op",
-            "value": "directional"
-          },
-          {
-            "fixture": "reply-directional-focus-refused-maximize",
-            "pointer": "/result/op",
-            "value": "directional"
-          },
-          {
-            "fixture": "reply-directional-focus-float-retained",
-            "pointer": "/result/op",
-            "value": "directional"
-          },
-          {
-            "fixture": "reply-directional-focus-float-refused-stale",
-            "pointer": "/result/op",
-            "value": "directional"
-          },
-          {
-            "fixture": "reply-directional-focus-unfocused-retained",
-            "pointer": "/result/op",
-            "value": "directional"
-          },
-          {
-            "fixture": "reply-directional-move-float-refused-stale",
-            "pointer": "/result/op",
-            "value": "directional"
-          },
-          {
-            "fixture": "reply-directional-move-float-refused-invalid-geometry",
-            "pointer": "/result/op",
-            "value": "directional"
-          },
-          {
-            "fixture": "reply-directional-move-float-refused-constraints",
-            "pointer": "/result/op",
-            "value": "directional"
-          },
-          {
-            "fixture": "reply-directional-move-float-unknown-output",
-            "pointer": "/result/op",
-            "value": "directional"
-          },
-          {
-            "fixture": "reply-directional-focus-float-applied",
-            "pointer": "/result/op",
-            "value": "directional"
-          },
-          {
-            "fixture": "reply-directional-move-float-applied",
-            "pointer": "/result/op",
-            "value": "directional"
-          },
-          {
-            "fixture": "reply-directional-move-maximize-clear",
-            "pointer": "/result/op",
-            "value": "directional"
-          }
-        ],
-        "rejected": [
-          {
-            "fixture": "reply-rejected-focus-unknown",
-            "pointer": "/result/op",
-            "value": "rejected"
-          },
-          {
-            "fixture": "reply-rejected-send-target-unknown",
-            "pointer": "/result/op",
-            "value": "rejected"
-          },
-          {
-            "fixture": "reply-rejected-send-window-unknown",
-            "pointer": "/result/op",
-            "value": "rejected"
-          },
-          {
-            "fixture": "reply-rejected-send-refused",
-            "pointer": "/result/op",
-            "value": "rejected"
-          },
-          {
-            "fixture": "reply-rejected-view-output-unknown",
-            "pointer": "/result/op",
-            "value": "rejected"
-          },
-          {
-            "fixture": "reply-rejected-view-target-unknown",
-            "pointer": "/result/op",
-            "value": "rejected"
-          },
-          {
-            "fixture": "reply-rejected-transfer-in-flight",
-            "pointer": "/result/op",
-            "value": "rejected"
-          },
-          {
-            "fixture": "reply-rejected-direction-invalid",
-            "pointer": "/result/op",
-            "value": "rejected"
-          },
-          {
-            "fixture": "reply-rejected-scope-held",
-            "pointer": "/result/op",
-            "value": "rejected"
-          },
-          {
-            "fixture": "reply-rejected-selection-unknown",
-            "pointer": "/result/op",
-            "value": "rejected"
-          },
-          {
-            "fixture": "reply-rejected-migration-refused",
-            "pointer": "/result/op",
-            "value": "rejected"
-          },
-          {
-            "fixture": "reply-rejected-operation-refused",
-            "pointer": "/result/op",
-            "value": "rejected"
-          },
-          {
-            "fixture": "reply-rejected-tiling-target-unknown",
-            "pointer": "/result/op",
-            "value": "rejected"
-          },
-          {
-            "fixture": "reply-rejected-state-unsupported",
-            "pointer": "/result/op",
-            "value": "rejected"
-          },
-          {
-            "fixture": "reply-rejected-state-unknown",
-            "pointer": "/result/op",
-            "value": "rejected"
-          },
-          {
-            "fixture": "reply-rejected-fullscreen-not-exitable",
-            "pointer": "/result/op",
-            "value": "rejected"
-          },
-          {
-            "fixture": "reply-rejected-stale-render-target",
-            "pointer": "/result/op",
-            "value": "rejected"
-          }
-        ]
-      },
       "DragSide": {
         "left": [
           {
             "fixture": "reply-result-drag-left",
-            "pointer": "/result/hover/prior/edge",
+            "pointer": "/dragPreview/hover/prior/edge",
             "value": "left"
           }
         ],
         "right": [
           {
             "fixture": "reply-result-drag-right",
-            "pointer": "/result/hover/prior/edge",
+            "pointer": "/dragPreview/hover/prior/edge",
             "value": "right"
           }
         ],
         "top": [
           {
             "fixture": "reply-result-drag-top",
-            "pointer": "/result/hover/prior/edge",
+            "pointer": "/dragPreview/hover/prior/edge",
             "value": "top"
           }
         ],
         "bottom": [
           {
             "fixture": "reply-result-drag-bottom",
-            "pointer": "/result/hover/prior/edge",
+            "pointer": "/dragPreview/hover/prior/edge",
             "value": "bottom"
-          }
-        ]
-      },
-      "DirectionalOutcome": {
-        "focus-refused-floating": [
-          {
-            "fixture": "reply-directional-focus-refused-floating",
-            "pointer": "/result/outcome",
-            "value": "focus-refused-floating"
-          }
-        ],
-        "move-refused-floating": [
-          {
-            "fixture": "reply-directional-move-refused-floating",
-            "pointer": "/result/outcome",
-            "value": "move-refused-floating"
-          }
-        ],
-        "focus-refused-workspace-floating": [
-          {
-            "fixture": "reply-directional-focus-refused-workspace-floating",
-            "pointer": "/result/outcome",
-            "value": "focus-refused-workspace-floating"
-          }
-        ],
-        "move-refused-workspace-floating": [
-          {
-            "fixture": "reply-directional-move-refused-workspace-floating",
-            "pointer": "/result/outcome",
-            "value": "move-refused-workspace-floating"
-          }
-        ],
-        "move-refused-fullscreen": [
-          {
-            "fixture": "reply-directional-move-refused-fullscreen",
-            "pointer": "/result/outcome",
-            "value": "move-refused-fullscreen"
-          }
-        ],
-        "focus-refused-maximize": [
-          {
-            "fixture": "reply-directional-focus-refused-maximize",
-            "pointer": "/result/outcome",
-            "value": "focus-refused-maximize"
-          }
-        ],
-        "focus-float-retained": [
-          {
-            "fixture": "reply-directional-focus-float-retained",
-            "pointer": "/result/outcome",
-            "value": "focus-float-retained"
-          }
-        ],
-        "focus-float-refused-stale": [
-          {
-            "fixture": "reply-directional-focus-float-refused-stale",
-            "pointer": "/result/outcome",
-            "value": "focus-float-refused-stale"
-          }
-        ],
-        "focus-unfocused-retained": [
-          {
-            "fixture": "reply-directional-focus-unfocused-retained",
-            "pointer": "/result/outcome",
-            "value": "focus-unfocused-retained"
-          }
-        ],
-        "move-float-refused-stale": [
-          {
-            "fixture": "reply-directional-move-float-refused-stale",
-            "pointer": "/result/outcome",
-            "value": "move-float-refused-stale"
-          }
-        ],
-        "move-float-refused-invalid-geometry": [
-          {
-            "fixture": "reply-directional-move-float-refused-invalid-geometry",
-            "pointer": "/result/outcome",
-            "value": "move-float-refused-invalid-geometry"
-          }
-        ],
-        "move-float-refused-constraints": [
-          {
-            "fixture": "reply-directional-move-float-refused-constraints",
-            "pointer": "/result/outcome",
-            "value": "move-float-refused-constraints"
-          }
-        ],
-        "move-float-unknown-output": [
-          {
-            "fixture": "reply-directional-move-float-unknown-output",
-            "pointer": "/result/outcome",
-            "value": "move-float-unknown-output"
-          }
-        ],
-        "focus-float-applied": [
-          {
-            "fixture": "reply-directional-focus-float-applied",
-            "pointer": "/result/outcome",
-            "value": "focus-float-applied"
-          }
-        ],
-        "move-float-applied": [
-          {
-            "fixture": "reply-directional-move-float-applied",
-            "pointer": "/result/outcome",
-            "value": "move-float-applied"
-          }
-        ],
-        "move-maximize-clear": [
-          {
-            "fixture": "reply-directional-move-maximize-clear",
-            "pointer": "/result/outcome",
-            "value": "move-maximize-clear"
-          }
-        ]
-      },
-      "DirectionalCause": {
-        "no-target": [
-          {
-            "fixture": "reply-directional-cause-no-target",
-            "pointer": "/result/cause",
-            "value": "no-target"
-          }
-        ],
-        "unknown-window": [
-          {
-            "fixture": "reply-directional-cause-unknown-window",
-            "pointer": "/result/cause",
-            "value": "unknown-window"
-          }
-        ],
-        "focus-present": [
-          {
-            "fixture": "reply-directional-cause-focus-present",
-            "pointer": "/result/cause",
-            "value": "focus-present"
-          }
-        ],
-        "no-source": [
-          {
-            "fixture": "reply-directional-cause-no-source",
-            "pointer": "/result/cause",
-            "value": "no-source"
-          }
-        ],
-        "no-adjacent-output": [
-          {
-            "fixture": "reply-directional-cause-no-adjacent-output",
-            "pointer": "/result/cause",
-            "value": "no-adjacent-output"
-          }
-        ]
-      },
-      "CommandRejectKind": {
-        "focus-unknown": [
-          {
-            "fixture": "reply-rejected-focus-unknown",
-            "pointer": "/result/kind",
-            "value": "focus-unknown"
-          }
-        ],
-        "send-target-unknown": [
-          {
-            "fixture": "reply-rejected-send-target-unknown",
-            "pointer": "/result/kind",
-            "value": "send-target-unknown"
-          }
-        ],
-        "send-window-unknown": [
-          {
-            "fixture": "reply-rejected-send-window-unknown",
-            "pointer": "/result/kind",
-            "value": "send-window-unknown"
-          }
-        ],
-        "send-refused": [
-          {
-            "fixture": "reply-rejected-send-refused",
-            "pointer": "/result/kind",
-            "value": "send-refused"
-          }
-        ],
-        "view-output-unknown": [
-          {
-            "fixture": "reply-rejected-view-output-unknown",
-            "pointer": "/result/kind",
-            "value": "view-output-unknown"
-          }
-        ],
-        "view-target-unknown": [
-          {
-            "fixture": "reply-rejected-view-target-unknown",
-            "pointer": "/result/kind",
-            "value": "view-target-unknown"
-          }
-        ],
-        "transfer-in-flight": [
-          {
-            "fixture": "reply-rejected-transfer-in-flight",
-            "pointer": "/result/kind",
-            "value": "transfer-in-flight"
-          }
-        ],
-        "direction-invalid": [
-          {
-            "fixture": "reply-rejected-direction-invalid",
-            "pointer": "/result/kind",
-            "value": "direction-invalid"
-          }
-        ],
-        "scope-held": [
-          {
-            "fixture": "reply-rejected-scope-held",
-            "pointer": "/result/kind",
-            "value": "scope-held"
-          }
-        ],
-        "selection-unknown": [
-          {
-            "fixture": "reply-rejected-selection-unknown",
-            "pointer": "/result/kind",
-            "value": "selection-unknown"
-          }
-        ],
-        "migration-refused": [
-          {
-            "fixture": "reply-rejected-migration-refused",
-            "pointer": "/result/kind",
-            "value": "migration-refused"
-          }
-        ],
-        "operation-refused": [
-          {
-            "fixture": "reply-rejected-operation-refused",
-            "pointer": "/result/kind",
-            "value": "operation-refused"
-          }
-        ],
-        "tiling-target-unknown": [
-          {
-            "fixture": "reply-rejected-tiling-target-unknown",
-            "pointer": "/result/kind",
-            "value": "tiling-target-unknown"
-          }
-        ],
-        "state-unsupported": [
-          {
-            "fixture": "reply-rejected-state-unsupported",
-            "pointer": "/result/kind",
-            "value": "state-unsupported"
-          }
-        ],
-        "state-unknown": [
-          {
-            "fixture": "reply-rejected-state-unknown",
-            "pointer": "/result/kind",
-            "value": "state-unknown"
-          }
-        ],
-        "fullscreen-not-exitable": [
-          {
-            "fixture": "reply-rejected-fullscreen-not-exitable",
-            "pointer": "/result/kind",
-            "value": "fullscreen-not-exitable"
-          }
-        ],
-        "stale-render-target": [
-          {
-            "fixture": "reply-rejected-stale-render-target",
-            "pointer": "/result/kind",
-            "value": "stale-render-target"
           }
         ]
       },
@@ -11815,11 +10659,6 @@
       "value": "native-b"
     },
     {
-      "fixture": "reply-bootstrap",
-      "pointer": "/result",
-      "value": null
-    },
-    {
       "fixture": "reply-observe",
       "pointer": "/workspaces/0/bind",
       "value": ""
@@ -11865,11 +10704,6 @@
       "value": "1"
     },
     {
-      "fixture": "reply-result-float-no-space",
-      "pointer": "/result/noSpace",
-      "value": true
-    },
-    {
       "fixture": "reply-observe",
       "pointer": "/workspaces/1/trailing",
       "value": true
@@ -11888,11 +10722,6 @@
       "fixture": "reply-operation-continued-tiled",
       "pointer": "/operationSettled/0/cause",
       "value": ""
-    },
-    {
-      "fixture": "reply-directional-focus-unfocused-retained",
-      "pointer": "/result/cause",
-      "value": null
     },
     {
       "fixture": "report-empty",
@@ -11952,11 +10781,6 @@
     {
       "fixture": "reply-observe",
       "pointer": "/workspaces/0/trailing",
-      "absent": true
-    },
-    {
-      "fixture": "reply-result-float-placed",
-      "pointer": "/result/noSpace",
       "absent": true
     },
     {

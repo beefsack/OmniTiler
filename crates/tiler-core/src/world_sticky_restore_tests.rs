@@ -6,7 +6,7 @@
 use crate::boundary::CoreCommand;
 use crate::directional::WindowId;
 use crate::intent_data::{IntentData, encode_intent_data};
-use crate::world_engine::WorldEngine;
+use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{IntentRecord, WorldCommand, WorldReportV4};
 use crate::world_v4_support_tests::{accepted, fact, float_fact, rect, report_full, screen};
 
@@ -1506,8 +1506,12 @@ fn sticky_toggle_refuses_only_usable_pending_or_restored() {
             Some(2),
             Some(toggle("win-a")),
         );
-        let reply = accepted(&mut local, &native_clear);
-        assert!(reply.command_result.is_none());
+        let (outcome, settlements) = local.handle_report(&native_clear, &[]);
+        let WorldOutcome::Accepted(_reply) = outcome else {
+            panic!("expected accepted, got {outcome:?}");
+        };
+        assert_eq!(settlements.len(), 1);
+        assert!(settlements[0].result.is_none());
         assert_eq!(
             local
                 .retained_states
@@ -1554,8 +1558,12 @@ fn sticky_toggle_refuses_only_usable_pending_or_restored() {
             Some(2),
             Some(toggle("win-a")),
         );
-        let reply = accepted(&mut local, &native_clear);
-        assert!(reply.command_result.is_none());
+        let (outcome, settlements) = local.handle_report(&native_clear, &[]);
+        let WorldOutcome::Accepted(_reply) = outcome else {
+            panic!("expected accepted, got {outcome:?}");
+        };
+        assert_eq!(settlements.len(), 1);
+        assert!(settlements[0].result.is_none());
         assert_eq!(
             local
                 .retained_states
@@ -1692,8 +1700,7 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
             );
             let mut on_fact = float_fact("win-a", "out-a", 0, 0);
             on_fact.sticky = Some(false);
-            let on_reply = accepted(
-                &mut origin,
+            let (outcome, settlements) = origin.handle_report(
                 &report_full(
                     2,
                     2,
@@ -1704,8 +1711,13 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
                     Some(1),
                     Some(set_sticky("win-a", true)),
                 ),
+                &[],
             );
-            assert!(on_reply.command_result.is_none(), "prior={prior}");
+            let WorldOutcome::Accepted(on_reply) = outcome else {
+                panic!("expected accepted, got {outcome:?}");
+            };
+            assert_eq!(settlements.len(), 1, "prior={prior}");
+            assert!(settlements[0].result.is_none(), "prior={prior}");
             let save = on_reply.intent_desired.first().expect("save").clone();
             assert_eq!(
                 (*save.data.as_ref().expect("bytes")),
@@ -1727,8 +1739,7 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
                     None,
                 ),
             );
-            let on_reply = accepted(
-                &mut origin,
+            let (outcome, settlements) = origin.handle_report(
                 &report_full(
                     2,
                     2,
@@ -1739,8 +1750,13 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
                     Some(1),
                     Some(set_sticky("win-a", true)),
                 ),
+                &[],
             );
-            assert!(on_reply.command_result.is_none(), "prior={prior}");
+            let WorldOutcome::Accepted(on_reply) = outcome else {
+                panic!("expected accepted, got {outcome:?}");
+            };
+            assert_eq!(settlements.len(), 1, "prior={prior}");
+            assert!(settlements[0].result.is_none(), "prior={prior}");
             let save = on_reply.intent_desired.first().expect("save").clone();
             assert_eq!(
                 (*save.data.as_ref().expect("bytes")),
@@ -1871,8 +1887,7 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
         let mut off_fact = fact("win-a", "out-a", 0);
         off_fact.rect = Some(rect(100, 100, 200, 200));
         off_fact.sticky = Some(true);
-        let off_reply = accepted(
-            &mut fresh,
+        let (outcome, settlements) = fresh.handle_report(
             &report_full(
                 3,
                 3,
@@ -1883,8 +1898,13 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
                 Some(1),
                 Some(set_sticky("win-a", false)),
             ),
+            &[],
         );
-        assert!(off_reply.command_result.is_none(), "prior={prior}");
+        let WorldOutcome::Accepted(off_reply) = outcome else {
+            panic!("expected accepted, got {outcome:?}");
+        };
+        assert_eq!(settlements.len(), 1, "prior={prior}");
+        assert!(settlements[0].result.is_none(), "prior={prior}");
         let off_save = off_reply.intent_desired.first().expect("off save").clone();
         assert_eq!(
             (*off_save.data.as_ref().expect("bytes")),

@@ -57,7 +57,7 @@ function loadReply(): WorldReply {
                 visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             },
         ],
-        transfers: [], effects: [], focusRequest: null, result: null,
+        transfers: [], effects: [], focusRequest: null, dragPreview: null,
         gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         presentation: {
             foreground: "win-a", rev: "1",
@@ -75,10 +75,10 @@ function loadReply(): WorldReply {
     }));
     assert.ok(parsed !== null && !isWorldRejection(parsed));
     const reply = parsed as WorldReply;
-    // v4 capture lane always carries result null; the terminal toggle-float
-    // result rides TakeCommandResult (tested in command-result). Float
-    // placement here uses the retained frame_op token.
-    assert.equal(reply.result, null);
+    // v4 core replies carry dragPreview (null here); the terminal
+    // toggle-float result rides TakeCommandResult (tested in command-result).
+    // Float placement here uses the retained frame_op token.
+    assert.equal(reply.dragPreview, null);
     assert.equal(reply.windows.find((w) => w.win === "win-a")?.frame_op, OP);
     return reply;
 }
@@ -420,7 +420,7 @@ describe("world float placement", () => {
         // Strip the token but keep a differing retained frame: no write.
         const tokenless: WorldReply = {
             ...reply,
-            result: null,
+            dragPreview: null,
             windows: reply.windows.map((w) =>
                 w.win === "win-a" ? { ...w, frame_op: "" } : w,
             ),

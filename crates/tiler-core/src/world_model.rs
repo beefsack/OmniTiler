@@ -2137,13 +2137,16 @@ mod prior_empty_scope_tests {
             Some(1),
             Some(refused_focus),
         );
-        match engine.handle_report(&first, &[]).0 {
-            WorldOutcome::Accepted(reply) => match reply.command_result {
-                Some(crate::world_report::CommandResult::Rejected { kind, .. }) => {
-                    assert_eq!(kind, crate::world_report::CommandRejectKind::FocusUnknown)
+        let (outcome, settlements) = engine.handle_report(&first, &[]);
+        match outcome {
+            WorldOutcome::Accepted(_reply) => {
+                match settlements.first().and_then(|s| s.result.as_ref()) {
+                    Some(crate::world_report::CommandResult::Rejected { kind }) => {
+                        assert_eq!(*kind, crate::world_report::CommandRejectKind::FocusUnknown)
+                    }
+                    other => panic!("expected focus refusal result, got {other:?}"),
                 }
-                other => panic!("expected focus refusal result, got {other:?}"),
-            },
+            }
             other => panic!("expected accepted refusal reply, got {other:?}"),
         }
         // A redelivery reconciles observation only. The controlled-empty

@@ -186,7 +186,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         windows: [],
         transfers: [],
         effects: [],
-        result: null,
+        dragPreview: null,
         ...extra,
     });
     const parsed = parseWorldReply(text);
@@ -356,7 +356,7 @@ describe("world overlay safety", () => {
             presentation: DISABLED_PRESENTATION,
             scopes: [], workspaces: [fusedWs("ws-1", 0), fusedWs("ws-2", 1)], outputs: [],
             windows: [winRow("win-tiled", "ws-2", [10, 10, 300, 300])],
-            transfers: [moveTransfer()], effects: [], result: null,
+            transfers: [moveTransfer()], effects: [], dragPreview: null,
         });
         const parsed = parseWorldReply(text);
         assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
@@ -421,7 +421,7 @@ describe("world overlay safety", () => {
             presentation: DISABLED_PRESENTATION,
             scopes: [], workspaces: [fusedWs("ws-1", 0), fusedWs("ws-2", 1)], outputs: [],
             windows: [winRow("win-tiled", "ws-2", [10, 10, 300, 300])],
-            transfers: [moveTransfer()], effects: [], result: null,
+            transfers: [moveTransfer()], effects: [], dragPreview: null,
         });
         const parsed = parseWorldReply(text);
         assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
@@ -489,7 +489,7 @@ describe("world overlay safety", () => {
             presentation: DISABLED_PRESENTATION,
             scopes: [], workspaces: [], outputs: [],
             windows: [winRow("win-tiled", "ws-1", [10, 10, 300, 300])],
-            transfers: [], effects: [], result: null,
+            transfers: [], effects: [], dragPreview: null,
         });
         const parsed = parseWorldReply(text);
         assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
@@ -558,7 +558,7 @@ describe("world overlay safety", () => {
             presentation: DISABLED_PRESENTATION,
             scopes: [], workspaces: [], outputs: [],
             windows: [],
-            transfers: [], effects: [], result: null,
+            transfers: [], effects: [], dragPreview: null,
         });
         const parsed = parseWorldReply(text);
         assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");

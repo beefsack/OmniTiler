@@ -280,7 +280,7 @@ function replyFor(h: Harness, mutate: (body: Record<string, unknown>) => void, r
         intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
-        workspaces: [], outputs: [], transfers: [], effects: [], result: null,
+        workspaces: [], outputs: [], transfers: [], effects: [], dragPreview: null,
         windows: [],
     };
     mutate(pending);
@@ -291,7 +291,7 @@ function replyFor(h: Harness, mutate: (body: Record<string, unknown>) => void, r
     if (result !== undefined && result !== null) {
         (globalThis as Record<string, unknown>)["__takeResult"] = result;
     }
-    const text = JSON.stringify({ ...snapshot, result: null });
+    const text = JSON.stringify({ ...snapshot, dragPreview: null });
     const parsed = parseWorldReply(text);
     assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
     last.callback(text);
@@ -426,7 +426,7 @@ describe("world capacity-float echo", () => {
             intentDesired: [], switchSettled: [], diagnostics: [],
             presentation: DISABLED_PRESENTATION,
             scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
-            workspaces: [], outputs: [], transfers: [], effects: [], result: null,
+            workspaces: [], outputs: [], transfers: [], effects: [], dragPreview: null,
             windows: [{
                 ...TILE_A, floating: true, float_origin: "mystery",
             }],

@@ -13,13 +13,14 @@
 use crate::boundary::CoreCommand;
 use crate::directional::{OutputId, SameAxisMove, WindowId, WorkspaceId};
 use crate::geometry::Rect;
+use crate::gesture::{GestureIngress, GestureKind, GesturePhase};
 use crate::session::DomainKey;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandRejectKind, CommandResult, FrameSetter, MemberAttempt, PresentationIngressV4,
-    PresentationRowV4, ScopeAuthority, ScreenReport, TransferKind, WORLD_CONTRACT_VERSION_V4,
-    WindowFact, WorkspaceRef, WorldCommand, WorldReportV4,
+    CommandRejectKind, CommandResult, DragPreviewV4, FrameSetter, MemberAttempt,
+    PresentationIngressV4, PresentationRowV4, ScopeAuthority, ScreenReport, TransferKind,
+    WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef, WorldCommand, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -522,7 +523,11 @@ fn world_migration_selects_largest_edge_despite_window_centre() {
         OutputId("u1".to_owned()),
         OutputId("u2".to_owned()),
     ];
-    let reply = accepted(&mut engine, &cmd_report);
+    let (outcome, settlements) = engine.handle_report(&cmd_report, &[]);
+    let reply = match outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted migration, got {other:?}"),
+    };
     let migration = reply
         .transfers
         .iter()
@@ -534,10 +539,10 @@ fn world_migration_selects_largest_edge_despite_window_centre() {
         reply.transfers
     );
     assert_eq!(migration.operation_id, "op-21", "stable command identity");
-    let CommandResult::Migration { source, target, .. } =
-        reply.command_result.clone().expect("migration provenance")
+    let Some(CommandResult::Migration { source, target, .. }) =
+        settlements.first().and_then(|s| s.result.clone())
     else {
-        panic!("expected migration result, got {:?}", reply.command_result);
+        panic!("expected migration result, got {settlements:?}");
     };
     assert_eq!(source.output.0, "out-l");
     assert_eq!(target.output.0, "u1");
@@ -581,15 +586,15 @@ fn flight_fences_second_move_pre_engine_without_rerank() {
         Some(113),
         Some(move_up("win-a")),
     );
-    match engine.handle_report(&again, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
+    match engine.handle_report(&again, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.clone()),
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::TransferInFlight
             }),
             "second move while flight outstanding refuses"
         ),
-        other => panic!("second move while flight outstanding refuses, got {other:?}"),
+        (other, _) => panic!("second move while flight outstanding refuses, got {other:?}"),
     }
     assert_eq!(
         engine.state_revision(),
@@ -612,15 +617,15 @@ fn flight_fences_second_move_pre_engine_without_rerank() {
         Some(114),
         Some(move_up("win-a")),
     );
-    match engine.handle_report(&again, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
+    match engine.handle_report(&again, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.clone()),
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::TransferInFlight
             }),
             "gap-path move while flight outstanding refuses"
         ),
-        other => panic!("gap-path move while flight outstanding refuses, got {other:?}"),
+        (other, _) => panic!("gap-path move while flight outstanding refuses, got {other:?}"),
     }
     assert_eq!(
         engine.state_revision(),
@@ -919,47 +924,56 @@ fn two_output_world() -> (WorldEngine, Vec<ScreenReport>, String, Vec<String>) {
 
 #[test]
 fn drag_preview_same_domain_routes_and_carries_core_rect_and_hover() {
-    // Read-only preview from the live pointer with no cross-output source:
-    // the rect and hover come from the core plan (never the oracle), with
-    // exact domain/source provenance, coexisting with the unchanged
+    // Read-only preview from retained gesture ingress with no cross-output
+    // source: the rect and hover come from the core plan (never the oracle),
+    // with exact domain/source provenance, coexisting with the unchanged
     // snapshot ordering. Same-domain capture never refuses wholesale.
     let (mut engine, screens, _, _) = two_output_world();
-    let preview = report(
+    let mut preview = report(
         2,
         2,
         screens,
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
         "win-a",
-        Some(81),
-        Some(WorldCommand::Operation(CoreCommand::DragPreview {
-            window: "win-a".to_owned(),
-            x: 155,
-            y: 50,
-            hover_prior: None,
-            source: None,
-        })),
+        None,
+        None,
     );
-    let reply = match engine.handle_report(&preview, &[]).0 {
+    preview.gesture = Some(GestureIngress {
+        id: 1,
+        window: WindowId("win-a".to_owned()),
+        kind: GestureKind::Move,
+        cursor: Some((155, 50)),
+        start_cursor: Some((10, 10)),
+        phase: GesturePhase::Updated,
+        esc: false,
+        modal_move: false,
+        start_frame: rect(0, 0, 400, 600),
+    });
+    let (outcome, settlements) = engine.handle_report(&preview, &[]);
+    assert!(
+        settlements.is_empty(),
+        "gesture preview consumes no command"
+    );
+    let reply = match outcome {
         WorldOutcome::Accepted(reply) => reply,
         WorldOutcome::Rejected { kind, .. } => {
-            panic!("same-domain preview must run the legacy route, got {kind}")
+            panic!("same-domain preview must run the gesture route, got {kind}")
         }
         other => panic!("unexpected outcome {other:?}"),
     };
-    let Some(CommandResult::DragPreview {
+    let Some(DragPreviewV4 {
+        id,
         rect,
         hover,
         domain,
         source,
         target,
         revision,
-    }) = reply.command_result.clone()
+    }) = reply.drag_preview.clone()
     else {
-        panic!(
-            "expected drag-preview result, got {:?}",
-            reply.command_result
-        );
+        panic!("expected drag_preview, got {:?}", reply.drag_preview);
     };
+    assert_eq!(id, 1);
     assert!(rect.w > 0 && rect.h > 0, "core-derived proposed rect");
     assert_eq!(domain.output.0, "out-a");
     assert_eq!(source, domain, "same-domain capture");
@@ -974,14 +988,14 @@ fn drag_preview_same_domain_routes_and_carries_core_rect_and_hover() {
     assert!(reply.effects.is_empty());
     // No core v4 canonical writer exists; the typed assertions above
     // already pin the drag-preview op and the win-b neighbor identity,
-    // and the exact-byte delta below proves the result rides the reply
+    // and the exact-byte delta below proves the preview rides the reply
     // bytes (protocol `encode_reply_v4` field arithmetic).
     use crate::world_sizing_v4::reply_exact_bytes_v4;
     let mut stripped = reply.clone();
-    stripped.command_result = None;
+    stripped.drag_preview = None;
     assert!(
         reply_exact_bytes_v4(&reply) > reply_exact_bytes_v4(&stripped),
-        "exact bytes carry the drag-preview result"
+        "exact bytes carry the drag-preview"
     );
 }
 
@@ -1131,8 +1145,9 @@ fn move_and_resize_ride_the_snapshot() {
             press_index: 0,
         })),
     );
-    let reply = accepted(&mut engine, &resize);
-    assert!(reply.command_result.is_none());
+    let (_, resize_settlements) = engine.handle_report(&resize, &[]);
+    assert_eq!(resize_settlements.len(), 1);
+    assert!(resize_settlements[0].result.is_none());
     let step = report(
         4,
         4,
@@ -1147,8 +1162,13 @@ fn move_and_resize_ride_the_snapshot() {
             same_axis_move: SameAxisMove::GroupWithNeighbor,
         })),
     );
-    let reply = accepted(&mut engine, &step);
-    assert!(reply.command_result.is_none());
+    let (step_outcome, step_settlements) = engine.handle_report(&step, &[]);
+    let reply = match step_outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted step, got {other:?}"),
+    };
+    assert_eq!(step_settlements.len(), 1);
+    assert!(step_settlements[0].result.is_none());
     assert!(
         reply.windows.iter().all(|w| w.allocation.is_some()),
         "local move keeps managed geometry"
@@ -1202,11 +1222,16 @@ fn drag_drop_pair_resolves_pointer_target() {
             }),
         })),
     );
-    let reply = accepted(&mut engine, &drop);
+    let (drop_outcome, drop_settlements) = engine.handle_report(&drop, &[]);
+    let reply = match drop_outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted drop, got {other:?}"),
+    };
     // Pair transaction committed: the mover arrives in the pointer domain
     // with a retained window transfer. The drop geometry rides the
     // snapshot, so no separate result.
-    assert!(reply.command_result.is_none());
+    assert_eq!(drop_settlements.len(), 1);
+    assert!(drop_settlements[0].result.is_none());
     assert!(
         matches!(
             reply.transfers.as_slice(),
@@ -1327,15 +1352,15 @@ fn operation_send_retains_and_foreign_routes_refuse() {
             direction: "right".to_owned(),
         })),
     );
-    match solo.handle_report(&refused, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
+    match solo.handle_report(&refused, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.clone()),
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
             }),
             "expected operation refusal"
         ),
-        other => panic!("expected operation refusal, got {other:?}"),
+        (other, _) => panic!("expected operation refusal, got {other:?}"),
     }
 }
 
@@ -1396,15 +1421,15 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
             }),
         );
         seq += 1;
-        match engine.handle_report(&send, &[]).0 {
-            WorldOutcome::Accepted(reply) => assert_eq!(
-                reply.command_result,
+        match engine.handle_report(&send, &[]) {
+            (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+                settlements.first().and_then(|s| s.result.clone()),
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::SendRefused
                 }),
                 "{window}: expected send-refused"
             ),
-            other => panic!("{window}: expected send-refused, got {other:?}"),
+            (other, _) => panic!("{window}: expected send-refused, got {other:?}"),
         }
     }
     assert!(
@@ -1802,15 +1827,15 @@ fn hotplug_incomplete_survivor_holds_unit_and_full_report_recovers() {
         Some(11),
         Some(move_up("win-a")),
     );
-    match engine.handle_report(&fenced, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
+    match engine.handle_report(&fenced, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.clone()),
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
             }),
             "crossing without topology refuses"
         ),
-        other => panic!("crossing without topology refuses, got {other:?}"),
+        (other, _) => panic!("crossing without topology refuses, got {other:?}"),
     }
     // The next FULL complete report recovers controlled rows with no
     // duplication and no invented flights.
@@ -2008,15 +2033,15 @@ fn unknown_outputs_and_views_hold_fail_closed() {
             direction: "left".to_owned(),
         }),
     );
-    match engine.handle_report(&focus_ghost, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
+    match engine.handle_report(&focus_ghost, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.clone()),
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::FocusUnknown
             }),
             "unknown focus refuses fail-closed"
         ),
-        other => panic!("unknown focus refuses fail-closed, got {other:?}"),
+        (other, _) => panic!("unknown focus refuses fail-closed, got {other:?}"),
     }
     // Unknown view echoes never authorize homing or views. v4 carries
     // no view-echo lane (and the legacy-only unknown-echo publish hold
@@ -2152,29 +2177,21 @@ fn operation_drag_pair_preserves_configured_outer_across_outputs() {
         let destination_left = rect(818, 18, 378, 554);
         let mut preview_rect = None;
         if chained {
-            let preview = report(
-                3,
-                3,
-                screens.clone(),
-                facts.clone(),
-                "win-a",
-                Some(81),
-                Some(WorldCommand::Operation(CoreCommand::DragPreview {
-                    window: "win-a".to_owned(),
-                    x: 860,
-                    y: 120,
-                    hover_prior: None,
-                    source: source.clone(),
-                })),
-            );
+            let mut preview = report(3, 3, screens.clone(), facts.clone(), "win-a", None, None);
+            preview.gesture = Some(GestureIngress {
+                id: 1,
+                window: WindowId("win-a".to_owned()),
+                kind: GestureKind::Move,
+                cursor: Some((860, 120)),
+                start_cursor: Some((10, 40)),
+                phase: GesturePhase::Updated,
+                esc: false,
+                modal_move: false,
+                start_frame: rect(10, 40, 40, 90),
+            });
             let reply = accepted(&mut engine, &preview);
-            let Some(CommandResult::DragPreview { rect, domain, .. }) =
-                reply.command_result.clone()
-            else {
-                panic!(
-                    "expected drag-preview result, got {:?}",
-                    reply.command_result
-                );
+            let Some(DragPreviewV4 { rect, domain, .. }) = reply.drag_preview.clone() else {
+                panic!("expected drag_preview, got {:?}", reply.drag_preview);
             };
             assert_eq!(domain.output.0, "out-b", "preview names the pointer output");
             assert_eq!(rect, destination_left, "preview names the left inset half");
@@ -2183,7 +2200,7 @@ fn operation_drag_pair_preserves_configured_outer_across_outputs() {
             assert_pair_gaps(&engine, &key_a, &key_b);
         }
         let drop_seq = if chained { 82 } else { 81 };
-        let drop = report(
+        let mut drop = report(
             4,
             4,
             screens.clone(),
@@ -2198,6 +2215,19 @@ fn operation_drag_pair_preserves_configured_outer_across_outputs() {
                 source: source.clone(),
             })),
         );
+        if chained {
+            drop.gesture = Some(GestureIngress {
+                id: 1,
+                window: WindowId("win-a".to_owned()),
+                kind: GestureKind::Move,
+                cursor: None,
+                start_cursor: Some((10, 40)),
+                phase: GesturePhase::Cancelled,
+                esc: false,
+                modal_move: false,
+                start_frame: rect(10, 40, 40, 90),
+            });
+        }
         let reply = accepted(&mut engine, &drop);
         assert!(
             matches!(
@@ -2241,33 +2271,45 @@ fn operation_drag_pair_preserves_configured_outer_across_outputs() {
         // echo the retained destination allocations (native arrival) and the
         // pointer targets the far right edge of the neighbor slot, which is
         // in the right half while the post-drop mover sits left.
+        let local_facts = vec![
+            fact_rect("win-a", "out-b", allocation),
+            fact_rect("win-b", "out-b", neighbor),
+            fact_rect("win-s", "out-a", stayer),
+        ];
+        // Settle the cross-output transfer arrival on out-b before starting
+        // the new same-output gesture.
+        accepted(
+            &mut engine,
+            &report(
+                5,
+                5,
+                screens.clone(),
+                local_facts.clone(),
+                "win-a",
+                None,
+                None,
+            ),
+        );
         let px = neighbor.x + neighbor.w - 2;
         let py = neighbor.y + neighbor.h / 2;
-        let local = report(
-            5,
-            5,
-            screens.clone(),
-            vec![
-                fact_rect("win-a", "out-b", allocation),
-                fact_rect("win-b", "out-b", neighbor),
-                fact_rect("win-s", "out-a", stayer),
-            ],
-            "win-a",
-            Some(83),
-            Some(WorldCommand::Operation(CoreCommand::DragPreview {
-                window: "win-a".to_owned(),
-                x: px,
-                y: py,
-                hover_prior: None,
-                source: None,
-            })),
-        );
+        let mut local = report(6, 6, screens.clone(), local_facts, "win-a", None, None);
+        local.gesture = Some(GestureIngress {
+            id: 2,
+            window: WindowId("win-a".to_owned()),
+            kind: GestureKind::Move,
+            cursor: Some((px, py)),
+            start_cursor: Some((allocation.x + 2, allocation.y + 2)),
+            phase: GesturePhase::Updated,
+            esc: false,
+            modal_move: false,
+            start_frame: allocation,
+        });
         let local_reply = accepted(&mut engine, &local);
-        let Some(CommandResult::DragPreview {
+        let Some(DragPreviewV4 {
             rect: local_rect, ..
-        }) = local_reply.command_result.clone()
+        }) = local_reply.drag_preview.clone()
         else {
-            panic!("local placement runs, got {:?}", local_reply.command_result)
+            panic!("local placement runs, got {:?}", local_reply.drag_preview)
         };
         assert_eq!(
             local_rect, neighbor,
@@ -2730,15 +2772,15 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        match engine.handle_report(&refused, &[]).0 {
-            WorldOutcome::Accepted(reply) => assert_eq!(
-                reply.command_result,
+        match engine.handle_report(&refused, &[]) {
+            (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+                settlements.first().and_then(|s| s.result.clone()),
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::SendRefused
                 }),
                 "follow={follow}: sticky must refuse"
             ),
-            other => panic!("follow={follow}: sticky must refuse, got {other:?}"),
+            (other, _) => panic!("follow={follow}: sticky must refuse, got {other:?}"),
         }
         let (mut engine, screens, _view_a, view_b, _) = bootstrap_gapped_pair();
         let mut excluded = fact_rect("win-a", "out-a", rect(10, 40, 40, 90));
@@ -2766,15 +2808,15 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        match engine.handle_report(&refused, &[]).0 {
-            WorldOutcome::Accepted(reply) => assert_eq!(
-                reply.command_result,
+        match engine.handle_report(&refused, &[]) {
+            (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+                settlements.first().and_then(|s| s.result.clone()),
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::SendRefused
                 }),
                 "follow={follow}: fit-excluded must refuse"
             ),
-            other => panic!("follow={follow}: fit-excluded must refuse, got {other:?}"),
+            (other, _) => panic!("follow={follow}: fit-excluded must refuse, got {other:?}"),
         }
     }
     // In-flight fence: a second same-window explicit output send
@@ -2829,15 +2871,15 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        match engine.handle_report(&again, &[]).0 {
-            WorldOutcome::Accepted(reply) => assert_eq!(
-                reply.command_result,
+        match engine.handle_report(&again, &[]) {
+            (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+                settlements.first().and_then(|s| s.result.clone()),
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::TransferInFlight
                 }),
                 "follow={follow}: second send must fence"
             ),
-            other => panic!("follow={follow}: second send must fence, got {other:?}"),
+            (other, _) => panic!("follow={follow}: second send must fence, got {other:?}"),
         }
     }
     // Migration-destination fence: a retained whole-workspace migration
@@ -2931,21 +2973,23 @@ fn explicit_output_send_fences_match_output_route() {
                 follow,
             })),
         );
-        match engine.handle_report(&probe, &[]).0 {
-            WorldOutcome::Accepted(reply) => {
+        match engine.handle_report(&probe, &[]) {
+            (WorldOutcome::Accepted(_), settlements) => {
                 // KIND_SEND_TARGET is "send-target-unknown"; the
                 // migration-destination fence runs before the
                 // mapping/staged checks, so with the matching cell
                 // retained this refusal is necessarily that fence.
                 assert_eq!(
-                    reply.command_result,
+                    settlements.first().and_then(|s| s.result.clone()),
                     Some(CommandResult::Rejected {
                         kind: CommandRejectKind::SendTargetUnknown
                     }),
                     "follow={follow}: migration cell"
                 )
             }
-            other => panic!("follow={follow}: send onto migration cell must refuse, got {other:?}"),
+            (other, _) => {
+                panic!("follow={follow}: send onto migration cell must refuse, got {other:?}")
+            }
         }
         assert!(
             engine

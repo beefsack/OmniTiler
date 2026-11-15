@@ -34,6 +34,10 @@ use tiler_protocol::world_protocol::{
     DecodedReplyV4, ReplyWireOptionals, decode_reply_v4, decode_report_v4, encode_reply_v4,
 };
 
+#[allow(dead_code)]
+#[path = "visibility_engine_record/producer.rs"]
+mod visibility_recorder;
+
 fn fixture_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/world-wire/v4")
 }
@@ -1622,6 +1626,12 @@ impl VisibilityHostDriver {
 }
 
 fn load_scenario_value(scenario_id: &str) -> serde_json::Value {
+    if scenario_id.starts_with("visibility-") {
+        static RECORD_ONCE: std::sync::Once = std::sync::Once::new();
+        RECORD_ONCE.call_once(|| {
+            visibility_recorder::record_all_if_enabled();
+        });
+    }
     // Strict current conformance resolves scenarios from the active family;
     // scenarios without an encoder-generated active counterpart fall back to
     // the frozen bytes for unchanged non-handshake data. No in-memory
@@ -2095,6 +2105,106 @@ fn window_state_runs_ordered_core_scenario() {
         run.pending_topics,
         vec!["windows-app-owned-fullscreen-exit".to_owned()],
         "pending gate topic"
+    );
+}
+
+#[test]
+fn window_state_preserves_exact_issuing_settlement_rejections() {
+    use tiler_core::world_report::{CommandRejectKind, CommandResult};
+
+    let scenario = load_scenario_value("window-state");
+    let generations = ["generation-a", "generation-b", "generation-c"];
+    let mut gen_idx = 0usize;
+    let mut engine: Option<WorldEngine> = None;
+    let mut observed = std::collections::BTreeMap::new();
+
+    for step in scenario["steps"].as_array().expect("window-state steps") {
+        let sid = step["id"].as_str().expect("step id");
+        let input = &step["input"];
+        match input["kind"].as_str().expect("input kind") {
+            "fixture-event" => {
+                if input["event"]["kind"].as_str() == Some("disconnect") {
+                    engine = None;
+                    gen_idx += 1;
+                }
+            }
+            "wire" if input["to"].as_str() == Some("core") => {
+                let message = &input["message"];
+                let wire = serde_json::to_string(message).expect("message serializes");
+                match message.get("type").and_then(|v| v.as_str()) {
+                    Some("handshake") => {
+                        let req = decode_handshake_request(&wire).expect("handshake decodes");
+                        let mut fresh = WorldEngine::new(generations[gen_idx]).expect("engine");
+                        let reply = fresh.handshake(&req);
+                        assert_eq!(
+                            reply.generation.as_deref(),
+                            Some(generations[gen_idx]),
+                            "{sid} handshake generation"
+                        );
+                        engine = Some(fresh);
+                    }
+                    Some("settings") => {
+                        let req = decode_settings(&wire).expect("settings decodes");
+                        engine
+                            .as_mut()
+                            .expect("live engine")
+                            .handle_settings(&req)
+                            .expect("settings admitted");
+                    }
+                    None => {
+                        let mut decoded = decode_report_v4(&wire).expect("report decodes");
+                        let batch =
+                            match (decoded.report.command_seq, decoded.report.command.take()) {
+                                (Some(seq), Some(cmd)) => {
+                                    decoded.report.command_seq = None;
+                                    vec![(seq, cmd)]
+                                }
+                                (None, None) => Vec::new(),
+                                other => panic!("{sid}: unexpected command/seq pair {other:?}"),
+                            };
+                        let (_outcome, settlements) = engine
+                            .as_mut()
+                            .expect("live engine")
+                            .handle_report(&decoded.report, &batch);
+                        if let Some(settled) = settlements.into_iter().next() {
+                            observed.insert(sid.to_owned(), settled.result);
+                        }
+                    }
+                    Some(other) => panic!("{sid}: unexpected message type {other}"),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        matches!(
+            observed.get("maximize"),
+            Some(Some(CommandResult::Maximize {
+                maximized: true,
+                ..
+            }))
+        ),
+        "maximize issuing settlement: {:?}",
+        observed.get("maximize")
+    );
+    assert_eq!(
+        observed.get("unknown-fullscreen"),
+        Some(&Some(CommandResult::Rejected {
+            kind: CommandRejectKind::StateUnknown,
+        }))
+    );
+    assert_eq!(
+        observed.get("known-nonexitable-exit"),
+        Some(&Some(CommandResult::Rejected {
+            kind: CommandRejectKind::FullscreenNotExitable,
+        }))
+    );
+    assert_eq!(
+        observed.get("sticky-unsupported-command"),
+        Some(&Some(CommandResult::Rejected {
+            kind: CommandRejectKind::StateUnsupported,
+        }))
     );
 }
 

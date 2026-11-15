@@ -429,7 +429,7 @@
       "expect": {
         "status": "settled",
         "assertions": [
-          ".output.message.result.op == \"maximize\" and .output.message.result.maximized == true",
+          ".output.message.windows | any(.win == \"win-a\" and any(.state[]; .property == \"maximized\" and .value == true and .auth == \"controlled\"))",
           "[.output.message.windows[].state[]] | all(.property != \"sticky\")"
         ]
       },
@@ -599,7 +599,7 @@
       "expect": {
         "status": "settled",
         "assertions": [
-          ".output.message.result == {op:\"rejected\",kind:\"state-unknown\"}",
+          ".output.message | has(\"result\") | not",
           ".output.message.windows[].state | all(.property != \"fullscreen\" or .auth != \"controlled\")",
           "[.output.message.windows[].state[]] | all(.property != \"sticky\")"
         ]
@@ -942,7 +942,7 @@
       "expect": {
         "status": "settled",
         "assertions": [
-          ".output.message.result == {op:\"rejected\",kind:\"fullscreen-not-exitable\"}",
+          ".output.message.consumed == false and (.output.message.windows | any(.win == \"win-a\" and all(.state[]; .cmdSeq != \"4\")))",
           "[.output.message.windows[].state[]] | all(.property != \"sticky\")"
         ]
       },
@@ -2964,7 +2964,7 @@
       "expect": {
         "status": "settled",
         "assertions": [
-          ".output.message.result == {op:\"rejected\",kind:\"state-unsupported\"}"
+          "[.output.message.windows[].state[]] | all(.property != \"sticky\")"
         ]
       },
       "rules": [

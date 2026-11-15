@@ -402,7 +402,7 @@ fn note_effects_v4(sim: &mut SimV4, reply: &WorldReplyV4, at: &str) -> Result<()
     } else {
         sim.prev_request = None;
     }
-    if reply.command_result.is_some()
+    if reply.drag_preview.is_some()
         || reply.gesture_settled.is_some()
         || !reply.operation_settled.is_empty()
         || reply.cursor_warp.is_some()

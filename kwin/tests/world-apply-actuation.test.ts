@@ -498,7 +498,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         windows: [],
         transfers: [],
         effects: [],
-        result: null,
+        dragPreview: null,
         ...extra,
     });
     const parsed = parseWorldReply(text);
@@ -1314,7 +1314,7 @@ describe("world actuation identity and proof", () => {
                 { id: "fx-9", kind: "raise", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: false },
                 { id: "fx-10", kind: "stack", target: "win-b", rev: "1", cause: "explicit-command", cmdSeq: "1", awaitShown: false },
             ],
-            result: null,
+            dragPreview: null,
         });
         assert.equal(parseWorldReply(refused), null, "non-empty effects refuses at the reader");
         const h = makeHarness();
@@ -1397,7 +1397,7 @@ describe("world apply safety reads", () => {
                 visibility: null, visibility_auth: "untouched", visibility_hold: "",
                 state: [],
             }],
-            transfers: [], effects: [], result: null,
+            transfers: [], effects: [], dragPreview: null,
         });
         const parsed = parseWorldReply(text);
         assert.ok(parsed !== null && isCoreWorldReply(parsed));
@@ -1672,7 +1672,7 @@ describe("world admission focus on settled floats", () => {
                 state: [],
             }],
             transfers: [],
-            effects: [], result: null,
+            effects: [], dragPreview: null,
         });
         const parsed = parseWorldReply(text);
         assert.ok(parsed !== null && isCoreWorldReply(parsed));

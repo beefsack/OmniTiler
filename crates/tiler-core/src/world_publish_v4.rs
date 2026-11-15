@@ -12,8 +12,8 @@ use crate::directional::{OutputId, WorkspaceId};
 use crate::session::DomainKey;
 use crate::world_engine::WorldEngine;
 use crate::world_report::{
-    CommandResult, HoldReason, OneShotEffect, TransferTargetV4, WORLD_CONTRACT_VERSION_V4,
-    WorldCommand, WorldReplyV4,
+    HoldReason, OneShotEffect, TransferTargetV4, WORLD_CONTRACT_VERSION_V4, WorldCommand,
+    WorldReplyV4,
 };
 
 /// Direct v4 publication envelope: the reply identity the legacy path reads
@@ -46,7 +46,6 @@ impl WorldEngine {
         envelope: PublishEnvelopeV4,
         _command: Option<&WorldCommand>,
         effects: Vec<OneShotEffect>,
-        command_result: Option<CommandResult>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> WorldReplyV4 {
         // Narrow producer style hold first, before any authority assembly:
@@ -146,6 +145,8 @@ impl WorldEngine {
         let windows = rows.windows;
         let cursor_warp = self.warp_for_publish(&effects, &windows, &local_held);
         self.prune_settled_outcomes();
+        self.prune_drag_preview(&local_held);
+        let drag_preview = self.drag_preview.clone();
         let gesture_settled = self.gesture_terminal;
         let operation_settled = self.operation_settled.values().cloned().collect();
         let native_creations = self
@@ -209,7 +210,7 @@ impl WorldEngine {
             transfers,
             effects: wire_effects,
             focus_request,
-            command_result,
+            drag_preview,
             gesture_settled,
             operation_settled,
             native_creations,

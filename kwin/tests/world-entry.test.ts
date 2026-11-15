@@ -14,7 +14,7 @@ import { createContext, runInContext } from "node:vm";
 import { startWorldAdapterEntry, mintAdapterIncarnation } from "../src/world-entry";
 import { captureWorldObservation } from "../src/world-observe";
 import { isSeparateWorkspaceMode } from "../src/workspace-native";
-import { createMiniBroker, DISABLED_PRESENTATION, type MiniBroker } from "./world-wire-harness";
+import { createMiniBroker, DISABLED_PRESENTATION, parseRawEvalWithSettlements, type MiniBroker } from "./world-wire-harness";
 import { isCanonicalU64, isOpaqueId } from "../src/world-seq";
 import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
 
@@ -602,7 +602,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         windows: [],
         transfers: [],
         effects: [],
-        result: null,
+        dragPreview: null,
         ...extra,
     });
     const parsed = parseWorldReply(text);
@@ -2628,8 +2628,8 @@ describe("world entry restart float-intent preservation", () => {
             // returns bound with a nulled terminal result.
             const envelope = calls[at]!.payload;
             const stamped = broker.stampCapture(envelope);
-            const coreReply = await engineSend("DescribeWorld", stamped);
-            const rawReply = broker.bindReply(coreReply, envelope);
+            const { reply: coreReply, settlements } = parseRawEvalWithSettlements(await engineSend("DescribeWorldWithSettlements", stamped));
+            const rawReply = broker.bindReply(coreReply, envelope, settlements);
             calls[at]!.callback(rawReply);
             return { req: JSON.parse(calls[at]!.payload) as Record<string, unknown>, reply: JSON.parse(rawReply) as Record<string, unknown>, rawReply };
         };
@@ -3133,8 +3133,8 @@ describe("world entry script-restart sequence handover", () => {
             // report the sole broker would dispatch, and the core reply
             // returns bound with a nulled terminal result.
             const stamped = p.broker.stampCapture(p.calls[at]!.payload);
-            const coreReply = await engineSend("DescribeWorld", stamped);
-            const rawReply = p.broker.bindReply(coreReply, p.calls[at]!.payload);
+            const { reply: coreReply, settlements } = parseRawEvalWithSettlements(await engineSend("DescribeWorldWithSettlements", stamped));
+            const rawReply = p.broker.bindReply(coreReply, p.calls[at]!.payload, settlements);
             p.calls[at]!.callback(rawReply);
             return {
                 req: JSON.parse(p.calls[at]!.payload) as Record<string, unknown>,
@@ -4613,8 +4613,8 @@ describe("world entry focus feedback production regression", () => {
             flushed = at + 1;
             const envelope = calls[at]!.payload;
             const stamped = broker.stampCapture(envelope);
-            const coreReply = await engineSend("DescribeWorld", stamped);
-            const rawReply = broker.bindReply(coreReply, envelope);
+            const { reply: coreReply, settlements } = parseRawEvalWithSettlements(await engineSend("DescribeWorldWithSettlements", stamped));
+            const rawReply = broker.bindReply(coreReply, envelope, settlements);
             calls[at]!.callback(rawReply);
             return { req: JSON.parse(calls[at]!.payload) as Record<string, unknown>, reply: JSON.parse(rawReply) as Record<string, unknown>, rawReply };
         };

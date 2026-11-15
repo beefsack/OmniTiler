@@ -803,9 +803,6 @@ impl WorldBroker {
                 }
             }
         }
-        let last_drag_command = drained
-            .back()
-            .is_some_and(|queued| command_is_drag_preview(&queued.command));
         let (outcome, settlements) = self.engine.handle_report(&plain_report, &batch);
         self.finish_capture_outcome(
             &parsed,
@@ -815,7 +812,6 @@ impl WorldBroker {
             staged_gesture_map,
             gesture_assoc,
             drained,
-            last_drag_command,
             outcome,
             settlements,
         )
@@ -831,7 +827,6 @@ impl WorldBroker {
         mut staged_gesture_map: crate::kde_gesture::KdeGestureMap,
         gesture_assoc: Option<crate::kde_gesture::GestureAssoc>,
         drained: VecDeque<QueuedCommand>,
-        last_drag_command: bool,
         outcome: WorldOutcome,
         settlements: Vec<tiler_core::world_report::BatchSettlement>,
     ) -> Result<String, BrokerError> {
@@ -847,14 +842,10 @@ impl WorldBroker {
         // (it can open, settle, or close an active gesture), so pins must
         // reconcile there just like `Accepted`, while still reparking any
         // drained batch. `Duplicate` is a cached replay with no transition.
-        let (outcome, command_produced_preview, reply_gesture_settled) = match outcome {
+        let (outcome, reply_drag_preview_id, reply_gesture_settled) = match outcome {
             WorldOutcome::Accepted(reply) => {
                 let encoded = encode_world_reply(&reply)?;
-                let produced = last_drag_command
-                    && matches!(
-                        reply.command_result,
-                        Some(tiler_core::world_report::CommandResult::DragPreview { .. })
-                    );
+                let preview_id = reply.drag_preview.as_ref().map(|preview| preview.id);
                 self.settle_batch(&drained, &settlements)?;
                 staged_gesture_map.reconcile_pins(
                     self.engine.active_gesture_id(),
@@ -863,28 +854,38 @@ impl WorldBroker {
                 );
                 (
                     FreshOutcome::Reply(encoded),
-                    produced,
+                    preview_id,
                     reply.gesture_settled,
                 )
             }
             WorldOutcome::CommandConsumed(reply) => {
                 let encoded = encode_world_reply(&reply)?;
+                let preview_id = reply.drag_preview.as_ref().map(|preview| preview.id);
                 self.repark_batch(drained);
                 staged_gesture_map.reconcile_pins(
                     self.engine.active_gesture_id(),
                     reply.gesture_settled.map(|settled| settled.id),
                     gesture_assoc.as_ref(),
                 );
-                (FreshOutcome::Reply(encoded), false, reply.gesture_settled)
+                (
+                    FreshOutcome::Reply(encoded),
+                    preview_id,
+                    reply.gesture_settled,
+                )
             }
             WorldOutcome::Duplicate(reply) => {
                 let encoded = encode_world_reply(&reply)?;
+                let preview_id = reply.drag_preview.as_ref().map(|preview| preview.id);
                 self.repark_batch(drained);
-                (FreshOutcome::Reply(encoded), false, reply.gesture_settled)
+                (
+                    FreshOutcome::Reply(encoded),
+                    preview_id,
+                    reply.gesture_settled,
+                )
             }
             WorldOutcome::Rejected { kind, message } => {
                 self.repark_batch(drained);
-                (FreshOutcome::Rejected { kind, message }, false, None)
+                (FreshOutcome::Rejected { kind, message }, None, None)
             }
         };
         match outcome {
@@ -907,25 +908,25 @@ impl WorldBroker {
                     .gesture_map
                     .terminal_assoc_for(reply_gesture_settled.map(|settled| settled.id))
                     .cloned();
-                // The actuator lane never carries the terminal result
-                // (requester-only even when the actuator is the issuer); the
-                // projection cache keeps the snapshot plus presentation only,
-                // with write tokens stripped. The renderer-only drop preview
-                // is the single exception: when the accepted reply carried a
-                // `DragPreview` result, its paint geometry plus subject proof
-                // (`rect`, mover-home source, insertion-neighbor window; no
-                // hover chain, no result tag, no session revision) rides the
-                // projection as `preview` (null otherwise) so a renderer
-                // without take-lane authority paints exactly what core
-                // published. The preview additionally names its producing
-                // native gesture (`producerInstance`/`producerSerial`) when
-                // this capture's normalized ingress proves it; a
-                // command-produced or otherwise unproven preview rides with
+                // Core replies carry no command-result lane (command
+                // outcomes settle requester-only via `TakeCommandResult`);
+                // the projection cache keeps the snapshot plus presentation
+                // only, with write tokens stripped. The renderer-only drop
+                // preview is the single exception: when the accepted reply
+                // carried a retained `dragPreview`, its paint geometry plus
+                // subject proof (`rect`, mover-home source,
+                // insertion-neighbor window; no hover chain, no id, no
+                // session revision) rides the projection as `preview`
+                // (null otherwise) so a renderer without take-lane
+                // authority paints exactly what core published. The preview
+                // names its producing native gesture
+                // (`producerInstance`/`producerSerial`) only when the
+                // reconciled `active_assoc` pin matches `dragPreview.id`
+                // exactly; a missing or mismatched association rides with
                 // null producer fields and the renderer hides it (fail
-                // closed), while the take lane still settles the issuer.
-                // The covered causal witness rides alongside for the read
-                // lane. The expanded bound reply always fits the reply
-                // cap; oversize fails closed without caching.
+                // closed). The covered causal witness rides alongside for
+                // the read lane. The expanded bound reply always fits the
+                // reply cap; oversize fails closed without caching.
                 // Neutral focused-fullscreen suspension consumes the core
                 // verdict mechanically: a preview resolving on the
                 // suspended output never rides the projection, so the
@@ -936,24 +937,19 @@ impl WorldBroker {
                 } else {
                     drag_preview_of(&encoded)
                 };
-                let preview = match (&preview_geometry, &gesture_assoc) {
-                    (Some(_), Some(assoc)) if !command_produced_preview => {
-                        CarriedPreview::proven(preview_geometry, assoc)
-                    }
+                let preview_assoc = self.gesture_map.active_assoc_for(reply_drag_preview_id);
+                let preview = match (&preview_geometry, preview_assoc) {
+                    (Some(_), Some(assoc)) => CarriedPreview::proven(preview_geometry, assoc),
                     _ => CarriedPreview::unproven(preview_geometry),
                 };
-                let stripped = strip_result(&encoded);
-                let with_assoc = inject_gesture_assocs(
-                    &stripped,
-                    gesture_assoc.as_ref(),
-                    settled_assoc.as_ref(),
-                );
+                let with_assoc =
+                    inject_gesture_assocs(&encoded, gesture_assoc.as_ref(), settled_assoc.as_ref());
                 let bound =
                     bind_response(&with_assoc, &parsed.source, parsed.native_invalid, clock);
                 if bound.len() > WORLD_MAX_REPLY_BYTES {
                     return Err(BrokerError::Oversized);
                 }
-                self.presentation = Some(project_reply(&stripped, preview.as_ref()));
+                self.presentation = Some(project_reply(&encoded, preview.as_ref()));
                 self.presentation_covered = covered;
                 self.watermarks
                     .insert(parsed.adapter.clone(), parsed.native_invalid);
@@ -1939,8 +1935,8 @@ fn assoc_json(assoc: Option<&crate::kde_gesture::GestureAssoc>) -> serde_json::V
 
 /// Attach the broker-only bound actuator associations for the actual
 /// normalized ingress (`gestureAssoc`) and the retained gesture terminal
-/// (`gestureSettledAssoc`) to one stripped accepted reply, or explicit nulls
-/// when absent. Both keys are broker-owned (never core/protocol): the exact
+/// (`gestureSettledAssoc`) to one accepted reply, or explicit nulls when
+/// absent. Both keys are broker-owned (never core/protocol): the exact
 /// response replay caches them verbatim. Pure over the strings.
 fn inject_gesture_assocs(
     reply: &str,
@@ -1951,19 +1947,6 @@ fn inject_gesture_assocs(
     if let Some(map) = value.as_object_mut() {
         map.insert("gestureAssoc".to_owned(), assoc_json(assoc));
         map.insert("gestureSettledAssoc".to_owned(), assoc_json(settled_assoc));
-    }
-    value.to_string()
-}
-
-/// Null the terminal result lane of one accepted reply for the actuator
-/// response. The result is requester-only even when the actuator is the
-/// issuer; the issuer collects it via take.
-fn strip_result(encoded: &str) -> String {
-    let mut value: serde_json::Value = serde_json::from_str(encoded).unwrap_or_default();
-    if let Some(map) = value.as_object_mut()
-        && map.contains_key("result")
-    {
-        map.insert("result".to_owned(), serde_json::Value::Null);
     }
     value.to_string()
 }
@@ -2114,31 +2097,9 @@ pub fn normalize_invalidation_witness(
     Ok(Some(CoverWitness { instance, counter }))
 }
 
-/// Whether one queued command is itself a drag-preview operation: its
-/// terminal result may be a command-produced `DragPreview`. Only that exact
-/// op disqualifies the staged gesture association (the result bytes are the
-/// command's own, not the live session's). Any other shape (including a
-/// malformed command, which never drains) is not a drag-preview command.
-fn command_is_drag_preview(command: &serde_json::Value) -> bool {
-    let outer = match command.as_object() {
-        Some(map) => map,
-        None => return false,
-    };
-    if outer.get("op").and_then(serde_json::Value::as_str) != Some("operation") {
-        return false;
-    }
-    match outer.get("command") {
-        Some(serde_json::Value::Object(inner)) => {
-            inner.get("op").and_then(serde_json::Value::as_str) == Some("drag-preview")
-        }
-        _ => false,
-    }
-}
-
 /// Renderer-carried drop preview: the paint geometry plus subject proof,
 /// with the producing native gesture when proven. Unproven previews ride
-/// with null producer fields and the renderer hides them (fail closed),
-/// while the take lane still settles the issuer.
+/// with null producer fields and the renderer hides them (fail closed).
 #[derive(Debug, Clone)]
 struct CarriedPreview {
     geometry: serde_json::Value,
@@ -2166,7 +2127,7 @@ impl CarriedPreview {
 
 /// Whether one accepted reply suspends its renderer-only drop preview:
 /// the core published a focused-fullscreen suspension verdict for the
-/// resolution (pointer) domain output of the `DragPreview` result.
+/// resolution (pointer) domain output of the retained `dragPreview`.
 /// Mechanical consumption of the core-published verdict, no broker policy:
 /// the mover-home source may differ, so a cross-output preview resolving
 /// on another output stays intact.
@@ -2174,11 +2135,8 @@ fn preview_suspended_by_presentation(encoded: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(encoded)
         .ok()
         .and_then(|value| {
-            let result = value.get("result")?;
-            if result.get("op").and_then(serde_json::Value::as_str) != Some("drag-preview") {
-                return None;
-            }
-            let domain_out = result
+            let preview = value.get("dragPreview")?.as_object()?;
+            let domain_out = preview
                 .get("domainOut")
                 .and_then(serde_json::Value::as_str)?;
             let suspended = value
@@ -2192,33 +2150,32 @@ fn preview_suspended_by_presentation(encoded: &str) -> bool {
 
 /// Renderer-only drop preview of one accepted reply: the paint geometry
 /// plus the subject proof (`rect`, the mover-home `sourceOut`/`sourceWs`,
-/// and the insertion-neighbor `win`) when the reply carried a `DragPreview`
-/// result, else `None`. Pure over the encoded reply; never touches the
-/// engine. Issuer correlation and core provenance (the `op` tag, the
-/// `hover` chain, the session `rev`, the resolution `domainOut`/`domainWs`)
-/// never ride: the subscriber paints from these fields plus the cached
+/// and the insertion-neighbor `win`) when the reply carried a retained
+/// `dragPreview`, else `None`. Pure over the encoded reply; never touches
+/// the engine. Core provenance (the `id`, the `hover` chain, the session
+/// `rev`, the resolution `domainOut`/`domainWs`) never rides: the
+/// subscriber paints from these fields plus the cached
 /// snapshot/scopes/presentation, vets staleness through the projection
 /// generation/revision/coverage, and applies live hide-only vetoes at
 /// dispatch.
 /// Malformed shapes fail closed to `None`, never a fabricated preview.
 fn drag_preview_of(encoded: &str) -> Option<serde_json::Value> {
     let value: serde_json::Value = serde_json::from_str(encoded).ok()?;
-    let result = value.get("result")?;
-    if result.get("op").and_then(serde_json::Value::as_str) != Some("drag-preview") {
-        return None;
-    }
-    let rect = result.get("rect")?;
+    let preview = value.get("dragPreview")?.as_object()?;
+    let rect = preview.get("rect")?;
     if !rect
         .as_array()
         .is_some_and(|items| items.len() == 4 && items.iter().all(|item| item.as_i64().is_some()))
     {
         return None;
     }
-    let source_out = result
+    let source_out = preview
         .get("sourceOut")
         .and_then(serde_json::Value::as_str)?;
-    let source_ws = result.get("sourceWs").and_then(serde_json::Value::as_str)?;
-    let win = result.get("win").and_then(serde_json::Value::as_str)?;
+    let source_ws = preview
+        .get("sourceWs")
+        .and_then(serde_json::Value::as_str)?;
+    let win = preview.get("win").and_then(serde_json::Value::as_str)?;
     Some(serde_json::json!({
         "rect": rect,
         "sourceOut": source_out,
@@ -2230,12 +2187,12 @@ fn drag_preview_of(encoded: &str) -> Option<serde_json::Value> {
 /// Project one accepted reply for the presentation cache: snapshot plus
 /// presentation plus the renderer-only drop preview, with the native write
 /// tokens (`frame_op`, `clear_op`) stripped from every window row.
-/// One-shot lanes (result, transfers, effects, settlements, warp) never
-/// enter except through the carried `preview` (paint `rect`, mover-home
-/// source, insertion-neighbor window, producing-gesture identity or nulls
-/// when unproven; null when no drop preview was published) plus the causal
-/// coverage bound at read time. The `gen`/`req` binding is added at read
-/// time.
+/// One-shot lanes (transfers, effects, settlements, warp) never enter, and
+/// `dragPreview` enters only through the carried `preview` (paint `rect`,
+/// mover-home source, insertion-neighbor window, producing-gesture identity
+/// or nulls when unproven; null when no drop preview was published) plus
+/// the causal coverage bound at read time. The `gen`/`req` binding is added
+/// at read time.
 fn project_reply(encoded: &str, preview: Option<&CarriedPreview>) -> String {
     let value: serde_json::Value = serde_json::from_str(encoded).unwrap_or_default();
     let get = |key: &str| value.get(key).cloned().unwrap_or(serde_json::Value::Null);
@@ -2661,26 +2618,10 @@ mod tests {
     }
 
     #[test]
-    fn strip_result_nulls_only_the_terminal_lane() {
-        let reply = "{\"v\":4,\"result\":{\"op\":\"toggle-float\"},\"effects\":[]}";
-        let stripped: serde_json::Value = serde_json::from_str(&strip_result(reply)).expect("JSON");
-        assert!(stripped["result"].is_null());
-        assert!(stripped["effects"].is_array());
-        // Error bodies carry no result lane and pass through untouched.
-        let error = "{\"v\":4,\"outcome\":\"rejected\",\"kind\":\"k\",\"message\":\"m\"}";
-        let passthrough: serde_json::Value =
-            serde_json::from_str(&strip_result(error)).expect("JSON");
-        assert_eq!(
-            passthrough,
-            serde_json::from_str::<serde_json::Value>(error).expect("JSON")
-        );
-    }
-
-    #[test]
     fn projection_drops_write_tokens_and_one_shot_lanes() {
         let reply = "{\"v\":4,\"rev\":\"3\",\"obs\":\"2\",\"scopes\":[],\"workspaces\":[],\
             \"outputs\":[],\"windows\":[{\"win\":\"w\",\"frame_op\":\"op-1\",\"clear_op\":\"op-1\",\
-            \"alloc\":null}],\"transfers\":[{}],\"effects\":[{}],\"result\":{},\
+            \"alloc\":null}],\"transfers\":[{}],\"effects\":[{}],\"dragPreview\":null,\
             \"operationSettled\":[{}],\"gestureSettled\":null,\"presentation\":{}}";
         let unproven = CarriedPreview::unproven(drag_preview_of(reply));
         let projection: serde_json::Value =
@@ -2690,7 +2631,7 @@ mod tests {
         assert!(window.get("clear_op").is_none());
         assert_eq!(window["win"], "w");
         for key in [
-            "result",
+            "dragPreview",
             "transfers",
             "effects",
             "operationSettled",
@@ -2698,20 +2639,18 @@ mod tests {
         ] {
             assert!(projection.get(key).is_none(), "{key}");
         }
-        // A non-preview result never rides the projection: the preview lane
-        // stays an explicit null until core publishes a drop preview.
         assert!(projection["preview"].is_null());
         assert_eq!(projection["rev"], "3");
     }
 
     #[test]
     fn projection_carries_only_the_trimmed_drop_preview_geometry() {
-        let preview = "{\"op\":\"drag-preview\",\"rev\":\"7\",\"domainOut\":\"out-1\",\
+        let preview = "{\"id\":\"1\",\"rev\":\"7\",\"domainOut\":\"out-1\",\
             \"domainWs\":\"ws-1\",\"sourceOut\":\"out-1\",\"sourceWs\":\"ws-1\",\
             \"rect\":[0,0,396,600],\"hover\":null,\"win\":\"win-a\"}";
         let reply = format!(
             "{{\"v\":4,\"rev\":\"3\",\"obs\":\"2\",\"scopes\":[],\"workspaces\":[],\
-            \"outputs\":[],\"windows\":[],\"transfers\":[],\"effects\":[],\"result\":{preview},\
+            \"outputs\":[],\"windows\":[],\"transfers\":[],\"effects\":[],\"dragPreview\":{preview},\
             \"operationSettled\":[],\"gestureSettled\":null,\"presentation\":{{}}}}"
         );
         let geometry = drag_preview_of(&reply).expect("drop preview carries");
@@ -2726,10 +2665,10 @@ mod tests {
                 "win": "win-a",
             })
         );
-        for excluded in ["op", "hover", "rev", "domainOut", "domainWs"] {
+        for excluded in ["id", "hover", "rev", "domainOut", "domainWs"] {
             assert!(
                 geometry.get(excluded).is_none(),
-                "issuer/provenance field {excluded} never rides the preview"
+                "provenance field {excluded} never rides the preview"
             );
         }
         // A proven preview binds its producing native gesture; an unproven
@@ -2769,25 +2708,22 @@ mod tests {
                 "producerSerial": null,
             })
         );
-        // The actuator reply lane itself still strips the terminal result:
-        // only the projection carries the trimmed preview.
-        let stripped: serde_json::Value =
-            serde_json::from_str(&strip_result(&reply)).expect("JSON");
-        assert!(stripped["result"].is_null());
-        // A terminal result of any other op never becomes a preview.
-        let other = reply.replace("\"drag-preview\"", "\"toggle-float\"");
-        assert!(drag_preview_of(&other).is_none());
+        // Null dragPreview carries no preview.
+        let cleared_reply = reply.replace(preview, "null");
+        assert!(drag_preview_of(&cleared_reply).is_none());
         let cleared: serde_json::Value = serde_json::from_str(&project_reply(
-            &other,
-            CarriedPreview::unproven(drag_preview_of(&other)).as_ref(),
+            &cleared_reply,
+            CarriedPreview::unproven(drag_preview_of(&cleared_reply)).as_ref(),
         ))
         .expect("JSON");
         assert!(cleared["preview"].is_null());
         // Missing and malformed preview shapes fail closed to null, never a
-        // fabricated geometry: no rect, a non-quad rect, or a missing
-        // subject identity carries nothing.
+        // fabricated geometry: non-object, no rect, a non-quad rect, or a
+        // missing subject identity carries nothing.
         assert!(drag_preview_of("{\"v\":4}").is_none());
         assert!(drag_preview_of("not json").is_none());
+        let non_object = reply.replace(preview, "\"bad\"");
+        assert!(drag_preview_of(&non_object).is_none());
         let no_rect = reply.replace("[0,0,396,600]", "null");
         assert!(drag_preview_of(&no_rect).is_none());
         let short_rect = reply.replace("[0,0,396,600]", "[0,0,396]");
@@ -2799,11 +2735,10 @@ mod tests {
     #[test]
     fn suspended_presentation_omits_only_the_matching_domain_preview() {
         // A suspended output matching the preview's resolution (pointer)
-        // domain omits the renderer preview; the command result itself is
-        // untouched (the take lane still settles the issuer).
+        // domain omits the renderer preview.
         let suspended = "{\"v\":4,\"rev\":\"3\",\"obs\":\"2\",\"scopes\":[],\"workspaces\":[],\
             \"outputs\":[],\"windows\":[],\"transfers\":[],\"effects\":[],\
-            \"result\":{\"op\":\"drag-preview\",\"rev\":\"7\",\"domainOut\":\"out-1\",\
+            \"dragPreview\":{\"id\":\"1\",\"rev\":\"7\",\"domainOut\":\"out-1\",\
             \"domainWs\":\"ws-1\",\"sourceOut\":\"out-2\",\"sourceWs\":\"ws-2\",\
             \"rect\":[0,0,396,600],\"hover\":null,\"win\":\"win-a\"},\
             \"operationSettled\":[],\"gestureSettled\":null,\
@@ -2816,18 +2751,16 @@ mod tests {
         // source.
         let crossed = suspended.replace("\"domainOut\":\"out-1\"", "\"domainOut\":\"out-2\"");
         assert!(!preview_suspended_by_presentation(&crossed));
-        // No verdict, no result, or another op never suspends.
+        // No verdict or no dragPreview never suspends.
         let plain = suspended.replace(",\"suspendedOutput\":\"out-1\"", "");
         assert!(!preview_suspended_by_presentation(&plain));
-        let no_result = suspended.replace(
-            "\"result\":{\"op\":\"drag-preview\",\"rev\":\"7\",\"domainOut\":\"out-1\",\
+        let no_preview = suspended.replace(
+            "\"dragPreview\":{\"id\":\"1\",\"rev\":\"7\",\"domainOut\":\"out-1\",\
             \"domainWs\":\"ws-1\",\"sourceOut\":\"out-2\",\"sourceWs\":\"ws-2\",\
             \"rect\":[0,0,396,600],\"hover\":null,\"win\":\"win-a\"}",
-            "\"result\":null",
+            "\"dragPreview\":null",
         );
-        assert!(!preview_suspended_by_presentation(&no_result));
-        let other = suspended.replace("\"drag-preview\"", "\"toggle-float\"");
-        assert!(!preview_suspended_by_presentation(&other));
+        assert!(!preview_suspended_by_presentation(&no_preview));
         assert!(!preview_suspended_by_presentation("{\"v\":4}"));
         assert!(!preview_suspended_by_presentation("not json"));
         // The conversion over a suspended reply carries no preview, so the
@@ -2928,24 +2861,255 @@ mod tests {
     }
 
     #[test]
-    fn drag_preview_commands_never_prove_a_native_gesture() {
-        // Only the exact drag-preview operation shape disqualifies the
-        // staged association; unrelated and malformed commands do not.
-        assert!(command_is_drag_preview(
-            &serde_json::json!({"op":"operation","command":{"op":"drag-preview","win":"w"}})
-        ));
-        for other in [
-            serde_json::json!({"op":"select-numbered","out":null,"index":1}),
-            serde_json::json!({"op":"operation","command":{"op":"toggle-float"}}),
-            serde_json::json!({"op":"operation","command":{"op":"drag-drop"}}),
-            serde_json::json!({"op":"operation"}),
-            serde_json::json!({"op":"operation","command":null}),
-            serde_json::json!("drag-preview"),
-        ] {
-            assert!(
-                !command_is_drag_preview(&other),
-                "not a drag command: {other}"
+    fn requester_serializer_preserves_all_non_preview_result_vocabulary() {
+        use tiler_core::directional::{Direction, OutputId, WindowId, WorkspaceId};
+        use tiler_core::geometry::Rect;
+        use tiler_core::session::DomainKey;
+        use tiler_core::world_directional::DirectionalOutcome;
+        use tiler_core::world_report::{BatchSettlement, CommandRejectKind, CommandResult};
+
+        let mut broker = WorldBroker::new();
+        let generation = broker.generation().to_owned();
+        let sender = ":1.99";
+        let mut next_client_cmd = 1u64;
+
+        let mut settle_and_take = |result: Option<CommandResult>| -> serde_json::Value {
+            let client_cmd = next_client_cmd.to_string();
+            next_client_cmd += 1;
+            let queue_req = format!(
+                "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"vocab\",\"clientCmd\":\"{client_cmd}\",\
+                  \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
             );
+            let queued: serde_json::Value =
+                serde_json::from_str(&broker.queue_command(sender, &queue_req).expect("queued"))
+                    .expect("JSON");
+            assert_eq!(queued["outcome"], "queued");
+            let drained = std::mem::take(&mut broker.pending);
+            assert_eq!(drained.len(), 1);
+            let seq = drained[0].global_seq;
+            broker
+                .settle_batch(&drained, &[BatchSettlement { seq, result }])
+                .expect("settle");
+            let take_req = format!(
+                "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"vocab\",\"clientCmd\":\"{client_cmd}\"}}"
+            );
+            serde_json::from_str(&broker.take_result(sender, &take_req).expect("take"))
+                .expect("JSON")
+        };
+
+        // None -> ready with null result.
+        let none_take = settle_and_take(None);
+        assert_eq!(none_take["outcome"], "ready");
+        assert!(none_take["result"].is_null());
+
+        // Float placement, no-space, and unfloat.
+        let placed = settle_and_take(Some(CommandResult::Float {
+            window: WindowId("win-a".to_owned()),
+            rect: Some(Rect {
+                x: 10,
+                y: 20,
+                w: 640,
+                h: 480,
+            }),
+            no_space: false,
+        }));
+        assert_eq!(placed["outcome"], "ready");
+        assert_eq!(placed["result"]["op"], "toggle-float");
+        assert_eq!(placed["result"]["win"], "win-a");
+        assert_eq!(
+            placed["result"]["rect"],
+            serde_json::json!([10, 20, 640, 480])
+        );
+        assert!(placed["result"].get("noSpace").is_none());
+
+        let no_space = settle_and_take(Some(CommandResult::Float {
+            window: WindowId("win-a".to_owned()),
+            rect: None,
+            no_space: true,
+        }));
+        assert_eq!(no_space["outcome"], "ready");
+        assert_eq!(no_space["result"]["op"], "toggle-float");
+        assert_eq!(no_space["result"]["win"], "win-a");
+        assert!(no_space["result"]["rect"].is_null());
+        assert_eq!(no_space["result"]["noSpace"], true);
+
+        let unfloat = settle_and_take(Some(CommandResult::Float {
+            window: WindowId("win-a".to_owned()),
+            rect: None,
+            no_space: false,
+        }));
+        assert_eq!(unfloat["outcome"], "ready");
+        assert_eq!(unfloat["result"]["win"], "win-a");
+        assert!(unfloat["result"]["rect"].is_null());
+        assert!(unfloat["result"].get("noSpace").is_none());
+
+        // Migration.
+        let migration = settle_and_take(Some(CommandResult::Migration {
+            direction: Direction::Right,
+            source: DomainKey {
+                output: OutputId("out-b".to_owned()),
+                workspace: WorkspaceId("ws-a".to_owned()),
+            },
+            target: DomainKey {
+                output: OutputId("out-a".to_owned()),
+                workspace: WorkspaceId("ws-a".to_owned()),
+            },
+            members: vec![WindowId("win-a".to_owned())],
+            floats: 0,
+        }));
+        assert_eq!(migration["outcome"], "ready");
+        assert_eq!(migration["result"]["op"], "migrate-workspace");
+        assert_eq!(migration["result"]["direction"], "right");
+        assert_eq!(migration["result"]["sourceOut"], "out-b");
+        assert_eq!(migration["result"]["targetOut"], "out-a");
+
+        // Maximize.
+        let maximize = settle_and_take(Some(CommandResult::Maximize {
+            window: WindowId("win-a".to_owned()),
+            maximized: true,
+            clear_fullscreen: true,
+            was_maximized: false,
+        }));
+        assert_eq!(maximize["outcome"], "ready");
+        assert_eq!(maximize["result"]["op"], "maximize");
+        assert_eq!(maximize["result"]["win"], "win-a");
+        assert_eq!(maximize["result"]["maximized"], true);
+        assert_eq!(maximize["result"]["clearFullscreen"], true);
+        assert_eq!(maximize["result"]["wasMaximized"], false);
+
+        // All 16 DirectionalOutcome tokens.
+        let directional_cases = [
+            (
+                DirectionalOutcome::FocusRefusedFloating,
+                Some("win-a"),
+                None,
+            ),
+            (DirectionalOutcome::MoveRefusedFloating, Some("win-a"), None),
+            (
+                DirectionalOutcome::FocusRefusedWorkspaceFloating,
+                Some("win-a"),
+                None,
+            ),
+            (
+                DirectionalOutcome::MoveRefusedWorkspaceFloating,
+                Some("win-a"),
+                None,
+            ),
+            (
+                DirectionalOutcome::MoveRefusedFullscreen,
+                Some("win-a"),
+                None,
+            ),
+            (
+                DirectionalOutcome::FocusRefusedMaximize,
+                Some("win-a"),
+                None,
+            ),
+            (DirectionalOutcome::FocusFloatRetained, Some("win-a"), None),
+            (
+                DirectionalOutcome::FocusFloatRefusedStale,
+                Some("win-a"),
+                None,
+            ),
+            (DirectionalOutcome::FocusUnfocusedRetained, None, None),
+            (
+                DirectionalOutcome::MoveFloatRefusedStale,
+                Some("win-a"),
+                None,
+            ),
+            (
+                DirectionalOutcome::MoveFloatRefusedInvalidGeometry,
+                Some("win-a"),
+                None,
+            ),
+            (
+                DirectionalOutcome::MoveFloatRefusedConstraints,
+                Some("win-a"),
+                None,
+            ),
+            (
+                DirectionalOutcome::MoveFloatRefusedUnknownOutput,
+                Some("win-a"),
+                None,
+            ),
+            (
+                DirectionalOutcome::FocusFloatApplied,
+                Some("win-a"),
+                Some(Rect {
+                    x: 8,
+                    y: 8,
+                    w: 800,
+                    h: 600,
+                }),
+            ),
+            (
+                DirectionalOutcome::MoveFloatApplied,
+                Some("win-a"),
+                Some(Rect {
+                    x: 8,
+                    y: 8,
+                    w: 800,
+                    h: 600,
+                }),
+            ),
+            (DirectionalOutcome::NeedClear, Some("win-a"), None),
+        ];
+        for (outcome, target, rect) in directional_cases {
+            let taken = settle_and_take(Some(CommandResult::Directional {
+                outcome,
+                target: target.map(|w| WindowId(w.to_owned())),
+                rect,
+                cause: None,
+            }));
+            assert_eq!(taken["outcome"], "ready");
+            assert_eq!(taken["result"]["op"], "directional");
+            assert_eq!(taken["result"]["outcome"], outcome.as_str());
+            assert!(taken["result"]["cause"].is_null());
+        }
+
+        // All 5 directional cause tokens.
+        for cause in [
+            "no-target",
+            "unknown-window",
+            "focus-present",
+            "no-source",
+            "no-adjacent-output",
+        ] {
+            let taken = settle_and_take(Some(CommandResult::Directional {
+                outcome: DirectionalOutcome::FocusUnfocusedRetained,
+                target: None,
+                rect: None,
+                cause: Some(cause.to_owned()),
+            }));
+            assert_eq!(taken["outcome"], "ready");
+            assert_eq!(taken["result"]["op"], "directional");
+            assert_eq!(taken["result"]["cause"], cause);
+        }
+
+        // All 17 CommandRejectKind tokens via failed Take lane.
+        for kind in [
+            CommandRejectKind::FocusUnknown,
+            CommandRejectKind::SendTargetUnknown,
+            CommandRejectKind::SendWindowUnknown,
+            CommandRejectKind::SendRefused,
+            CommandRejectKind::ViewOutputUnknown,
+            CommandRejectKind::ViewTargetUnknown,
+            CommandRejectKind::TransferInFlight,
+            CommandRejectKind::DirectionInvalid,
+            CommandRejectKind::ScopeHeld,
+            CommandRejectKind::SelectionUnknown,
+            CommandRejectKind::MigrationRefused,
+            CommandRejectKind::OperationRefused,
+            CommandRejectKind::TilingTargetUnknown,
+            CommandRejectKind::StateUnsupported,
+            CommandRejectKind::StateUnknown,
+            CommandRejectKind::FullscreenNotExitable,
+            CommandRejectKind::StaleRenderTarget,
+        ] {
+            let taken = settle_and_take(Some(CommandResult::Rejected { kind }));
+            assert_eq!(taken["outcome"], "failed");
+            assert_eq!(taken["kind"], kind.as_str());
+            assert!(taken.get("result").is_none());
         }
     }
 
@@ -3203,7 +3367,6 @@ mod tests {
                 staged_map,
                 None,
                 drained,
-                false,
                 consumed_outcome,
                 consumed_settlements,
             )

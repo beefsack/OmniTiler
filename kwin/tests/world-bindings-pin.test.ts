@@ -160,7 +160,7 @@ describe("world binding retention flags", () => {
                 { id: "ws-2", out: "out-2", bind: "ws-2", scope: { kind: "output", out: "out-2" }, order: 0, mode: "tiled", exist: true, hold: "" },
             ],
             outputs: [],
-            windows: [], transfers: [], effects: [], result: null,
+            windows: [], transfers: [], effects: [], dragPreview: null,
         });
         assert.ok(parseWorldReply(autoText) !== null && isCoreWorldReply(parseWorldReply(autoText)), "authored accept binds strict v4");
         (auto as { callback: (reply: unknown) => void }).callback(autoText);

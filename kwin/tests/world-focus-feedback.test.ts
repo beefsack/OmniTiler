@@ -86,7 +86,7 @@ function replyText(opts: {
         windows: opts.windows ?? [winRow("win-b", "ws1")],
         transfers: [],
         effects: [],
-        result: null,
+        dragPreview: null,
     });
 }
 

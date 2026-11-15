@@ -9,7 +9,9 @@ use crate::world_report::{
     AttemptOutcome, CommandRejectKind, IntentDesire, IntentRecord, ScopeAuthority, StateProperty,
     WorldCommand, WorldReportV4,
 };
-use crate::world_v4_support_tests::{accepted, desire, fact, float_fact, report_full, screen};
+use crate::world_v4_support_tests::{
+    accepted, accepted_with_settlements, desire, fact, float_fact, report_full, screen,
+};
 
 fn bootstrap(windows: Vec<crate::world_report::WindowFact>) -> WorldReportV4 {
     report_full(
@@ -107,7 +109,7 @@ fn target_row(
 fn native_on_from_tile_records_false_prior_and_floats() {
     let mut engine = native_engine();
     accepted(&mut engine, &bootstrap(vec![fact("win-a", "out-a", 0)]));
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -116,7 +118,8 @@ fn native_on_from_tile_records_false_prior_and_floats() {
             set_sticky("win-a", true),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     assert_eq!(
         engine.restored_sticky.get(&WindowId("win-a".to_owned())),
         Some(&false)
@@ -136,7 +139,7 @@ fn native_on_from_tile_records_false_prior_and_floats() {
 fn native_sticky_on_from_tile_takes_centered_sixty_percent_placement() {
     let mut engine = native_engine();
     accepted(&mut engine, &bootstrap(vec![fact("win-a", "out-a", 0)]));
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -145,7 +148,8 @@ fn native_sticky_on_from_tile_takes_centered_sixty_percent_placement() {
             set_sticky("win-a", true),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     let (value, authority, seq) = target_row(&reply, "win-a").expect("sticky target");
     assert_eq!((value, seq), (true, Some(1)));
     assert_eq!(authority, ScopeAuthority::Controlled);
@@ -220,7 +224,7 @@ fn native_sticky_on_from_tile_reuses_retained_float_placement() {
         &cmd(3, 2, vec![fact("win-a", "out-a", 0)], toggle_float("win-a")),
     );
     assert!(!desire(&unplaced, "win-a").floating, "unfloat retiles");
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             4,
@@ -229,7 +233,8 @@ fn native_sticky_on_from_tile_reuses_retained_float_placement() {
             set_sticky("win-a", true),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     let (value, authority, seq) = target_row(&reply, "win-a").expect("sticky target");
     assert_eq!((value, seq), (true, Some(3)));
     assert_eq!(authority, ScopeAuthority::Controlled);
@@ -254,7 +259,7 @@ fn native_sticky_on_from_float_preserves_observed_frame() {
         &mut engine,
         &bootstrap(vec![float_fact("win-a", "out-a", 0, 0)]),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -263,7 +268,8 @@ fn native_sticky_on_from_float_preserves_observed_frame() {
             set_sticky("win-a", true),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     let row = desire(&reply, "win-a");
     assert!(row.floating, "sticky floats: {row:?}");
     // Float-origin preserves the observed frame by issuing no placement:
@@ -292,7 +298,7 @@ fn native_on_from_float_records_true_prior() {
         &mut engine,
         &bootstrap(vec![float_fact("win-a", "out-a", 0, 0)]),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -301,7 +307,8 @@ fn native_on_from_float_records_true_prior() {
             set_sticky("win-a", true),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     let save = reply.intent_desired.first().expect("one save");
     assert_eq!(
         (*save.data.as_ref().expect("bytes")),
@@ -329,7 +336,7 @@ fn native_off_holds_float_runtime_and_queues_off_record() {
         .expect("member")
         .home
         .clone();
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -338,7 +345,8 @@ fn native_off_holds_float_runtime_and_queues_off_record() {
             set_sticky("win-a", false),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     let after = engine
         .members
         .get(&WindowId("win-a".to_owned()))
@@ -373,11 +381,12 @@ fn native_toggle_float_holds_runtime_with_tile_base() {
         .expect("member")
         .home
         .clone();
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(3, 2, vec![fact("win-a", "out-a", 0)], toggle_float("win-a")),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     let after = engine
         .members
         .get(&WindowId("win-a".to_owned()))
@@ -423,7 +432,7 @@ fn native_off_prior_float_dest_floating_still_publishes_clear() {
         ),
     );
     assert!(!engine.floating_scopes.is_empty());
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             4,
@@ -432,7 +441,8 @@ fn native_off_prior_float_dest_floating_still_publishes_clear() {
             set_sticky("win-a", false),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     let (value, _, _) = target_row(&reply, "win-a").expect("sticky clear publishes");
     assert!(!value);
 }
@@ -443,12 +453,13 @@ fn native_unknown_sticky_rejects_state_unknown() {
     let mut unknown = fact("win-a", "out-a", 0);
     unknown.sticky = None;
     accepted(&mut engine, &bootstrap(vec![fact("win-a", "out-a", 0)]));
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(2, 1, vec![unknown], set_sticky("win-a", true)),
     );
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        reply.command_result,
+        settlements[0].result,
         Some(crate::world_report::CommandResult::Rejected {
             kind: CommandRejectKind::StateUnknown
         })
@@ -481,12 +492,13 @@ fn native_unknown_raw_null_masks_semantic_restore() {
     );
     let mut unknown = fact("win-a", "out-a", 0);
     unknown.sticky = None;
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(3, 2, vec![unknown], set_sticky("win-a", false)),
     );
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        reply.command_result,
+        settlements[0].result,
         Some(crate::world_report::CommandResult::Rejected {
             kind: CommandRejectKind::StateUnknown
         })
@@ -508,7 +520,7 @@ fn native_same_state_noop_keeps_target_and_reauthorizes_after_ambiguous() {
     );
     let (value, _, seq) = target_row(&first, "win-a").expect("target");
     assert_eq!((value, seq), (true, Some(1)));
-    let second = accepted(
+    let (second, second_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -517,7 +529,8 @@ fn native_same_state_noop_keeps_target_and_reauthorizes_after_ambiguous() {
             set_sticky("win-a", true),
         ),
     );
-    assert!(second.command_result.is_none());
+    assert_eq!(second_settlements.len(), 1);
+    assert!(second_settlements[0].result.is_none());
     let (_, _, second_seq) = target_row(&second, "win-a").expect("target retained");
     assert_eq!(second_seq, Some(1));
     let key = (WindowId("win-a".to_owned()), StateProperty::Sticky);
@@ -525,7 +538,7 @@ fn native_same_state_noop_keeps_target_and_reauthorizes_after_ambiguous() {
     binding.spent = true;
     binding.disposition = AttemptOutcome::PossiblyExecuted;
     engine.retained_states.insert(key.clone(), binding);
-    let third = accepted(
+    let (third, third_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             4,
@@ -534,7 +547,8 @@ fn native_same_state_noop_keeps_target_and_reauthorizes_after_ambiguous() {
             set_sticky("win-a", true),
         ),
     );
-    assert!(third.command_result.is_none());
+    assert_eq!(third_settlements.len(), 1);
+    assert!(third_settlements[0].result.is_none());
     let (_, _, third_seq) = target_row(&third, "win-a").expect("reauthorized");
     assert_eq!(third_seq, Some(3));
 }
@@ -554,8 +568,9 @@ fn native_target_cmdseq_and_revision_stable_across_observation() {
     );
     let first_rev = first.state_revision;
     let (_, _, first_seq) = target_row(&first, "win-a").expect("target");
-    let second = accepted(&mut engine, &observe(3, vec![fact("win-a", "out-a", 0)]));
-    assert!(second.command_result.is_none());
+    let (second, second_settlements) =
+        accepted_with_settlements(&mut engine, &observe(3, vec![fact("win-a", "out-a", 0)]));
+    assert!(second_settlements.is_empty());
     let (_, _, second_seq) = target_row(&second, "win-a").expect("retained target");
     assert_eq!(first_seq, second_seq);
     let binding = engine
@@ -635,7 +650,7 @@ fn native_spent_retry_reemits_canonical_save_preserving_prior() {
     // Fresh retry with a new sequence reauthorizes: new binding owned by
     // the new command, canonical save preserving the original prior
     // (not the now-float runtime).
-    let retry = accepted(
+    let (retry, retry_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             4,
@@ -644,7 +659,8 @@ fn native_spent_retry_reemits_canonical_save_preserving_prior() {
             set_sticky("win-a", true),
         ),
     );
-    assert!(retry.command_result.is_none());
+    assert_eq!(retry_settlements.len(), 1);
+    assert!(retry_settlements[0].result.is_none());
     let save = retry.intent_desired.first().expect("retry save").data;
     assert_eq!(save, first_save, "retry preserves original prior");
     assert_eq!(
@@ -1117,7 +1133,7 @@ fn native_off_cross_workspace_prior_false_lands_dest_tile() {
     let dest_view = engine
         .effective_view(&OutputId("out-a".to_owned()))
         .expect("trailing view");
-    let off_reply = accepted(
+    let (_off_reply, off_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             4,
@@ -1126,7 +1142,8 @@ fn native_off_cross_workspace_prior_false_lands_dest_tile() {
             set_sticky("win-a", false),
         ),
     );
-    assert!(off_reply.command_result.is_none());
+    assert_eq!(off_settlements.len(), 1);
+    assert!(off_settlements[0].result.is_none());
     let meta = engine
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
@@ -2998,7 +3015,7 @@ fn native_binding_cap_replacement_allowed_but_distinct_refused_atomic() {
         MAX_RETAINED_STATE_BINDINGS,
         "exact bound before replacement"
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -3007,7 +3024,8 @@ fn native_binding_cap_replacement_allowed_but_distinct_refused_atomic() {
             set_sticky("win-a", false),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     let binding = rollback_binding(&engine, "win-a");
     assert!(!binding.spent);
     assert!(!binding.target.value);
@@ -3063,15 +3081,18 @@ fn native_binding_cap_replacement_allowed_but_distinct_refused_atomic() {
     control_obs.command = None;
     control_obs.command_seq = None;
     let _ = control.handle_report(&control_obs, &[]).0;
-    match capped.handle_report(&refused_obs, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(crate::world_report::CommandResult::Rejected {
-                kind: crate::world_report::CommandRejectKind::OperationRefused
-            }),
-            "expected cap refusal"
-        ),
-        other => panic!("expected cap refusal, got {other:?}"),
+    match capped.handle_report(&refused_obs, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(crate::world_report::CommandResult::Rejected {
+                    kind: crate::world_report::CommandRejectKind::OperationRefused
+                }),
+                "expected cap refusal"
+            );
+        }
+        (other, _) => panic!("expected cap refusal, got {other:?}"),
     }
     assert_eq!(capped.state_revision, revision + 1, "refusal issues");
     assert_eq!(capped.command_highwater, Some(2), "command consumed");
@@ -3241,7 +3262,7 @@ fn native_two_output_isolation_and_generic_binding_emits_no_target() {
             None,
         ),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report_full(
             2,
@@ -3254,7 +3275,8 @@ fn native_two_output_isolation_and_generic_binding_emits_no_target() {
             Some(set_sticky("win-a", true)),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     let (value, authority, seq) = target_row(&reply, "win-a").expect("target");
     assert_eq!((value, seq), (true, Some(1)));
     assert_eq!(authority, ScopeAuthority::Controlled);

@@ -21,7 +21,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
-import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
+import { createMiniBroker, parseRawEvalWithSettlements, type MiniBroker } from "./world-wire-harness";
 
 function repoRoot(): string {
     let dir = resolve(process.cwd());
@@ -391,10 +391,10 @@ describe("world ordinary frame engine carrier", () => {
             const envelope = (calls[index] as CapturedCall).payload;
             const stampedText = broker.stampCapture(envelope);
             stamped.push(stampedText);
-            const coreReply = await bridge.send("DescribeWorld", stampedText);
+            const { reply: coreReply, settlements } = parseRawEvalWithSettlements(await bridge.send("DescribeWorldWithSettlements", stampedText));
             const parsed = JSON.parse(coreReply) as Record<string, unknown>;
             assert.notEqual(parsed["outcome"], "rejected", `real strict engine accepts the genuine producer capture, got ${coreReply.slice(0, 400)}`);
-            const reply = broker.bindReply(coreReply, envelope);
+            const reply = broker.bindReply(coreReply, envelope, settlements);
             answered.add(index);
             replies.set(index, reply);
             (calls[index] as CapturedCall).callback(reply);
@@ -528,7 +528,7 @@ describe("world ordinary frame engine carrier", () => {
             assert.equal(lastReply["outcome"] ?? "accepted", "accepted", "engine reply accepted");
             assert.equal(lastReply["adapter"], "test-adapter", "bound reply retains the producer adapter");
             assert.equal(lastReply["gen"], gen, "bound reply binds the serving generation");
-            assert.equal(lastReply["result"], null, "actuator-lane result stays nulled");
+            assert.equal("result" in lastReply, false, "actuator-lane result stays omitted");
             assert.equal(lastReply["gestureAssoc"], null, "no fabricated gesture binding");
             const replyRows = (lastReply["windows"] as Array<Record<string, unknown>>).filter((entry) => entry["win"] === "win-a");
             assert.equal(replyRows.length, 1, "engine plans the fake window");

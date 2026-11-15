@@ -272,7 +272,7 @@ function migrationReply(): WorldReply {
             { op: "op-22-refill", kind: "view", win: "", out: DP, ws: D3, follow: false, held: false, cmdSeq: null },
         ],
         effects: [],
-        result: null,
+        dragPreview: null,
     };
 }
 
@@ -349,7 +349,7 @@ describe("world native output echo", () => {
                 { op: "op-2", kind: "window", win: "win-b", out: HDMI, ws: DY, follow: false, held: false, cmdSeq: null },
             ],
             effects: [],
-            result: null,
+            dragPreview: null,
         };
         const state = freshState(reply);
         const out = applyThroughHost(surf, state, reply, observe(surf));
@@ -611,7 +611,7 @@ describe("world native output lag (T05 producer shape)", () => {
                 { op: "op-1", kind: "window", win: "win-a", out: HDMI, ws: DY, follow: true, held: false, cmdSeq: null },
             ],
             effects: [],
-            result: null,
+            dragPreview: null,
         };
         const state = freshState(reply);
         const out = applyThroughHost(surf, state, reply, observe(surf));

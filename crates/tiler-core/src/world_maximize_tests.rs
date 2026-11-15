@@ -12,7 +12,9 @@ use crate::world_report::{
     StateProperty, WorldCommand, WorldReportV4,
 };
 use crate::world_state::MAX_RETAINED_STATE_BINDINGS;
-use crate::world_v4_support_tests::{accepted, fact, report_full, screen};
+use crate::world_v4_support_tests::{
+    accepted, accepted_with_settlements, fact, report_full, screen,
+};
 
 fn max_caps() -> HostCapabilities {
     HostCapabilities {
@@ -196,7 +198,7 @@ fn ordinary_max_mints_binding_and_revokes_stale_fullscreen_entry() {
         },
     );
     let rev_before = engine.state_revision;
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -205,7 +207,8 @@ fn ordinary_max_mints_binding_and_revokes_stale_fullscreen_entry() {
             toggle("win-a"),
         ),
     );
-    match &reply.command_result {
+    assert_eq!(settlements.len(), 1);
+    match settlements[0].result.clone() {
         Some(CommandResult::Maximize {
             maximized,
             clear_fullscreen,
@@ -213,7 +216,7 @@ fn ordinary_max_mints_binding_and_revokes_stale_fullscreen_entry() {
             ..
         }) => {
             assert_eq!(
-                (*maximized, *clear_fullscreen, *was_maximized),
+                (maximized, clear_fullscreen, was_maximized),
                 (true, false, false)
             );
         }
@@ -244,7 +247,7 @@ fn fullscreen_replacement_pairs_same_rev_seq() {
         &bootstrap(vec![max_fact("win-a", Some(true), true, false)]),
     );
     let rev_before = engine.state_revision;
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -253,7 +256,8 @@ fn fullscreen_replacement_pairs_same_rev_seq() {
             toggle("win-a"),
         ),
     );
-    match &reply.command_result {
+    assert_eq!(settlements.len(), 1);
+    match settlements[0].result.clone() {
         Some(CommandResult::Maximize {
             maximized,
             clear_fullscreen,
@@ -261,7 +265,7 @@ fn fullscreen_replacement_pairs_same_rev_seq() {
             ..
         }) => {
             assert_eq!(
-                (*maximized, *clear_fullscreen, *was_maximized),
+                (maximized, clear_fullscreen, was_maximized),
                 (true, true, false)
             );
         }
@@ -316,7 +320,7 @@ fn both_true_mints_only_fullscreen_leg_and_cancels_obsolete_max() {
             above_meta: None,
         },
     );
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -325,7 +329,8 @@ fn both_true_mints_only_fullscreen_leg_and_cancels_obsolete_max() {
             toggle("win-a"),
         ),
     );
-    match &reply.command_result {
+    assert_eq!(settlements.len(), 1);
+    match settlements[0].result.clone() {
         Some(CommandResult::Maximize {
             maximized,
             clear_fullscreen,
@@ -333,7 +338,7 @@ fn both_true_mints_only_fullscreen_leg_and_cancels_obsolete_max() {
             ..
         }) => {
             assert_eq!(
-                (*maximized, *clear_fullscreen, *was_maximized),
+                (maximized, clear_fullscreen, was_maximized),
                 (true, true, true)
             );
         }
@@ -363,7 +368,7 @@ fn unexitable_or_unknown_exitability_rejects_without_mutation() {
             &mut engine,
             &bootstrap(vec![max_fact("win-a", Some(true), true, false)]),
         );
-        let reply = accepted(
+        let (_reply, settlements) = accepted_with_settlements(
             &mut engine,
             &cmd(
                 2,
@@ -372,8 +377,9 @@ fn unexitable_or_unknown_exitability_rejects_without_mutation() {
                 toggle("win-a"),
             ),
         );
+        assert_eq!(settlements.len(), 1);
         assert_eq!(
-            reply.command_result,
+            settlements[0].result,
             Some(CommandResult::Rejected { kind }),
             "exitable {exitable:?}"
         );
@@ -397,18 +403,18 @@ fn unknown_maximized_home_unreadable_refuses_without_mutation() {
     let mut row = max_fact("win-a", None, false, false);
     row.maximized = None;
     let revision = engine.state_revision;
-    match engine
-        .handle_report(&cmd(2, 1, vec![row], toggle("win-a")), &[])
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "expected readability refusal"
-        ),
-        other => panic!("expected readability refusal, got {other:?}"),
+    match engine.handle_report(&cmd(2, 1, vec![row], toggle("win-a")), &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "expected readability refusal"
+            );
+        }
+        (other, _) => panic!("expected readability refusal, got {other:?}"),
     }
     assert_eq!(engine.state_revision, revision + 1, "refusal issues");
     assert!(engine.retained_states.is_empty());
@@ -448,26 +454,26 @@ fn dual_pair_cap_refusal_mints_neither_leg() {
         "exact bound before dual attempt"
     );
     let revision = engine.state_revision;
-    match engine
-        .handle_report(
-            &cmd(
-                3,
-                2,
-                vec![max_fact("win-a", Some(true), true, false)],
-                toggle("win-a"),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "expected cap refusal"
+    match engine.handle_report(
+        &cmd(
+            3,
+            2,
+            vec![max_fact("win-a", Some(true), true, false)],
+            toggle("win-a"),
         ),
-        other => panic!("expected cap refusal, got {other:?}"),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "expected cap refusal"
+            );
+        }
+        (other, _) => panic!("expected cap refusal, got {other:?}"),
     }
     assert_eq!(engine.state_revision, revision + 1, "refusal issues");
     assert!(
@@ -539,15 +545,18 @@ fn both_true_at_cap_refuses_without_mutation() {
     control_obs.command = None;
     control_obs.command_seq = None;
     let _ = control.handle_report(&control_obs, &[]).0;
-    match engine.handle_report(&refused_obs, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "expected cap refusal"
-        ),
-        other => panic!("expected cap refusal, got {other:?}"),
+    match engine.handle_report(&refused_obs, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "expected cap refusal"
+            );
+        }
+        (other, _) => panic!("expected cap refusal, got {other:?}"),
     }
     assert_eq!(engine.state_revision, revision + 1, "refusal issues");
     assert_eq!(
@@ -584,26 +593,26 @@ fn dual_pair_one_vacant_slot_refuses_with_no_partial_pair() {
         "one vacant slot before dual attempt"
     );
     let revision = engine.state_revision;
-    match engine
-        .handle_report(
-            &cmd(
-                3,
-                2,
-                vec![max_fact("win-a", Some(true), true, false)],
-                toggle("win-a"),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "expected cap refusal"
+    match engine.handle_report(
+        &cmd(
+            3,
+            2,
+            vec![max_fact("win-a", Some(true), true, false)],
+            toggle("win-a"),
         ),
-        other => panic!("expected cap refusal, got {other:?}"),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "expected cap refusal"
+            );
+        }
+        (other, _) => panic!("expected cap refusal, got {other:?}"),
     }
     assert_eq!(engine.state_revision, revision + 1, "refusal issues");
     assert!(
@@ -646,7 +655,7 @@ fn exact_cap_existing_both_keys_replacement_valid() {
         "exact bound with both subject keys present"
     );
     let rev_before = engine.state_revision;
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -655,13 +664,14 @@ fn exact_cap_existing_both_keys_replacement_valid() {
             toggle("win-a"),
         ),
     );
-    match &reply.command_result {
+    assert_eq!(settlements.len(), 1);
+    match settlements[0].result.clone() {
         Some(CommandResult::Maximize {
             maximized,
             clear_fullscreen,
             ..
         }) => {
-            assert_eq!((*maximized, *clear_fullscreen), (true, true));
+            assert_eq!((maximized, clear_fullscreen), (true, true));
         }
         other => panic!("expected maximize result, got {other:?}"),
     }
@@ -1313,7 +1323,7 @@ fn newer_fullscreen_on_holds_pending_max_true_before_raw_flips() {
         .revision;
     // Newer fullscreen-on with raw facts unchanged: no maximize attempt,
     // no changed flags.
-    let pending = accepted(
+    let (pending, pending_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -1322,7 +1332,8 @@ fn newer_fullscreen_on_holds_pending_max_true_before_raw_flips() {
             set_fullscreen("win-a", true),
         ),
     );
-    assert!(pending.command_result.is_none());
+    assert_eq!(pending_settlements.len(), 1);
+    assert!(pending_settlements[0].result.is_none());
     let full_rev = engine
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
@@ -1453,7 +1464,7 @@ fn newer_fullscreen_on_holds_pending_max_false_before_raw_flips() {
         .expect("max leg")
         .target
         .revision;
-    let pending = accepted(
+    let (pending, pending_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -1462,7 +1473,8 @@ fn newer_fullscreen_on_holds_pending_max_false_before_raw_flips() {
             set_fullscreen("win-a", true),
         ),
     );
-    assert!(pending.command_result.is_none());
+    assert_eq!(pending_settlements.len(), 1);
+    assert!(pending_settlements[0].result.is_none());
     let full_rev = engine
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))

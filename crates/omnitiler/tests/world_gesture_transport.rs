@@ -1511,3 +1511,100 @@ fn close_with_omitted_ingress_resolves_old_active_terminal_after_256_unbindable_
     );
     assert_eq!(closed_reply["gestureSettledAssoc"], assoc1);
 }
+
+#[test]
+fn retained_preview_stays_proven_across_omitted_ingress_newcomers_and_resets_on_handshake() {
+    let service = WorldService::new();
+    let discovery: serde_json::Value =
+        serde_json::from_str(&handshake_discover(&service, ADAPTER, "req-0")).expect("valid JSON");
+    let generation = discovery["gen"].as_str().expect("gen").to_owned();
+    apply_settings(&service, &generation);
+
+    let ra = "[0,0,200,200]".to_owned();
+    let rb = "[300,0,200,200]".to_owned();
+
+    // Open update with moved cursor produces a proven dragPreview.
+    let open = with_raw(
+        &inner_report(&[window_json("win-a", &ra), window_json("win-b", &rb)]),
+        &raw_native_full(
+            "gesture-1",
+            "1",
+            "1",
+            "updated",
+            "win-a",
+            "move",
+            &ra,
+            "[10,10]",
+            "[150,50]",
+            1,
+            1,
+            0,
+            1,
+        ),
+        "null",
+        "null",
+    );
+    let reply1 = capture(&service, &generation, 1, &open);
+    assert!(reply1.get("result").is_none());
+    assert!(reply1["dragPreview"].is_object());
+    let proj1 = preview_of(&service, "read-1");
+    assert_eq!(proj1["preview"]["producerInstance"], "gesture-1");
+    assert_eq!(proj1["preview"]["producerSerial"], "1");
+
+    // Omitted ingress retains both dragPreview and its proven producer identity.
+    let omitted = inner_report(&[window_json("win-a", &ra), window_json("win-b", &rb)]);
+    let reply2 = capture(&service, &generation, 2, &omitted);
+    assert!(reply2["gestureAssoc"].is_null());
+    assert_eq!(reply2["dragPreview"], reply1["dragPreview"]);
+    let proj2 = preview_of(&service, "read-2");
+    assert_eq!(proj2["preview"], proj1["preview"]);
+
+    // 256 unbindable newcomers (unknown window) evict (gesture-1, "1") from
+    // by_key, yet cannot relabel the retained preview or drop its pinned proof.
+    for i in 0..256u64 {
+        let serial = format!("{}", 2 + i);
+        let newcomer = with_raw(
+            &inner_report(&[window_json("win-a", &ra), window_json("win-b", &rb)]),
+            &raw_native_full(
+                "gesture-1",
+                &serial,
+                "1",
+                "started",
+                "win-missing",
+                "move",
+                &ra,
+                "[10,10]",
+                "[150,50]",
+                1,
+                1,
+                0,
+                1,
+            ),
+            "null",
+            "null",
+        );
+        let _ = capture(&service, &generation, 3 + i, &newcomer);
+    }
+    let proj_after = preview_of(&service, "read-after-evict");
+    assert_eq!(proj_after["preview"]["producerInstance"], "gesture-1");
+    assert_eq!(proj_after["preview"]["producerSerial"], "1");
+
+    // Same-generation settings/read continuity preserves the retained preview.
+    apply_settings(&service, &generation);
+    let proj_same_gen = preview_of(&service, "read-same-gen");
+    assert_eq!(proj_same_gen["preview"], proj_after["preview"]);
+
+    // Fresh handshake resets preview and pins.
+    let discovery2: serde_json::Value =
+        serde_json::from_str(&handshake_discover(&service, ADAPTER, "req-1")).expect("valid JSON");
+    let gen2 = discovery2["gen"].as_str().expect("gen2").to_owned();
+    assert_ne!(gen2, generation);
+    let reset_read: serde_json::Value = serde_json::from_str(
+        &service
+            .read_presentation("{\"v\":4,\"req\":\"read-reset\"}")
+            .expect("in-band"),
+    )
+    .expect("valid JSON");
+    assert_eq!(reset_read["outcome"], "rejected");
+    assert_eq!(reset_read["kind"], "not-ready");
+}

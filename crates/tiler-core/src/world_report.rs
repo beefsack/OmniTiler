@@ -2486,27 +2486,11 @@ impl CommandRejectKind {
 
 /// Correlated per-command outcome that the snapshot alone cannot express.
 /// Wire shape is `{"op", ...}` with canonical key order frozen in
-/// `encode_reply_v4` in the protocol crate; the independent core
-/// byte-count twin is [`reply_exact_bytes_v4`](crate::world_sizing_v4::reply_exact_bytes_v4).
-/// every `u64` counter encodes as a bounded decimal string (never a JSON
-/// number) so JavaScript adapters never lose precision past 2^53.
+/// `encode_command_result`; every `u64` counter encodes as a bounded decimal
+/// string (never a JSON number) so JavaScript adapters never lose precision
+/// past 2^53.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandResult {
-    /// Read-only drag-preview: the derived proposed rect plus the carried
-    /// hover prior for the next preview or the final drop. `domain` is the
-    /// resolution (pointer) domain, `source` the capture domain the mover
-    /// leaves. `target` is the insertion-neighbor window the overlay orders
-    /// above (core-resolved, never the mover: carrier ordering needs the
-    /// neighbor identity, not the subject). Never commits, never advances
-    /// the revision.
-    DragPreview {
-        rect: Rect,
-        hover: Option<DragHoverPrior>,
-        domain: DomainKey,
-        source: DomainKey,
-        target: WindowId,
-        revision: u64,
-    },
     /// Intentional-float placement: `rect` is the effective float rectangle
     /// (`None` for unfloat-to-tile). The adapter owns floating geometry and
     /// must not rewrite floats from snapshot rows; this result is the
@@ -2631,6 +2615,22 @@ pub struct WorldPresentationV4 {
     pub pager: Vec<crate::world_presentation::PagerScreen>,
 }
 
+/// Retained active drag-preview overlay state on [`WorldReplyV4`].
+/// `id` is the bound gesture's `retained.id`, preventing a stale preview
+/// from repainting a replacement gesture; `domain` is the resolution
+/// (pointer) domain, `source` the capture domain the mover leaves, and
+/// `target` is the insertion-neighbor window the overlay orders above.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DragPreviewV4 {
+    pub id: u64,
+    pub rect: Rect,
+    pub hover: Option<DragHoverPrior>,
+    pub domain: DomainKey,
+    pub source: DomainKey,
+    pub target: WindowId,
+    pub revision: u64,
+}
+
 /// Staged v4 world reply: single globally ordered full desired snapshot at
 /// contract version 4. Reuses the shared row types plus
 /// [`TransferTargetV4`] (retained command correlation) and
@@ -2655,7 +2655,7 @@ pub struct WorldReplyV4 {
     /// Retained focus request, always present on the wire (`null`
     /// carries no request). Zero or one row, never a chain.
     pub focus_request: Option<FocusRequest>,
-    pub command_result: Option<CommandResult>,
+    pub drag_preview: Option<DragPreviewV4>,
     pub gesture_settled: Option<GestureSettled>,
     pub operation_settled: Vec<OperationEvent>,
     pub native_creations: Vec<NativeCreationDesire>,

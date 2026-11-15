@@ -8,17 +8,17 @@
 //! omits it: an overcount, never an undercount.
 
 use crate::world_report::{
-    AttemptLaneV4, CommandResult, PresentationIngressV4, PresentationRowV4, RendererInput,
+    AttemptLaneV4, DragPreviewV4, PresentationIngressV4, PresentationRowV4, RendererInput,
     TransferKind, WorldCommand, WorldPresentationV4, WorldReplyV4, WorldReportV4,
 };
 use crate::world_sizing::{
     MAX_CANONICAL_F64_LEN, MAX_EFFECT_RESERVE_BYTES, MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES,
     MAX_TARGET_LANES_PER_WINDOW, anchored_border_estimate, authority_scope_len, bool_len,
-    command_estimate_owned, command_result_estimate, focus_feedback_estimate,
-    gesture_settled_estimate, int_len, intent_desired_estimate, intent_records_estimate,
-    json_string_len, last_write_estimate, native_creations_estimate, operation_settled_estimate,
-    raw_setting_value_estimate, rect_len, scope_status_estimate, switch_settled_estimate, u64_len,
-    usize_len, warp_cursor_estimate, window_target_lanes_estimate, workspace_ref_option_len,
+    command_estimate_owned, focus_feedback_estimate, gesture_settled_estimate, int_len,
+    intent_desired_estimate, intent_records_estimate, json_string_len, last_write_estimate,
+    native_creations_estimate, operation_settled_estimate, raw_setting_value_estimate, rect_len,
+    scope_status_estimate, switch_settled_estimate, u64_len, usize_len, warp_cursor_estimate,
+    window_target_lanes_estimate, workspace_ref_option_len,
 };
 
 fn held_fields_estimate(fields: &[(String, crate::connection::RawSettingValue)]) -> usize {
@@ -565,7 +565,7 @@ pub fn reply_estimate_v4(reply: &WorldReplyV4) -> usize {
     }
     bytes += reply.effects.len().saturating_sub(1);
     bytes += 16 + focus_request_estimate_v4(&reply.focus_request);
-    bytes += command_result_estimate(&reply.command_result);
+    bytes += 15 + drag_preview_exact_v4(&reply.drag_preview);
     bytes += gesture_settled_estimate(&reply.gesture_settled);
     bytes += operation_settled_estimate(&reply.operation_settled);
     bytes += native_creations_estimate(&reply.native_creations);
@@ -647,11 +647,10 @@ fn presentation_estimate_v4(presentation: &WorldPresentationV4) -> usize {
 /// (`encode_reply_v4(&decoded).unwrap().len()` over every valid fixture).
 #[must_use]
 pub fn reply_exact_bytes_v4(reply: &WorldReplyV4) -> usize {
-    // 308 joiner literals: every `]` closing one array section rides in
+    // 313 joiner literals: `,"dragPreview":` (15) replaces `,"result":` (10)
+    // from the legacy 308 base. Every `]` closing one array section rides in
     // the next section's `],` joiner, so no per-section closer is added.
-    // `intentDesired` (13) is one byte wider than the old `intentWrites`
-    // (12), so the base is one past the legacy 307.
-    let mut bytes = 308
+    let mut bytes = 313
         + usize_len(reply.contract_version as usize)
         + json_string_len(&reply.adapter_incarnation)
         + json_string_len(&reply.core_generation)
@@ -789,7 +788,7 @@ pub fn reply_exact_bytes_v4(reply: &WorldReplyV4) -> usize {
                 + request.cmd_seq.map_or(4, |seq| 2 + u64_len(seq))
                 + after_shown_exact(&request.after_shown)
         });
-    bytes += command_result_exact_v4(&reply.command_result);
+    bytes += drag_preview_exact_v4(&reply.drag_preview);
     bytes += reply.gesture_settled.as_ref().map_or(4, |terminal| {
         // {"id":"","committed":} = 22 punctuation.
         22 + u64_len(terminal.id) + bool_len(terminal.committed)
@@ -881,122 +880,47 @@ fn after_shown_exact(shown: &Option<crate::world_report::AfterShown>) -> usize {
     bytes
 }
 
-/// Exact byte size of the v4 `result` section body (after the `],"result":`
-/// joiner): `null` (4) when absent, else the per-op object. Mirrors the
-/// shared [`encode_command_result`](crate::world_sizing::encode_command_result)
-/// the v4 writer reuses.
-fn command_result_exact_v4(result: &Option<CommandResult>) -> usize {
-    let Some(result) = result else {
+/// Exact byte size of the v4 `dragPreview` section body (after the
+/// `,"dragPreview":` joiner): `null` (4) when absent, else the retained
+/// preview object.
+fn drag_preview_exact_v4(preview: &Option<DragPreviewV4>) -> usize {
+    let Some(preview) = preview else {
         return 4;
     };
     let rect_body =
         |r: crate::geometry::Rect| 5 + int_len(r.x) + int_len(r.y) + int_len(r.w) + int_len(r.h);
-    match result {
-        CommandResult::DragPreview {
-            rect,
-            hover,
-            domain,
-            source,
-            target,
-            revision,
-        } => {
-            // {"op":"drag-preview","rev":"","domainOut":"","domainWs":"",
-            // "sourceOut":"","sourceWs":"","rect":[],"hover":,"win":""}
-            // = 104 punctuation plus the rect body.
-            let mut bytes = 104
-                + u64_len(*revision)
-                + json_string_len(&domain.output.0)
-                + json_string_len(&domain.workspace.0)
-                + json_string_len(&source.output.0)
-                + json_string_len(&source.workspace.0)
-                + json_string_len(&target.0)
-                + rect_body(*rect);
-            bytes += match hover {
-                None => 4,
-                Some(hover) => {
-                    // {"domainOut":"","domainWs":"","leaf":"","win":"",
-                    // "rev":"","prior":,"priorOut":"","priorWs":""} = 82
-                    // punctuation; prior is null (4) or
-                    // {"group":"","edge":""} (18 + widths).
-                    82 + json_string_len(&hover.domain.output.0)
-                        + json_string_len(&hover.domain.workspace.0)
-                        + json_string_len(&hover.source_leaf.0)
-                        + json_string_len(&hover.source_window.0)
-                        + u64_len(hover.revision)
-                        + hover.prior.as_ref().map_or(4, |prior| {
-                            18 + json_string_len(&prior.group.0)
-                                + json_string_len(prior.edge.as_str())
-                        })
-                        + json_string_len(&hover.prior_domain.output.0)
-                        + json_string_len(&hover.prior_domain.workspace.0)
-                }
-            };
-            bytes
+    // {"id":"","rev":"","domainOut":"","domainWs":"","sourceOut":"",
+    // "sourceWs":"","rect":[],"hover":,"win":""} = 92 punctuation plus
+    // the rect body.
+    let mut bytes = 92
+        + u64_len(preview.id)
+        + u64_len(preview.revision)
+        + json_string_len(&preview.domain.output.0)
+        + json_string_len(&preview.domain.workspace.0)
+        + json_string_len(&preview.source.output.0)
+        + json_string_len(&preview.source.workspace.0)
+        + json_string_len(&preview.target.0)
+        + rect_body(preview.rect);
+    bytes += match &preview.hover {
+        None => 4,
+        Some(hover) => {
+            // {"domainOut":"","domainWs":"","leaf":"","win":"",
+            // "rev":"","prior":,"priorOut":"","priorWs":""} = 82
+            // punctuation; prior is null (4) or
+            // {"group":"","edge":""} (18 + widths).
+            82 + json_string_len(&hover.domain.output.0)
+                + json_string_len(&hover.domain.workspace.0)
+                + json_string_len(&hover.source_leaf.0)
+                + json_string_len(&hover.source_window.0)
+                + u64_len(hover.revision)
+                + hover.prior.as_ref().map_or(4, |prior| {
+                    18 + json_string_len(&prior.group.0) + json_string_len(prior.edge.as_str())
+                })
+                + json_string_len(&hover.prior_domain.output.0)
+                + json_string_len(&hover.prior_domain.workspace.0)
         }
-        CommandResult::Float {
-            window,
-            rect,
-            no_space,
-        } => {
-            36 + json_string_len(&window.0)
-                + rect.map_or(4, rect_body)
-                + if *no_space { 15 } else { 0 }
-        }
-        CommandResult::Migration {
-            direction,
-            source,
-            target,
-            members,
-            floats,
-        } => {
-            // {"op":"migrate-workspace","direction":"","sourceOut":"",
-            // "sourceWs":"","targetOut":"","targetWs":"","members":[],
-            // "floats":} = 112 punctuation.
-            let mut bytes =
-                112 + json_string_len(match direction {
-                    crate::directional::Direction::Left => "left",
-                    crate::directional::Direction::Right => "right",
-                    crate::directional::Direction::Up => "up",
-                    crate::directional::Direction::Down => "down",
-                }) + json_string_len(&source.output.0)
-                    + json_string_len(&source.workspace.0)
-                    + json_string_len(&target.output.0)
-                    + json_string_len(&target.workspace.0)
-                    + usize_len(*floats);
-            for member in members {
-                bytes += json_string_len(&member.0);
-            }
-            bytes += members.len().saturating_sub(1);
-            bytes
-        }
-        CommandResult::Directional {
-            outcome,
-            target,
-            rect,
-            cause,
-        } => {
-            // {"op":"directional","outcome":"","win":,"rect":,"cause":}
-            // = 55 punctuation.
-            let mut bytes = 55
-                + json_string_len(outcome.as_str())
-                + target.as_ref().map_or(4, |t| json_string_len(&t.0));
-            bytes += rect.map_or(4, rect_body);
-            bytes += cause.as_deref().map_or(4, json_string_len);
-            bytes
-        }
-        CommandResult::Maximize {
-            window,
-            maximized,
-            clear_fullscreen,
-            was_maximized,
-        } => {
-            72 + json_string_len(&window.0)
-                + bool_len(*maximized)
-                + bool_len(*clear_fullscreen)
-                + bool_len(*was_maximized)
-        }
-        CommandResult::Rejected { kind } => 25 + json_string_len(kind.as_str()),
-    }
+    };
+    bytes
 }
 
 /// Exact byte size of the v4 reply presentation body (after the

@@ -23,6 +23,8 @@
 
 use std::io::{BufRead, Write};
 
+use tiler_core::world_report::{BatchSettlement, CommandResult};
+use tiler_core::world_sizing::encode_command_result;
 use tiler_protocol::connection_protocol::route_connection_request;
 use tiler_protocol::world_protocol::{
     DecodedReplyV4, ReplyWireOptionals, WorldEngine, WorldOutcome, decode_request, encode_error,
@@ -46,12 +48,22 @@ fn serving_generation(engine: &Option<WorldEngine>, seed: &str) -> String {
         .unwrap_or_else(|| seed.to_owned())
 }
 
-fn submit_report(engine: &mut WorldEngine, body: &str, generation: &str) -> String {
+fn submit_report_with_settlements(
+    engine: &mut WorldEngine,
+    body: &str,
+    generation: &str,
+) -> (String, Vec<BatchSettlement>) {
     let report = match decode_request(body) {
         Ok(report) => report,
-        Err(error) => return encode_error(error.kind, error.message, generation),
+        Err(error) => {
+            return (
+                encode_error(error.kind, error.message, generation),
+                Vec::new(),
+            );
+        }
     };
-    match engine.handle_report(&report, &[]).0 {
+    let (outcome, settlements) = engine.handle_report(&report, &[]);
+    match outcome {
         WorldOutcome::Accepted(reply)
         | WorldOutcome::Duplicate(reply)
         | WorldOutcome::CommandConsumed(reply) => {
@@ -62,12 +74,44 @@ fn submit_report(engine: &mut WorldEngine, body: &str, generation: &str) -> Stri
                 },
                 reply,
             }) {
-                Ok(bytes) => bytes,
-                Err(error) => encode_error(error.kind, error.message, generation),
+                Ok(bytes) => (bytes, settlements),
+                Err(error) => (
+                    encode_error(error.kind, error.message, generation),
+                    Vec::new(),
+                ),
             }
         }
-        WorldOutcome::Rejected { kind, message } => encode_error(kind, message, generation),
+        WorldOutcome::Rejected { kind, message } => {
+            (encode_error(kind, message, generation), Vec::new())
+        }
     }
+}
+
+fn submit_report(engine: &mut WorldEngine, body: &str, generation: &str) -> String {
+    submit_report_with_settlements(engine, body, generation).0
+}
+
+fn encode_settlement_result(result: &Option<CommandResult>) -> serde_json::Value {
+    let mut encoded = String::new();
+    encode_command_result(&mut encoded, result);
+    serde_json::from_str(&encoded).unwrap_or(serde_json::Value::Null)
+}
+
+fn encode_report_with_settlements(reply: String, settlements: Vec<BatchSettlement>) -> String {
+    let encoded_settlements: Vec<serde_json::Value> = settlements
+        .into_iter()
+        .map(|s| {
+            serde_json::json!({
+                "seq": s.seq.to_string(),
+                "result": encode_settlement_result(&s.result),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "reply": reply,
+        "settlements": encoded_settlements,
+    })
+    .to_string()
 }
 
 fn main() {
@@ -102,6 +146,13 @@ fn main() {
                 let live = engine.as_mut()?;
                 let generation = live.core_generation().to_owned();
                 Some(submit_report(live, body, &generation))
+            } else if method == "DescribeWorldWithSettlements" {
+                // Test-only seam returning {reply, settlements} from the real
+                // issuing handle_report tuple; canonical DescribeWorld is unchanged.
+                let live = engine.as_mut()?;
+                let generation = live.core_generation().to_owned();
+                let (reply, settlements) = submit_report_with_settlements(live, body, &generation);
+                Some(encode_report_with_settlements(reply, settlements))
             } else {
                 Some(encode_error(
                     "unknown-value",

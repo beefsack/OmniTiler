@@ -717,7 +717,11 @@ fn native_false_null_toggle_float_save_preserved() {
             float_rect: None,
         })),
     );
-    let reply = accepted_reply(&mut engine, &toggled);
+    let (outcome, settlements) = engine.handle_report(&toggled, &[]);
+    let reply = match outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted toggled, got {other:?}"),
+    };
     assert_eq!(reply.intent_desired.len(), 1, "{reply:?}");
     assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
     assert_eq!(
@@ -733,7 +737,7 @@ fn native_false_null_toggle_float_save_preserved() {
             .is_some_and(|s| s.is_exception(&WindowId("win-a".to_owned())))
     });
     assert!(floated, "toggle floats the composed-null window");
-    match &reply.command_result {
+    match settlements.first().and_then(|s| s.result.as_ref()) {
         Some(crate::world_report::CommandResult::Float {
             window,
             rect,

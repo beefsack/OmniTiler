@@ -97,7 +97,7 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             assert.deepEqual(h.focused, ["win-c"], "no intermediate native focus before the batch lands");
             const batchReply = JSON.parse(h.replies.get(await h.flushAt(batchIndex)) as string) as Record<string, unknown>;
             assert.notEqual(batchReply["outcome"], "rejected", "real Engine drains the batch");
-            assert.equal(batchReply["result"], null, "actuator lane never carries terminal results");
+            assert.equal("result" in batchReply, false, "actuator lane never carries terminal results");
             // Final-only publication: core collapses the superseded head
             // focus unissued, so only the return to origin publishes.
             // Focus left the effects lane: the grant rides the retained
@@ -240,7 +240,7 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             assert.equal(describeCount(h), n0 + 1, "one capture drains the whole move batch");
             const batchReply = JSON.parse(h.replies.get(await h.flushAt(batchIndex)) as string) as Record<string, unknown>;
             assert.notEqual(batchReply["outcome"], "rejected", "real Engine drains the move batch");
-            assert.equal(batchReply["result"], null, "actuator lane never carries terminal results");
+            assert.equal("result" in batchReply, false, "actuator lane never carries terminal results");
             // Net-zero round trip: the pair swaps out and back, so the
             // final publication matches the pre-batch frames exactly, and
             // the native setters match the final publication.
@@ -487,7 +487,7 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             assert.ok(catchIndex >= 0, "catchup dispatches after the timeout");
             const catchReply = JSON.parse(h.replies.get(await h.flushAt(catchIndex)) as string) as Record<string, unknown>;
             assert.equal(catchReply["outcome"] ?? "accepted", "accepted", "catchup drains the filed batch");
-            assert.equal(catchReply["result"], null, "actuator lane never carries the terminal result");
+            assert.equal("result" in catchReply, false, "actuator lane never carries the terminal result");
             appliedMatchesReply(h, catchReply);
             assert.ok(
                 h.wins.some((w, i) => JSON.stringify(frameOf(w)) !== JSON.stringify(nativeBefore[i])),

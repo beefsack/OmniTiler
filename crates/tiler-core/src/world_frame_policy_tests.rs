@@ -3816,11 +3816,15 @@ fn rapid_toggle_sticky_excursion_rearms_with_gap_protection() {
         true,
     );
     set_sticky(&mut sticky_cmd, "w1", 1, true);
-    let stuck = accepted(&mut engine, &sticky_cmd);
+    let (stuck_outcome, stuck_settlements) = engine.handle_report(&sticky_cmd, &[]);
+    let WorldOutcome::Accepted(_stuck) = stuck_outcome else {
+        panic!("expected accepted, got {stuck_outcome:?}");
+    };
+    assert_eq!(stuck_settlements.len(), 1);
     assert!(
-        stuck.command_result.is_none(),
+        stuck_settlements[0].result.is_none(),
         "sticky command accepted: {:?}",
-        stuck.command_result
+        stuck_settlements
     );
     assert!(
         !engine.frame_bursts.contains_key(&key),
@@ -3901,11 +3905,15 @@ fn composed_sticky_round_trip_rearms_burst() {
         true,
     );
     set_sticky(&mut sticky_on, "w1", 1, true);
-    let on_reply = accepted(&mut engine, &sticky_on);
+    let (on_outcome, on_settlements) = engine.handle_report(&sticky_on, &[]);
+    let WorldOutcome::Accepted(on_reply) = on_outcome else {
+        panic!("expected accepted, got {on_outcome:?}");
+    };
+    assert_eq!(on_settlements.len(), 1);
     assert!(
-        on_reply.command_result.is_none(),
+        on_settlements[0].result.is_none(),
         "composed sticky accepted: {:?}",
-        on_reply.command_result
+        on_settlements
     );
     assert!(
         !engine.frame_bursts.contains_key(&key),
@@ -3930,9 +3938,12 @@ fn composed_sticky_round_trip_rearms_burst() {
         true,
     );
     toggle_float(&mut unfloat, "w1", 2, None);
-    let off_reply = accepted(&mut engine, &unfloat);
+    let (off_outcome, off_settlements) = engine.handle_report(&unfloat, &[]);
+    let WorldOutcome::Accepted(off_reply) = off_outcome else {
+        panic!("expected accepted, got {off_outcome:?}");
+    };
     assert_eq!(
-        off_reply.command_result,
+        off_settlements.first().and_then(|s| s.result.clone()),
         Some(crate::world_report::CommandResult::Float {
             window: key.clone(),
             rect: None,
@@ -4028,19 +4039,19 @@ fn float_command_refusal_keeps_budget_over_observation_gap() {
         );
         let mut floated = report(3, vec![gap], vec![], vec![], 1100, true);
         toggle_float(&mut floated, "w1", 1, Some(target));
-        match engine.handle_report(&floated, &[]).0 {
-            WorldOutcome::Accepted(reply) => {
+        match engine.handle_report(&floated, &[]) {
+            (WorldOutcome::Accepted(reply), settlements) => {
                 assert!(
                     !frame_row(&reply, "w1").floating,
                     "{label}: gap float must not place"
                 );
                 assert!(
                     matches!(
-                        reply.command_result,
+                        settlements.first().and_then(|s| s.result.as_ref()),
                         Some(crate::world_report::CommandResult::Rejected { .. })
                     ),
                     "{label}: gap float refuses: {:?}",
-                    reply.command_result
+                    settlements
                 );
                 assert_eq!(
                     engine.frame_bursts.get(&key).map(|entry| entry.attempts),
@@ -4049,7 +4060,7 @@ fn float_command_refusal_keeps_budget_over_observation_gap() {
                     engine.frame_bursts.get(&key)
                 );
             }
-            WorldOutcome::Rejected { kind, message } => {
+            (WorldOutcome::Rejected { kind, message }, _) => {
                 assert_eq!(
                     engine.frame_bursts.get(&key).map(|entry| entry.attempts),
                     Some(1),

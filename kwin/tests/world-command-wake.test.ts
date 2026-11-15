@@ -273,7 +273,7 @@ function acceptCapture(
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
         workspaces: [], outputs: [],
         windows: [windowRow([10, 10, 300, 300])],
-        transfers: [], effects: [], result: null,
+        transfers: [], effects: [], dragPreview: null,
     });
     const parsed = parseWorldReply(text);
     assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");

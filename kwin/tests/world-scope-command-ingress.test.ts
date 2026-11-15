@@ -202,7 +202,7 @@ function acceptedAutoReply(gen: string, source: string, nativeInvalid: string, r
         warpCursor: null,
         intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
-        scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
+        scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [], dragPreview: null,
     });
     const parsed = parseWorldReply(text);
     assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");

@@ -252,7 +252,7 @@ function setup(): Harness {
             const text = JSON.stringify({
                 v: 4, adapter: "test-adapter", gen: GEN, req: body.source, obs: String(rev), rev: String(rev),
                 ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
-                windows: describeWindows, transfers: [], effects: [], result: null,
+                windows: describeWindows, transfers: [], effects: [], dragPreview: null,
                 gestureSettled: settled.settled, gestureAssoc: assoc,
                 gestureSettledAssoc: settled.settled !== null && assoc !== null && settled.settled.id === assoc.coreId ? assoc : null,
                 focusRequest: null,

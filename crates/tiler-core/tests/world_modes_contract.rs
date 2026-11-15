@@ -368,35 +368,32 @@ fn local_mode_selects_without_swap_when_target_visible_elsewhere() {
     );
     let view_b = view_of(&first, "out-b").expect("view b");
     // Local mode refuses a foreign id: no cross-output duplication.
-    match engine
-        .handle_report(
-            &report(
-                2,
-                2,
-                two_screens(),
-                vec![],
-                vec![],
-                vec![],
-                "",
-                Some(11),
-                Some(WorldCommand::SelectWorkspace {
-                    output: OutputId("out-a".to_owned()),
-                    workspace: view_b,
-                }),
-                vec![],
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
+    match engine.handle_report(
+        &report(
+            2,
+            2,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: view_b,
+            }),
+            vec![],
+        ),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.clone()),
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::ViewTargetUnknown
             }),
             "view-target-unknown"
         ),
-        other => panic!("expected view-target-unknown, got {other:?}"),
+        (other, _) => panic!("expected view-target-unknown, got {other:?}"),
     }
 }
 
@@ -496,36 +493,33 @@ fn shared_mode_refuses_whole_workspace_migration() {
         ),
     );
     let shared = view_of(&first, "out-a").expect("shared view");
-    match engine
-        .handle_report(
-            &report(
-                2,
-                2,
-                two_screens(),
-                vec![fact("win-a", "out-a", 0)],
-                vec![],
-                vec![],
-                "",
-                Some(11),
-                Some(WorldCommand::MigrateWorkspace {
-                    source_output: OutputId("out-a".to_owned()),
-                    target_output: OutputId("out-b".to_owned()),
-                    workspace: shared,
-                }),
-                vec![],
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
+    match engine.handle_report(
+        &report(
+            2,
+            2,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::MigrateWorkspace {
+                source_output: OutputId("out-a".to_owned()),
+                target_output: OutputId("out-b".to_owned()),
+                workspace: shared,
+            }),
+            vec![],
+        ),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.clone()),
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::MigrationRefused
             }),
             "migration-refused"
         ),
-        other => panic!("expected migration-refused, got {other:?}"),
+        (other, _) => panic!("expected migration-refused, got {other:?}"),
     }
 }
 

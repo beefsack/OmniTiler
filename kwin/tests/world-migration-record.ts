@@ -27,7 +27,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { startWorldAdapterEntry, WORLD_DEBOUNCE_MS } from "../src/world-entry";
 import { parseWorldReply, isCoreWorldReply } from "../src/world-report";
-import { createMiniBroker } from "./world-wire-harness";
+import { createMiniBroker, parseRawEvalWithSettlements } from "./world-wire-harness";
 
 function repoRoot(): string {
     let dir = resolve(process.cwd());
@@ -294,12 +294,12 @@ export async function recordMigrationFamily(options: MigrationRecordOptions): Pr
             }
             next.done = true;
             const stamped = broker.stampCapture(next.payload);
-            const raw = await bridge.send("DescribeWorld", stamped);
+            const { reply: raw, settlements } = parseRawEvalWithSettlements(await bridge.send("DescribeWorldWithSettlements", stamped));
             assertRecord(
                 (JSON.parse(raw) as Record<string, unknown>)["outcome"] !== "rejected",
                 `engine accepts capture: ${raw.slice(0, 300)}`,
             );
-            const bound = broker.bindReply(raw, next.payload);
+            const bound = broker.bindReply(raw, next.payload, settlements);
             flushed.push({ envelope: next.payload, bound });
             next.callback(bound);
             runTimers();
@@ -349,7 +349,8 @@ export async function recordMigrationFamily(options: MigrationRecordOptions): Pr
         assertRecord(drainParsed !== null && isCoreWorldReply(drainParsed), "drain reply parses");
         const kinds = drainParsed.transfers.map((transfer) => transfer.kind).sort();
         assertRecord(kinds.includes("migration"), `drain retains the migration transfer: ${JSON.stringify(kinds)}`);
-        assertRecord(drainParsed.result === null, "actuator-lane result stays null");
+        assertRecord(drainParsed.dragPreview === null, "drain carries no dragPreview");
+        assertRecord(!("result" in (JSON.parse(drain.bound) as Record<string, unknown>)), "core reply carries no result lane");
         assertRecord(takePayloads.length >= 1, "entry takes the terminal result");
         const takeRequest = takePayloads[takePayloads.length - 1] as string;
         const takeReply = JSON.parse(takeReplies[takeReplies.length - 1] as string) as Record<string, unknown>;

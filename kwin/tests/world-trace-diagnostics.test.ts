@@ -203,7 +203,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         warpCursor: null, intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: OUT, ws: WS }, auth: "controlled", reason: "" }],
-        workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
+        workspaces: [], outputs: [], windows: [], transfers: [], effects: [], dragPreview: null,
         ...snapshot,
     });
     const parsed = parseWorldReply(text);

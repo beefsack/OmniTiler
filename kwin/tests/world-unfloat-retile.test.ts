@@ -232,7 +232,7 @@ function makeHarness(initial: LiveSpec[]) {
             intentDesired: [], switchSettled: [], diagnostics: [],
             presentation: DISABLED_PRESENTATION,
             scopes: [{ scope: { kind: "workspace", out: OUT, ws: WS_A }, auth: "controlled", reason: "" }],
-            workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
+            workspaces: [], outputs: [], windows: [], transfers: [], effects: [], dragPreview: null,
             ...snapshot,
         });
         const parsed = parseWorldReply(text);
@@ -412,7 +412,7 @@ describe("world unfloat immediate retile", () => {
                 winRow(WIN_A, TILE_A, "controlled"),
                 winRow(WIN_B, TILE_B_HALF, "controlled"),
             ],
-            result: null,
+            dragPreview: null,
         }));
         assert.equal(h.geometryWrites.length, writesAfterUnfloat, "converged repeat writes nothing");
         assert.deepEqual(h.frameOf(WIN_A), TILE_A);
@@ -440,7 +440,7 @@ describe("world unfloat immediate retile", () => {
         assert.ok(!("command" in (seedBody["report"] as Record<string, unknown>)));
         seed.callback(h.accepted("gen-1", seedBody["source"] as string, seedBody["nativeInvalid"] as string, "1", {
             windows: [winRow(WIN_F, FLOAT_F, "untouched", { floating: true })],
-            result: null,
+            dragPreview: null,
         }));
         assert.deepEqual(h.frameOf(WIN_F), FLOAT_F);
 
@@ -469,7 +469,7 @@ describe("world unfloat immediate retile", () => {
         const repeatBody = JSON.parse(repeat.payload) as Record<string, unknown>;
         repeat.callback(h.accepted("gen-1", repeatBody["source"] as string, repeatBody["nativeInvalid"] as string, "3", {
             windows: [winRow(WIN_F, TILE_F, "controlled")],
-            result: null,
+            dragPreview: null,
         }));
         assert.deepEqual(h.frameOf(WIN_F), TILE_F, "fixed-size tile sticks on repeat");
     });
@@ -488,7 +488,7 @@ describe("world unfloat immediate retile", () => {
         const writesBefore = h.geometryWrites.length;
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "1", {
             windows: [winRow(WIN_O, TILE_A, "controlled")],
-            result: null,
+            dragPreview: null,
         }));
         assert.equal(h.geometryWrites.length, writesBefore, "overlay frame never auto-writes");
         assert.deepEqual(h.frameOf(WIN_O), [0, 0, 100, 100]);

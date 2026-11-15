@@ -1,24 +1,23 @@
 use tiler_core::active_group::ActiveGroupMember;
 use tiler_core::contract::DragSide;
-use tiler_core::directional::{Direction, NodeId, OutputId, WindowId, WorkspaceId};
+use tiler_core::directional::{NodeId, OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::gesture::GestureSettled;
 use tiler_core::intent_data::IntentData;
 use tiler_core::policy::PriorGroupEdge;
 use tiler_core::session::{DomainKey, DragHoverPrior};
-use tiler_core::world_directional::DirectionalOutcome;
 use tiler_core::world_presentation::{
     GroupHideReason, PagerScreen, PagerWindow, PagerWorkspace, PresentationUnderlay,
     PresentationUnderlayFound,
 };
 use tiler_core::world_report::{
     AfterShown, AfterShownMember, AfterShownScope, AuthorityScope, BorderHideReasonV4,
-    BorderPresentationV4, CommandRejectKind, CommandResult, FloatOrigin, FocusRequest,
-    FocusRequestCause, FrameWitness, HoldReason, IntentDesire, NativeCreationDesire,
-    OperationEvent, OperationOutcome, OutputDesire, RowDiagnostic, RowDiagnosticKind,
-    RowDiagnosticLane, ScopeAuthority, ScopeStatus, StateProperty, StateTarget, SwitchEvent,
-    SwitchFocus, SwitchOutcome, TilingMode, TransferKind, TransferTargetV4, VisibilityTarget,
-    WindowDesire, WorkspaceDesire, WorldPresentationV4, WorldReplyV4,
+    BorderPresentationV4, DragPreviewV4, FloatOrigin, FocusRequest, FocusRequestCause,
+    FrameWitness, HoldReason, IntentDesire, NativeCreationDesire, OperationEvent, OperationOutcome,
+    OutputDesire, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScopeStatus,
+    StateProperty, StateTarget, SwitchEvent, SwitchFocus, SwitchOutcome, TilingMode, TransferKind,
+    TransferTargetV4, VisibilityTarget, WindowDesire, WorkspaceDesire, WorldPresentationV4,
+    WorldReplyV4,
 };
 use tiler_protocol::world_protocol::{DecodedReplyV4, ReplyWireOptionals};
 
@@ -139,7 +138,7 @@ pub fn base_bootstrap() -> DecodedReplyV4 {
             transfers: vec![],
             effects: vec![],
             focus_request: None,
-            command_result: None,
+            drag_preview: None,
             gesture_settled: None,
             operation_settled: vec![],
             native_creations: vec![],
@@ -214,7 +213,7 @@ pub fn base_observe() -> DecodedReplyV4 {
             transfers: vec![],
             effects: vec![],
             focus_request: None,
-            command_result: None,
+            drag_preview: None,
             gesture_settled: None,
             operation_settled: vec![],
             native_creations: vec![],
@@ -279,7 +278,8 @@ fn domain_key(out: &str, ws: &str) -> DomainKey {
 fn drag_preview(edge: Option<DragSide>, has_hover: bool) -> DecodedReplyV4 {
     obs_with(|d| {
         let domain = domain_key("out-a", "ws-a");
-        d.reply.command_result = Some(CommandResult::DragPreview {
+        d.reply.drag_preview = Some(DragPreviewV4 {
+            id: 1,
             rect: rect(8, 8, 400, 600),
             hover: if has_hover {
                 Some(DragHoverPrior {
@@ -301,28 +301,6 @@ fn drag_preview(edge: Option<DragSide>, has_hover: bool) -> DecodedReplyV4 {
             target: WindowId("win-a".to_owned()),
             revision: 1,
         });
-    })
-}
-
-fn directional_result(
-    outcome: DirectionalOutcome,
-    target: Option<&str>,
-    r: Option<Rect>,
-    cause: Option<&str>,
-) -> DecodedReplyV4 {
-    obs_with(|d| {
-        d.reply.command_result = Some(CommandResult::Directional {
-            outcome,
-            target: target.map(|w| WindowId(w.to_owned())),
-            rect: r,
-            cause: cause.map(str::to_owned),
-        });
-    })
-}
-
-fn rejected_result(kind: CommandRejectKind) -> DecodedReplyV4 {
-    obs_with(|d| {
-        d.reply.command_result = Some(CommandResult::Rejected { kind });
     })
 }
 
@@ -742,33 +720,6 @@ pub fn valid_reply_cases() -> Vec<(&'static str, DecodedReplyV4)> {
                 w.frame_operation = Some("float-a".to_owned());
                 w.floating = true;
                 w.command_seq = Some(1);
-                d.reply.command_result = Some(CommandResult::Float {
-                    window: WindowId("win-a".to_owned()),
-                    rect: Some(rect(10, 20, 640, 480)),
-                    no_space: false,
-                });
-            }),
-        ),
-        (
-            "reply-result-float-no-space",
-            obs_with(|d| {
-                d.reply.command_result = Some(CommandResult::Float {
-                    window: WindowId("win-a".to_owned()),
-                    rect: None,
-                    no_space: true,
-                });
-            }),
-        ),
-        (
-            "reply-result-migration",
-            obs_with(|d| {
-                d.reply.command_result = Some(CommandResult::Migration {
-                    direction: Direction::Right,
-                    source: domain_key("out-b", "ws-a"),
-                    target: domain_key("out-a", "ws-a"),
-                    members: vec![WindowId("win-a".to_owned())],
-                    floats: 0,
-                });
             }),
         ),
         (
@@ -780,260 +731,7 @@ pub fn valid_reply_cases() -> Vec<(&'static str, DecodedReplyV4)> {
                     authority: ScopeAuthority::Controlled,
                     command_seq: Some(1),
                 }];
-                d.reply.command_result = Some(CommandResult::Maximize {
-                    window: WindowId("win-a".to_owned()),
-                    maximized: true,
-                    clear_fullscreen: true,
-                    was_maximized: false,
-                });
             }),
-        ),
-        (
-            "reply-directional-focus-refused-floating",
-            directional_result(
-                DirectionalOutcome::FocusRefusedFloating,
-                Some("win-a"),
-                None,
-                None,
-            ),
-        ),
-        (
-            "reply-directional-move-refused-floating",
-            directional_result(
-                DirectionalOutcome::MoveRefusedFloating,
-                Some("win-a"),
-                None,
-                None,
-            ),
-        ),
-        (
-            "reply-directional-focus-refused-workspace-floating",
-            directional_result(
-                DirectionalOutcome::FocusRefusedWorkspaceFloating,
-                Some("win-a"),
-                None,
-                None,
-            ),
-        ),
-        (
-            "reply-directional-move-refused-workspace-floating",
-            directional_result(
-                DirectionalOutcome::MoveRefusedWorkspaceFloating,
-                Some("win-a"),
-                None,
-                None,
-            ),
-        ),
-        (
-            "reply-directional-move-refused-fullscreen",
-            directional_result(
-                DirectionalOutcome::MoveRefusedFullscreen,
-                Some("win-a"),
-                None,
-                None,
-            ),
-        ),
-        (
-            "reply-directional-focus-refused-maximize",
-            directional_result(
-                DirectionalOutcome::FocusRefusedMaximize,
-                Some("win-a"),
-                None,
-                None,
-            ),
-        ),
-        (
-            "reply-directional-focus-float-retained",
-            directional_result(
-                DirectionalOutcome::FocusFloatRetained,
-                Some("win-a"),
-                None,
-                None,
-            ),
-        ),
-        (
-            "reply-directional-focus-float-refused-stale",
-            directional_result(
-                DirectionalOutcome::FocusFloatRefusedStale,
-                Some("win-a"),
-                None,
-                None,
-            ),
-        ),
-        (
-            "reply-directional-focus-unfocused-retained",
-            directional_result(DirectionalOutcome::FocusUnfocusedRetained, None, None, None),
-        ),
-        (
-            "reply-directional-move-float-refused-stale",
-            directional_result(
-                DirectionalOutcome::MoveFloatRefusedStale,
-                Some("win-a"),
-                None,
-                None,
-            ),
-        ),
-        (
-            "reply-directional-move-float-refused-invalid-geometry",
-            directional_result(
-                DirectionalOutcome::MoveFloatRefusedInvalidGeometry,
-                Some("win-a"),
-                None,
-                None,
-            ),
-        ),
-        (
-            "reply-directional-move-float-refused-constraints",
-            directional_result(
-                DirectionalOutcome::MoveFloatRefusedConstraints,
-                Some("win-a"),
-                None,
-                None,
-            ),
-        ),
-        (
-            "reply-directional-move-float-unknown-output",
-            directional_result(
-                DirectionalOutcome::MoveFloatRefusedUnknownOutput,
-                Some("win-a"),
-                None,
-                None,
-            ),
-        ),
-        (
-            "reply-directional-focus-float-applied",
-            directional_result(
-                DirectionalOutcome::FocusFloatApplied,
-                Some("win-a"),
-                Some(rect(8, 8, 800, 600)),
-                None,
-            ),
-        ),
-        (
-            "reply-directional-move-float-applied",
-            directional_result(
-                DirectionalOutcome::MoveFloatApplied,
-                Some("win-a"),
-                Some(rect(8, 8, 800, 600)),
-                None,
-            ),
-        ),
-        (
-            "reply-directional-move-maximize-clear",
-            directional_result(DirectionalOutcome::NeedClear, Some("win-a"), None, None),
-        ),
-        (
-            "reply-directional-cause-no-target",
-            directional_result(
-                DirectionalOutcome::FocusUnfocusedRetained,
-                None,
-                None,
-                Some("no-target"),
-            ),
-        ),
-        (
-            "reply-directional-cause-unknown-window",
-            directional_result(
-                DirectionalOutcome::FocusUnfocusedRetained,
-                None,
-                None,
-                Some("unknown-window"),
-            ),
-        ),
-        (
-            "reply-directional-cause-focus-present",
-            directional_result(
-                DirectionalOutcome::FocusUnfocusedRetained,
-                None,
-                None,
-                Some("focus-present"),
-            ),
-        ),
-        (
-            "reply-directional-cause-no-source",
-            directional_result(
-                DirectionalOutcome::FocusUnfocusedRetained,
-                None,
-                None,
-                Some("no-source"),
-            ),
-        ),
-        (
-            "reply-directional-cause-no-adjacent-output",
-            directional_result(
-                DirectionalOutcome::FocusUnfocusedRetained,
-                None,
-                None,
-                Some("no-adjacent-output"),
-            ),
-        ),
-        (
-            "reply-rejected-focus-unknown",
-            rejected_result(CommandRejectKind::FocusUnknown),
-        ),
-        (
-            "reply-rejected-send-target-unknown",
-            rejected_result(CommandRejectKind::SendTargetUnknown),
-        ),
-        (
-            "reply-rejected-send-window-unknown",
-            rejected_result(CommandRejectKind::SendWindowUnknown),
-        ),
-        (
-            "reply-rejected-send-refused",
-            rejected_result(CommandRejectKind::SendRefused),
-        ),
-        (
-            "reply-rejected-view-output-unknown",
-            rejected_result(CommandRejectKind::ViewOutputUnknown),
-        ),
-        (
-            "reply-rejected-view-target-unknown",
-            rejected_result(CommandRejectKind::ViewTargetUnknown),
-        ),
-        (
-            "reply-rejected-transfer-in-flight",
-            rejected_result(CommandRejectKind::TransferInFlight),
-        ),
-        (
-            "reply-rejected-direction-invalid",
-            rejected_result(CommandRejectKind::DirectionInvalid),
-        ),
-        (
-            "reply-rejected-scope-held",
-            rejected_result(CommandRejectKind::ScopeHeld),
-        ),
-        (
-            "reply-rejected-selection-unknown",
-            rejected_result(CommandRejectKind::SelectionUnknown),
-        ),
-        (
-            "reply-rejected-migration-refused",
-            rejected_result(CommandRejectKind::MigrationRefused),
-        ),
-        (
-            "reply-rejected-operation-refused",
-            rejected_result(CommandRejectKind::OperationRefused),
-        ),
-        (
-            "reply-rejected-tiling-target-unknown",
-            rejected_result(CommandRejectKind::TilingTargetUnknown),
-        ),
-        (
-            "reply-rejected-state-unsupported",
-            rejected_result(CommandRejectKind::StateUnsupported),
-        ),
-        (
-            "reply-rejected-state-unknown",
-            rejected_result(CommandRejectKind::StateUnknown),
-        ),
-        (
-            "reply-rejected-fullscreen-not-exitable",
-            rejected_result(CommandRejectKind::FullscreenNotExitable),
-        ),
-        (
-            "reply-rejected-stale-render-target",
-            rejected_result(CommandRejectKind::StaleRenderTarget),
         ),
         (
             "reply-operation-continued-tiled",

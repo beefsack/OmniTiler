@@ -1,7 +1,7 @@
 //! Staged v4 whole-reply decoder (5a): manifest-driven coverage for
 //! [`decode_reply_v4`](tiler_protocol::world_protocol::decode_reply_v4)
-//! over the `test-fixtures/world-wire/v4-active` WorldReply fixtures: 113
-//! valid-wire accepts stable under re-parse, 22 context-free reject-wire
+//! over the `test-fixtures/world-wire/v4-active` WorldReply fixtures: 73
+//! valid-wire accepts stable under re-parse, 18 context-free reject-wire
 //! refusals with exact kind/message from the untouched original (then an
 //! in-memory single-pointer repair as a positive counterfactual), 3
 //! handshake-context rows accepted context-free but refused by
@@ -101,7 +101,7 @@ fn handshake_capabilities(file: &str) -> serde_json::Value {
 #[test]
 fn v4_reply_census_matches_contract() {
     let fixtures = world_fixtures();
-    assert_eq!(fixtures.len(), 138, "WorldReply fixture count");
+    assert_eq!(fixtures.len(), 94, "WorldReply fixture count");
     let valid: Vec<_> = fixtures
         .iter()
         .filter(|fixture| fixture.expectation == "valid-wire")
@@ -110,8 +110,8 @@ fn v4_reply_census_matches_contract() {
         .iter()
         .filter(|fixture| fixture.expectation == "reject-wire")
         .collect();
-    assert_eq!(valid.len(), 113, "valid-wire count");
-    assert_eq!(reject.len(), 25, "reject-wire count");
+    assert_eq!(valid.len(), 73, "valid-wire count");
+    assert_eq!(reject.len(), 21, "reject-wire count");
     assert!(
         valid.iter().all(|fixture| fixture.canonical),
         "every valid-wire reply is canonical"
@@ -124,7 +124,7 @@ fn v4_reply_census_matches_contract() {
         .iter()
         .filter(|fixture| !fixture.context.is_null())
         .count();
-    assert_eq!(context_free, 22, "context-free reject count");
+    assert_eq!(context_free, 18, "context-free reject count");
     assert_eq!(contextual, 3, "handshake-context reject count");
     for fixture in &reject {
         if fixture.context.is_null() {
@@ -152,7 +152,7 @@ fn v4_reply_valid_wire_accepts() {
         assert_eq!(first, second, "decode stable under re-parse {}", fixture.id);
         count += 1;
     }
-    assert_eq!(count, 113, "every valid-wire reply decodes");
+    assert_eq!(count, 73, "every valid-wire reply decodes");
 }
 
 #[test]
@@ -165,7 +165,10 @@ fn v4_reply_valid_shapes_spot_check() {
     assert!(observe.reply.ready, "observe ready");
     assert_eq!(observe.reply.scopes.len(), 1);
     assert_eq!(observe.reply.workspaces.len(), 2);
-    assert!(observe.reply.command_result.is_none(), "observe no result");
+    assert!(
+        observe.reply.drag_preview.is_none(),
+        "observe no drag preview"
+    );
     assert!(observe.reply.cursor_warp.is_none(), "observe no warp");
     assert!(
         !observe.wire.suspended_output_present,
@@ -195,8 +198,8 @@ fn v4_reply_valid_shapes_spot_check() {
         focus.reply.effects.is_empty(),
         "focus left the effects lane"
     );
-    let float = decode_ok("messages/reply-result-float-placed.json");
-    assert!(float.reply.command_result.is_some(), "float carries result");
+    let drag = decode_ok("messages/reply-result-drag-left.json");
+    assert!(drag.reply.drag_preview.is_some(), "drag carries preview");
     let gesture = decode_ok("messages/reply-gesture-committed.json");
     let settled = gesture.reply.gesture_settled.expect("terminal present");
     assert_eq!(settled.id, 1);
@@ -282,30 +285,6 @@ fn expected_reject(id: &str) -> (&'static str, &'static str, &'static str, &'sta
             "visibility-show-fallback",
             "messages/reply-observe.json",
             "/windows/0/visibility/fallback",
-        ),
-        "invalid-result-applied-wrapper" => (
-            "unknown-value",
-            "request contains an unknown value",
-            "messages/reply-result-maximize.json",
-            "/result",
-        ),
-        "invalid-result-noop-wrapper" => (
-            "unknown-value",
-            "request contains an unknown value",
-            "messages/reply-observe.json",
-            "/result",
-        ),
-        "invalid-result-float-false-marker" => (
-            "snapshot-invalid",
-            "result-float-false-marker",
-            "messages/reply-result-float-placed.json",
-            "/result/noSpace",
-        ),
-        "invalid-directional-cause-string-empty" => (
-            "unknown-value",
-            "request contains an unknown value",
-            "messages/reply-directional-cause-focus-present.json",
-            "/result/cause",
         ),
         "invalid-operation-cause-null" => (
             "malformed",
@@ -444,7 +423,7 @@ fn v4_reply_reject_wire_refuses_then_repairs() {
         decode_reply_v4(&repaired).expect("repaired decodes");
         count += 1;
     }
-    assert_eq!(count, 22, "every context-free reject refuses then repairs");
+    assert_eq!(count, 18, "every context-free reject refuses then repairs");
 }
 
 #[test]
@@ -826,13 +805,7 @@ fn v4_reply_structural_regression() {
     let error = decode_value(&fallback).expect_err("fallback alone refuses");
     assert_eq!(error.message, "visibility-show-fallback");
 
-    // Float marker, effect correlation, and state-count rules.
-    let mut marker = valid_reply_value();
-    marker["result"] = serde_json::json!({
-        "op": "toggle-float", "win": "win-a", "rect": [10, 20, 640, 480], "noSpace": false
-    });
-    let error = decode_value(&marker).expect_err("false marker refuses");
-    assert_eq!(error.message, "result-float-false-marker");
+    // Effect correlation and state-count rules.
     let mut effect = valid_reply_value();
     effect["effects"] = serde_json::json!([{
         "id": "effect-a", "kind": "focus", "target": "win-a", "rev": "1",
@@ -1028,7 +1001,7 @@ fn v4_reply_writer_round_trips_all_valid_wire() {
         assert_eq!(back, decoded, "re-decode equals {}", fixture.id);
         count += 1;
     }
-    assert_eq!(count, 113, "every valid-wire reply round-trips");
+    assert_eq!(count, 73, "every valid-wire reply round-trips");
 }
 
 #[test]
@@ -1573,4 +1546,181 @@ fn v4_reply_cap_valid_near_4mib_windows_encodes_and_roundtrips() {
     assert_eq!(wire.len(), reply_exact_bytes_v4(&decoded.reply));
     let redecoded = decode_reply_v4(&wire).expect("encoded ~4 MiB reply re-decodes");
     assert_eq!(redecoded, decoded);
+}
+
+#[test]
+fn v4_reply_drag_preview_strict_validation_and_bounds() {
+    use tiler_core::contract::DragSide;
+    use tiler_core::directional::{NodeId, OutputId, WindowId, WorkspaceId};
+    use tiler_core::geometry::Rect;
+    use tiler_core::policy::PriorGroupEdge;
+    use tiler_core::session::{DomainKey, DragHoverPrior};
+    use tiler_core::world_presentation::{GroupHideReason, PresentationUnderlay};
+    use tiler_core::world_report::{
+        BorderHideReasonV4, BorderPresentationV4, DragPreviewV4, WORLD_CONTRACT_VERSION_V4,
+        WorldPresentationV4, WorldReplyV4,
+    };
+    use tiler_core::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
+    use tiler_protocol::world_protocol::ReplyWireOptionals;
+
+    let domain = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId("ws-a".to_owned()),
+    };
+    let preview = DragPreviewV4 {
+        id: 7,
+        rect: Rect {
+            x: 8,
+            y: 8,
+            w: 400,
+            h: 600,
+        },
+        hover: Some(DragHoverPrior {
+            domain: domain.clone(),
+            source_leaf: NodeId("leaf-a".to_owned()),
+            source_window: WindowId("win-a".to_owned()),
+            revision: 3,
+            prior: Some(PriorGroupEdge {
+                group: NodeId("group-a".to_owned()),
+                edge: DragSide::Left,
+            }),
+            prior_domain: domain.clone(),
+        }),
+        domain: domain.clone(),
+        source: domain,
+        target: WindowId("win-a".to_owned()),
+        revision: 2,
+    };
+    let base_decoded = DecodedReplyV4 {
+        reply: WorldReplyV4 {
+            contract_version: WORLD_CONTRACT_VERSION_V4,
+            adapter_incarnation: "adapter-a".to_owned(),
+            core_generation: "generation-a".to_owned(),
+            request_id: "request-a".to_owned(),
+            based_on_observation_seq: 1,
+            state_revision: 2,
+            ready: true,
+            command_consumed: false,
+            scopes: vec![],
+            workspaces: vec![],
+            outputs: vec![],
+            windows: vec![],
+            transfers: vec![],
+            effects: vec![],
+            focus_request: None,
+            drag_preview: Some(preview),
+            gesture_settled: None,
+            operation_settled: vec![],
+            native_creations: vec![],
+            cursor_warp: None,
+            presentation: WorldPresentationV4 {
+                foreground: String::new(),
+                rev: 2,
+                suspended_output: None,
+                border: BorderPresentationV4 {
+                    visible: false,
+                    reason: Some(BorderHideReasonV4::NoTarget),
+                    subject: None,
+                    outsets: None,
+                    width: None,
+                    radius: None,
+                    witness: None,
+                },
+                underlay: PresentationUnderlay::Hidden {
+                    base_revision: None,
+                    reason: GroupHideReason::NoGroup,
+                },
+                pager: vec![],
+            },
+            intent_desired: vec![],
+            switch_settled: vec![],
+            diagnostics: vec![],
+        },
+        wire: ReplyWireOptionals {
+            suspended_output_present: false,
+        },
+    };
+    let base_wire = encode_reply_v4(&base_decoded).expect("encodes");
+    assert_eq!(reply_exact_bytes_v4(&base_decoded.reply), base_wire.len());
+    assert!(reply_estimate_v4(&base_decoded.reply) >= base_wire.len());
+    assert_eq!(decode_reply_v4(&base_wire).expect("decodes"), base_decoded);
+
+    let base_doc: serde_json::Value = serde_json::from_str(&base_wire).expect("parses");
+
+    // Missing required dragPreview key refuses as malformed.
+    let mut missing = base_doc.clone();
+    missing.as_object_mut().unwrap().remove("dragPreview");
+    assert_eq!(
+        decode_value(&missing)
+            .expect_err("missing dragPreview")
+            .kind,
+        "malformed"
+    );
+
+    // Retired result key refuses as unknown-field (no alias or dual shape).
+    let mut old_result = base_doc.clone();
+    old_result
+        .as_object_mut()
+        .unwrap()
+        .insert("result".to_owned(), serde_json::Value::Null);
+    assert_eq!(
+        decode_value(&old_result).expect_err("old result key").kind,
+        "unknown-field"
+    );
+
+    // Old op key inside dragPreview refuses as unknown-field.
+    let mut with_op = base_doc.clone();
+    with_op["dragPreview"]["op"] = serde_json::json!("drag-preview");
+    assert_eq!(
+        decode_value(&with_op)
+            .expect_err("op inside dragPreview")
+            .kind,
+        "unknown-field"
+    );
+
+    // Non-object dragPreview refuses as malformed.
+    let mut non_obj = base_doc.clone();
+    non_obj["dragPreview"] = serde_json::json!([]);
+    assert_eq!(
+        decode_value(&non_obj)
+            .expect_err("non-object dragPreview")
+            .kind,
+        "malformed"
+    );
+
+    // Missing id or win inside dragPreview refuses as malformed.
+    for key in ["id", "win", "hover"] {
+        let mut dropped = base_doc.clone();
+        dropped["dragPreview"].as_object_mut().unwrap().remove(key);
+        assert_eq!(
+            decode_value(&dropped).expect_err("missing key").kind,
+            "malformed",
+            "missing {key}"
+        );
+    }
+
+    // id must be a bounded canonical quoted u64.
+    let mut num_id = base_doc.clone();
+    num_id["dragPreview"]["id"] = serde_json::json!(7);
+    assert_eq!(
+        decode_value(&num_id).expect_err("numeric id").kind,
+        "malformed"
+    );
+    for bad_id in ["", "01", "18446744073709551616"] {
+        let mut doc = base_doc.clone();
+        doc["dragPreview"]["id"] = serde_json::json!(bad_id);
+        assert_eq!(
+            decode_value(&doc).expect_err("bad id").kind,
+            "unknown-value",
+            "id={bad_id}"
+        );
+    }
+
+    // Malformed rect inside dragPreview refuses.
+    let mut bad_rect = base_doc;
+    bad_rect["dragPreview"]["rect"] = serde_json::json!([8, 8, 0, 600]);
+    assert_eq!(
+        decode_value(&bad_rect).expect_err("zero-width rect").kind,
+        "unknown-value"
+    );
 }

@@ -638,48 +638,6 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
         |r: crate::geometry::Rect| int_len(r.x) + int_len(r.y) + int_len(r.w) + int_len(r.h) + 5;
     // Every variant body below plus the shared `,"result":` key (10).
     10 + match result {
-        CommandResult::DragPreview {
-            rect,
-            hover,
-            domain,
-            source,
-            target,
-            revision,
-        } => {
-            // {"op":"drag-preview","rev":"","domainOut":"","domainWs":"",
-            // "sourceOut":"","sourceWs":"","rect":[],"hover":,"win":""}
-            // = 113 punctuation plus the revision digits, hover body, and
-            // target id.
-            let mut bytes = 113
-                + u64_len(*revision)
-                + json_string_len(&domain.output.0)
-                + json_string_len(&domain.workspace.0)
-                + json_string_len(&source.output.0)
-                + json_string_len(&source.workspace.0)
-                + json_string_len(&target.0)
-                + rect_len(*rect);
-            bytes += match hover {
-                None => 4,
-                Some(hover) => {
-                    // {"domainOut":"","domainWs":"","leaf":"","win":"",
-                    // "rev":"","prior":,"priorOut":"","priorWs":""} = 88
-                    // punctuation; prior is null (4) or
-                    // {"group":"","edge":""} (26 + widths).
-                    88 + json_string_len(&hover.domain.output.0)
-                        + json_string_len(&hover.domain.workspace.0)
-                        + json_string_len(&hover.source_leaf.0)
-                        + json_string_len(&hover.source_window.0)
-                        + u64_len(hover.revision)
-                        + hover.prior.as_ref().map_or(4, |prior| {
-                            26 + json_string_len(&prior.group.0)
-                                + json_string_len(prior.edge.as_str())
-                        })
-                        + json_string_len(&hover.prior_domain.output.0)
-                        + json_string_len(&hover.prior_domain.workspace.0)
-                }
-            };
-            bytes
-        }
         CommandResult::Float {
             window,
             rect,
@@ -1614,62 +1572,6 @@ pub fn encode_command_result(out: &mut String, result: &Option<CommandResult>) {
         out.push_str(&format!("[{},{},{},{}]", r.x, r.y, r.w, r.h));
     };
     match result {
-        Result::DragPreview {
-            rect: proposed,
-            hover,
-            domain,
-            source,
-            target,
-            revision,
-        } => {
-            out.push_str("{\"op\":\"drag-preview\",\"rev\":\"");
-            out.push_str(&revision.to_string());
-            out.push_str("\",\"domainOut\":");
-            push_json_string(out, &domain.output.0);
-            out.push_str(",\"domainWs\":");
-            push_json_string(out, &domain.workspace.0);
-            out.push_str(",\"sourceOut\":");
-            push_json_string(out, &source.output.0);
-            out.push_str(",\"sourceWs\":");
-            push_json_string(out, &source.workspace.0);
-            out.push_str(",\"rect\":");
-            push_rect(out, *proposed);
-            out.push_str(",\"hover\":");
-            match hover {
-                None => out.push_str("null"),
-                Some(hover) => {
-                    out.push_str("{\"domainOut\":");
-                    push_json_string(out, &hover.domain.output.0);
-                    out.push_str(",\"domainWs\":");
-                    push_json_string(out, &hover.domain.workspace.0);
-                    out.push_str(",\"leaf\":");
-                    push_json_string(out, &hover.source_leaf.0);
-                    out.push_str(",\"win\":");
-                    push_json_string(out, &hover.source_window.0);
-                    out.push_str(",\"rev\":\"");
-                    out.push_str(&hover.revision.to_string());
-                    out.push_str("\",\"prior\":");
-                    match &hover.prior {
-                        None => out.push_str("null"),
-                        Some(prior) => {
-                            out.push_str("{\"group\":");
-                            push_json_string(out, &prior.group.0);
-                            out.push_str(",\"edge\":");
-                            push_json_string(out, prior.edge.as_str());
-                            out.push('}');
-                        }
-                    }
-                    out.push_str(",\"priorOut\":");
-                    push_json_string(out, &hover.prior_domain.output.0);
-                    out.push_str(",\"priorWs\":");
-                    push_json_string(out, &hover.prior_domain.workspace.0);
-                    out.push('}');
-                }
-            }
-            out.push_str(",\"win\":");
-            push_json_string(out, &target.0);
-            out.push('}');
-        }
         Result::Float {
             window,
             rect,

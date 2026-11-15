@@ -251,7 +251,7 @@ function conversionCreationReply(): WorldReply {
         ],
         transfers: [],
         effects: [],
-        result: null,
+        dragPreview: null,
     };
 }
 
@@ -329,7 +329,7 @@ function conversionMoveReply(): WorldReply {
             { op: "op-scv-1-0", kind: "view", win: "", out: OUT_2, ws: TOKEN, follow: false, held: false, cmdSeq: null },
         ],
         effects: [],
-        result: null,
+        dragPreview: null,
     };
 }
 
@@ -428,7 +428,7 @@ describe("world startup conversion actuation", () => {
                 { op: "op-scm-1-0", kind: "window", win: "win-b", out: OUT_2, ws: TOKEN, follow: false, held: false, cmdSeq: null },
             ],
             effects: [],
-            result: null,
+            dragPreview: null,
         };
         const state = freshState(reply);
         const host = createWorldApplyHost(surf.surface, readProp);

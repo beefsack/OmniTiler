@@ -17,7 +17,7 @@ use crate::gesture::{
 };
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandResult, PresentationIngressV4, PresentationRowV4, ScreenReport, TransferKind,
+    DragPreviewV4, PresentationIngressV4, PresentationRowV4, ScreenReport, TransferKind,
     WORLD_CONTRACT_VERSION_V4, WindowFact, WorldReportV4,
 };
 
@@ -267,11 +267,8 @@ fn row_of<'a>(
 }
 
 fn preview_of(reply: &crate::world_report::WorldReplyV4) -> Rect {
-    let Some(CommandResult::DragPreview { rect, .. }) = reply.command_result.clone() else {
-        panic!(
-            "expected drag-preview result, got {:?}",
-            reply.command_result
-        );
+    let Some(DragPreviewV4 { rect, .. }) = reply.drag_preview.clone() else {
+        panic!("expected drag-preview, got {:?}", reply.drag_preview);
     };
     rect
 }
@@ -489,7 +486,7 @@ fn update_without_bind_is_stale_until_first_update_binds() {
             true,
         ),
     );
-    assert!(unknown.command_result.is_none());
+    assert!(unknown.drag_preview.is_none());
     assert!(unknown.transfers.is_empty());
     // A valid update binds implicitly and previews.
     let previewed = accepted(
@@ -575,7 +572,7 @@ fn move_update_previews_and_clears_on_release_commit() {
         ),
     );
     assert!(
-        released.command_result.is_none(),
+        released.drag_preview.is_none(),
         "release rides the snapshot"
     );
     assert_ne!(
@@ -608,7 +605,7 @@ fn move_update_previews_and_clears_on_release_commit() {
             true,
         ),
     );
-    assert!(rerelease.command_result.is_none());
+    assert!(rerelease.drag_preview.is_none());
     assert!(rerelease.transfers.is_empty(), "no double commit");
     assert_eq!(
         row_of(&rerelease, "win-a").allocation,
@@ -678,7 +675,7 @@ fn cursorless_move_release_clears_without_commit() {
             true,
         ),
     );
-    assert!(released.command_result.is_none());
+    assert!(released.drag_preview.is_none());
     assert!(released.transfers.is_empty());
 }
 
@@ -706,7 +703,7 @@ fn cursorless_update_holds_with_no_overlay_work() {
             true,
         ),
     );
-    assert!(held.command_result.is_none(), "no cursor, no overlay");
+    assert!(held.drag_preview.is_none(), "no cursor, no overlay");
     // The session survives: a cursor-bearing update previews.
     let previewed = accepted(
         &mut engine,
@@ -782,7 +779,7 @@ fn cancel_and_esc_clear_without_commit() {
             true,
         ),
     );
-    assert!(cancelled.command_result.is_none());
+    assert!(cancelled.drag_preview.is_none());
     assert_eq!(row_of(&cancelled, "win-a").allocation, before_alloc);
     // Host Esc edge clears regardless of phase.
     accepted(
@@ -823,13 +820,13 @@ fn cancel_and_esc_clear_without_commit() {
             true,
         ),
     );
-    assert!(cleared.command_result.is_none());
+    assert!(cleared.drag_preview.is_none());
 }
 
 #[test]
 fn replacement_window_is_ignored_while_one_is_retained() {
     let (mut engine, ra, rb) = rig();
-    accepted(
+    let initial = accepted(
         &mut engine,
         &report(
             2,
@@ -847,6 +844,7 @@ fn replacement_window_is_ignored_while_one_is_retained() {
             true,
         ),
     );
+    assert!(initial.drag_preview.is_some());
     // A different lifetime never replaces the retained session: the old
     // one holds and the newcomer is ignored, never silently adopted.
     let held = accepted(
@@ -867,7 +865,7 @@ fn replacement_window_is_ignored_while_one_is_retained() {
             true,
         ),
     );
-    assert!(held.command_result.is_none());
+    assert_eq!(held.drag_preview, initial.drag_preview);
     // The retained session still previews.
     let previewed = accepted(
         &mut engine,
@@ -965,7 +963,7 @@ fn invalid_starts_refuse_without_session() {
         );
         seq += 1;
         assert!(
-            refused.command_result.is_none(),
+            refused.drag_preview.is_none(),
             "{tag} start must not preview"
         );
     }
@@ -988,7 +986,7 @@ fn invalid_starts_refuse_without_session() {
             false,
         ),
     );
-    assert!(gapped.command_result.is_none());
+    assert!(gapped.drag_preview.is_none());
 }
 
 #[test]
@@ -1031,7 +1029,7 @@ fn gap_holds_and_recovers_without_replay() {
             false,
         ),
     );
-    assert!(held.command_result.is_none());
+    assert!(held.drag_preview.is_none());
     // Recovery previews again with no replay of the held update.
     let previewed = accepted(
         &mut engine,
@@ -1094,7 +1092,7 @@ fn close_clears_the_session() {
             true,
         ),
     );
-    assert!(closed.command_result.is_none());
+    assert!(closed.drag_preview.is_none());
     // The next update for the closed lifetime is stale.
     let stale = accepted(
         &mut engine,
@@ -1114,7 +1112,7 @@ fn close_clears_the_session() {
             true,
         ),
     );
-    assert!(stale.command_result.is_none());
+    assert!(stale.drag_preview.is_none());
 }
 
 #[test]
@@ -1142,7 +1140,7 @@ fn cross_output_release_retains_follow_and_settles_on_receipt() {
         ),
     );
     assert!(
-        released.command_result.is_none(),
+        released.drag_preview.is_none(),
         "release rides snapshot+transfer"
     );
     let transfer = released
@@ -1201,7 +1199,7 @@ fn cross_release_to_unplaceable_points_refuses() {
         ),
     );
     assert!(refused.transfers.is_empty());
-    assert!(refused.command_result.is_none());
+    assert!(refused.drag_preview.is_none());
 }
 
 #[test]
@@ -1265,10 +1263,7 @@ fn resize_release_commits_share_change() {
             true,
         ),
     );
-    assert!(
-        released.command_result.is_none(),
-        "resize rides the snapshot"
-    );
+    assert!(released.drag_preview.is_none(), "resize rides the snapshot");
     assert_ne!(
         row_of(&released, "win-b").allocation,
         before_alloc,
@@ -1362,7 +1357,7 @@ fn consumed_command_reports_still_carry_gesture_preview() {
         direction: "right".to_owned(),
     });
     let first = accepted(&mut engine, &with_command);
-    assert!(first.command_result.is_some() || first.command_consumed);
+    assert!(first.drag_preview.is_some() || first.command_consumed);
     // Resend the consumed sequence with a fresh observation and a fresh
     // gesture sample: consumed, but the overlay still resolves.
     let preview2 = GestureIngress {
@@ -1456,10 +1451,7 @@ fn incarnation_reset_clears_the_session() {
     reset.core_generation = engine.core_generation().to_owned();
     let stale = accepted(&mut engine, &reset);
     assert!(
-        matches!(
-            stale.command_result,
-            Some(CommandResult::DragPreview { .. })
-        ),
+        matches!(stale.drag_preview, Some(DragPreviewV4 { .. })),
         "id 1 is fresh in the new generation, not replayed from the old one"
     );
 }
@@ -1487,7 +1479,7 @@ fn engine_sessionless_gesture_never_fabricates() {
             true,
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert!(reply.drag_preview.is_none());
     assert!(reply.transfers.is_empty());
 }
 
@@ -1527,7 +1519,7 @@ fn missing_ingress_with_close_clears_the_session() {
             true,
         ),
     );
-    assert!(cleared.command_result.is_none());
+    assert!(cleared.drag_preview.is_none());
     let stale = accepted(
         &mut engine,
         &report(
@@ -1546,7 +1538,7 @@ fn missing_ingress_with_close_clears_the_session() {
             true,
         ),
     );
-    assert!(stale.command_result.is_none());
+    assert!(stale.drag_preview.is_none());
 }
 
 #[test]
@@ -1596,7 +1588,7 @@ fn started_truth_is_immutable_and_zero_gates_preview() {
             true,
         ),
     );
-    assert!(zero.command_result.is_none());
+    assert!(zero.drag_preview.is_none());
     // A moved sample previews.
     let previewed = accepted(
         &mut engine,
@@ -1636,7 +1628,7 @@ fn started_truth_is_immutable_and_zero_gates_preview() {
             true,
         ),
     );
-    assert!(back.command_result.is_none());
+    assert!(back.drag_preview.is_none());
 }
 
 #[test]
@@ -1688,7 +1680,7 @@ fn terminal_replay_with_same_start_frame_refuses() {
             true,
         ),
     );
-    assert!(replay.command_result.is_none());
+    assert!(replay.drag_preview.is_none());
     assert!(replay.transfers.is_empty());
     assert_eq!(row_of(&replay, "win-a").allocation, alloc);
 }
@@ -1791,7 +1783,7 @@ fn cancelled_without_session_never_binds_or_shields() {
             true,
         ),
     );
-    assert!(cancelled.command_result.is_none());
+    assert!(cancelled.drag_preview.is_none());
     assert_eq!(
         cancelled.gesture_settled.map(|t| (t.id, t.committed)),
         Some((1, false)),
@@ -1817,7 +1809,7 @@ fn cancelled_without_session_never_binds_or_shields() {
             true,
         ),
     );
-    assert!(replay.command_result.is_none());
+    assert!(replay.drag_preview.is_none());
     let previewed = accepted(
         &mut engine,
         &report(
@@ -1936,7 +1928,7 @@ fn focused_fullscreen_game_bars_update_and_release() {
             true,
         ),
     );
-    assert!(held.command_result.is_none());
+    assert!(held.drag_preview.is_none());
     let moved_a = rect(100, 0, 40, 90);
     let refused = accepted(
         &mut engine,
@@ -1960,7 +1952,7 @@ fn focused_fullscreen_game_bars_update_and_release() {
             true,
         ),
     );
-    assert!(refused.command_result.is_none());
+    assert!(refused.drag_preview.is_none());
     assert!(refused.transfers.is_empty());
 }
 
@@ -2018,7 +2010,7 @@ fn terminal_consumes_unbindable_identity() {
             true,
         ),
     );
-    assert!(refused.command_result.is_none());
+    assert!(refused.drag_preview.is_none());
     assert!(refused.transfers.is_empty());
     assert_eq!(
         refused.gesture_settled.map(|t| (t.id, t.committed)),
@@ -2044,7 +2036,7 @@ fn terminal_consumes_unbindable_identity() {
             true,
         ),
     );
-    assert!(replay.command_result.is_none());
+    assert!(replay.drag_preview.is_none());
     assert!(replay.transfers.is_empty());
     // A fresh id is unaffected by the consumed one.
     let previewed = accepted(
@@ -2133,7 +2125,7 @@ fn new_id_supersedes_older_open_session() {
             true,
         ),
     );
-    assert!(stale.command_result.is_none());
+    assert!(stale.drag_preview.is_none());
     assert!(stale.transfers.is_empty());
     // The newer session is intact and still previews.
     let previewed = accepted(
@@ -2163,7 +2155,7 @@ fn stale_cancel_cannot_erase_newer_session() {
     // A cancel carrying an older id than the retained session is ignored:
     // the newer gesture survives it.
     let (mut engine, ra, rb) = rig();
-    accepted(
+    let initial = accepted(
         &mut engine,
         &report(
             2,
@@ -2182,6 +2174,7 @@ fn stale_cancel_cannot_erase_newer_session() {
             true,
         ),
     );
+    assert!(initial.drag_preview.is_some());
     let ignored = accepted(
         &mut engine,
         &report(
@@ -2201,7 +2194,7 @@ fn stale_cancel_cannot_erase_newer_session() {
             true,
         ),
     );
-    assert!(ignored.command_result.is_none());
+    assert_eq!(ignored.drag_preview, initial.drag_preview);
     let previewed = accepted(
         &mut engine,
         &report(
@@ -2321,7 +2314,7 @@ fn repeat_updated_and_released_same_id_has_no_replay() {
             true,
         ),
     );
-    assert!(stale_update.command_result.is_none());
+    assert!(stale_update.drag_preview.is_none());
     // Exact Released replay: no recommit.
     let rerelease = accepted(
         &mut engine,
@@ -2342,7 +2335,7 @@ fn repeat_updated_and_released_same_id_has_no_replay() {
             true,
         ),
     );
-    assert!(rerelease.command_result.is_none());
+    assert!(rerelease.drag_preview.is_none());
     assert!(rerelease.transfers.is_empty());
     assert_eq!(row_of(&rerelease, "win-a").allocation, alloc);
 }
@@ -2609,7 +2602,7 @@ fn terminal_replay_on_new_report_preserves_original_outcome() {
         replay.gesture_settled, released.gesture_settled,
         "consumed replay retains original terminal without re-settling"
     );
-    assert!(replay.command_result.is_none());
+    assert!(replay.drag_preview.is_none());
     assert!(replay.transfers.is_empty());
 }
 
@@ -2967,6 +2960,767 @@ fn q2_gesture_survives_subject_close_within_generation_and_clears_on_new_generat
         }
         other => panic!("expected accepted in new generation, got {other:?}"),
     }
+}
+
+#[test]
+fn retained_drag_preview_persists_across_omitted_ingress_and_clears_on_fences_and_neighbor_departure()
+ {
+    let (mut engine, ra, rb) = rig();
+    let updated = ingress_id(
+        "win-a",
+        GestureKind::Move,
+        Some((160, 50)),
+        GesturePhase::Updated,
+        ra,
+        7,
+    );
+    let previewed = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(updated.clone()),
+            vec![],
+            true,
+        ),
+    );
+    let first_preview = previewed
+        .drag_preview
+        .clone()
+        .expect("updated gesture produces drag_preview");
+    assert_eq!(first_preview.id, 7);
+
+    // Omitted ingress preserves the retained drag_preview.
+    let omitted = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            None,
+            vec![],
+            true,
+        ),
+    );
+    assert_eq!(omitted.drag_preview, Some(first_preview.clone()));
+
+    // Omitted ingress under incomplete inventory invalidates drag_preview.
+    let gapped = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            None,
+            vec![],
+            false,
+        ),
+    );
+    assert!(gapped.drag_preview.is_none());
+
+    // Re-establish preview, then depart the neighbor on omitted ingress.
+    let restored = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(updated),
+            vec![],
+            true,
+        ),
+    );
+    assert_eq!(restored.drag_preview.as_ref().map(|p| p.id), Some(7));
+    let neighbor_closed = accepted(
+        &mut engine,
+        &report(
+            6,
+            6,
+            vec![fact("win-a", "out-a", ra)],
+            "win-a",
+            None,
+            vec![first_preview.target.clone()],
+            true,
+        ),
+    );
+    assert!(neighbor_closed.drag_preview.is_none());
+}
+
+#[test]
+fn retained_drag_preview_clears_on_genuine_held_no_preview_and_ignores_newcomer() {
+    let (mut engine, ra, rb) = rig();
+    let mut start = ingress_id(
+        "win-a",
+        GestureKind::Move,
+        Some((10, 10)),
+        GesturePhase::Started,
+        ra,
+        7,
+    );
+    start.start_cursor = Some((10, 10));
+    let started = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(start),
+            vec![],
+            true,
+        ),
+    );
+    assert!(started.drag_preview.is_none());
+
+    let updated = ingress_id(
+        "win-a",
+        GestureKind::Move,
+        Some((160, 50)),
+        GesturePhase::Updated,
+        ra,
+        7,
+    );
+    let previewed = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(updated.clone()),
+            vec![],
+            true,
+        ),
+    );
+    let active_preview = previewed
+        .drag_preview
+        .clone()
+        .expect("updated gesture produces drag_preview");
+    assert_eq!(active_preview.id, 7);
+
+    // Genuinely ignored stale newcomer (older id <= retained.id) and unbindable
+    // newcomer cannot relabel id or clear/authorize preview.
+    let stale_newcomer = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(ingress_id(
+                "win-b",
+                GestureKind::Move,
+                Some((20, 50)),
+                GesturePhase::Updated,
+                rb,
+                6,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert_eq!(stale_newcomer.drag_preview, Some(active_preview.clone()));
+
+    let unbindable_newcomer = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(ingress_id(
+                "missing-win",
+                GestureKind::Move,
+                Some((20, 50)),
+                GesturePhase::Started,
+                rb,
+                8,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert_eq!(unbindable_newcomer.drag_preview, Some(active_preview));
+
+    // Genuine current-session Held (missing cursor) clears drag_preview.
+    let no_cursor = accepted(
+        &mut engine,
+        &report(
+            6,
+            6,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                None,
+                GesturePhase::Updated,
+                ra,
+                7,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert!(no_cursor.drag_preview.is_none());
+
+    // Restore preview, then zero-movement Held clears drag_preview.
+    let restored = accepted(
+        &mut engine,
+        &report(
+            7,
+            7,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(updated),
+            vec![],
+            true,
+        ),
+    );
+    assert!(restored.drag_preview.is_some());
+    let zero_move = accepted(
+        &mut engine,
+        &report(
+            8,
+            8,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                Some((10, 10)),
+                GesturePhase::Updated,
+                ra,
+                7,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert!(zero_move.drag_preview.is_none());
+}
+
+#[test]
+fn fresh_replacement_gesture_clears_predecessor_drag_preview_and_old_id_cannot_repaint() {
+    let (mut engine, ra, rb) = rig();
+    let updated_old = ingress_id(
+        "win-a",
+        GestureKind::Move,
+        Some((160, 50)),
+        GesturePhase::Updated,
+        ra,
+        7,
+    );
+    let previewed = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(updated_old.clone()),
+            vec![],
+            true,
+        ),
+    );
+    assert_eq!(previewed.drag_preview.as_ref().map(|p| p.id), Some(7));
+
+    // Fresh replacement id 8 (> 7) supersedes id 7 and clears its drag_preview.
+    let mut replacement = ingress_id(
+        "win-b",
+        GestureKind::Move,
+        Some((150, 50)),
+        GesturePhase::Started,
+        rb,
+        8,
+    );
+    replacement.start_cursor = Some((150, 50));
+    let replaced = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-b",
+            Some(replacement),
+            vec![],
+            true,
+        ),
+    );
+    assert!(
+        replaced.drag_preview.is_none(),
+        "fresh replacement bind-only Started clears predecessor drag_preview"
+    );
+
+    // Old id 7 cannot repaint once superseded by id 8.
+    let old_repaint = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-b",
+            Some(updated_old),
+            vec![],
+            true,
+        ),
+    );
+    assert!(old_repaint.drag_preview.is_none());
+}
+
+#[test]
+fn retained_drag_preview_clears_on_omitted_ingress_game_pause_style_hold_and_domain_loss() {
+    let (mut engine, ra, rb) = rig();
+    let updated = ingress_id(
+        "win-a",
+        GestureKind::Move,
+        Some((160, 50)),
+        GesturePhase::Updated,
+        ra,
+        7,
+    );
+    let previewed = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(updated.clone()),
+            vec![],
+            true,
+        ),
+    );
+    assert_eq!(previewed.drag_preview.as_ref().map(|p| p.id), Some(7));
+
+    // Game pause on omitted ingress (focused other window is fullscreen) clears drag_preview.
+    let mut paused_neighbor = fact("win-b", "out-a", rb);
+    paused_neighbor.fullscreen = Some(true);
+    let paused = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![fact("win-a", "out-a", ra), paused_neighbor],
+            "win-b",
+            None,
+            vec![],
+            true,
+        ),
+    );
+    assert!(paused.drag_preview.is_none());
+
+    // Restore preview, then style/scope fence on omitted ingress (maximized subject)
+    // invalidates drag_preview via gesture_continue_fences.
+    let restored = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(updated.clone()),
+            vec![],
+            true,
+        ),
+    );
+    assert!(restored.drag_preview.is_some());
+    let mut style_held_subject = fact("win-a", "out-a", ra);
+    style_held_subject.maximized = Some(true);
+    let style_held = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            vec![style_held_subject, fact("win-b", "out-a", rb)],
+            "win-a",
+            None,
+            vec![],
+            true,
+        ),
+    );
+    assert!(style_held.drag_preview.is_none());
+
+    // Restore preview, then domain loss (unreadable screen) on omitted ingress clears drag_preview.
+    let restored2 = accepted(
+        &mut engine,
+        &report(
+            6,
+            6,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(updated),
+            vec![],
+            true,
+        ),
+    );
+    assert!(restored2.drag_preview.is_some());
+    let mut bad_screen_report = report(
+        7,
+        7,
+        vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+        "win-a",
+        None,
+        vec![],
+        true,
+    );
+    bad_screen_report.screens[0].complete = false;
+    bad_screen_report.screens[0].full_rect = None;
+    bad_screen_report.screens[0].work_area = None;
+    let domain_lost = accepted(&mut engine, &bad_screen_report);
+    assert!(domain_lost.drag_preview.is_none());
+}
+
+#[test]
+fn retained_drag_preview_clears_on_released_cancelled_subject_close_and_rehandshake() {
+    // Released clears drag_preview.
+    let (mut engine, ra, rb) = rig();
+    let previewed = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                Some((160, 50)),
+                GesturePhase::Updated,
+                ra,
+                7,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert!(previewed.drag_preview.is_some());
+    let released = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                Some((160, 50)),
+                GesturePhase::Released,
+                ra,
+                7,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert!(released.drag_preview.is_none());
+
+    // Cancelled clears drag_preview.
+    let previewed2 = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                Some((160, 50)),
+                GesturePhase::Updated,
+                ra,
+                8,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert!(previewed2.drag_preview.is_some());
+    let cancelled = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                Some((160, 50)),
+                GesturePhase::Cancelled,
+                ra,
+                8,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert!(cancelled.drag_preview.is_none());
+
+    // staged.closes on subject clears drag_preview.
+    let previewed3 = accepted(
+        &mut engine,
+        &report(
+            6,
+            6,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                Some((160, 50)),
+                GesturePhase::Updated,
+                ra,
+                9,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert!(previewed3.drag_preview.is_some());
+    let subject_closed = accepted(
+        &mut engine,
+        &report(
+            7,
+            7,
+            vec![fact("win-b", "out-a", rb)],
+            "win-b",
+            None,
+            vec![WindowId("win-a".to_owned())],
+            true,
+        ),
+    );
+    assert!(subject_closed.drag_preview.is_none());
+
+    // Fresh handshake clears drag_preview.
+    let previewed4 = accepted(
+        &mut engine,
+        &report(
+            8,
+            8,
+            vec![fact("win-b", "out-a", rb)],
+            "win-b",
+            Some(ingress_id(
+                "win-b",
+                GestureKind::Move,
+                Some((20, 50)),
+                GesturePhase::Updated,
+                rb,
+                10,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    let _ = previewed4;
+    rebind(&mut engine, "adapter-1");
+    let after_handshake = match engine.handle_report(
+        &WorldReportV4 {
+            core_generation: engine.core_generation().to_owned(),
+            ..report(
+                1,
+                1,
+                vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+                "win-a",
+                None,
+                vec![],
+                true,
+            )
+        },
+        &[],
+    ) {
+        (WorldOutcome::Accepted(reply), _) => reply,
+        (other, _) => panic!("expected accepted after handshake, got {other:?}"),
+    };
+    assert!(after_handshake.drag_preview.is_none());
+}
+
+#[test]
+fn retained_drag_preview_clears_on_active_held_resize_and_engine_refusal() {
+    let (mut engine, ra, rb) = rig();
+    // Engine refusal (cursor over self centre) clears retained drag_preview.
+    let previewed = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                Some((160, 50)),
+                GesturePhase::Updated,
+                ra,
+                7,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert!(previewed.drag_preview.is_some());
+    let win_a_frame = previewed
+        .windows
+        .iter()
+        .find(|w| w.lifetime.0 == "win-a")
+        .and_then(|w| w.effective_frame)
+        .expect("win-a frame");
+    let self_refused = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                Some((
+                    win_a_frame.x + win_a_frame.w / 2,
+                    win_a_frame.y + win_a_frame.h / 2,
+                )),
+                GesturePhase::Updated,
+                ra,
+                7,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert!(self_refused.drag_preview.is_none());
+
+    // Non-Move (Resize) holds with no drag_preview.
+    let resize_held = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Resize,
+                Some((160, 50)),
+                GesturePhase::Updated,
+                ra,
+                8,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert!(resize_held.drag_preview.is_none());
+}
+
+#[test]
+fn retained_drag_preview_clears_on_omitted_ingress_local_held_style_publication_hold() {
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities {
+            native_sticky: true,
+            maximize: true,
+            ..crate::connection::HostCapabilities::default()
+        },
+        vec![
+            (
+                "gap".to_owned(),
+                crate::connection::RawSettingValue::Number(0.0),
+            ),
+            (
+                "outerGap".to_owned(),
+                crate::connection::RawSettingValue::Number(0.0),
+            ),
+            (
+                "borderWidth".to_owned(),
+                crate::connection::RawSettingValue::Number(32.0),
+            ),
+            (
+                "borderGap".to_owned(),
+                crate::connection::RawSettingValue::Number(0.0),
+            ),
+            (
+                "borderRadius".to_owned(),
+                crate::connection::RawSettingValue::Number(0.0),
+            ),
+        ],
+    )
+    .expect("generation");
+    let ra = rect(0, 0, 40, 90);
+    let rb = rect(100, 0, 40, 90);
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "",
+            None,
+            vec![],
+            true,
+        ),
+    );
+
+    let previewed = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                Some((160, 50)),
+                GesturePhase::Updated,
+                ra,
+                7,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert_eq!(previewed.drag_preview.as_ref().map(|p| p.id), Some(7));
+
+    // Omitted ingress with a producer style hold on out-a (scale * borderWidth
+    // exceeds the 1024px scale_float_once cap) leaves gesture_continue_fences satisfied while
+    // local_held publication pruning sets out-a hold=Unreadable and clears
+    // drag_preview.
+    let mut style_held_report = report(
+        3,
+        3,
+        vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+        "win-a",
+        None,
+        vec![],
+        true,
+    );
+    style_held_report.screens[0].scale = 32.015625;
+    style_held_report.presentation = PresentationRowV4::Valid(PresentationIngressV4 {
+        foreground: "win-a".to_owned(),
+        ..PresentationIngressV4::default()
+    });
+    let held_reply = accepted(&mut engine, &style_held_report);
+    let out_a = held_reply
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-a")
+        .expect("out-a output row");
+    assert_eq!(
+        out_a.hold,
+        Some(crate::world_report::HoldReason::Unreadable),
+        "style gate publishes Unreadable hold on out-a"
+    );
+    assert!(
+        held_reply.drag_preview.is_none(),
+        "local_held publication prune clears retained drag_preview"
+    );
 }
 
 // Cross-output gesture release suite: pair-targeted slot agreement,

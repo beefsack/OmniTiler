@@ -542,15 +542,15 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
     );
     send_report.focused_global = "win-a".to_owned();
     send_report.foreground_known = true;
-    match engine.handle_report(&send_report, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
+    match engine.handle_report(&send_report, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.clone()),
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::SendWindowUnknown
             }),
             "minimized send must refuse"
         ),
-        other => panic!("minimized send must refuse, got {other:?}"),
+        (other, _) => panic!("minimized send must refuse, got {other:?}"),
     }
     // Explicit focus-by-id on the minimized lifetime refuses without an effect.
     let mut focus_report = report(
@@ -570,19 +570,18 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
     );
     focus_report.focused_global = "win-a".to_owned();
     focus_report.foreground_known = true;
-    match engine.handle_report(&focus_report, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
+    match engine.handle_report(&focus_report, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.clone()),
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::FocusUnknown
             }),
             "minimized focus must refuse"
         ),
-        other => panic!("minimized focus must refuse, got {other:?}"),
+        (other, _) => panic!("minimized focus must refuse, got {other:?}"),
     }
     // Directional focus naming the minimized lifetime reports stale.
-    let reply = accepted(
-        &mut engine,
+    let (outcome, settlements) = engine.handle_report(
         &report(
             5,
             5,
@@ -598,8 +597,13 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
                 direction: "left".to_owned(),
             }),
         ),
+        &[],
     );
-    let outcome = match &reply.command_result {
+    let reply = match outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted reply, got {other:?}"),
+    };
+    let outcome = match settlements.first().and_then(|s| s.result.as_ref()) {
         Some(tiler_core::world_report::CommandResult::Directional { outcome, .. }) => {
             outcome.as_str()
         }
@@ -1127,15 +1131,15 @@ fn pager_click_minimized_refuses_while_tiled_focus_succeeds() {
     );
     click_minimized.focused_global = "win-a".to_owned();
     click_minimized.foreground_known = true;
-    match engine.handle_report(&click_minimized, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
+    match engine.handle_report(&click_minimized, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.clone()),
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::FocusUnknown
             }),
             "pager click on minimized must refuse"
         ),
-        other => panic!("pager click on minimized must refuse, got {other:?}"),
+        (other, _) => panic!("pager click on minimized must refuse, got {other:?}"),
     }
     let mut click_tiled = report(
         3,

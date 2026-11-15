@@ -24,7 +24,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 
 import { startWorldAdapterEntry } from "../src/world-entry";
-import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
+import { createMiniBroker, parseRawEvalWithSettlements, type MiniBroker } from "./world-wire-harness";
 
 const WIN_O = "11111111-1111-1111-1111-111111111111";
 const WIN_F = "44444444-4444-4444-4444-444444444444";
@@ -333,8 +333,8 @@ async function makeHarness(): Promise<Harness> {
             assert.ok(index >= 0, `expected a queued DescribeWorld dispatch (queued=${harness.calls.length} answered=${harness.answered.size})`);
             const envelope = (harness.calls[index] as CapturedCall).payload;
             const stamped = harness.broker.stampCapture(envelope);
-            const raw = await harness.bridge.send("DescribeWorld", stamped);
-            const bound = harness.broker.bindReply(raw, envelope);
+            const { reply: raw, settlements } = parseRawEvalWithSettlements(await harness.bridge.send("DescribeWorldWithSettlements", stamped));
+            const bound = harness.broker.bindReply(raw, envelope, settlements);
             harness.answered.add(index);
             harness.replies.set(index, bound);
             const parsed = JSON.parse(bound) as Record<string, unknown>;
@@ -638,7 +638,7 @@ function assertBoundTransport(round: FlushedRound, envelope: Record<string, unkn
     assert.equal(parsed["source"], envelope["source"], `bound reply carries the capture source (round ${round.index})`);
     assert.ok(typeof parsed["clock"] === "string", `bound reply carries the dispatch clock (round ${round.index})`);
     assert.ok("nativeInvalid" in parsed, `bound reply carries the native watermark (round ${round.index})`);
-    assert.equal(parsed["result"], null, `terminal result rides the take lane only, never the capture reply (round ${round.index})`);
+    assert.equal("result" in parsed, false, `terminal result rides the take lane only, never the capture reply (round ${round.index})`);
 }
 
 function assertExactBindings(h: Harness, round: FlushedRound, label: string): string {

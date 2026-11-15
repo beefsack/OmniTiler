@@ -664,12 +664,25 @@ pub(crate) mod tests {
         );
     }
 
+    fn accepted_v4_with_result(
+        engine: &mut WorldEngine,
+        report: &crate::world_report::WorldReportV4,
+    ) -> (crate::world_report::WorldReplyV4, Option<CommandResult>) {
+        let (outcome, settlements) = engine.handle_report(report, &[]);
+        let reply = match outcome {
+            crate::world_engine::WorldOutcome::Accepted(reply) => reply,
+            other => panic!("expected accepted report, got {other:?}"),
+        };
+        let result = settlements.into_iter().next().and_then(|s| s.result);
+        (reply, result)
+    }
+
     fn directional(
         engine: &mut WorldEngine,
         seq: u64,
         command: WorldCommand,
-    ) -> crate::world_report::WorldReplyV4 {
-        accepted_v4(
+    ) -> (crate::world_report::WorldReplyV4, Option<CommandResult>) {
+        accepted_v4_with_result(
             engine,
             &report_v4(
                 seq,
@@ -689,7 +702,7 @@ pub(crate) mod tests {
     fn float_focus_hit_emits_effect_and_applied_result() {
         let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         bootstrap_pair(&mut engine);
-        let reply = directional(
+        let (reply, result) = directional(
             &mut engine,
             2,
             WorldCommand::FocusDirectional {
@@ -697,11 +710,8 @@ pub(crate) mod tests {
                 direction: "right".to_owned(),
             },
         );
-        assert_eq!(
-            outcome_str(&reply.command_result),
-            Some("focus-float-applied")
-        );
-        let target = match &reply.command_result {
+        assert_eq!(outcome_str(&result), Some("focus-float-applied"));
+        let target = match &result {
             Some(CommandResult::Directional { target, .. }) => target.clone(),
             other => panic!("directional result, got {other:?}"),
         };
@@ -731,7 +741,7 @@ pub(crate) mod tests {
         let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         bootstrap_pair(&mut engine);
         // Left of the leftmost float: no candidate, focus retains.
-        let reply = directional(
+        let (_reply, result) = directional(
             &mut engine,
             2,
             WorldCommand::FocusDirectional {
@@ -739,18 +749,15 @@ pub(crate) mod tests {
                 direction: "left".to_owned(),
             },
         );
-        assert_eq!(
-            outcome_str(&reply.command_result),
-            Some("focus-float-retained")
-        );
+        assert_eq!(outcome_str(&result), Some("focus-float-retained"));
         assert!(
-            reply.effects.is_empty(),
+            _reply.effects.is_empty(),
             "no focus effect on a miss, got {:?}",
-            reply.effects
+            _reply.effects
         );
         // Right half-snap authorizes the bounded half in work-area
         // space; the adapter applies it exactly once.
-        let reply = directional(
+        let (_reply, result) = directional(
             &mut engine,
             3,
             WorldCommand::MoveDirectional {
@@ -759,7 +766,7 @@ pub(crate) mod tests {
                 same_axis: crate::directional::SameAxisMove::default(),
             },
         );
-        let half = match &reply.command_result {
+        let half = match &result {
             Some(CommandResult::Directional { outcome, rect, .. }) => {
                 assert_eq!(outcome.as_str(), "move-float-applied");
                 rect.expect("authorized half")
@@ -799,7 +806,7 @@ pub(crate) mod tests {
             ),
         );
         let mut report2 = |seq: u64, command: WorldCommand| {
-            accepted_v4(
+            accepted_v4_with_result(
                 &mut engine,
                 &report_v4(
                     seq,
@@ -826,18 +833,15 @@ pub(crate) mod tests {
                 ),
             )
         };
-        let reply = report2(
+        let (_reply, result) = report2(
             2,
             WorldCommand::FocusDirectional {
                 window: WindowId("win-auto".to_owned()),
                 direction: "right".to_owned(),
             },
         );
-        assert_eq!(
-            outcome_str(&reply.command_result),
-            Some("focus-refused-floating")
-        );
-        let reply = report2(
+        assert_eq!(outcome_str(&result), Some("focus-refused-floating"));
+        let (_reply, result) = report2(
             3,
             WorldCommand::MoveDirectional {
                 window: WindowId("win-auto".to_owned()),
@@ -845,14 +849,11 @@ pub(crate) mod tests {
                 same_axis: crate::directional::SameAxisMove::default(),
             },
         );
-        assert_eq!(
-            outcome_str(&reply.command_result),
-            Some("move-refused-floating")
-        );
+        assert_eq!(outcome_str(&result), Some("move-refused-floating"));
         // Fullscreen refuses the move but leaves focus to the float
         // lattice: from the rightmost float there is no target, so
         // focus retains instead of refusing.
-        let reply = report2(
+        let (_reply, result) = report2(
             4,
             WorldCommand::MoveDirectional {
                 window: WindowId("win-full".to_owned()),
@@ -860,21 +861,15 @@ pub(crate) mod tests {
                 same_axis: crate::directional::SameAxisMove::default(),
             },
         );
-        assert_eq!(
-            outcome_str(&reply.command_result),
-            Some("move-refused-fullscreen")
-        );
-        let reply = report2(
+        assert_eq!(outcome_str(&result), Some("move-refused-fullscreen"));
+        let (_reply, result) = report2(
             5,
             WorldCommand::FocusDirectional {
                 window: WindowId("win-full".to_owned()),
                 direction: "right".to_owned(),
             },
         );
-        assert_eq!(
-            outcome_str(&reply.command_result),
-            Some("focus-float-retained")
-        );
+        assert_eq!(outcome_str(&result), Some("focus-float-retained"));
     }
 
     #[test]
@@ -954,7 +949,7 @@ pub(crate) mod tests {
                 None,
             ),
         );
-        let reply = accepted_v4(
+        let (reply, result) = accepted_v4_with_result(
             &mut engine,
             &report_v4(
                 2,
@@ -976,11 +971,8 @@ pub(crate) mod tests {
                 }),
             ),
         );
-        assert_eq!(
-            outcome_str(&reply.command_result),
-            Some("move-float-applied")
-        );
-        let half = match &reply.command_result {
+        assert_eq!(outcome_str(&result), Some("move-float-applied"));
+        let half = match &result {
             Some(CommandResult::Directional { rect, .. }) => *rect,
             other => panic!("directional result, got {other:?}"),
         };
@@ -1061,7 +1053,7 @@ pub(crate) mod tests {
         // A newcomer floats on the displayed spare; the home-workspace
         // float stays behind. Focusing right from the sticky subject must
         // resolve the displayed newcomer, never the home float.
-        let reply = accepted_v4(
+        let (reply, result) = accepted_v4_with_result(
             &mut engine,
             &report_full_v4(
                 3,
@@ -1089,11 +1081,11 @@ pub(crate) mod tests {
             ),
         );
         assert_eq!(
-            outcome_str(&reply.command_result),
+            outcome_str(&result),
             Some("focus-float-applied"),
             "sticky routes in displayed {spare}, not home {head}"
         );
-        let target = match &reply.command_result {
+        let target = match &result {
             Some(CommandResult::Directional { target, .. }) => target.clone(),
             other => panic!("directional result, got {other:?}"),
         };
@@ -1135,7 +1127,7 @@ pub(crate) mod tests {
                 None,
             ),
         );
-        let reply = accepted_v4(
+        let (reply, result) = accepted_v4_with_result(
             &mut engine,
             &report_v4(
                 2,
@@ -1153,9 +1145,9 @@ pub(crate) mod tests {
         // Tiled success carries no result: the transfer plus the single
         // follow-focus effect ARE the outcome.
         assert!(
-            reply.command_result.is_none(),
+            result.is_none(),
             "tiled success carries no result, got {:?}",
-            reply.command_result
+            result
         );
         assert!(
             reply
@@ -1207,7 +1199,7 @@ pub(crate) mod tests {
                 None,
             ),
         );
-        let reply = accepted_v4(
+        let (_reply, result) = accepted_v4_with_result(
             &mut engine,
             &report_v4(
                 2,
@@ -1228,14 +1220,11 @@ pub(crate) mod tests {
                 }),
             ),
         );
-        assert_eq!(
-            outcome_str(&reply.command_result),
-            Some("focus-float-retained")
-        );
+        assert_eq!(outcome_str(&result), Some("focus-float-retained"));
         // Unknown windows refuse stale with the preserved cause and no
         // mutation: no continuation on stale lifetime evidence, one shared
         // vocabulary instead of a bare rejection.
-        let reply = accepted_v4(
+        let (reply, result) = accepted_v4_with_result(
             &mut engine,
             &report_v4(
                 3,
@@ -1256,18 +1245,12 @@ pub(crate) mod tests {
                 }),
             ),
         );
+        assert_eq!(outcome_str(&result), Some("focus-float-refused-stale"));
         assert_eq!(
-            outcome_str(&reply.command_result),
-            Some("focus-float-refused-stale")
-        );
-        assert_eq!(
-            reply
-                .command_result
-                .as_ref()
-                .and_then(|result| match result {
-                    CommandResult::Directional { cause, .. } => cause.clone(),
-                    _ => None,
-                }),
+            result.as_ref().and_then(|result| match result {
+                CommandResult::Directional { cause, .. } => cause.clone(),
+                _ => None,
+            }),
             Some("unknown-window".to_owned())
         );
         assert!(

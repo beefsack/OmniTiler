@@ -510,7 +510,7 @@
               ]
             }
           },
-          "result": null,
+          "dragPreview": null,
           "gestureSettled": null,
           "operationSettled": [],
           "nativeCreations": [],
@@ -942,7 +942,7 @@
             "cmdSeq": "5",
             "afterShown": null
           },
-          "result": null,
+          "dragPreview": null,
           "gestureSettled": null,
           "operationSettled": [],
           "nativeCreations": [],
@@ -1421,7 +1421,7 @@
           ],
           "effects": [],
           "focusRequest": null,
-          "result": null,
+          "dragPreview": null,
           "gestureSettled": null,
           "operationSettled": [],
           "nativeCreations": [],
@@ -1842,7 +1842,7 @@
           ],
           "effects": [],
           "focusRequest": null,
-          "result": null,
+          "dragPreview": null,
           "gestureSettled": null,
           "operationSettled": [],
           "nativeCreations": [],
@@ -2301,7 +2301,7 @@
               ]
             }
           },
-          "result": null,
+          "dragPreview": null,
           "gestureSettled": null,
           "operationSettled": [],
           "nativeCreations": [],
@@ -2783,7 +2783,7 @@
               ]
             }
           },
-          "result": null,
+          "dragPreview": null,
           "gestureSettled": null,
           "operationSettled": [],
           "nativeCreations": [],

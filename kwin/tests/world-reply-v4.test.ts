@@ -86,40 +86,18 @@ describe("world-reply-v4", () => {
         ]);
     });
 
-    it("result vocabulary decodes truthfully", () => {
+    it("dragPreview and core reply lanes decode truthfully", () => {
         const drag = parseWorldReply(boundText(doc("reply-result-drag-left.json")));
         assert.ok(isCoreWorldReply(drag));
-        assert.equal(drag.result?.op, "drag-preview");
-        if (drag.result?.op === "drag-preview") {
-            assert.equal(drag.result.win, "win-a");
-            assert.equal(drag.result.hover?.prior?.edge, "left");
-        }
+        assert.ok(drag.dragPreview !== null);
+        assert.equal(drag.dragPreview.win, "win-a");
+        assert.equal(drag.dragPreview.hover?.prior?.edge, "left");
         const float = parseWorldReply(boundText(doc("reply-result-float-placed.json")));
         assert.ok(isCoreWorldReply(float));
-        assert.deepEqual(float.result, {
-            op: "toggle-float", win: "win-a", rect: [10, 20, 640, 480], noSpace: false,
-        });
-        const mig = parseWorldReply(boundText(doc("reply-result-migration.json")));
-        assert.ok(isCoreWorldReply(mig));
-        assert.deepEqual(mig.result, {
-            op: "migrate-workspace", direction: "right",
-            sourceOut: "out-b", sourceWs: "ws-a", targetOut: "out-a", targetWs: "ws-a",
-            members: ["win-a"], floats: 0,
-        });
+        assert.equal(float.dragPreview, null);
         const max = parseWorldReply(boundText(doc("reply-result-maximize.json")));
         assert.ok(isCoreWorldReply(max));
-        assert.deepEqual(max.result, {
-            op: "maximize", win: "win-a", maximized: true, clearFullscreen: true, wasMaximized: false,
-        });
-        const rej = parseWorldReply(boundText(doc("reply-rejected-focus-unknown.json")));
-        assert.ok(isCoreWorldReply(rej));
-        assert.deepEqual(rej.result, { op: "rejected", kind: "focus-unknown" });
-        const dir = parseWorldReply(boundText(doc("reply-directional-focus-float-applied.json")));
-        assert.ok(isCoreWorldReply(dir));
-        assert.deepEqual(dir.result, {
-            op: "directional", outcome: "focus-float-applied",
-            win: "win-a", rect: [8, 8, 800, 600], cause: null,
-        });
+        assert.equal(max.dragPreview, null);
         const settled = parseWorldReply(boundText(doc("reply-gesture-committed.json")));
         assert.ok(isCoreWorldReply(settled));
         assert.deepEqual(settled.gestureSettled, { id: "1", committed: true });
@@ -189,14 +167,24 @@ describe("world-reply-v4", () => {
         assert.equal(parseWorldReply(bind(manyOut)), null);
         // Non-canonical counter refuses.
         assert.equal(parseWorldReply(bind({ ...clone("reply-observe.json"), obs: "01" })), null);
-        // Retired result ops refuse.
-        const badOp = clone("reply-result-drag-left.json");
-        (badOp["result"] as Record<string, unknown>)["op"] = "active-group";
-        assert.equal(parseWorldReply(bind(badOp)), null);
-        // Present-but-false no-space marker refuses.
-        const badSpace = clone("reply-result-float-placed.json");
-        (badSpace["result"] as Record<string, unknown>)["noSpace"] = false;
-        assert.equal(parseWorldReply(bind(badSpace)), null);
+        // Legacy core result lane refuses; missing dragPreview refuses.
+        assert.equal(parseWorldReply(bind({ ...clone("reply-observe.json"), result: null })), null);
+        const noDrag = clone("reply-observe.json");
+        delete noDrag["dragPreview"];
+        assert.equal(parseWorldReply(bind(noDrag)), null);
+        const noDragBoot = JSON.parse(raw("reply-bootstrap.json")) as Record<string, unknown>;
+        delete noDragBoot["dragPreview"];
+        assert.equal(parseDiscoveryReply(JSON.stringify(noDragBoot)), null);
+        // Malformed or counter-overflow dragPreview shapes refuse.
+        const badDragOp = clone("reply-result-drag-left.json");
+        (badDragOp["dragPreview"] as Record<string, unknown>)["op"] = "drag-preview";
+        assert.equal(parseWorldReply(bind(badDragOp)), null);
+        const badDragId = clone("reply-result-drag-left.json");
+        (badDragId["dragPreview"] as Record<string, unknown>)["id"] = "18446744073709551616";
+        assert.equal(parseWorldReply(bind(badDragId)), null);
+        const badDragRev = clone("reply-result-drag-left.json");
+        (badDragRev["dragPreview"] as Record<string, unknown>)["rev"] = "07";
+        assert.equal(parseWorldReply(bind(badDragRev)), null);
         // Oversize wire (trailing-space padding past 4MiB) refuses.
         const oversizeBound = boundText(doc("reply-observe.json")) + " ".repeat(4 * 1024 * 1024);
         assert.equal(parseWorldReply(oversizeBound), null);
@@ -255,13 +243,11 @@ describe("world-reply-v4", () => {
         assert.equal(boot.focusRequest, null);
     });
 
-    it("broker correlation: strip_result and gestureAssoc", () => {
-        // strip_result semantics: the same non-null result, nulled, still binds.
-        const stripped = clone("reply-result-drag-left.json");
-        stripped["result"] = null;
-        const parsed = parseWorldReply(boundText(stripped));
+    it("broker correlation: dragPreview and gestureAssoc", () => {
+        // Core dragPreview rides through bound replies untouched.
+        const parsed = parseWorldReply(boundText(doc("reply-result-drag-left.json")));
         assert.ok(isCoreWorldReply(parsed));
-        assert.equal(parsed.result, null);
+        assert.ok(parsed.dragPreview !== null);
         // Broker-owned actuator association round-trips verbatim.
         const assoc = { instance: "inst-a", serial: "1", coreId: "1" };
         const withAssoc = JSON.stringify({ ...clone("reply-observe.json"), source: "src-a", nativeInvalid: "1", clock: "2", gestureAssoc: assoc, gestureSettledAssoc: null });

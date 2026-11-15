@@ -763,7 +763,7 @@ fn shared_first_incomplete_reports_empty_then_complete_mints_and_latches() {
         "gap settles nothing: {:?}",
         first.operation_settled
     );
-    assert!(first.command_result.is_none());
+    assert!(first.drag_preview.is_none());
     assert!(first.gesture_settled.is_none());
     assert!(first.cursor_warp.is_none());
     // No engine readiness, revision, rings, or retained mint.

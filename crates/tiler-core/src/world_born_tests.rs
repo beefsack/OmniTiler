@@ -2157,33 +2157,30 @@ fn toggle_float_on_maximized_birth_refuses_without_clear() {
         w: 150,
         h: 120,
     };
-    match engine
-        .handle_report(
-            &report_full(
-                2,
-                2,
-                vec![screen("out-a", 0)],
-                vec![born_maximized("win-born", "out-a", 100)],
-                Vec::new(),
-                "",
-                Some(7),
-                Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                    window: "win-born".to_owned(),
-                    float_rect: Some(target),
-                })),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
+    match engine.handle_report(
+        &report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![born_maximized("win-born", "out-a", 100)],
+            Vec::new(),
+            "",
+            Some(7),
+            Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                window: "win-born".to_owned(),
+                float_rect: Some(target),
+            })),
+        ),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.clone()),
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
             }),
             "expected ToggleFloat refusal"
         ),
-        other => panic!("expected ToggleFloat refusal, got {other:?}"),
+        (other, _) => panic!("expected ToggleFloat refusal, got {other:?}"),
     }
     assert_eq!(engine.born_retained_len(), 1, "refusal keeps the binding");
     assert!(

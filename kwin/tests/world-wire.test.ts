@@ -25,6 +25,7 @@ import {
     parseWorldReply,
 } from "../src/world-report";
 import { buildHandshakeRequest, defaultKwinCapabilities, ownApplicationIdentity } from "../src/world-connection";
+import { createMiniBroker, parseRawEvalWithSettlements } from "./world-wire-harness";
 
 interface FakeDesktop {
     id: string;
@@ -170,7 +171,7 @@ function acceptCapture(gen: string, envelope: Record<string, unknown>, rev: stri
             visibility: null, visibility_auth: "untouched", visibility_hold: "",
             state: [],
         }],
-        transfers: [], effects: [], focusRequest: null, result: null,
+        transfers: [], effects: [], focusRequest: null, dragPreview: null,
         gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
@@ -415,7 +416,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         assert.equal(parsed.obs, "9", "obs independent of the native watermark");
         assert.equal(parsed.source, envelope["source"]);
         assert.equal(parsed.nativeInvalid, envelope["nativeInvalid"]);
-        assert.equal(parsed.result, null, "actuator lane never carries the terminal result");
+        assert.equal(parsed.dragPreview, null, "core reply carries null dragPreview");
         auto.callback(replyText);
         assert.ok(flow.world.geometryWrites.some((w) => w.startsWith("win-a@10,10")));
         // A stale rev on a newer watermark applies nothing further.
@@ -439,13 +440,19 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         const drainedBody = JSON.parse(drained.payload) as Record<string, unknown>;
         drained.callback(acceptCapture("gen-1", drainedBody, "1"));
         assert.equal(flow.world.geometryWrites.length, writes, "stale rev applies nothing");
-        // The parser decodes correlated results truthfully (never a parser
-        // default): success omits the no-space marker on the wire and fills
-        // false, so actuator-side null-stripping is broker behavior only.
-        // Exact vectors are immutable: every mutation works on a clone.
+        // The parser decodes TakeCommandResult truthfully: success omits the
+        // no-space marker on the wire and fills false.
+        const takeFloat = parseWorldReply(JSON.stringify({
+            v: 4, outcome: "ready", gen: "gen-1", globalCmd: "1",
+            result: { op: "toggle-float", win: "win-a", rect: [10, 20, 640, 480] },
+        }));
+        assert.ok(takeFloat !== null && !isWorldRejection(takeFloat) && "outcome" in takeFloat && takeFloat.outcome === "ready");
+        if (takeFloat !== null && !isWorldRejection(takeFloat) && "outcome" in takeFloat && takeFloat.outcome === "ready") {
+            assert.deepEqual(takeFloat.result, { op: "toggle-float", win: "win-a", rect: [10, 20, 640, 480], noSpace: false });
+        }
+        // Core reply rejects any legacy `result` lane.
         const dir = join("..", "test-fixtures", "world-wire", "v4-active", "messages");
         const floatBody = JSON.parse(readFileSync(join(dir, "reply-result-float-placed.json"), "utf8")) as Record<string, unknown>;
-        assert.ok(!("noSpace" in (floatBody["result"] as Record<string, unknown>)), "success omits noSpace on the wire");
         const boundFloat = JSON.stringify({ ...floatBody, source: "src-a", nativeInvalid: "1", clock: "2", gestureAssoc: null, gestureSettledAssoc: null });
         const parsedFloat = parseWorldReply(boundFloat);
         assert.ok(parsedFloat !== null && isCoreWorldReply(parsedFloat));
@@ -453,15 +460,9 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
             flow.handle.stop();
             return;
         }
-        assert.deepEqual(parsedFloat.result, { op: "toggle-float", win: "win-a", rect: [10, 20, 640, 480], noSpace: false });
-        const strippedFloat = JSON.stringify({ ...floatBody, result: null, source: "src-a", nativeInvalid: "1", clock: "2", gestureAssoc: null, gestureSettledAssoc: null });
-        const parsedStripped = parseWorldReply(strippedFloat);
-        assert.ok(parsedStripped !== null && isCoreWorldReply(parsedStripped));
-        if (!isCoreWorldReply(parsedStripped)) {
-            flow.handle.stop();
-            return;
-        }
-        assert.equal(parsedStripped.result, null, "broker-stripped result binds null");
+        assert.equal(parsedFloat.dragPreview, null);
+        const withLegacyResult = JSON.stringify({ ...floatBody, result: null, source: "src-a", nativeInvalid: "1", clock: "2", gestureAssoc: null, gestureSettledAssoc: null });
+        assert.equal(parseWorldReply(withLegacyResult), null, "legacy core result key refuses");
         flow.handle.stop();
     });
 
@@ -893,5 +894,65 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         )));
         const queueReq = JSON.parse(buildQueueRequest("c", "gen-1", "1", { op: "focus", win: "w" })) as Record<string, unknown>;
         assert.deepEqual(queueReq, { v: 4, gen: "gen-1", client: "c", clientCmd: "1", command: { op: "focus", win: "w" } });
+    });
+
+    it("MiniBroker settlement seam: non-issuing stays pending, ready-null needs matching seq, malformed throws", () => {
+        const setupBroker = () => {
+            const broker = createMiniBroker();
+            broker.bindDiscovery(JSON.stringify({ v: 4, type: "handshake-reply", adapter: "adp-1", gen: "gen-1" }));
+            const queued = JSON.parse(broker.answerQueue(JSON.stringify({
+                v: 4, gen: "gen-1", client: "c", clientCmd: "1", command: { op: "focus", win: "w" },
+            }))) as Record<string, unknown>;
+            assert.equal(queued["outcome"], "queued");
+            const env = JSON.stringify({
+                v: 4, adapter: "adp-1", gen: "gen-1", source: "src-1", sourceSeq: "1", nativeInvalid: "0", report: {},
+            });
+            const stamped = JSON.parse(broker.stampCapture(env)) as Record<string, unknown>;
+            assert.equal(stamped["cmdSeq"], "1");
+            return { broker, env };
+        };
+
+        // Empty settlements (non-issuing) leave take pending.
+        {
+            const { broker, env } = setupBroker();
+            const bound = JSON.parse(broker.bindReply(JSON.stringify({ dragPreview: null }), env, [])) as Record<string, unknown>;
+            assert.ok(!("result" in bound), "bindReply does not fabricate result:null");
+            const take = JSON.parse(broker.answerTake(JSON.stringify({ v: 4, gen: "gen-1", client: "c", clientCmd: "1" }))) as Record<string, unknown>;
+            assert.equal(take["outcome"], "pending");
+        }
+
+        // Mismatched seq does not settle; matching seq with explicit null settles ready-null.
+        {
+            const { broker, env } = setupBroker();
+            broker.bindReply(JSON.stringify({ dragPreview: null }), env, [{ seq: "99", result: null }]);
+            const stillPending = JSON.parse(broker.answerTake(JSON.stringify({ v: 4, gen: "gen-1", client: "c", clientCmd: "1" }))) as Record<string, unknown>;
+            assert.equal(stillPending["outcome"], "pending");
+
+            broker.bindReply(JSON.stringify({ dragPreview: null }), env, [{ seq: "1", result: null }]);
+            const readyNull = JSON.parse(broker.answerTake(JSON.stringify({ v: 4, gen: "gen-1", client: "c", clientCmd: "1" }))) as Record<string, unknown>;
+            assert.equal(readyNull["outcome"], "ready");
+            assert.equal(readyNull["result"], null);
+        }
+
+        // Rejected settlement maps kind -> failed { kind, message: kind }.
+        {
+            const { broker, env } = setupBroker();
+            broker.bindReply(JSON.stringify({ dragPreview: null }), env, [{ seq: "1", result: { op: "rejected", kind: "focus-unknown" } }]);
+            const failed = JSON.parse(broker.answerTake(JSON.stringify({ v: 4, gen: "gen-1", client: "c", clientCmd: "1" }))) as Record<string, unknown>;
+            assert.equal(failed["outcome"], "failed");
+            assert.equal(failed["kind"], "focus-unknown");
+            assert.equal(failed["message"], "focus-unknown");
+        }
+
+        // Malformed settlement rows fail loudly in both parseRawEvalWithSettlements and bindReply.
+        assert.throws(() => parseRawEvalWithSettlements(JSON.stringify({ reply: "{}", settlements: [{ seq: "01", result: null }] })));
+        assert.throws(() => parseRawEvalWithSettlements(JSON.stringify({ reply: "{}", settlements: [{ seq: "1" }] })));
+        assert.throws(() => parseRawEvalWithSettlements(JSON.stringify({ reply: "{}", settlements: [{ seq: "1", result: { op: "rejected" } }] })));
+        assert.throws(() => parseRawEvalWithSettlements(JSON.stringify({ reply: "{}", settlements: [{ seq: "1", result: { op: "rejected", kind: "" } }] })));
+        {
+            const { broker, env } = setupBroker();
+            assert.throws(() => broker.bindReply("{}", env, [{ seq: "1", result: undefined }]));
+            assert.throws(() => broker.bindReply("{}", env, [{ seq: "1", result: { op: "rejected", kind: 42 } }]));
+        }
     });
 });

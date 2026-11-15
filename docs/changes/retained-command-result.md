@@ -1,6 +1,6 @@
 # Retained command result and drag preview
 
-- Status: approved design note for the final [C3 conversion](core-v4-review.md#user-decisions-2026-11-12); Q1 decided B ([user decisions](#user-decisions-2026-11-15)). Implementation pending. No acknowledged-events lane or every-historical-result delivery promise.
+- Status: approved design note for the final [C3 conversion](core-v4-review.md#user-decisions-2026-11-12); Q1 decided B ([user decisions](#user-decisions-2026-11-15)). Core, protocol, broker and KDE implemented and verified offline (2026-11-16: Rust 3447, KWin 1331; frozen fixture families byte-identical; 44 result-only active `world-wire/v4-active` records retired, behavioural coverage kept via issuing `BatchSettlement`/`TakeCommandResult` tests). KDE native check and macOS/Windows adoption pending. No acknowledged-events lane or every-historical-result delivery promise.
 - Scope: separate live `dragPreview` from command outcomes, and decide whether `WorldReplyV4` retains or removes non-preview `result`. Preserves broker requester-only `TakeCommandResult` ownership (`docs/decisions/contract.md:70`), `intentDesired`, `focusRequest`, and [retained settlement](retained-settlements.md#user-decisions-2026-11-14) lifetime/cleanup rules.
 
 ## Today (source evidence)

@@ -166,9 +166,16 @@ fn test_engine() -> WorldEngine {
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
-    match engine.handle_report(report, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("expected accepted, got {other:?}"),
+    accepted_with_settlements(engine, report).0
+}
+
+fn accepted_with_settlements(
+    engine: &mut WorldEngine,
+    report: &WorldReportV4,
+) -> (WorldReplyV4, Vec<crate::world_report::BatchSettlement>) {
+    match engine.handle_report(report, &[]) {
+        (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("expected accepted, got {other:?}"),
     }
 }
 
@@ -282,14 +289,14 @@ fn explicit_grant_settles_proven_without_arrival_or_current_focus() {
         .cloned()
         .expect("command records memory");
     assert_eq!(memory.get(&domain), Some(&WindowId("w0".to_owned())));
-    let reply = accepted(&mut engine, &settle);
+    let (reply, settlements) = accepted_with_settlements(&mut engine, &settle);
     assert!(
         reply.effects.is_empty(),
         "settlement emits nothing: {reply:?}"
     );
     assert!(reply.transfers.is_empty());
     assert!(reply.operation_settled.is_empty());
-    assert_eq!(reply.command_result, None);
+    assert!(settlements.is_empty());
     // Accepted focus memory follows the genuine observation (w1) on the
     // followup: observing the target satisfies the slot, and memory never
     // rolls back to the proven target (w0).
@@ -1502,9 +1509,9 @@ fn accepted_report_rejected_command_retains_feedback_settlement() {
         Some(focus_command("w-ghost")),
     );
     rejected.focus_feedback = vec![row];
-    let reply = accepted(&mut engine, &rejected);
+    let (_reply, settlements) = accepted_with_settlements(&mut engine, &rejected);
     assert_eq!(
-        reply.command_result,
+        settlements.first().and_then(|s| s.result.clone()),
         Some(crate::world_report::CommandResult::Rejected {
             kind: crate::world_report::CommandRejectKind::FocusUnknown
         })
@@ -1574,9 +1581,9 @@ fn consumed_command_report_still_settles_feedback() {
         Some(focus_command("w0")),
     );
     consumed.focus_feedback = vec![row.clone()];
-    match engine.handle_report(&consumed, &[]).0 {
-        WorldOutcome::CommandConsumed(reply) => {
-            assert_eq!(reply.command_result, None);
+    match engine.handle_report(&consumed, &[]) {
+        (WorldOutcome::CommandConsumed(reply), settlements) => {
+            assert!(settlements.is_empty());
             assert!(reply.effects.is_empty());
         }
         other => panic!("expected consumed, got {other:?}"),
@@ -1664,7 +1671,7 @@ fn failed_attempt_keeps_accepted_memory_with_no_retry_or_side_effects() {
     // No accepted-choice rollback, no retry, no transfers or operation
     // events on the followup observation.
     assert_eq!(engine.last_active_window, memory);
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             4,
@@ -1679,5 +1686,5 @@ fn failed_attempt_keeps_accepted_memory_with_no_retry_or_side_effects() {
     assert!(reply.effects.is_empty(), "no focus retry: {reply:?}");
     assert!(reply.transfers.is_empty());
     assert!(reply.operation_settled.is_empty());
-    assert_eq!(reply.command_result, None);
+    assert!(settlements.is_empty());
 }

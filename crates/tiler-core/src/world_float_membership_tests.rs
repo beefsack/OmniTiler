@@ -159,9 +159,19 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("expected accepted, got {other:?}"),
+    accepted_with_settlements(engine, report).0
+}
+
+fn accepted_with_settlements(
+    engine: &mut WorldEngine,
+    report: &WorldReportV4,
+) -> (
+    crate::world_report::WorldReplyV4,
+    Vec<crate::world_report::BatchSettlement>,
+) {
+    match engine.handle_report(report, &[]) {
+        (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("expected accepted, got {other:?}"),
     }
 }
 
@@ -1126,30 +1136,27 @@ fn dialog_hints_null_stays_float_member_without_frame_write() {
     assert!(back.transfers.is_empty(), "{:?}", back.transfers);
 
     // Dependent toggle stays fail-closed without replacing nulls.
-    match engine
-        .handle_report(
-            &report(
-                4,
-                4,
-                vec![
-                    dialog_hints_null("win-d", "out-a", 0),
-                    fact("win-t", "out-b", 800),
-                ],
-                vec![],
-                Some(11),
-                Some(WorldCommand::Operation(
-                    crate::boundary::CoreCommand::ToggleFloat {
-                        window: "win-d".to_owned(),
-                        float_rect: None,
-                    },
-                )),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
+    match engine.handle_report(
+        &report(
+            4,
+            4,
+            vec![
+                dialog_hints_null("win-d", "out-a", 0),
+                fact("win-t", "out-b", 800),
+            ],
+            vec![],
+            Some(11),
+            Some(WorldCommand::Operation(
+                crate::boundary::CoreCommand::ToggleFloat {
+                    window: "win-d".to_owned(),
+                    float_rect: None,
+                },
+            )),
+        ),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.clone()),
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
             }),
@@ -1232,7 +1239,7 @@ fn hints_null_float_move_refuses_without_side_effects() {
             .is_some_and(|fact| fact.hints.is_none()),
         "raw hints stay None"
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             2,
@@ -1250,7 +1257,7 @@ fn hints_null_float_move_refuses_without_side_effects() {
             }),
         ),
     );
-    match &reply.command_result {
+    match settlements.first().and_then(|s| s.result.as_ref()) {
         Some(CommandResult::Directional { outcome, .. }) => assert_eq!(
             *outcome,
             DirectionalOutcome::MoveFloatRefusedConstraints,
@@ -1302,7 +1309,7 @@ fn hints_null_float_move_refuses_without_side_effects() {
             None,
         ),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut cleared_engine,
         &report(
             2,
@@ -1317,7 +1324,7 @@ fn hints_null_float_move_refuses_without_side_effects() {
             }),
         ),
     );
-    match &reply.command_result {
+    match settlements.first().and_then(|s| s.result.as_ref()) {
         Some(CommandResult::Directional { outcome, .. }) => assert_eq!(
             *outcome,
             DirectionalOutcome::MoveFloatRefusedConstraints,
@@ -1341,7 +1348,7 @@ fn hints_null_float_move_refuses_without_side_effects() {
         hints: Some(WindowSizeHints::none()),
         ..dialog_hints_null("win-d", "out-a", 0)
     };
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             3,
@@ -1356,7 +1363,7 @@ fn hints_null_float_move_refuses_without_side_effects() {
             }),
         ),
     );
-    match &reply.command_result {
+    match settlements.first().and_then(|s| s.result.as_ref()) {
         Some(CommandResult::Directional { outcome, .. }) => assert_eq!(
             *outcome,
             DirectionalOutcome::MoveFloatApplied,
@@ -1397,7 +1404,7 @@ fn hints_null_float_move_refuses_without_side_effects() {
             None,
         ),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut capped_engine,
         &report(
             2,
@@ -1412,7 +1419,7 @@ fn hints_null_float_move_refuses_without_side_effects() {
             }),
         ),
     );
-    match &reply.command_result {
+    match settlements.first().and_then(|s| s.result.as_ref()) {
         Some(CommandResult::Directional { outcome, .. }) => assert_eq!(
             *outcome,
             DirectionalOutcome::MoveFloatRefusedConstraints,
@@ -1651,7 +1658,7 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
             None,
         ),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             2,
@@ -1666,7 +1673,7 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
             }),
         ),
     );
-    match &reply.command_result {
+    match settlements.first().and_then(|s| s.result.as_ref()) {
         Some(CommandResult::Directional { outcome, .. }) => {
             assert_eq!(*outcome, DirectionalOutcome::MoveFloatApplied, "{reply:?}")
         }
@@ -1775,7 +1782,7 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
             None,
         ),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut max_engine,
         &report(
             2,
@@ -1790,9 +1797,9 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
             }),
         ),
     );
-    match &reply.command_result {
+    match settlements.first().and_then(|s| s.result.as_ref()) {
         Some(CommandResult::Directional { outcome, .. }) => {
-            assert_eq!(*outcome, DirectionalOutcome::NeedClear, "{reply:?}")
+            assert_eq!(outcome, &DirectionalOutcome::NeedClear, "{reply:?}")
         }
         other => panic!("expected NeedClear, got {other:?}"),
     }

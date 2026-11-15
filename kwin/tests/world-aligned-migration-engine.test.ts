@@ -23,7 +23,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
-import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
+import { createMiniBroker, parseRawEvalWithSettlements, type MiniBroker } from "./world-wire-harness";
 
 function repoRoot(): string {
     let dir = resolve(process.cwd());
@@ -368,8 +368,8 @@ async function makeHarness(): Promise<Harness> {
             // with a nulled terminal result.
             const envelope = (harness.calls[index] as CapturedCall).payload;
             const stamped = harness.broker.stampCapture(envelope);
-            const coreReply = await harness.bridge.send("DescribeWorld", stamped);
-            const reply = harness.broker.bindReply(coreReply, envelope);
+            const { reply: coreReply, settlements } = parseRawEvalWithSettlements(await harness.bridge.send("DescribeWorldWithSettlements", stamped));
+            const reply = harness.broker.bindReply(coreReply, envelope, settlements);
             harness.answered.add(index);
             harness.replies.set(index, reply);
             (harness.calls[index] as CapturedCall).callback(reply);
@@ -769,7 +769,7 @@ describe("world migration engine", () => {
             );
             assert.ok(drainIndex >= 0, "queued command drains on a fresh capture");
             const migrateReply = JSON.parse(h.replies.get(drainIndex) as string) as Record<string, unknown>;
-            assert.equal(migrateReply["result"], null, "actuator lane never carries the terminal result");
+            assert.equal("result" in migrateReply, false, "actuator lane never carries the terminal result");
             const result = lastTakeResult(h);
             assert.equal(result["op"], "migrate-workspace");
             assert.equal(result["sourceOut"], "out-a");

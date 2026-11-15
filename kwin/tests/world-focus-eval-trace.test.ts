@@ -82,7 +82,7 @@ function replyText(opts: {
         transfers: [],
         effects: [],
         focusRequest: opts.focusRequest,
-        result: null,
+        dragPreview: null,
     });
 }
 

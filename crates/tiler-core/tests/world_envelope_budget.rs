@@ -320,31 +320,28 @@ fn late_command_refusal_rolls_back_without_mutation() {
     // Same-output send to an unknown workspace refuses after staging:
     // no transfer retained, no ring/view churn; the refused sequence still
     // consumes and the issuing revision advances by exactly one.
-    match engine
-        .handle_report(
-            &report(
-                4,
-                vec![fact("win-a", "out-a", 0)],
-                Some(11),
-                Some(WorldCommand::Send {
-                    window: WindowId("win-a".to_owned()),
-                    target_output: OutputId("out-a".to_owned()),
-                    target_workspace: "ws-999".to_owned(),
-                    follow: false,
-                }),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
+    match engine.handle_report(
+        &report(
+            4,
+            vec![fact("win-a", "out-a", 0)],
+            Some(11),
+            Some(WorldCommand::Send {
+                window: WindowId("win-a".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: "ws-999".to_owned(),
+                follow: false,
+            }),
+        ),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.clone()),
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::SendTargetUnknown
             }),
             "unknown workspace refuses with a typed result"
         ),
-        other => panic!("unknown workspace must refuse, got {other:?}"),
+        (other, _) => panic!("unknown workspace must refuse, got {other:?}"),
     }
     assert_eq!(engine.state_revision(), revision + 1);
     assert!(engine.retained_transfers().is_empty());

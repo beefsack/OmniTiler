@@ -14,7 +14,7 @@ import { createInterface } from "node:readline";
 import { dirname, join, resolve } from "node:path";
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
 import { parseWorldReply, isCoreWorldReply } from "../src/world-report";
-import { createMiniBroker } from "./world-wire-harness";
+import { createMiniBroker, parseRawEvalWithSettlements } from "./world-wire-harness";
 
 const WS = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const WIN_A = "11111111-1111-1111-1111-111111111111";
@@ -281,9 +281,9 @@ describe("world outer-gap regression", () => {
             assert.ok(index >= 0, "expected a queued DescribeWorld dispatch");
             const envelope = (calls[index] as CapturedCall).payload;
             const stamped = broker.stampCapture(envelope);
-            const raw = await bridge.send("DescribeWorld", stamped);
+            const { reply: raw, settlements } = parseRawEvalWithSettlements(await bridge.send("DescribeWorldWithSettlements", stamped));
             assert.notEqual((JSON.parse(raw) as Record<string, unknown>)["outcome"], "rejected", `real strict engine accepts the genuine producer capture, got ${raw.slice(0, 400)}`);
-            const bound = broker.bindReply(raw, envelope);
+            const bound = broker.bindReply(raw, envelope, settlements);
             answered.add(index);
             replies.set(index, bound);
             (calls[index] as CapturedCall).callback(bound);

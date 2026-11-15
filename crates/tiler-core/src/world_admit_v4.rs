@@ -757,7 +757,7 @@ impl WorldEngine {
             transfers: Vec::new(),
             effects: Vec::new(),
             focus_request: None,
-            command_result: None,
+            drag_preview: None,
             gesture_settled: None,
             operation_settled: Vec::new(),
             native_creations: Vec::new(),

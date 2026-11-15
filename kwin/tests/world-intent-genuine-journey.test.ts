@@ -18,7 +18,7 @@ import { dirname, join, resolve } from "node:path";
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
 import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
 import { createWorldIntentStore } from "../src/world-intent-store";
-import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
+import { createMiniBroker, parseRawEvalWithSettlements, type MiniBroker } from "./world-wire-harness";
 
 function repoRoot(): string {
     let dir = resolve(process.cwd());
@@ -370,13 +370,13 @@ async function makeHarness(): Promise<Harness> {
         next.done = true;
         const drainedBefore = broker.drained.length;
         const stamped = broker.stampCapture(next.payload);
-        const raw = await bridge.send("DescribeWorld", stamped);
+        const { reply: raw, settlements } = parseRawEvalWithSettlements(await bridge.send("DescribeWorldWithSettlements", stamped));
         assert.equal(
             (JSON.parse(raw) as Record<string, unknown>)["outcome"] ?? "accepted",
             "accepted",
             `engine accepts the capture: ${raw.slice(0, 300)}`,
         );
-        const bound = broker.bindReply(raw, next.payload);
+        const bound = broker.bindReply(raw, next.payload, settlements);
         replies.push(bound);
         next.callback(bound);
         runTimers();

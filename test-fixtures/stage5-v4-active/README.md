@@ -22,7 +22,16 @@ New keys versus frozen `../stage5-v4` (all producer-genuine, never patched):
   (`true` for this shared-native KDE route).
 - Every capture report carries the required `foregroundKnown` bit.
 - Every capture reply carries the required nullable `focusRequest` lane
-  (`null` here: no close intent rides these chains).
+  (`null` here: no close intent rides these chains) and the required nullable
+  `dragPreview` lane, and omits `result` (command outcomes ride issuing
+  `Vec<BatchSettlement>` and requester-only `TakeCommandResult`). In `full`,
+  `reply-preview-0.json` carries a non-null live `dragPreview` (`id: "1"`,
+  `win: "win-b"`, with `frame_auth: "hold"` and `frame_hold: "gesture-barrier"`
+  on `win-a`/`win-b`), and `reply-cover2-0.json` retains that same non-null
+  `dragPreview` (`frame_auth: "controlled"`, `frame_hold: ""`); the
+  corresponding dispatches (`dispatch-preview.json`, `dispatch-preview-b.json`,
+  `dispatch-cover2.json`) carry `dropPreview: null` under the independent
+  live-dispatch hide veto.
 - Capture replies also carry nullable broker `gestureSettledAssoc`, pinned
   independently of current ingress. Retained gesture outcomes remain present
   on later fresh publications; operation/switch outcomes use the current

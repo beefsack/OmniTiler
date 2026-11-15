@@ -153,11 +153,10 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("expected accepted, got {other:?}"),
-    }
+    accepted_with_settlements(engine, report).0
 }
+
+use crate::world_v4_support_tests::accepted_with_settlements;
 
 fn engine_with_zero_outer_gap() -> WorldEngine {
     WorldEngine::new_test_bound_with_initial_settings(
@@ -316,7 +315,7 @@ fn explicit_tile_retry_failure_mints_no_focus_and_never_loops() {
         })
         .collect();
     for seq in [2u64, 3] {
-        let reply = accepted(
+        let (reply, settlements) = accepted_with_settlements(
             &mut engine,
             &report(
                 seq,
@@ -331,15 +330,18 @@ fn explicit_tile_retry_failure_mints_no_focus_and_never_loops() {
                 })),
             ),
         );
-        match &reply.command_result {
-            Some(CommandResult::Float {
-                window,
-                rect,
-                no_space,
-            }) => {
-                assert_eq!(window.0, victim, "retry names the victim");
-                assert_eq!(*rect, None, "still no tile rect");
-                assert!(*no_space, "still exhausted");
+        match &settlements.as_slice() {
+            [s] if matches!(s.result, Some(CommandResult::Float { .. })) => {
+                if let Some(CommandResult::Float {
+                    window,
+                    rect,
+                    no_space,
+                }) = &s.result
+                {
+                    assert_eq!(window.0, victim, "retry names the victim");
+                    assert_eq!(*rect, None, "still no tile rect");
+                    assert!(*no_space, "still exhausted");
+                }
             }
             other => panic!("expected float result, got {other:?}"),
         }
@@ -1999,15 +2001,15 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
                 follow: true,
             }),
         );
-        match engine.handle_report(&send, &[]).0 {
-            WorldOutcome::Accepted(reply) => assert_eq!(
-                reply.command_result,
-                Some(CommandResult::Rejected {
+        match engine.handle_report(&send, &[]) {
+            (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+                settlements.first().and_then(|s| s.result.as_ref()),
+                Some(&CommandResult::Rejected {
                     kind: CommandRejectKind::SendRefused
                 }),
                 "{tag}: expected send-refused"
             ),
-            other => panic!("{tag}: expected send-refused, got {other:?}"),
+            (other, _) => panic!("{tag}: expected send-refused, got {other:?}"),
         }
         assert!(
             engine.retained_transfers().is_empty(),
@@ -2056,15 +2058,15 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
             }),
         );
         let revision_before = engine.state_revision();
-        match engine.handle_report(&send, &[]).0 {
-            WorldOutcome::Accepted(reply) => assert_eq!(
-                reply.command_result,
-                Some(CommandResult::Rejected {
+        match engine.handle_report(&send, &[]) {
+            (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+                settlements.first().and_then(|s| s.result.as_ref()),
+                Some(&CommandResult::Rejected {
                     kind: CommandRejectKind::SendTargetUnknown
                 }),
                 "blind target"
             ),
-            other => panic!("expected send-target-unknown, got {other:?}"),
+            (other, _) => panic!("expected send-target-unknown, got {other:?}"),
         }
         assert_eq!(
             engine.state_revision(),
@@ -2142,15 +2144,15 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
             }),
         );
         let revision_before = engine.state_revision();
-        match engine.handle_report(&send, &[]).0 {
-            WorldOutcome::Accepted(reply) => assert_eq!(
-                reply.command_result,
-                Some(CommandResult::Rejected {
+        match engine.handle_report(&send, &[]) {
+            (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+                settlements.first().and_then(|s| s.result.as_ref()),
+                Some(&CommandResult::Rejected {
                     kind: CommandRejectKind::ScopeHeld
                 }),
                 "clamped source"
             ),
-            other => panic!("expected scope-held, got {other:?}"),
+            (other, _) => panic!("expected scope-held, got {other:?}"),
         }
         assert_eq!(
             engine.state_revision(),
@@ -2227,15 +2229,15 @@ fn second_migration_explicit_refuses_while_directional_resolves_current() {
     retry_explicit.action_foreground = Some(OutputId("out-a".to_owned()));
     retry_explicit.action_outputs =
         vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
-    match engine.handle_report(&retry_explicit, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
+    match engine.handle_report(&retry_explicit, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.as_ref()),
+            Some(&CommandResult::Rejected {
                 kind: CommandRejectKind::MigrationRefused
             }),
             "explicit retry"
         ),
-        other => panic!("explicit retry: expected migration-refused, got {other:?}"),
+        (other, _) => panic!("explicit retry: expected migration-refused, got {other:?}"),
     }
     assert_eq!(
         engine.state_revision(),
@@ -2258,13 +2260,13 @@ fn second_migration_explicit_refuses_while_directional_resolves_current() {
     retry_directional.action_foreground = Some(OutputId("out-a".to_owned()));
     retry_directional.action_outputs =
         vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
-    let applied = match engine.handle_report(&retry_directional, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("directional retry: expected apply, got {other:?}"),
+    let (_applied, settlements) = match engine.handle_report(&retry_directional, &[]) {
+        (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("directional retry: expected apply, got {other:?}"),
     };
-    let flight = applied
-        .command_result
-        .clone()
+    let flight = settlements
+        .first()
+        .and_then(|s| s.result.clone())
         .and_then(|result| match result {
             crate::world_report::CommandResult::Migration { source, .. } => Some(source),
             _ => None,
@@ -2336,7 +2338,7 @@ fn floating_source_migration_carries_without_engine_tree() {
             }),
         ),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             3,
@@ -2358,12 +2360,9 @@ fn floating_source_migration_carries_without_engine_tree() {
         members,
         floats,
         ..
-    }) = reply.command_result.clone()
+    }) = settlements.first().and_then(|s| s.result.clone())
     else {
-        panic!(
-            "expected migration provenance, got {:?}",
-            reply.command_result
-        );
+        panic!("expected migration provenance, got {settlements:?}");
     };
     assert_eq!(
         (source.output.0.as_str(), source.workspace.0.as_str()),
@@ -2773,7 +2772,7 @@ fn tiled_workspace_migration_carries_float_members() {
             None,
         ),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             3,
@@ -2797,12 +2796,9 @@ fn tiled_workspace_migration_carries_float_members() {
     assert_eq!(migration.target_output.0, "out-b");
     let Some(CommandResult::Migration {
         members, floats, ..
-    }) = reply.command_result.clone()
+    }) = settlements.first().and_then(|s| s.result.clone())
     else {
-        panic!(
-            "expected migration provenance, got {:?}",
-            reply.command_result
-        );
+        panic!("expected migration provenance, got {settlements:?}");
     };
     assert!(
         members.iter().any(|w| w.0 == "w0"),
@@ -3092,7 +3088,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
     let mut fullscreen_w1 = fact("w1", "out-a", 100);
     fullscreen_w1.fullscreen = Some(true);
     fullscreen_w1.rect = Some(fullscreen_frame);
-    let floated = accepted(
+    let (floated, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             2,
@@ -3107,7 +3103,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             })),
         ),
     );
-    match &floated.command_result {
+    match settlements.first().and_then(|s| s.result.as_ref()) {
         Some(CommandResult::Float {
             window,
             rect,
@@ -3215,7 +3211,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
     float_full.transient = Some(true);
     float_full.fullscreen = Some(true);
     float_full.rect = Some(fullscreen_frame);
-    let retiled = accepted(
+    let (retiled, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             4,
@@ -3230,7 +3226,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             })),
         ),
     );
-    match &retiled.command_result {
+    match settlements.first().and_then(|s| s.result.as_ref()) {
         Some(CommandResult::Float {
             window,
             rect,
@@ -3485,7 +3481,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
         let mut fullscreen_w1 = fact("w1", "out-a", 100);
         fullscreen_w1.fullscreen = Some(true);
         fullscreen_w1.rect = Some(fullscreen_frame);
-        let reply = accepted(
+        let (reply, settlements) = accepted_with_settlements(
             &mut engine,
             &report(
                 4,
@@ -3500,7 +3496,7 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
                 })),
             ),
         );
-        match &reply.command_result {
+        match settlements.first().and_then(|s| s.result.as_ref()) {
             Some(CommandResult::Float { window, rect, .. }) => {
                 assert_eq!(window.0, "w1");
                 assert_eq!(*rect, Some(durable), "durable beats fallback");
@@ -3517,32 +3513,29 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
     // Maximize still refuses on the same command path, both directions.
     let mut maxed = fact("w1", "out-a", 100);
     maxed.maximized = Some(true);
-    match engine
-        .handle_report(
-            &report(
-                5,
-                screens.clone(),
-                vec![fact("w0", "out-a", 0), maxed],
-                "w0",
-                vec![],
-                Some(5),
-                Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                    window: "w1".to_owned(),
-                    float_rect: None,
-                })),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
+    match engine.handle_report(
+        &report(
+            5,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), maxed],
+            "w0",
+            vec![],
+            Some(5),
+            Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                window: "w1".to_owned(),
+                float_rect: None,
+            })),
+        ),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.as_ref()),
+            Some(&CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
             }),
             "maximized toggle must refuse"
         ),
-        other => panic!("maximized toggle must refuse, got {other:?}"),
+        (other, _) => panic!("maximized toggle must refuse, got {other:?}"),
     }
 
     // Floating + maximized unfloat refuses too (post-clear observation
@@ -3576,32 +3569,29 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
     let mut maxed_float = fact("w1", "out-a", 100);
     maxed_float.transient = Some(true);
     maxed_float.maximized = Some(true);
-    match engine
-        .handle_report(
-            &report(
-                3,
-                screens.clone(),
-                vec![fact("w0", "out-a", 0), maxed_float],
-                "w0",
-                vec![],
-                Some(3),
-                Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                    window: "w1".to_owned(),
-                    float_rect: None,
-                })),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
+    match engine.handle_report(
+        &report(
+            3,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), maxed_float],
+            "w0",
+            vec![],
+            Some(3),
+            Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                window: "w1".to_owned(),
+                float_rect: None,
+            })),
+        ),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.as_ref()),
+            Some(&CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
             }),
             "maximized unfloat must refuse"
         ),
-        other => panic!("maximized unfloat must refuse, got {other:?}"),
+        (other, _) => panic!("maximized unfloat must refuse, got {other:?}"),
     }
 }
 
@@ -3615,8 +3605,8 @@ fn toggle_maximize_command_decides_and_reports() {
             window: WindowId(window.to_owned()),
         }
     }
-    fn maximize_of(reply: &crate::world_report::WorldReplyV4) -> (bool, bool, bool) {
-        match &reply.command_result {
+    fn maximize_of(settlements: &[crate::world_report::BatchSettlement]) -> (bool, bool, bool) {
+        match settlements.first().and_then(|s| s.result.as_ref()) {
             Some(CommandResult::Maximize {
                 window,
                 maximized,
@@ -3657,7 +3647,7 @@ fn toggle_maximize_command_decides_and_reports() {
     fs.fullscreen = Some(true);
     // The native paired clear needs proven exitability.
     fs.fullscreen_exitable = Some(true);
-    let toggled = accepted(
+    let (toggled, toggled_settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             2,
@@ -3670,7 +3660,7 @@ fn toggle_maximize_command_decides_and_reports() {
         ),
     );
     assert_eq!(
-        maximize_of(&toggled),
+        maximize_of(&toggled_settlements),
         (true, true, false),
         "fullscreen preimage maximizes with clear"
     );
@@ -3694,9 +3684,10 @@ fn toggle_maximize_command_decides_and_reports() {
     // serializer byte-for-byte (locks the fixed count, no guesses; the
     // 10 bytes are the shared `,"result":` section prefix).
     let mut encoded = String::new();
-    crate::world_sizing::encode_command_result(&mut encoded, &toggled.command_result);
+    let toggled_result = toggled_settlements.first().and_then(|s| s.result.clone());
+    crate::world_sizing::encode_command_result(&mut encoded, &toggled_result);
     assert_eq!(
-        crate::world_sizing::command_result_estimate(&toggled.command_result),
+        crate::world_sizing::command_result_estimate(&toggled_result),
         encoded.len() + 10,
         "result estimate is exact: {encoded}"
     );
@@ -3705,7 +3696,7 @@ fn toggle_maximize_command_decides_and_reports() {
     // tile (seed slot) is the outcome.
     let mut mx = fact("w1", "out-a", 100);
     mx.maximized = Some(true);
-    let untoggled = accepted(
+    let (untoggled, untoggled_settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             3,
@@ -3718,7 +3709,7 @@ fn toggle_maximize_command_decides_and_reports() {
         ),
     );
     assert_eq!(
-        maximize_of(&untoggled),
+        maximize_of(&untoggled_settlements),
         (false, false, true),
         "maximized preimage unmaximizes without clear"
     );
@@ -3737,7 +3728,7 @@ fn toggle_maximize_command_decides_and_reports() {
     both.fullscreen = Some(true);
     both.fullscreen_exitable = Some(true);
     both.maximized = Some(true);
-    let both_reply = accepted(
+    let (_both_reply, both_settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             4,
@@ -3750,12 +3741,12 @@ fn toggle_maximize_command_decides_and_reports() {
         ),
     );
     assert_eq!(
-        maximize_of(&both_reply),
+        maximize_of(&both_settlements),
         (true, true, true),
         "both flags maximize with clear"
     );
     // Ordinary plain tile maximizes with no clear.
-    let plain = accepted(
+    let (plain, plain_settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             5,
@@ -3768,7 +3759,7 @@ fn toggle_maximize_command_decides_and_reports() {
         ),
     );
     assert_eq!(
-        maximize_of(&plain),
+        maximize_of(&plain_settlements),
         (true, false, false),
         "plain tile maximizes without clear"
     );
@@ -3797,8 +3788,8 @@ fn toggle_maximize_command_decides_and_reports() {
         wire.len() - 4,
         "command estimate is exact"
     );
-    // Commandless reports carry no result.
-    let quiet = accepted(
+    // Commandless reports carry no settlements.
+    let (_quiet, quiet_settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             6,
@@ -3811,32 +3802,29 @@ fn toggle_maximize_command_decides_and_reports() {
         ),
     );
     assert!(
-        quiet.command_result.is_none(),
-        "commandless carries nothing"
+        quiet_settlements.is_empty(),
+        "commandless carries nothing: {quiet_settlements:?}"
     );
     // A newer report reusing a consumed sequence reconciles only: the
     // stale command never re-emits its result.
-    let replay = match engine
-        .handle_report(
-            &report(
-                7,
-                screens.clone(),
-                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
-                "w1",
-                vec![],
-                Some(2),
-                Some(toggle("w1")),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::CommandConsumed(reply) => reply,
-        other => panic!("consumed sequence replays quiet, got {other:?}"),
+    let (_replay, replay_settlements) = match engine.handle_report(
+        &report(
+            7,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "w1",
+            vec![],
+            Some(2),
+            Some(toggle("w1")),
+        ),
+        &[],
+    ) {
+        (WorldOutcome::CommandConsumed(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("consumed sequence replays quiet, got {other:?}"),
     };
     assert!(
-        replay.command_result.is_none(),
-        "consumed sequence stays quiet"
+        replay_settlements.is_empty(),
+        "consumed sequence stays quiet: {replay_settlements:?}"
     );
 
     // Floating fullscreen toggles to maximized with a clear while the
@@ -3886,7 +3874,7 @@ fn toggle_maximize_command_decides_and_reports() {
         floated_fs.fullscreen = Some(true);
         floated_fs.fullscreen_exitable = Some(true);
         floated_fs.rect = Some(rect(0, 0, 800, 600));
-        let floated = accepted(
+        let (floated, floated_settlements) = accepted_with_settlements(
             &mut engine,
             &report(
                 3,
@@ -3898,7 +3886,7 @@ fn toggle_maximize_command_decides_and_reports() {
                 Some(toggle("w1")),
             ),
         );
-        match &floated.command_result {
+        match floated_settlements.first().and_then(|s| s.result.as_ref()) {
             Some(CommandResult::Maximize {
                 maximized,
                 clear_fullscreen,
@@ -3923,29 +3911,26 @@ fn toggle_maximize_command_decides_and_reports() {
     }
 
     // Refusal: a command naming an unfocused window never executes.
-    match engine
-        .handle_report(
-            &report(
-                8,
-                screens.clone(),
-                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
-                "w0",
-                vec![],
-                Some(8),
-                Some(toggle("w1")),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
+    match engine.handle_report(
+        &report(
+            8,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "w0",
+            vec![],
+            Some(8),
+            Some(toggle("w1")),
+        ),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.as_ref()),
+            Some(&CommandResult::Rejected {
                 kind: CommandRejectKind::FocusUnknown
             }),
             "unfocused toggle refuses"
         ),
-        other => panic!("unfocused toggle refuses, got {other:?}"),
+        (other, _) => panic!("unfocused toggle refuses, got {other:?}"),
     }
 
     // Refusal: a geometrically held scope never executes.
@@ -4000,29 +3985,26 @@ fn toggle_maximize_command_decides_and_reports() {
             },
             roomy("out-b", 800),
         ];
-        match held_engine
-            .handle_report(
-                &report(
-                    2,
-                    clamped,
-                    vec![fact("w0", "out-a", 710), fact("wb", "out-b", 800)],
-                    "w0",
-                    vec![],
-                    Some(11),
-                    Some(toggle("w0")),
-                ),
-                &[],
-            )
-            .0
-        {
-            WorldOutcome::Accepted(reply) => assert_eq!(
-                reply.command_result,
-                Some(CommandResult::Rejected {
+        match held_engine.handle_report(
+            &report(
+                2,
+                clamped,
+                vec![fact("w0", "out-a", 710), fact("wb", "out-b", 800)],
+                "w0",
+                vec![],
+                Some(11),
+                Some(toggle("w0")),
+            ),
+            &[],
+        ) {
+            (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+                settlements.first().and_then(|s| s.result.as_ref()),
+                Some(&CommandResult::Rejected {
                     kind: CommandRejectKind::ScopeHeld
                 }),
                 "held toggle refuses"
             ),
-            other => panic!("held toggle refuses, got {other:?}"),
+            (other, _) => panic!("held toggle refuses, got {other:?}"),
         }
     }
 
@@ -4073,29 +4055,26 @@ fn toggle_maximize_command_decides_and_reports() {
                 .any(|t| matches!(&t.kind, TransferKind::Window(_))),
             "send retains a window transfer"
         );
-        match flight_engine
-            .handle_report(
-                &report(
-                    3,
-                    screens.clone(),
-                    vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
-                    "w0",
-                    vec![],
-                    Some(3),
-                    Some(toggle("w0")),
-                ),
-                &[],
-            )
-            .0
-        {
-            WorldOutcome::Accepted(reply) => assert_eq!(
-                reply.command_result,
-                Some(CommandResult::Rejected {
+        match flight_engine.handle_report(
+            &report(
+                3,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+                "w0",
+                vec![],
+                Some(3),
+                Some(toggle("w0")),
+            ),
+            &[],
+        ) {
+            (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+                settlements.first().and_then(|s| s.result.as_ref()),
+                Some(&CommandResult::Rejected {
                     kind: CommandRejectKind::TransferInFlight
                 }),
                 "in-flight toggle refuses"
             ),
-            other => panic!("in-flight toggle refuses, got {other:?}"),
+            (other, _) => panic!("in-flight toggle refuses, got {other:?}"),
         }
     }
 }
@@ -4680,7 +4659,7 @@ fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
     assert!(row_of(&arrival, "wf").floating);
     let mut wf_float = float_fact("wf", "out-a", 200);
     wf_float.hints = Some(fixed_hints());
-    let untiled = accepted(
+    let (untiled, untiled_settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             3,
@@ -4695,7 +4674,7 @@ fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
             })),
         ),
     );
-    match &untiled.command_result {
+    match untiled_settlements.first().and_then(|s| s.result.as_ref()) {
         Some(CommandResult::Float {
             window,
             rect,

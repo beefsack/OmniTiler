@@ -53,16 +53,6 @@ pub fn produce(id: &str, fresh_source: &str, pointer: &str) -> String {
             Some(json!(true)),
             ("snapshot-invalid", "visibility-show-fallback"),
         ),
-        "invalid-result-applied-wrapper" => (
-            Some(json!({"op": "applied", "result": source["result"].clone()})),
-            unknown,
-        ),
-        "invalid-result-noop-wrapper" => (Some(json!({"op": "noop"})), unknown),
-        "invalid-result-float-false-marker" => (
-            Some(json!(false)),
-            ("snapshot-invalid", "result-float-false-marker"),
-        ),
-        "invalid-directional-cause-string-empty" => (Some(json!("")), unknown),
         "invalid-operation-outcome-visibility" => (Some(json!("visibility-complete")), unknown),
         "invalid-border-old-absolute" => (Some(json!([8, 8, 800, 600])), extra),
         "invalid-border-cloaked" => (Some(json!("cloaked")), unknown),

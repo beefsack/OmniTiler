@@ -28,7 +28,7 @@ import { createInterface } from "node:readline";
 import { describe, it } from "node:test";
 
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
-import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
+import { createMiniBroker, parseRawEvalWithSettlements, type MiniBroker } from "./world-wire-harness";
 
 class WorldBridge {
     private readonly proc: ChildProcess;
@@ -372,8 +372,8 @@ async function makeLifecycleHarness(opts: MakeOpts = {}): Promise<Harness> {
             assert.ok(index >= 0, "expected a queued DescribeWorld dispatch to flush to the real Engine");
             const envelope = (harness.calls[index] as CapturedCall).payload;
             const stamped = harness.broker.stampCapture(envelope);
-            const coreReply = await harness.bridge.send("DescribeWorld", stamped);
-            const reply = harness.broker.bindReply(coreReply, envelope);
+            const { reply: coreReply, settlements } = parseRawEvalWithSettlements(await harness.bridge.send("DescribeWorldWithSettlements", stamped));
+            const reply = harness.broker.bindReply(coreReply, envelope, settlements);
             harness.answered.add(index);
             harness.replies.set(index, reply);
             (harness.calls[index] as CapturedCall).callback(reply);

@@ -119,14 +119,15 @@ export const STAGE5_V4_S2_STEPS: ReadonlyArray<Stage5V4Step> = [
 ];
 
 // Expected drop-preview producer per step (null: no preview must paint).
-// Mirrors the legacy scenario: preview/a2/a3/preview-b/s2 paint with
-// their producing identity; p5/p6/cover/cover2 paint none.
+// preview/cover2/a2/a3/preview-b/s2 retain or paint with their producing
+// identity (`cover2` omits gesture ingress and retains the pinned `A/1`
+// preview per Q1=B); p5/p6/cover paint none.
 export const STAGE5_V4_PREVIEW_EXPECTATION: Readonly<Record<string, { readonly instance: string; readonly serial: string } | null>> = {
     p5: null,
     p6: null,
     cover: null,
     preview: { instance: STAGE5_V4_GESTURE_A, serial: "1" },
-    cover2: null,
+    cover2: { instance: STAGE5_V4_GESTURE_A, serial: "1" },
     a2: { instance: STAGE5_V4_GESTURE_A, serial: "1" },
     a3: { instance: STAGE5_V4_GESTURE_A, serial: "1" },
     "preview-b": { instance: STAGE5_V4_B_INSTANCE, serial: "1" },
@@ -160,6 +161,11 @@ export function dispatchLiveGesture(
 ): { readonly instance: string; readonly serial: string; readonly coreId: string } | null {
     if (variant === "crossed-b") {
         return { instance: STAGE5_V4_B_INSTANCE, serial: "1", coreId: "2" };
+    }
+    if (step === "cover2") {
+        // cover2 answers the waiter idle (omitted ingress): projection retains
+        // the pinned preview, while no live gesture is active on the subscriber.
+        return null;
     }
     const expected = STAGE5_V4_PREVIEW_EXPECTATION[step] ?? null;
     if (expected === null) {
@@ -726,9 +732,9 @@ export async function recordStage5V4Chain(options: Stage5V4RecordOptions): Promi
             }
         }
         // Frame-hold barrier is core-produced: every window row holds on
-        // the gesture barrier exactly while a preview is live, else holds
-        // nothing (legacy dispatch/projection pairs show the same split).
-        const wantHold = expected === null ? "" : "gesture-barrier";
+        // the gesture barrier while a gesture is live (not merely retained),
+        // else holds nothing.
+        const wantHold = dispatchLiveGesture(step, "normal") === null ? "" : "gesture-barrier";
         for (const row of parsed.windows) {
             if (row.frame_hold !== wantHold) {
                 throw new Error(`projection at step ${step} rev=${parsed.rev} obs=${parsed.obs} row ${row.win} frame_hold is ${JSON.stringify(row.frame_hold)} (expected ${JSON.stringify(wantHold)})`);

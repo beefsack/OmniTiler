@@ -12,7 +12,9 @@ use crate::world_report::{
     StateAttempt, StateProperty, WorldCommand, WorldReportV4,
 };
 use crate::world_state::MAX_RETAINED_STATE_BINDINGS;
-use crate::world_v4_support_tests::{accepted, fact, report_full, screen};
+use crate::world_v4_support_tests::{
+    accepted, accepted_with_settlements, fact, report_full, screen,
+};
 
 fn fs_caps() -> HostCapabilities {
     HostCapabilities {
@@ -177,7 +179,7 @@ fn set_entry_mints_retained_target_with_typed_seq() {
         .expect("member")
         .geometry;
     let rev_before = engine.state_revision;
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -186,7 +188,8 @@ fn set_entry_mints_retained_target_with_typed_seq() {
             set_fullscreen("win-a", true),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     let binding = engine
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
@@ -221,7 +224,7 @@ fn set_entry_mints_retained_target_with_typed_seq() {
 fn toggle_entry_and_exitable_exit_compose() {
     let mut engine = fs_engine();
     accepted(&mut engine, &bootstrap(vec![fs_fact("win-a", None, false)]));
-    let entry = accepted(
+    let (_entry, entry_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -230,9 +233,10 @@ fn toggle_entry_and_exitable_exit_compose() {
             toggle_fullscreen("win-a"),
         ),
     );
-    assert!(entry.command_result.is_none());
+    assert_eq!(entry_settlements.len(), 1);
+    assert!(entry_settlements[0].result.is_none());
     assert_eq!(binding_value(&engine, "win-a"), Some(true));
-    let exit = accepted(
+    let (exit, exit_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -241,7 +245,8 @@ fn toggle_entry_and_exitable_exit_compose() {
             toggle_fullscreen("win-a"),
         ),
     );
-    assert!(exit.command_result.is_none());
+    assert_eq!(exit_settlements.len(), 1);
+    assert!(exit_settlements[0].result.is_none());
     assert_eq!(binding_value(&engine, "win-a"), Some(false));
     // The exit authorizes from the fullscreen row itself.
     let (value, authority, seq) = target_row(&exit, "win-a").expect("exit target");
@@ -260,7 +265,7 @@ fn explicit_exit_needs_exitable_true() {
             &mut engine,
             &bootstrap(vec![fs_fact("win-a", Some(true), true)]),
         );
-        let reply = accepted(
+        let (_reply, settlements) = accepted_with_settlements(
             &mut engine,
             &cmd(
                 2,
@@ -269,8 +274,9 @@ fn explicit_exit_needs_exitable_true() {
                 set_fullscreen("win-a", false),
             ),
         );
+        assert_eq!(settlements.len(), 1);
         assert_eq!(
-            reply.command_result,
+            settlements[0].result,
             Some(CommandResult::Rejected { kind }),
             "exitable {exitable:?}"
         );
@@ -289,12 +295,13 @@ fn unreadable_fullscreen_consumes_state_unknown() {
     accepted(&mut engine, &bootstrap(vec![fs_fact("win-a", None, false)]));
     let mut unknown = fs_fact("win-a", None, false);
     unknown.fullscreen = None;
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(2, 1, vec![unknown], set_fullscreen("win-a", true)),
     );
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        reply.command_result,
+        settlements[0].result,
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::StateUnknown
         })
@@ -310,12 +317,13 @@ fn unsupported_caps_consume_state_unsupported() {
     let mut seed = fs_fact("win-a", None, false);
     seed.maximized = None;
     accepted(&mut engine, &bootstrap(vec![seed.clone()]));
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(2, 1, vec![seed], set_fullscreen("win-a", true)),
     );
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        reply.command_result,
+        settlements[0].result,
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::StateUnsupported
         })
@@ -330,7 +338,7 @@ fn same_state_entry_is_accepted_noop_without_writes() {
         &mut engine,
         &bootstrap(vec![fs_fact("win-a", Some(true), true)]),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -339,7 +347,8 @@ fn same_state_entry_is_accepted_noop_without_writes() {
             set_fullscreen("win-a", true),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     assert!(
         !engine
             .retained_states
@@ -356,11 +365,12 @@ fn entry_from_maximized_is_immediate_with_no_maximize_writes() {
     let mut maximized = fs_fact("win-a", None, false);
     maximized.maximized = Some(true);
     accepted(&mut engine, &bootstrap(vec![maximized.clone()]));
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(2, 1, vec![maximized], set_fullscreen("win-a", true)),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     assert_eq!(binding_value(&engine, "win-a"), Some(true));
     // No maximize writes: no Maximized binding, no maximize result, and
     // the row still publishes fullscreen Controlled under maximize.
@@ -380,11 +390,12 @@ fn ordinary_exit_returns_to_maximize_with_no_extra_maximize_write() {
     let mut row = fs_fact("win-a", Some(true), true);
     row.maximized = Some(true);
     accepted(&mut engine, &bootstrap(vec![row.clone()]));
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(2, 1, vec![row], set_fullscreen("win-a", false)),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     assert_eq!(binding_value(&engine, "win-a"), Some(false));
     assert!(
         !engine
@@ -506,7 +517,7 @@ fn correlated_attempt_settles_and_fresh_command_reauthorizes() {
         .expect("binding");
     assert!(stuck.spent);
     assert_eq!(stuck.disposition, AttemptOutcome::PossiblyExecuted);
-    let reauth = accepted(
+    let (_reauth, reauth_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             4,
@@ -515,7 +526,8 @@ fn correlated_attempt_settles_and_fresh_command_reauthorizes() {
             set_fullscreen("win-a", true),
         ),
     );
-    assert!(reauth.command_result.is_none());
+    assert_eq!(reauth_settlements.len(), 1);
+    assert!(reauth_settlements[0].result.is_none());
     let fresh = engine
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
@@ -545,7 +557,7 @@ fn fullscreen_coexists_with_sticky_on_one_row() {
             },
         ),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -554,7 +566,8 @@ fn fullscreen_coexists_with_sticky_on_one_row() {
             set_fullscreen("win-a", true),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     assert_eq!(binding_value(&engine, "win-a"), Some(true));
     let sticky = engine
         .retained_states
@@ -582,21 +595,21 @@ fn minimized_window_refuses_without_mutation() {
     minimized.minimized = Some(true);
     accepted(&mut engine, &bootstrap(vec![minimized.clone()]));
     let rev_before = engine.state_revision;
-    match engine
-        .handle_report(
-            &cmd(2, 1, vec![minimized], set_fullscreen("win-a", true)),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "expected minimized refusal"
-        ),
-        other => panic!("expected minimized refusal, got {other:?}"),
+    match engine.handle_report(
+        &cmd(2, 1, vec![minimized], set_fullscreen("win-a", true)),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "expected minimized refusal"
+            );
+        }
+        (other, _) => panic!("expected minimized refusal, got {other:?}"),
     }
     assert_eq!(engine.state_revision, rev_before + 1, "refusal issues");
     assert!(engine.retained_states.is_empty());
@@ -643,7 +656,7 @@ fn binding_cap_replacement_allowed_but_new_key_refused_atomic() {
     );
     // Same-window replacement at the exact cap mints through the producer:
     // raw still reads false, so the toggle resolves to true.
-    let replaced = accepted(
+    let (_replaced, replaced_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -652,7 +665,8 @@ fn binding_cap_replacement_allowed_but_new_key_refused_atomic() {
             toggle_fullscreen("win-a"),
         ),
     );
-    assert!(replaced.command_result.is_none());
+    assert_eq!(replaced_settlements.len(), 1);
+    assert!(replaced_settlements[0].result.is_none());
     assert_eq!(binding_value(&engine, "win-a"), Some(true));
     // A distinct new window at the cap refuses before mutation.
     let mut capped = fs_engine();
@@ -679,26 +693,26 @@ fn binding_cap_replacement_allowed_but_new_key_refused_atomic() {
         );
     }
     let revision = capped.state_revision;
-    match capped
-        .handle_report(
-            &cmd(
-                2,
-                1,
-                vec![fs_fact("win-a", None, false)],
-                set_fullscreen("win-a", true),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "expected cap refusal"
+    match capped.handle_report(
+        &cmd(
+            2,
+            1,
+            vec![fs_fact("win-a", None, false)],
+            set_fullscreen("win-a", true),
         ),
-        other => panic!("expected cap refusal, got {other:?}"),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "expected cap refusal"
+            );
+        }
+        (other, _) => panic!("expected cap refusal, got {other:?}"),
     }
     assert_eq!(capped.state_revision, revision + 1, "refusal issues");
     assert!(
@@ -756,9 +770,11 @@ fn unsupported_caps_with_null_fullscreen_consumes_state_unsupported() {
         accepted(&mut engine, &bootstrap(vec![seed]));
         let mut unknown = fs_unknown_fact("win-a", None);
         unknown.maximized = None;
-        let reply = accepted(&mut engine, &cmd(2, 1, vec![unknown], command));
+        let (_reply, settlements) =
+            accepted_with_settlements(&mut engine, &cmd(2, 1, vec![unknown], command));
+        assert_eq!(settlements.len(), 1);
         assert_eq!(
-            reply.command_result,
+            settlements[0].result,
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::StateUnsupported
             }),
@@ -785,7 +801,7 @@ fn stale_true_binding_canceled_by_same_state_set() {
         ),
     );
     assert_eq!(binding_value(&engine, "win-a"), Some(true));
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -794,7 +810,8 @@ fn stale_true_binding_canceled_by_same_state_set() {
             set_fullscreen("win-a", false),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     assert!(
         !engine
             .retained_states
@@ -822,7 +839,7 @@ fn stale_false_binding_canceled_by_same_state_set() {
         ),
     );
     assert_eq!(binding_value(&engine, "win-a"), Some(false));
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -831,7 +848,8 @@ fn stale_false_binding_canceled_by_same_state_set() {
             set_fullscreen("win-a", true),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     assert!(
         !engine
             .retained_states
@@ -878,7 +896,7 @@ fn spent_opposite_binding_canceled_by_same_state_set() {
             .expect("spent")
             .spent
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             4,
@@ -887,7 +905,8 @@ fn spent_opposite_binding_canceled_by_same_state_set() {
             set_fullscreen("win-a", false),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     assert!(
         !engine
             .retained_states
@@ -1465,7 +1484,7 @@ fn replaced_true_false_true_obsoletes_original_stamp() {
         ),
     );
     let rev = first.state_revision;
-    let second = accepted(
+    let (_second, second_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -1474,7 +1493,8 @@ fn replaced_true_false_true_obsoletes_original_stamp() {
             set_fullscreen("win-a", false),
         ),
     );
-    assert!(second.command_result.is_none());
+    assert_eq!(second_settlements.len(), 1);
+    assert!(second_settlements[0].result.is_none());
     assert!(
         !engine
             .retained_states
@@ -1675,7 +1695,7 @@ fn consecutive_toggles_resolve_from_raw_facts_not_queued_intent() {
         .expect("binding")
         .target
         .revision;
-    let second = accepted(
+    let (_second, second_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -1684,7 +1704,8 @@ fn consecutive_toggles_resolve_from_raw_facts_not_queued_intent() {
             toggle_fullscreen("win-a"),
         ),
     );
-    assert!(second.command_result.is_none());
+    assert_eq!(second_settlements.len(), 1);
+    assert!(second_settlements[0].result.is_none());
     let fresh = engine
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
@@ -1699,7 +1720,7 @@ fn consecutive_toggles_resolve_from_raw_facts_not_queued_intent() {
         &mut engine,
         &observe(4, vec![fs_fact("win-a", Some(true), true)]),
     );
-    let exit = accepted(
+    let (_exit, exit_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             5,
@@ -1708,7 +1729,8 @@ fn consecutive_toggles_resolve_from_raw_facts_not_queued_intent() {
             toggle_fullscreen("win-a"),
         ),
     );
-    assert!(exit.command_result.is_none());
+    assert_eq!(exit_settlements.len(), 1);
+    assert!(exit_settlements[0].result.is_none());
     assert_eq!(binding_value(&engine, "win-a"), Some(false));
 }
 
@@ -1752,7 +1774,7 @@ fn spent_same_value_binding_consumes_same_state_without_renewal() {
             &observe(4, vec![fs_fact("win-a", arrived_exitable, arrived_value)]),
         );
         // Fresh SetFullscreen to that same known value: pure no-op.
-        let reply = accepted(
+        let (reply, settlements) = accepted_with_settlements(
             &mut engine,
             &cmd(
                 5,
@@ -1761,8 +1783,9 @@ fn spent_same_value_binding_consumes_same_state_without_renewal() {
                 set_fullscreen("win-a", desired),
             ),
         );
+        assert_eq!(settlements.len(), 1);
         assert!(
-            reply.command_result.is_none(),
+            settlements[0].result.is_none(),
             "desired {desired}: same-state must not reject"
         );
         let binding = engine

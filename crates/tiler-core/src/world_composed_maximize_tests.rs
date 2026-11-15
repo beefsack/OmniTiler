@@ -19,7 +19,9 @@ use crate::world_report::{
     RowDiagnosticLane, ScopeAuthority, StateAttempt, StateProperty, WindowDesire, WindowFact,
     WorldCommand, WorldReportV4,
 };
-use crate::world_v4_support_tests::{accepted, fact, report_full, screen};
+use crate::world_v4_support_tests::{
+    accepted, accepted_with_settlements, fact, report_full, screen,
+};
 
 fn no_max_caps() -> HostCapabilities {
     HostCapabilities {
@@ -120,15 +122,22 @@ fn desire<'a>(reply: &'a crate::world_report::WorldReplyV4, win: &str) -> &'a Wi
         .unwrap_or_else(|| panic!("row for {win}"))
 }
 
-fn maximize_result(reply: &crate::world_report::WorldReplyV4) -> (bool, bool, bool) {
-    match &reply.command_result {
+fn maximize_result(settlements: &[crate::world_report::BatchSettlement]) -> (bool, bool, bool) {
+    match settlements.first().and_then(|s| s.result.clone()) {
         Some(CommandResult::Maximize {
             maximized,
             clear_fullscreen,
             was_maximized,
             ..
-        }) => (*maximized, *clear_fullscreen, *was_maximized),
+        }) => (maximized, clear_fullscreen, was_maximized),
         other => panic!("expected maximize result, got {other:?}"),
+    }
+}
+
+fn float_placement(settlements: &[crate::world_report::BatchSettlement]) -> Rect {
+    match settlements.first().and_then(|s| s.result.as_ref()) {
+        Some(CommandResult::Float { rect, .. }) => rect.expect("float placement"),
+        other => panic!("expected float result, got {other:?}"),
     }
 }
 
@@ -150,7 +159,7 @@ fn composed_tile_toggle_selects_work_area_and_restores_base() {
     assert_eq!(base_a.frame_authority, ScopeAuthority::Controlled);
     assert!(base_a.state.is_empty());
 
-    let toggled = accepted(
+    let (toggled, toggled_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -160,7 +169,7 @@ fn composed_tile_toggle_selects_work_area_and_restores_base() {
             toggle("win-a"),
         ),
     );
-    assert_eq!(maximize_result(&toggled), (true, false, false));
+    assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     let row = desire(&toggled, "win-a");
     assert_eq!(row.frame_authority, ScopeAuthority::Controlled);
     assert_eq!(row.allocation, base_a.allocation, "tile slot retained");
@@ -202,7 +211,7 @@ fn composed_tile_toggle_selects_work_area_and_restores_base() {
     // Clear restores the retained base exactly.
     let mut clear_fact = cfact("win-a", "out-a", 0);
     clear_fact.rect = Some(work_area());
-    let cleared = accepted(
+    let (cleared, cleared_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             4,
@@ -212,7 +221,7 @@ fn composed_tile_toggle_selects_work_area_and_restores_base() {
             toggle("win-a"),
         ),
     );
-    assert_eq!(maximize_result(&cleared), (false, false, true));
+    assert_eq!(maximize_result(&cleared_settlements), (false, false, true));
     let row = desire(&cleared, "win-a");
     assert_eq!(row.effective_frame, base_a.effective_frame);
     assert_eq!(row.allocation, base_a.allocation);
@@ -232,7 +241,7 @@ fn composed_float_toggle_uses_controlled_lane_and_restores_base() {
         &mut engine,
         &bootstrap(1, vec![cfact("win-a", "out-a", 0)], "win-a"),
     );
-    let floated = accepted(
+    let (_floated, floated_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -242,10 +251,7 @@ fn composed_float_toggle_uses_controlled_lane_and_restores_base() {
             toggle_float("win-a"),
         ),
     );
-    let float_base = match &floated.command_result {
-        Some(CommandResult::Float { rect, .. }) => rect.expect("float placement"),
-        other => panic!("expected float result, got {other:?}"),
-    };
+    let float_base = float_placement(&floated_settlements);
     // Settle the one-shot placement at its base frame.
     let mut settled_fact = cfact("win-a", "out-a", 0);
     settled_fact.rect = Some(float_base);
@@ -255,7 +261,7 @@ fn composed_float_toggle_uses_controlled_lane_and_restores_base() {
     assert_eq!(settled_row.frame_authority, ScopeAuthority::Untouched);
     let settled_base = settled_row.effective_frame.expect("float base");
 
-    let toggled = accepted(
+    let (toggled, toggled_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             4,
@@ -269,7 +275,7 @@ fn composed_float_toggle_uses_controlled_lane_and_restores_base() {
             toggle("win-a"),
         ),
     );
-    assert_eq!(maximize_result(&toggled), (true, false, false));
+    assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     let row = desire(&toggled, "win-a");
     assert!(row.floating, "float membership retained");
     assert_eq!(row.frame_authority, ScopeAuthority::Controlled);
@@ -290,11 +296,11 @@ fn composed_float_toggle_uses_controlled_lane_and_restores_base() {
     // Clear restores the retained float base exactly.
     let mut clear_fact = cfact("win-a", "out-a", 0);
     clear_fact.rect = Some(work_area());
-    let cleared = accepted(
+    let (cleared, cleared_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(6, 3, vec![clear_fact], "win-a", toggle("win-a")),
     );
-    assert_eq!(maximize_result(&cleared), (false, false, true));
+    assert_eq!(maximize_result(&cleared_settlements), (false, false, true));
     let row = desire(&cleared, "win-a");
     assert!(row.floating);
     assert_eq!(row.effective_frame, Some(settled_base));
@@ -326,26 +332,26 @@ fn composed_unavailable_frame_authority_refuses_without_recovery() {
         toggle("win-a"),
     );
     barrier.gesture_barrier = true;
-    match engine.handle_report(&barrier, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
+    match engine.handle_report(&barrier, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.as_ref()),
+            Some(&CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
             })
         ),
-        other => panic!("expected refusal, got {other:?}"),
+        (other, _) => panic!("expected refusal, got {other:?}"),
     }
 
     // No autorecovery: the next commandless report keeps the base frame.
-    let quiet = accepted(
+    let (quiet, quiet_settlements) = accepted_with_settlements(
         &mut engine,
         &bootstrap(3, vec![cfact("win-a", "out-a", 0)], "win-a"),
     );
     assert_eq!(desire(&quiet, "win-a").effective_frame, base_frame);
-    assert!(quiet.command_result.is_none());
+    assert!(quiet_settlements.is_empty());
 
     // A fresh press composes once authority returns.
-    let toggled = accepted(
+    let (toggled, toggled_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             4,
@@ -355,7 +361,7 @@ fn composed_unavailable_frame_authority_refuses_without_recovery() {
             toggle("win-a"),
         ),
     );
-    assert_eq!(maximize_result(&toggled), (true, false, false));
+    assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     assert_eq!(desire(&toggled, "win-a").effective_frame, Some(work_area()));
 }
 
@@ -373,7 +379,7 @@ fn composed_null_maximized_admits_ordinarily_and_true_conflicts_fail_closed() {
     assert_eq!(base_row.frame_authority, ScopeAuthority::Controlled);
     // A fresh toggle still composes over the null: the owned bit selects
     // the work-area frame while the base stays retained.
-    let toggled = accepted(
+    let (toggled, toggled_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -383,7 +389,7 @@ fn composed_null_maximized_admits_ordinarily_and_true_conflicts_fail_closed() {
             toggle("win-a"),
         ),
     );
-    assert_eq!(maximize_result(&toggled), (true, false, false));
+    assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     assert_eq!(desire(&toggled, "win-a").effective_frame, Some(work_area()));
 
     // A non-null native claim conflicts with the core-owned overlay: the
@@ -391,23 +397,20 @@ fn composed_null_maximized_admits_ordinarily_and_true_conflicts_fail_closed() {
     // with no intent change.
     let mut conflict = cfact("win-a", "out-a", 0);
     conflict.maximized = Some(true);
-    match engine
-        .handle_report(&cmd(3, 2, vec![conflict], "win-a", toggle("win-a")), &[])
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
+    match engine.handle_report(&cmd(3, 2, vec![conflict], "win-a", toggle("win-a")), &[]) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.as_ref()),
+            Some(&CommandResult::Rejected {
                 kind: CommandRejectKind::FocusUnknown
             })
         ),
-        other => panic!("expected refusal, got {other:?}"),
+        (other, _) => panic!("expected refusal, got {other:?}"),
     }
-    let quiet = accepted(
+    let (quiet, quiet_settlements) = accepted_with_settlements(
         &mut engine,
         &bootstrap(4, vec![cfact("win-a", "out-a", 0)], "win-a"),
     );
-    assert!(quiet.command_result.is_none());
+    assert!(quiet_settlements.is_empty());
     assert_eq!(
         desire(&quiet, "win-a").effective_frame,
         Some(work_area()),
@@ -427,17 +430,14 @@ fn composed_some_false_conflicts_fail_closed() {
     );
     let mut conflict = cfact("win-a", "out-a", 0);
     conflict.maximized = Some(false);
-    match engine
-        .handle_report(&cmd(3, 2, vec![conflict], "win-a", toggle("win-a")), &[])
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
+    match engine.handle_report(&cmd(3, 2, vec![conflict], "win-a", toggle("win-a")), &[]) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.as_ref()),
+            Some(&CommandResult::Rejected {
                 kind: CommandRejectKind::FocusUnknown
             })
         ),
-        other => panic!("expected refusal, got {other:?}"),
+        (other, _) => panic!("expected refusal, got {other:?}"),
     }
     assert!(
         !engine
@@ -458,7 +458,7 @@ fn unsupported_nonnull_maximized_grades_conflicting_and_recovers_on_null() {
         &mut engine,
         &bootstrap(1, vec![cfact("win-a", "out-a", 0)], "win-a"),
     );
-    let toggled = accepted(
+    let (_toggled, toggled_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -468,7 +468,7 @@ fn unsupported_nonnull_maximized_grades_conflicting_and_recovers_on_null() {
             toggle("win-a"),
         ),
     );
-    assert_eq!(maximize_result(&toggled), (true, false, false));
+    assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     assert!(
         engine
             .composed_maximized
@@ -520,18 +520,15 @@ fn unsupported_nonnull_maximized_grades_conflicting_and_recovers_on_null() {
     // applicable gate (kind follows the structural gate, never reordered).
     let mut conflict = cfact("win-a", "out-a", 0);
     conflict.maximized = Some(false);
-    match engine
-        .handle_report(&cmd(5, 2, vec![conflict], "win-a", toggle("win-a")), &[])
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
+    match engine.handle_report(&cmd(5, 2, vec![conflict], "win-a", toggle("win-a")), &[]) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.as_ref()),
+            Some(&CommandResult::Rejected {
                 kind: CommandRejectKind::FocusUnknown
             }),
             "expected refusal against the graded row"
         ),
-        other => panic!("expected refusal against the graded row, got {other:?}"),
+        (other, _) => panic!("expected refusal against the graded row, got {other:?}"),
     }
 
     // A later valid null recovers: the retained bit still selects the
@@ -579,7 +576,7 @@ fn composed_tiled_fullscreen_toggle_clears_native_and_withholds_frame_until_exit
     // Explicit maximize on native fullscreen: only the native clear is
     // issued (no Maximized target); the owned bit is retained but no
     // composed frame is written while raw fullscreen stays true.
-    let replaced = accepted(
+    let (replaced, replaced_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -592,7 +589,7 @@ fn composed_tiled_fullscreen_toggle_clears_native_and_withholds_frame_until_exit
             toggle("win-a"),
         ),
     );
-    assert_eq!(maximize_result(&replaced), (true, true, false));
+    assert_eq!(maximize_result(&replaced_settlements), (true, true, false));
     assert!(
         engine
             .composed_maximized
@@ -659,7 +656,7 @@ fn composed_fullscreen_unexitable_or_unknown_refuses_without_intent_change() {
             &mut engine,
             &bootstrap(1, vec![cfact("win-a", "out-a", 0)], "win-a"),
         );
-        let reply = accepted(
+        let (reply, settlements) = accepted_with_settlements(
             &mut engine,
             &cmd(
                 2,
@@ -670,9 +667,11 @@ fn composed_fullscreen_unexitable_or_unknown_refuses_without_intent_change() {
             ),
         );
         assert!(
-            matches!(&reply.command_result, Some(CommandResult::Rejected { kind: got }) if *got == kind),
-            "exitable {exitable:?} rejects as {kind:?}, got {:?}",
-            reply.command_result
+            matches!(
+                settlements.first().and_then(|s| s.result.as_ref()),
+                Some(CommandResult::Rejected { kind: got }) if *got == kind
+            ),
+            "exitable {exitable:?} rejects as {kind:?}, got {settlements:?}"
         );
         assert!(
             !engine
@@ -684,11 +683,11 @@ fn composed_fullscreen_unexitable_or_unknown_refuses_without_intent_change() {
             fullscreen_state(&reply, "win-a").is_none(),
             "refusal issues no native clear"
         );
-        let quiet = accepted(
+        let (_quiet, quiet_settlements) = accepted_with_settlements(
             &mut engine,
             &bootstrap(3, vec![cfact("win-a", "out-a", 0)], "win-a"),
         );
-        assert!(quiet.command_result.is_none());
+        assert!(quiet_settlements.is_empty());
     }
 }
 
@@ -704,7 +703,7 @@ fn composed_fullscreen_without_caps_refuses_unsupported_without_intent_change() 
         &mut engine,
         &bootstrap(1, vec![cfact("win-a", "out-a", 0)], "win-a"),
     );
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -716,13 +715,12 @@ fn composed_fullscreen_without_caps_refuses_unsupported_without_intent_change() 
     );
     assert!(
         matches!(
-            &reply.command_result,
+            settlements.first().and_then(|s| s.result.as_ref()),
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::StateUnsupported
             })
         ),
-        "missing fullscreen caps rejects unsupported, got {:?}",
-        reply.command_result
+        "missing fullscreen caps rejects unsupported, got {settlements:?}"
     );
     assert!(
         !engine
@@ -738,7 +736,7 @@ fn composed_float_fullscreen_toggle_withholds_overlay_until_raw_exit() {
         &mut engine,
         &bootstrap(1, vec![cfact("win-a", "out-a", 0)], "win-a"),
     );
-    let floated = accepted(
+    let (_floated, floated_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -748,10 +746,7 @@ fn composed_float_fullscreen_toggle_withholds_overlay_until_raw_exit() {
             toggle_float("win-a"),
         ),
     );
-    let float_base = match &floated.command_result {
-        Some(CommandResult::Float { rect, .. }) => rect.expect("float placement"),
-        other => panic!("expected float result, got {other:?}"),
-    };
+    let float_base = float_placement(&floated_settlements);
     let mut settled_fact = cfact("win-a", "out-a", 0);
     settled_fact.rect = Some(float_base);
     accepted(&mut engine, &bootstrap(3, vec![settled_fact], "win-a"));
@@ -762,11 +757,11 @@ fn composed_float_fullscreen_toggle_withholds_overlay_until_raw_exit() {
     full_fact.rect = Some(float_base);
     full_fact.fullscreen = Some(true);
     full_fact.fullscreen_exitable = Some(true);
-    let replaced = accepted(
+    let (replaced, replaced_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(4, 2, vec![full_fact], "win-a", toggle("win-a")),
     );
-    assert_eq!(maximize_result(&replaced), (true, true, false));
+    assert_eq!(maximize_result(&replaced_settlements), (true, true, false));
     let row = desire(&replaced, "win-a");
     assert!(row.floating);
     assert_eq!(row.effective_frame, Some(float_base));
@@ -826,7 +821,7 @@ fn composed_max_on_revokes_stale_same_window_float_placement() {
     );
     // Explicit max-on revokes the obsolete same-window placement token
     // before the work-area frame; other windows keep theirs.
-    let toggled = accepted(
+    let (toggled, toggled_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             4,
@@ -836,7 +831,7 @@ fn composed_max_on_revokes_stale_same_window_float_placement() {
             toggle("win-a"),
         ),
     );
-    assert_eq!(maximize_result(&toggled), (true, false, false));
+    assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     let row = desire(&toggled, "win-a");
     assert_eq!(row.effective_frame, Some(work_area()));
     assert_eq!(row.frame_authority, ScopeAuthority::Controlled);
@@ -874,7 +869,7 @@ fn composed_float_suppressed_pair_holds_clamp_without_retry() {
             toggle_float("win-a"),
         ),
     );
-    let floated = accepted(
+    let (_floated, floated_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -884,7 +879,7 @@ fn composed_float_suppressed_pair_holds_clamp_without_retry() {
             toggle("win-a"),
         ),
     );
-    assert_eq!(maximize_result(&floated), (true, false, false));
+    assert_eq!(maximize_result(&floated_settlements), (true, false, false));
     // Mechanical clamp facts: accepted setter, stable mismatched readback
     // against the work-area target.
     let clamped = Rect {
@@ -1055,7 +1050,7 @@ fn composed_float_full_entry_pending_withholds_restore_token_until_exit() {
         &mut engine,
         &bootstrap(1, vec![cfact("win-a", "out-a", 0)], "win-a"),
     );
-    let floated = accepted(
+    let (_floated, floated_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -1065,10 +1060,7 @@ fn composed_float_full_entry_pending_withholds_restore_token_until_exit() {
             toggle_float("win-a"),
         ),
     );
-    let float_base = match &floated.command_result {
-        Some(CommandResult::Float { rect, .. }) => rect.expect("float placement"),
-        other => panic!("expected float result, got {other:?}"),
-    };
+    let float_base = float_placement(&floated_settlements);
     let mut settled_fact = cfact("win-a", "out-a", 0);
     settled_fact.rect = Some(float_base);
     accepted(&mut engine, &bootstrap(3, vec![settled_fact], "win-a"));
@@ -1118,30 +1110,27 @@ fn composed_float_full_entry_pending_withholds_restore_token_until_exit() {
     );
     // Clearing the overlay while the entry pends refuses: the bit removal
     // itself is a withheld frame write.
-    match engine
-        .handle_report(
-            &cmd(
-                6,
-                4,
-                vec![{
-                    let mut row = cfact("win-a", "out-a", 0);
-                    row.rect = Some(float_base);
-                    row
-                }],
-                "win-a",
-                toggle("win-a"),
-            ),
-            &[],
-        )
-        .0
-    {
-        crate::world_engine::WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
+    match engine.handle_report(
+        &cmd(
+            6,
+            4,
+            vec![{
+                let mut row = cfact("win-a", "out-a", 0);
+                row.rect = Some(float_base);
+                row
+            }],
+            "win-a",
+            toggle("win-a"),
+        ),
+        &[],
+    ) {
+        (crate::world_engine::WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.as_ref()),
+            Some(&CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
             })
         ),
-        other => panic!("expected refusal while the entry pends, got {other:?}"),
+        (other, _) => panic!("expected refusal while the entry pends, got {other:?}"),
     }
     assert!(
         engine
@@ -1203,26 +1192,23 @@ fn composed_tiled_max_off_while_full_entry_pending_refuses_without_intent_change
     );
     // Max-off removes the overlay bit, which would write the base frame
     // beside the queued entry: refuse with the bit retained.
-    match engine
-        .handle_report(
-            &cmd(
-                4,
-                3,
-                vec![cfact("win-a", "out-a", 0), cfact("win-b", "out-a", 100)],
-                "win-a",
-                toggle("win-a"),
-            ),
-            &[],
-        )
-        .0
-    {
-        crate::world_engine::WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
+    match engine.handle_report(
+        &cmd(
+            4,
+            3,
+            vec![cfact("win-a", "out-a", 0), cfact("win-b", "out-a", 100)],
+            "win-a",
+            toggle("win-a"),
+        ),
+        &[],
+    ) {
+        (crate::world_engine::WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.as_ref()),
+            Some(&CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
             })
         ),
-        other => panic!("expected refusal while the entry pends, got {other:?}"),
+        (other, _) => panic!("expected refusal while the entry pends, got {other:?}"),
     }
     assert!(
         engine
@@ -1272,7 +1258,7 @@ fn composed_max_on_revokes_stale_pending_fullscreen_entry() {
     );
     let entry = fullscreen_state(&pending, "win-a").expect("pending fullscreen-true target");
     assert!(entry.value);
-    let toggled = accepted(
+    let (toggled, toggled_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -1282,7 +1268,7 @@ fn composed_max_on_revokes_stale_pending_fullscreen_entry() {
             toggle("win-a"),
         ),
     );
-    assert_eq!(maximize_result(&toggled), (true, false, false));
+    assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     assert!(
         !engine
             .retained_states
@@ -1333,7 +1319,7 @@ fn greport(
 }
 
 fn toggle_on(engine: &mut WorldEngine, base_a_allocation: &mut Option<Rect>) {
-    let toggled = accepted(
+    let (toggled, toggled_settlements) = accepted_with_settlements(
         engine,
         &cmd(
             2,
@@ -1343,7 +1329,7 @@ fn toggle_on(engine: &mut WorldEngine, base_a_allocation: &mut Option<Rect>) {
             toggle("win-a"),
         ),
     );
-    assert_eq!(maximize_result(&toggled), (true, false, false));
+    assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     assert_eq!(desire(&toggled, "win-a").effective_frame, Some(work_area()));
     *base_a_allocation = desire(&toggled, "win-a").allocation;
     assert!(
@@ -1370,7 +1356,7 @@ fn composed_committed_move_clears_bit_before_reflow() {
     // START binds while the overlay shows the work area.
     let mut start_fact = cfact("win-a", "out-a", 0);
     start_fact.rect = Some(work_area());
-    let start = accepted(
+    let (_start, start_settlements) = accepted_with_settlements(
         &mut engine,
         &greport(
             3,
@@ -1385,7 +1371,7 @@ fn composed_committed_move_clears_bit_before_reflow() {
             ),
         ),
     );
-    assert!(start.command_result.is_none());
+    assert!(start_settlements.is_empty());
     assert!(
         engine
             .composed_maximized
@@ -1785,7 +1771,7 @@ fn composed_close_retires_bit_and_restart_births_ordinary() {
             .contains(&WindowId("win-a".to_owned())),
         "fresh engine carries no overlay"
     );
-    let reborn = accepted(
+    let (reborn, reborn_settlements) = accepted_with_settlements(
         &mut restarted,
         &bootstrap(
             1,
@@ -1798,7 +1784,7 @@ fn composed_close_retires_bit_and_restart_births_ordinary() {
         Some(work_area()),
         "restart births the ordinary base frame"
     );
-    assert!(reborn.command_result.is_none());
+    assert!(reborn_settlements.is_empty());
 }
 
 #[test]
@@ -1844,7 +1830,7 @@ fn float_compose_on(engine: &mut WorldEngine) -> Rect {
         &mut *engine,
         &bootstrap(1, vec![cfact("win-a", "out-a", 0)], "win-a"),
     );
-    let floated = accepted(
+    let (_floated, floated_settlements) = accepted_with_settlements(
         &mut *engine,
         &cmd(
             2,
@@ -1854,20 +1840,17 @@ fn float_compose_on(engine: &mut WorldEngine) -> Rect {
             toggle_float("win-a"),
         ),
     );
-    let float_base = match &floated.command_result {
-        Some(CommandResult::Float { rect, .. }) => rect.expect("float placement"),
-        other => panic!("expected float result, got {other:?}"),
-    };
+    let float_base = float_placement(&floated_settlements);
     let mut settled_fact = cfact("win-a", "out-a", 0);
     settled_fact.rect = Some(float_base);
     accepted(&mut *engine, &bootstrap(3, vec![settled_fact], "win-a"));
     let mut toggle_fact = cfact("win-a", "out-a", 0);
     toggle_fact.rect = Some(float_base);
-    let toggled = accepted(
+    let (toggled, toggled_settlements) = accepted_with_settlements(
         &mut *engine,
         &cmd(4, 2, vec![toggle_fact], "win-a", toggle("win-a")),
     );
-    assert_eq!(maximize_result(&toggled), (true, false, false));
+    assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     assert_eq!(desire(&toggled, "win-a").effective_frame, Some(work_area()));
     assert!(
         engine
@@ -2258,14 +2241,11 @@ fn composed_float_cross_output_release_clears_and_rehomes() {
     let mut engine = engine();
     let windows = || vec![cfact("win-a", "out-a", 0), cfact("win-c", "out-b", 900)];
     accepted(&mut engine, &bootstrap_two(1, windows(), "win-a"));
-    let floated = accepted(
+    let (_floated, floated_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd_two(2, 1, windows(), "win-a", toggle_float("win-a")),
     );
-    let float_base = match &floated.command_result {
-        Some(CommandResult::Float { rect, .. }) => rect.expect("float placement"),
-        other => panic!("expected float result, got {other:?}"),
-    };
+    let float_base = float_placement(&floated_settlements);
     let mut settled_fact = cfact("win-a", "out-a", 0);
     settled_fact.rect = Some(float_base);
     accepted(
@@ -2274,7 +2254,7 @@ fn composed_float_cross_output_release_clears_and_rehomes() {
     );
     let mut toggle_fact = cfact("win-a", "out-a", 0);
     toggle_fact.rect = Some(float_base);
-    let toggled = accepted(
+    let (toggled, toggled_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd_two(
             4,
@@ -2284,7 +2264,7 @@ fn composed_float_cross_output_release_clears_and_rehomes() {
             toggle("win-a"),
         ),
     );
-    assert_eq!(maximize_result(&toggled), (true, false, false));
+    assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     assert_eq!(desire(&toggled, "win-a").effective_frame, Some(work_area()));
     assert!(
         engine
@@ -2429,7 +2409,7 @@ fn composed_empty_output_drag_matches_ordinary_float_outcome() {
         &mut ordinary,
         &bootstrap_two(1, vec![cfact("win-a", "out-a", 0)], "win-a"),
     );
-    let floated = accepted(
+    let (_floated, floated_settlements) = accepted_with_settlements(
         &mut ordinary,
         &cmd_two(
             2,
@@ -2439,10 +2419,7 @@ fn composed_empty_output_drag_matches_ordinary_float_outcome() {
             toggle_float("win-a"),
         ),
     );
-    let float_base = match &floated.command_result {
-        Some(CommandResult::Float { rect, .. }) => rect.expect("float placement"),
-        other => panic!("expected float result, got {other:?}"),
-    };
+    let float_base = float_placement(&floated_settlements);
     let mut settled_fact = cfact("win-a", "out-a", 0);
     settled_fact.rect = Some(float_base);
     accepted(
@@ -2456,7 +2433,7 @@ fn composed_empty_output_drag_matches_ordinary_float_outcome() {
         &mut composed,
         &bootstrap_two(1, vec![cfact("win-a", "out-a", 0)], "win-a"),
     );
-    let floated = accepted(
+    let (_floated, floated_settlements) = accepted_with_settlements(
         &mut composed,
         &cmd_two(
             2,
@@ -2466,10 +2443,7 @@ fn composed_empty_output_drag_matches_ordinary_float_outcome() {
             toggle_float("win-a"),
         ),
     );
-    let float_base = match &floated.command_result {
-        Some(CommandResult::Float { rect, .. }) => rect.expect("float placement"),
-        other => panic!("expected float result, got {other:?}"),
-    };
+    let float_base = float_placement(&floated_settlements);
     let mut settled_fact = cfact("win-a", "out-a", 0);
     settled_fact.rect = Some(float_base);
     accepted(
@@ -2478,11 +2452,11 @@ fn composed_empty_output_drag_matches_ordinary_float_outcome() {
     );
     let mut toggle_fact = cfact("win-a", "out-a", 0);
     toggle_fact.rect = Some(float_base);
-    let toggled = accepted(
+    let (_toggled, toggled_settlements) = accepted_with_settlements(
         &mut composed,
         &cmd_two(4, 2, vec![toggle_fact], "win-a", toggle("win-a")),
     );
-    assert_eq!(maximize_result(&toggled), (true, false, false));
+    assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     assert!(
         composed
             .composed_maximized
@@ -2594,7 +2568,7 @@ fn ordinary_float_gesture_refuses_without_session() {
         &mut engine,
         &bootstrap(1, vec![cfact("win-a", "out-a", 0)], "win-a"),
     );
-    let floated = accepted(
+    let (_floated, floated_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -2604,10 +2578,7 @@ fn ordinary_float_gesture_refuses_without_session() {
             toggle_float("win-a"),
         ),
     );
-    let float_base = match &floated.command_result {
-        Some(CommandResult::Float { rect, .. }) => rect.expect("float placement"),
-        other => panic!("expected float result, got {other:?}"),
-    };
+    let float_base = float_placement(&floated_settlements);
     // No composed overlay: ordinary float gestures never bind.
     let mut settled_fact = cfact("win-a", "out-a", 0);
     settled_fact.rect = Some(float_base);
@@ -2735,8 +2706,10 @@ fn move_dir(window: &str, direction: &str) -> WorldCommand {
     }
 }
 
-fn directional_outcome(reply: &crate::world_report::WorldReplyV4) -> Option<&'static str> {
-    match &reply.command_result {
+fn directional_outcome(
+    settlements: &[crate::world_report::BatchSettlement],
+) -> Option<&'static str> {
+    match settlements.first().and_then(|s| s.result.as_ref()) {
         Some(CommandResult::Directional { outcome, .. }) => Some(outcome.as_str()),
         _ => None,
     }
@@ -2870,7 +2843,7 @@ fn composed_tiled_focus_crosses_adjacent_output() {
                 None,
             ),
         );
-        let toggled = accepted(
+        let (_toggled, toggled_settlements) = accepted_with_settlements(
             &mut engine,
             &report_full(
                 2,
@@ -2883,7 +2856,7 @@ fn composed_tiled_focus_crosses_adjacent_output() {
                 Some(toggle("win-a")),
             ),
         );
-        assert_eq!(maximize_result(&toggled), (true, false, false));
+        assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
         assert!(
             engine
                 .composed_maximized
@@ -2933,7 +2906,7 @@ fn composed_float_focus_single_output_retains() {
     let _base = float_compose_on(&mut engine);
     let mut overlay_fact = cfact("win-a", "out-a", 0);
     overlay_fact.rect = Some(work_area());
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             5,
@@ -2943,7 +2916,10 @@ fn composed_float_focus_single_output_retains() {
             focus_dir("win-a", "right"),
         ),
     );
-    assert_eq!(directional_outcome(&reply), Some("focus-float-retained"));
+    assert_eq!(
+        directional_outcome(&settlements),
+        Some("focus-float-retained")
+    );
     assert!(focus_effect_targets(&reply).is_empty());
     assert!(
         engine
@@ -2981,7 +2957,7 @@ fn composed_float_focus_crosses_to_remembered_target() {
                 None,
             ),
         );
-        let floated = accepted(
+        let (_floated, floated_settlements) = accepted_with_settlements(
             &mut engine,
             &report_full(
                 2,
@@ -2994,10 +2970,7 @@ fn composed_float_focus_crosses_to_remembered_target() {
                 Some(toggle_float("win-a")),
             ),
         );
-        let float_base = match &floated.command_result {
-            Some(CommandResult::Float { rect, .. }) => rect.expect("float placement"),
-            other => panic!("expected float result, got {other:?}"),
-        };
+        let float_base = float_placement(&floated_settlements);
         let settled = || {
             let mut settled_fact = cfact("win-a", "out-a", 0);
             settled_fact.rect = Some(float_base);
@@ -3016,7 +2989,7 @@ fn composed_float_focus_crosses_to_remembered_target() {
                 None,
             ),
         );
-        let toggled = accepted(
+        let (_toggled, toggled_settlements) = accepted_with_settlements(
             &mut engine,
             &report_full(
                 4,
@@ -3029,7 +3002,7 @@ fn composed_float_focus_crosses_to_remembered_target() {
                 Some(toggle("win-a")),
             ),
         );
-        assert_eq!(maximize_result(&toggled), (true, false, false));
+        assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
         assert!(
             engine
                 .composed_maximized
@@ -3131,7 +3104,7 @@ fn composed_float_cross_preserves_destination_bit() {
                 None,
             ),
         );
-        let toggled_t = accepted(
+        let (_toggled_t, toggled_t_settlements) = accepted_with_settlements(
             &mut engine,
             &report_full(
                 2,
@@ -3144,7 +3117,10 @@ fn composed_float_cross_preserves_destination_bit() {
                 Some(toggle("win-t")),
             ),
         );
-        assert_eq!(maximize_result(&toggled_t), (true, false, false));
+        assert_eq!(
+            maximize_result(&toggled_t_settlements),
+            (true, false, false)
+        );
         accepted(
             &mut engine,
             &report_full(
@@ -3161,7 +3137,7 @@ fn composed_float_cross_preserves_destination_bit() {
                 }),
             ),
         );
-        let floated = accepted(
+        let (_floated, floated_settlements) = accepted_with_settlements(
             &mut engine,
             &report_full(
                 4,
@@ -3174,10 +3150,7 @@ fn composed_float_cross_preserves_destination_bit() {
                 Some(toggle_float("win-a")),
             ),
         );
-        let float_base = match &floated.command_result {
-            Some(CommandResult::Float { rect, .. }) => rect.expect("float placement"),
-            other => panic!("expected float result, got {other:?}"),
-        };
+        let float_base = float_placement(&floated_settlements);
         let settled = || {
             let mut settled_fact = cfact("win-a", "out-a", 0);
             settled_fact.rect = Some(float_base);
@@ -3196,7 +3169,7 @@ fn composed_float_cross_preserves_destination_bit() {
                 None,
             ),
         );
-        let toggled_a = accepted(
+        let (_toggled_a, toggled_a_settlements) = accepted_with_settlements(
             &mut engine,
             &report_full(
                 6,
@@ -3209,7 +3182,10 @@ fn composed_float_cross_preserves_destination_bit() {
                 Some(toggle("win-a")),
             ),
         );
-        assert_eq!(maximize_result(&toggled_a), (true, false, false));
+        assert_eq!(
+            maximize_result(&toggled_a_settlements),
+            (true, false, false)
+        );
         let mut overlay_fact = cfact("win-a", "out-a", 0);
         overlay_fact.rect = Some(work_area());
         let reply = accepted(
@@ -3270,7 +3246,7 @@ fn composed_tiled_cross_preserves_destination_bit() {
                 None,
             ),
         );
-        let toggled_c = accepted(
+        let (_toggled_c, toggled_c_settlements) = accepted_with_settlements(
             &mut engine,
             &report_full(
                 2,
@@ -3283,7 +3259,10 @@ fn composed_tiled_cross_preserves_destination_bit() {
                 Some(toggle("win-c")),
             ),
         );
-        assert_eq!(maximize_result(&toggled_c), (true, false, false));
+        assert_eq!(
+            maximize_result(&toggled_c_settlements),
+            (true, false, false)
+        );
         // Explicit focus-by-window returns to win-a without touching the bit.
         accepted(
             &mut engine,
@@ -3301,7 +3280,7 @@ fn composed_tiled_cross_preserves_destination_bit() {
                 }),
             ),
         );
-        let toggled_a = accepted(
+        let (_toggled_a, toggled_a_settlements) = accepted_with_settlements(
             &mut engine,
             &report_full(
                 4,
@@ -3314,7 +3293,10 @@ fn composed_tiled_cross_preserves_destination_bit() {
                 Some(toggle("win-a")),
             ),
         );
-        assert_eq!(maximize_result(&toggled_a), (true, false, false));
+        assert_eq!(
+            maximize_result(&toggled_a_settlements),
+            (true, false, false)
+        );
         // Same-output sibling win-b waits on out-a; the composed subject skips
         // it and continues to the maximized win-c.
         let reply = accepted(
@@ -3362,20 +3344,19 @@ fn composed_tiled_focus_no_vertical_neighbor_and_single_output_refuse_unchanged(
     toggle_on(&mut single, &mut _alloc);
     let windows = || vec![cfact("win-a", "out-a", 0), cfact("win-b", "out-a", 100)];
     for (seq, cmd_seq, dir) in [(3, 2, "up"), (4, 3, "down")] {
-        match single
-            .handle_report(
-                &cmd(seq, cmd_seq, windows(), "win-a", focus_dir("win-a", dir)),
-                &[],
-            )
-            .0
-        {
-            WorldOutcome::Accepted(reply) => assert_eq!(
-                reply.command_result,
-                Some(CommandResult::Rejected {
+        match single.handle_report(
+            &cmd(seq, cmd_seq, windows(), "win-a", focus_dir("win-a", dir)),
+            &[],
+        ) {
+            (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+                settlements.first().and_then(|s| s.result.as_ref()),
+                Some(&CommandResult::Rejected {
                     kind: CommandRejectKind::OperationRefused
                 })
             ),
-            other => panic!("no-vertical-neighbor composed focus refuses unchanged, got {other:?}"),
+            (other, _) => {
+                panic!("no-vertical-neighbor composed focus refuses unchanged, got {other:?}")
+            }
         }
         assert!(
             single
@@ -3383,20 +3364,17 @@ fn composed_tiled_focus_no_vertical_neighbor_and_single_output_refuse_unchanged(
                 .contains(&WindowId("win-a".to_owned()))
         );
     }
-    match single
-        .handle_report(
-            &cmd(5, 4, windows(), "win-a", focus_dir("win-a", "right")),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
+    match single.handle_report(
+        &cmd(5, 4, windows(), "win-a", focus_dir("win-a", "right")),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.as_ref()),
+            Some(&CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
             })
         ),
-        other => panic!("single-output composed focus refuses unchanged, got {other:?}"),
+        (other, _) => panic!("single-output composed focus refuses unchanged, got {other:?}"),
     }
     assert!(
         single
@@ -3418,20 +3396,17 @@ fn composed_tiled_focus_no_vertical_neighbor_and_single_output_refuse_unchanged(
         &cmd_two(2, 1, h_windows(), "win-a", toggle("win-a")),
     );
     for (seq, cmd_seq, dir) in [(3, 2, "up"), (4, 3, "down")] {
-        match horiz
-            .handle_report(
-                &cmd_two(seq, cmd_seq, h_windows(), "win-a", focus_dir("win-a", dir)),
-                &[],
-            )
-            .0
-        {
-            WorldOutcome::Accepted(reply) => assert_eq!(
-                reply.command_result,
-                Some(CommandResult::Rejected {
+        match horiz.handle_report(
+            &cmd_two(seq, cmd_seq, h_windows(), "win-a", focus_dir("win-a", dir)),
+            &[],
+        ) {
+            (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+                settlements.first().and_then(|s| s.result.as_ref()),
+                Some(&CommandResult::Rejected {
                     kind: CommandRejectKind::OperationRefused
                 })
             ),
-            other => panic!("horizontal-only {dir} composed focus refuses, got {other:?}"),
+            (other, _) => panic!("horizontal-only {dir} composed focus refuses, got {other:?}"),
         }
         assert!(
             horiz
@@ -3452,8 +3427,9 @@ fn composed_tiled_move_clears_bit_without_native_clear() {
         ]
     };
     accepted(&mut engine, &bootstrap(1, windows(), "win-a"));
-    let toggled = accepted(&mut engine, &cmd(2, 1, windows(), "win-a", toggle("win-a")));
-    assert_eq!(maximize_result(&toggled), (true, false, false));
+    let (toggled, toggled_settlements) =
+        accepted_with_settlements(&mut engine, &cmd(2, 1, windows(), "win-a", toggle("win-a")));
+    assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     assert_eq!(desire(&toggled, "win-a").effective_frame, Some(work_area()));
     assert!(
         engine
@@ -3464,7 +3440,7 @@ fn composed_tiled_move_clears_bit_without_native_clear() {
     // Swap-with-neighbor guarantees a same-output reorder here (plain
     // group-with-neighbor nests, which can report planner-noop); the
     // composed clear policy is mode-independent.
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -3486,8 +3462,8 @@ fn composed_tiled_move_clears_bit_without_native_clear() {
     );
     assert!(engine.retained_clears.is_empty(), "no native clear bound");
     assert!(
-        reply.command_result.is_none(),
-        "tiled success carries no result"
+        settlements.first().is_some_and(|s| s.result.is_none()),
+        "tiled success carries None result: {settlements:?}"
     );
     expect_explicit_focus(&reply, "win-a", 2);
     let row = desire(&reply, "win-a");
@@ -3512,7 +3488,7 @@ fn composed_move_fullscreen_refuses_without_clear() {
     );
     let mut _alloc = None;
     toggle_on(&mut engine, &mut _alloc);
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -3525,7 +3501,10 @@ fn composed_move_fullscreen_refuses_without_clear() {
             move_dir("win-a", "right"),
         ),
     );
-    assert_eq!(directional_outcome(&reply), Some("move-refused-fullscreen"));
+    assert_eq!(
+        directional_outcome(&settlements),
+        Some("move-refused-fullscreen")
+    );
     assert!(
         engine
             .composed_maximized
@@ -3579,20 +3558,17 @@ fn composed_move_in_flight_restores_bit() {
             .composed_maximized
             .contains(&WindowId("win-a".to_owned()))
     );
-    match engine
-        .handle_report(
-            &cmd_two(4, 3, windows(), "win-a", move_dir("win-a", "right")),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
+    match engine.handle_report(
+        &cmd_two(4, 3, windows(), "win-a", move_dir("win-a", "right")),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.as_ref()),
+            Some(&CommandResult::Rejected {
                 kind: CommandRejectKind::TransferInFlight
             })
         ),
-        other => panic!("move under a flight refuses, got {other:?}"),
+        (other, _) => panic!("move under a flight refuses, got {other:?}"),
     }
     assert!(
         engine
@@ -3608,7 +3584,7 @@ fn b9_float_unfloat_clears_bit_and_tiles() {
     let _base = float_compose_on(&mut engine);
     let mut overlay_fact = cfact("win-a", "out-a", 0);
     overlay_fact.rect = Some(work_area());
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(5, 3, vec![overlay_fact], "win-a", toggle_float("win-a")),
     );
@@ -3618,7 +3594,7 @@ fn b9_float_unfloat_clears_bit_and_tiles() {
             .contains(&WindowId("win-a".to_owned())),
         "intentional unfloat clears the bit"
     );
-    match &reply.command_result {
+    match settlements.first().and_then(|s| s.result.as_ref()) {
         Some(CommandResult::Float { window, rect, .. }) => {
             assert_eq!(window, &WindowId("win-a".to_owned()));
             assert_eq!(*rect, None, "unfloat-to-tile carries no rect");
@@ -3639,20 +3615,17 @@ fn b9_unreadable_hints_refuses_with_bit_retained() {
     let mut unreadable = cfact("win-a", "out-a", 0);
     unreadable.rect = Some(work_area());
     unreadable.hints = None;
-    match engine
-        .handle_report(
-            &cmd(5, 3, vec![unreadable], "win-a", toggle_float("win-a")),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
+    match engine.handle_report(
+        &cmd(5, 3, vec![unreadable], "win-a", toggle_float("win-a")),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.as_ref()),
+            Some(&CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
             })
         ),
-        other => panic!("unreadable hints refuses, got {other:?}"),
+        (other, _) => panic!("unreadable hints refuses, got {other:?}"),
     }
     assert!(
         engine
@@ -3793,11 +3766,11 @@ fn composed_tiled_send_preserves_bit_and_recomputes_destination() {
         ]
     };
     accepted(&mut engine, &bootstrap_two(1, windows(), "win-a"));
-    let toggled = accepted(
+    let (toggled, toggled_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd_two(2, 1, windows(), "win-a", toggle("win-a")),
     );
-    assert_eq!(maximize_result(&toggled), (true, false, false));
+    assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     assert_eq!(desire(&toggled, "win-a").effective_frame, Some(work_area()));
     // Cross-output send retains a flight with the bit held.
     let sent = accepted(
@@ -3842,11 +3815,11 @@ fn composed_tiled_send_preserves_bit_and_recomputes_destination() {
     assert!(row.state.is_empty(), "no native maximize target");
     let dest_slot = row.allocation.expect("destination slot");
     // Clear restores the destination base, not the source slot.
-    let cleared = accepted(
+    let (cleared, cleared_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd_two(5, 3, arrived_windows, "win-a", toggle("win-a")),
     );
-    assert_eq!(maximize_result(&cleared), (false, false, true));
+    assert_eq!(maximize_result(&cleared_settlements), (false, false, true));
     let row = desire(&cleared, "win-a");
     assert_eq!(row.effective_frame, Some(dest_slot));
     assert_eq!(row.allocation, Some(dest_slot));
@@ -3859,14 +3832,11 @@ fn composed_float_send_preserves_bit_and_recomputes_destination() {
     let mut engine = engine();
     let windows = || vec![cfact("win-a", "out-a", 0), cfact("win-c", "out-b", 900)];
     accepted(&mut engine, &bootstrap_two(1, windows(), "win-a"));
-    let floated = accepted(
+    let (_floated, floated_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd_two(2, 1, windows(), "win-a", toggle_float("win-a")),
     );
-    let float_base = match &floated.command_result {
-        Some(CommandResult::Float { rect, .. }) => rect.expect("float placement"),
-        other => panic!("expected float result, got {other:?}"),
-    };
+    let float_base = float_placement(&floated_settlements);
     let mut settled_fact = cfact("win-a", "out-a", 0);
     settled_fact.rect = Some(float_base);
     accepted(
@@ -3875,7 +3845,7 @@ fn composed_float_send_preserves_bit_and_recomputes_destination() {
     );
     let mut toggle_fact = cfact("win-a", "out-a", 0);
     toggle_fact.rect = Some(float_base);
-    let toggled = accepted(
+    let (toggled, toggled_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd_two(
             4,
@@ -3885,7 +3855,7 @@ fn composed_float_send_preserves_bit_and_recomputes_destination() {
             toggle("win-a"),
         ),
     );
-    assert_eq!(maximize_result(&toggled), (true, false, false));
+    assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     assert_eq!(desire(&toggled, "win-a").effective_frame, Some(work_area()));
     // Cross-output float send retains a flight with the bit held.
     let sent = accepted(
@@ -3934,7 +3904,7 @@ fn composed_float_send_preserves_bit_and_recomputes_destination() {
     // Clear restores the retained float base exactly via the one-shot token.
     let mut clear_fact = cfact("win-a", "out-b", 900);
     clear_fact.rect = Some(work_area_out_b());
-    let cleared = accepted(
+    let (cleared, cleared_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd_two(
             7,
@@ -3944,7 +3914,7 @@ fn composed_float_send_preserves_bit_and_recomputes_destination() {
             toggle("win-a"),
         ),
     );
-    assert_eq!(maximize_result(&cleared), (false, false, true));
+    assert_eq!(maximize_result(&cleared_settlements), (false, false, true));
     let row = desire(&cleared, "win-a");
     assert!(row.floating);
     assert_eq!(row.effective_frame, Some(float_base));
@@ -4026,11 +3996,11 @@ fn composed_work_area_change_recomputes_float_and_retains_base() {
     // The session float base is untouched by the recompute: clear restores it.
     let mut clear_fact = cfact("win-a", "out-a", 0);
     clear_fact.rect = Some(changed);
-    let cleared = accepted(
+    let (cleared, cleared_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(6, 3, vec![clear_fact], "win-a", toggle("win-a")),
     );
-    assert_eq!(maximize_result(&cleared), (false, false, true));
+    assert_eq!(maximize_result(&cleared_settlements), (false, false, true));
     assert_eq!(desire(&cleared, "win-a").effective_frame, Some(float_base));
 }
 
@@ -4052,14 +4022,14 @@ fn composed_incomplete_inventory_refuses_without_recovery() {
         toggle("win-a"),
     );
     gapped.inventory_complete = false;
-    match engine.handle_report(&gapped, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
+    match engine.handle_report(&gapped, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.as_ref()),
+            Some(&CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
             })
         ),
-        other => panic!("expected refusal, got {other:?}"),
+        (other, _) => panic!("expected refusal, got {other:?}"),
     }
     assert!(
         !engine
@@ -4068,14 +4038,14 @@ fn composed_incomplete_inventory_refuses_without_recovery() {
         "refusal mints no overlay intent"
     );
     // No autorecovery: the next commandless report keeps the base frame.
-    let quiet = accepted(
+    let (quiet, quiet_settlements) = accepted_with_settlements(
         &mut engine,
         &bootstrap(3, vec![cfact("win-a", "out-a", 0)], "win-a"),
     );
     assert_eq!(desire(&quiet, "win-a").effective_frame, base_frame);
-    assert!(quiet.command_result.is_none());
+    assert!(quiet_settlements.is_empty());
     // A fresh press composes once authority returns.
-    let toggled = accepted(
+    let (toggled, toggled_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             4,
@@ -4085,7 +4055,7 @@ fn composed_incomplete_inventory_refuses_without_recovery() {
             toggle("win-a"),
         ),
     );
-    assert_eq!(maximize_result(&toggled), (true, false, false));
+    assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     assert_eq!(desire(&toggled, "win-a").effective_frame, Some(work_area()));
 }
 
@@ -4100,7 +4070,7 @@ fn composed_float_unreadable_hints_refuses_toggle_without_intent_change() {
         &mut engine,
         &bootstrap(1, vec![cfact("win-a", "out-a", 0)], "win-a"),
     );
-    let floated = accepted(
+    let (_floated, floated_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -4110,28 +4080,22 @@ fn composed_float_unreadable_hints_refuses_toggle_without_intent_change() {
             toggle_float("win-a"),
         ),
     );
-    let float_base = match &floated.command_result {
-        Some(CommandResult::Float { rect, .. }) => rect.expect("float placement"),
-        other => panic!("expected float result, got {other:?}"),
-    };
+    let float_base = float_placement(&floated_settlements);
     // Max-on with unreadable hints refuses and mints no intent.
     let mut hintless = cfact("win-a", "out-a", 0);
     hintless.rect = Some(float_base);
     hintless.hints = None;
-    match engine
-        .handle_report(
-            &cmd(3, 2, vec![hintless.clone()], "win-a", toggle("win-a")),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
+    match engine.handle_report(
+        &cmd(3, 2, vec![hintless.clone()], "win-a", toggle("win-a")),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.as_ref()),
+            Some(&CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
             })
         ),
-        other => panic!("hintless float max-on refuses, got {other:?}"),
+        (other, _) => panic!("hintless float max-on refuses, got {other:?}"),
     }
     assert!(
         !engine
@@ -4140,8 +4104,9 @@ fn composed_float_unreadable_hints_refuses_toggle_without_intent_change() {
         "refusal mints no overlay intent"
     );
     // No autorecovery while hints stay unreadable: the base frame holds.
-    let quiet = accepted(&mut engine, &bootstrap(4, vec![hintless], "win-a"));
-    assert!(quiet.command_result.is_none());
+    let (quiet, quiet_settlements) =
+        accepted_with_settlements(&mut engine, &bootstrap(4, vec![hintless], "win-a"));
+    assert!(quiet_settlements.is_empty());
     assert_eq!(desire(&quiet, "win-a").effective_frame, Some(float_base));
     // A fresh press with readable hints composes.
     let mut settled_fact = cfact("win-a", "out-a", 0);
@@ -4149,29 +4114,26 @@ fn composed_float_unreadable_hints_refuses_toggle_without_intent_change() {
     accepted(&mut engine, &bootstrap(5, vec![settled_fact], "win-a"));
     let mut toggle_fact = cfact("win-a", "out-a", 0);
     toggle_fact.rect = Some(float_base);
-    let toggled = accepted(
+    let (_toggled, toggled_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(6, 3, vec![toggle_fact], "win-a", toggle("win-a")),
     );
-    assert_eq!(maximize_result(&toggled), (true, false, false));
+    assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     // Max-off with unreadable hints refuses with the bit retained.
     let mut hintless_off = cfact("win-a", "out-a", 0);
     hintless_off.rect = Some(work_area());
     hintless_off.hints = None;
-    match engine
-        .handle_report(
-            &cmd(7, 4, vec![hintless_off], "win-a", toggle("win-a")),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
+    match engine.handle_report(
+        &cmd(7, 4, vec![hintless_off], "win-a", toggle("win-a")),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.as_ref()),
+            Some(&CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
             })
         ),
-        other => panic!("hintless float max-off refuses, got {other:?}"),
+        (other, _) => panic!("hintless float max-off refuses, got {other:?}"),
     }
     assert!(
         engine
@@ -4197,26 +4159,23 @@ fn composed_tiled_unreadable_hints_holds_admission() {
             "win-a",
         ),
     );
-    match engine
-        .handle_report(
-            &cmd(
-                2,
-                1,
-                vec![hintless, cfact("win-b", "out-a", 100)],
-                "win-a",
-                toggle("win-a"),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
+    match engine.handle_report(
+        &cmd(
+            2,
+            1,
+            vec![hintless, cfact("win-b", "out-a", 100)],
+            "win-a",
+            toggle("win-a"),
+        ),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.as_ref()),
+            Some(&CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
             })
         ),
-        other => panic!("hintless tile refuses, got {other:?}"),
+        (other, _) => panic!("hintless tile refuses, got {other:?}"),
     }
     assert!(
         !engine
@@ -4239,26 +4198,23 @@ fn tile_with_bit_toggle_float_refuses_not_tiled() {
     );
     let mut _alloc = None;
     toggle_on(&mut engine, &mut _alloc);
-    match engine
-        .handle_report(
-            &cmd(
-                3,
-                2,
-                vec![cfact("win-a", "out-a", 0), cfact("win-b", "out-a", 100)],
-                "win-a",
-                toggle_float("win-a"),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
+    match engine.handle_report(
+        &cmd(
+            3,
+            2,
+            vec![cfact("win-a", "out-a", 0), cfact("win-b", "out-a", 100)],
+            "win-a",
+            toggle_float("win-a"),
+        ),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.as_ref()),
+            Some(&CommandResult::Rejected {
                 kind: CommandRejectKind::OperationRefused
             })
         ),
-        other => panic!("tiled subject with the bit refuses not-tiled, got {other:?}"),
+        (other, _) => panic!("tiled subject with the bit refuses not-tiled, got {other:?}"),
     }
     assert!(
         engine
@@ -4282,7 +4238,7 @@ fn composed_float_move_constrained_halfsnap_restores_base_with_token() {
         max_w: None,
         max_h: None,
     });
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             5,
@@ -4293,7 +4249,7 @@ fn composed_float_move_constrained_halfsnap_restores_base_with_token() {
         ),
     );
     assert_eq!(
-        directional_outcome(&reply),
+        directional_outcome(&settlements),
         Some("move-float-refused-constraints")
     );
     assert!(
@@ -4332,7 +4288,7 @@ fn composed_float_move_halfsnap_applies_half_token() {
     let float_base = float_compose_on(&mut engine);
     let mut overlay_fact = cfact("win-a", "out-a", 0);
     overlay_fact.rect = Some(work_area());
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             5,
@@ -4342,7 +4298,10 @@ fn composed_float_move_halfsnap_applies_half_token() {
             move_dir("win-a", "right"),
         ),
     );
-    assert_eq!(directional_outcome(&reply), Some("move-float-applied"));
+    assert_eq!(
+        directional_outcome(&settlements),
+        Some("move-float-applied")
+    );
     assert!(
         !engine
             .composed_maximized
@@ -4385,9 +4344,9 @@ fn composed_float_move_unreadable_work_area_retains_bit_without_token() {
         Some(3),
         Some(move_dir("win-a", "right")),
     );
-    let reply = accepted(&mut engine, &probe);
+    let (_reply, settlements) = accepted_with_settlements(&mut engine, &probe);
     assert_eq!(
-        directional_outcome(&reply),
+        directional_outcome(&settlements),
         Some("move-float-unknown-output")
     );
     assert!(
@@ -4406,8 +4365,9 @@ fn composed_float_move_unreadable_work_area_retains_bit_without_token() {
     // work.
     let mut observed_fact = cfact("win-a", "out-a", 0);
     observed_fact.rect = Some(work_area());
-    let quiet = accepted(&mut engine, &bootstrap(6, vec![observed_fact], "win-a"));
-    assert!(quiet.command_result.is_none());
+    let (_quiet, quiet_settlements) =
+        accepted_with_settlements(&mut engine, &bootstrap(6, vec![observed_fact], "win-a"));
+    assert!(quiet_settlements.is_empty());
     assert!(
         engine
             .composed_maximized
@@ -4419,11 +4379,14 @@ fn composed_float_move_unreadable_work_area_retains_bit_without_token() {
     // A fresh move with readable geometry clears normally.
     let mut fresh_fact = cfact("win-a", "out-a", 0);
     fresh_fact.rect = Some(work_area());
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(7, 4, vec![fresh_fact], "win-a", move_dir("win-a", "right")),
     );
-    assert_eq!(directional_outcome(&reply), Some("move-float-applied"));
+    assert_eq!(
+        directional_outcome(&settlements),
+        Some("move-float-applied")
+    );
     assert!(
         !engine
             .composed_maximized

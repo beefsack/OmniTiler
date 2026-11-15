@@ -62,7 +62,7 @@ const ACCEPTED = (
     windows: [],
     transfers: [],
     effects: [],
-    result: null,
+    dragPreview: null,
     gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
     focusRequest: null,
     operationSettled: [], nativeCreations: [],
@@ -139,7 +139,7 @@ describe("world-report commands and reply parsing", () => {
             assert.equal(parsed.source, "req-1");
             assert.equal(parsed.nativeInvalid, "1");
             assert.equal(parsed.clock, "0");
-            assert.equal(parsed.result, null);
+            assert.equal(parsed.dragPreview, null);
         }
         const rejection = parseWorldReply('{"v":4,"outcome":"rejected","kind":"busy","message":"busy","gen":"gen-1","source":"","nativeInvalid":"0","clock":"0","gestureAssoc":null,"gestureSettledAssoc":null}');
         assert.ok(isWorldRejection(rejection));

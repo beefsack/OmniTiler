@@ -269,11 +269,12 @@ fn assert_admitted_left_right(reply: &WorldReplyV4, left: &str, right: &str) -> 
     (lx, rx)
 }
 
-fn assert_accepted(reply: &WorldReplyV4, what: &str) {
+fn assert_accepted(settlements: &[BatchSettlement], what: &str) {
     assert!(
-        !matches!(reply.command_result, Some(CommandResult::Rejected { .. })),
-        "{what} must not reject; got {:?}",
-        reply.command_result
+        !settlements
+            .iter()
+            .any(|s| matches!(s.result, Some(CommandResult::Rejected { .. }))),
+        "{what} must not reject; got {settlements:?}"
     );
 }
 
@@ -299,7 +300,7 @@ fn rapid_input_implicit_maximize_resolves_from_logical_cursor() {
     let first = engine
         .handle_report_v4_for_test(&observe(1, windows(), "win-a"))
         .expect("admission observes");
-    let (focused, _) = run_batched(
+    let (focused, focused_settlements) = run_batched(
         &mut engine,
         &report(
             2,
@@ -311,14 +312,14 @@ fn rapid_input_implicit_maximize_resolves_from_logical_cursor() {
         ),
         &[],
     );
-    assert_accepted(&focused, "focus win-b executes");
+    assert_accepted(&focused_settlements, "focus win-b executes");
     assert!(has_focus_effect(&focused, "win-b"));
     let (reply, settlements) = run_batched(
         &mut engine,
         &observe(3, windows(), "win-a"),
         &[(2, implicit_maximize())],
     );
-    assert_accepted(&reply, "implicit maximize at retained focus");
+    assert_accepted(&settlements, "implicit maximize at retained focus");
     assert_eq!(settlements.len(), 1, "one queued command settles once");
     assert_eq!(settlements[0].seq, 2);
     assert_ready_settlement(&settlements[0]);
@@ -338,7 +339,7 @@ fn rapid_input_explicit_maximize_keeps_settled_native_gate() {
     engine
         .handle_report_v4_for_test(&observe(1, windows(), "win-a"))
         .expect("admission observes");
-    let (focused, _) = run_batched(
+    let (_focused, focused_settlements) = run_batched(
         &mut engine,
         &report(
             2,
@@ -350,8 +351,8 @@ fn rapid_input_explicit_maximize_keeps_settled_native_gate() {
         ),
         &[],
     );
-    assert_accepted(&focused, "focus win-b executes");
-    let (reply, settlements) = run_batched(
+    assert_accepted(&focused_settlements, "focus win-b executes");
+    let (_reply, settlements) = run_batched(
         &mut engine,
         &observe(3, windows(), "win-a"),
         &[(
@@ -361,15 +362,10 @@ fn rapid_input_explicit_maximize_keeps_settled_native_gate() {
             },
         )],
     );
-    assert!(
-        matches!(reply.command_result, Some(CommandResult::Rejected { .. })),
-        "explicit maximize with stale native focus must keep the gate; got {:?}",
-        reply.command_result
-    );
     assert_eq!(settlements.len(), 1);
     assert!(
         matches!(settlements[0].result, Some(CommandResult::Rejected { .. })),
-        "the per-command settlement carries the refusal: {:?}",
+        "explicit maximize with stale native focus must keep the gate; got {:?}",
         settlements[0].result
     );
 }
@@ -387,11 +383,6 @@ fn rapid_input_implicit_without_canonical_focus_rejects() {
         &mut engine,
         &observe(2, windows(), ""),
         &[(1, implicit_maximize())],
-    );
-    assert!(
-        matches!(reply.command_result, Some(CommandResult::Rejected { .. })),
-        "implicit subject with no canonical focus must reject; got {:?}",
-        reply.command_result
     );
     assert!(
         focus_effects(&reply).is_empty(),
@@ -434,7 +425,7 @@ fn rapid_input_burst_applies_fifo_single_revision() {
             (3, implicit_maximize()),
         ],
     );
-    assert_accepted(&reply, "burst batch accepts");
+    assert_accepted(&settlements, "burst batch accepts");
     assert_eq!(
         settlements.len(),
         3,
@@ -452,16 +443,14 @@ fn rapid_input_burst_applies_fifo_single_revision() {
         "latest batch focus is the only focus effect: {:?}",
         reply.effects
     );
-    assert_accepted(&reply, "implicit maximize resolves at retained win-c");
+    assert_accepted(&settlements, "implicit maximize resolves at retained win-c");
     assert_eq!(
         reply.state_revision,
         before.state_revision + 1,
         "one capture advances exactly one revision"
     );
-    assert_eq!(
-        reply.command_result, settlements[2].result,
-        "the final publication carries the last command's result"
-    );
+    assert_eq!(settlements.len(), 3);
+    assert_ready_settlement(&settlements[2]);
 }
 
 #[test]
@@ -490,7 +479,7 @@ fn rapid_input_batch_focus_supersedes_admission_focus() {
         ),
         &[(1, focus_cmd("win-b"))],
     );
-    assert_accepted(&reply, "batch with newcomer accepts");
+    assert_accepted(&settlements, "batch with newcomer accepts");
     assert_eq!(settlements.len(), 1);
     assert_ready_settlement(&settlements[0]);
     assert_eq!(
@@ -579,7 +568,7 @@ fn rapid_input_mixed_100_action_burst_single_capture() {
         assert_eq!(settlement.seq, index as u64 + 1, "settlements stay FIFO");
         assert_ready_settlement(settlement);
     }
-    assert_accepted(&reply, "100-action batch accepts");
+    assert_accepted(&settlements, "100-action batch accepts");
     assert_eq!(
         reply.state_revision,
         before.state_revision + 1,
@@ -591,10 +580,7 @@ fn rapid_input_mixed_100_action_burst_single_capture() {
         "final focus survives the trailing resize: {:?}",
         reply.effects
     );
-    assert_eq!(
-        reply.command_result, settlements[99].result,
-        "the final publication carries the trailing resize result"
-    );
+    assert_eq!(settlements.len(), 100);
 }
 
 #[test]
@@ -625,7 +611,7 @@ fn rapid_input_mixed_burst_preserves_explicit_subjects_and_close() {
         ),
         &[(1, focus_cmd("win-b"))],
     );
-    assert_accepted(&reply, "burst command with close evidence executes");
+    assert_accepted(&settlements, "burst command with close evidence executes");
     assert_eq!(settlements.len(), 1);
     assert_ready_settlement(&settlements[0]);
     assert_eq!(
@@ -666,7 +652,6 @@ fn rapid_input_mixed_burst_preserves_explicit_subjects_and_close() {
         "explicit follow-up focus wins FIFO: {:?}",
         second.effects
     );
-    assert_accepted(&second, "implicit maximize at retained win-a");
 }
 
 #[test]
@@ -691,7 +676,7 @@ fn rapid_input_native_empty_batch_focus_establishes_implicit_subject() {
         &observe(2, windows(), ""),
         &[(1, focus_cmd("win-b")), (2, implicit_move_dir("right"))],
     );
-    assert_accepted(&reply, "batch focus plus implicit move accepts");
+    assert_accepted(&settlements, "batch focus plus implicit move accepts");
     assert_eq!(settlements.len(), 2, "both commands settle");
     assert_ready_settlement(&settlements[0]);
     assert_ready_settlement(&settlements[1]);
@@ -723,12 +708,12 @@ fn rapid_input_operation_focus_prefers_batch_command_over_empty_native() {
     engine
         .handle_report_v4_for_test(&observe(1, windows(), ""))
         .expect("admission observes");
-    let (reply, settlements) = run_batched(
+    let (_reply, settlements) = run_batched(
         &mut engine,
         &observe(2, windows(), ""),
         &[(1, focus_cmd("win-b")), (2, implicit_move_dir("right"))],
     );
-    assert_accepted(&reply, "batch accepts");
+    assert_accepted(&settlements, "batch accepts");
     assert_ready_settlement(&settlements[1]);
     let domain = engine
         .staged
@@ -752,12 +737,12 @@ fn rapid_input_genuine_focus_loss_clears_implicit_subject() {
     engine
         .handle_report_v4_for_test(&observe(1, windows(), "win-a"))
         .expect("admission observes");
-    let (focused, first) = run_batched(
+    let (_focused, first) = run_batched(
         &mut engine,
         &observe(2, windows(), "win-a"),
         &[(1, focus_cmd("win-b"))],
     );
-    assert_accepted(&focused, "focus win-b executes");
+    assert_accepted(&first, "focus win-b executes");
     assert_ready_settlement(&first[0]);
     let (reply, settlements) = run_batched(
         &mut engine,
@@ -800,7 +785,7 @@ fn rapid_input_empty_focus_directional_stays_no_focus() {
             (2, focus_cmd("win-b")),
         ],
     );
-    assert_accepted(&reply, "batch with empty subject accepts");
+    assert_accepted(&settlements, "batch with empty subject accepts");
     assert_eq!(settlements.len(), 2);
     assert_ready_settlement(&settlements[0]);
     assert_ready_settlement(&settlements[1]);
@@ -861,7 +846,6 @@ fn rapid_input_batch_refusal_keeps_rollback_and_command_saves() {
             (3, focus_cmd("win-b")),
         ],
     );
-    assert_accepted(&reply, "batch with mid refusal accepts");
     assert_eq!(settlements.len(), 3);
     assert!(
         settlements[0]
@@ -926,7 +910,10 @@ fn rapid_input_pre_ready_batch_reparks_then_drains() {
         &observe(2, windows(), "win-a"),
         &[(1, focus_cmd("win-b"))],
     );
-    assert_accepted(&reply, "pre-ready command drains on first usable capture");
+    assert_accepted(
+        &settlements,
+        "pre-ready command drains on first usable capture",
+    );
     assert_eq!(settlements.len(), 1);
     assert_ready_settlement(&settlements[0]);
     assert!(has_focus_effect(&reply, "win-b"));
@@ -979,7 +966,10 @@ fn rapid_input_host_native_batch_joins_evidence_once() {
         &host_report(2, windows(), "win-a"),
         &[(1, focus_cmd("win-b"))],
     );
-    assert_accepted(&reply, "command drains on the native-carrying capture");
+    assert_accepted(
+        &settlements,
+        "command drains on the native-carrying capture",
+    );
     assert_eq!(settlements.len(), 1);
     assert_ready_settlement(&settlements[0]);
     assert!(has_focus_effect(&reply, "win-b"));
@@ -1001,7 +991,7 @@ fn rapid_input_two_implicit_focus_directionals_resolve_sequentially() {
     let before = engine
         .handle_report_v4_for_test(&observe(1, windows(), "win-a"))
         .expect("admission observes");
-    let (setup, _) = run_batched(
+    let (setup, setup_settlements) = run_batched(
         &mut engine,
         &report(
             2,
@@ -1013,11 +1003,15 @@ fn rapid_input_two_implicit_focus_directionals_resolve_sequentially() {
         ),
         &[],
     );
-    assert_accepted(&setup, "setup focus win-b executes");
+    assert_accepted(&setup_settlements, "setup focus win-b executes");
     assert!(has_focus_effect(&setup, "win-b"));
     assert_admitted_left_right(&setup, "win-b", "win-a");
-    let (caught, _) = run_batched(&mut engine, &observe(3, windows(), "win-b"), &[]);
-    assert_accepted(&caught, "native fact catches up to the pre-batch focus");
+    let (_caught, caught_settlements) =
+        run_batched(&mut engine, &observe(3, windows(), "win-b"), &[]);
+    assert_accepted(
+        &caught_settlements,
+        "native fact catches up to the pre-batch focus",
+    );
     let (reply, settlements) = run_batched(
         &mut engine,
         &observe(4, windows(), "win-b"),
@@ -1035,7 +1029,7 @@ fn rapid_input_two_implicit_focus_directionals_resolve_sequentially() {
     assert_eq!(settlements[1].seq, 3, "settlements stay FIFO");
     assert_ready_settlement(&settlements[0]);
     assert_ready_settlement(&settlements[1]);
-    assert_accepted(&reply, "sequential directional batch accepts");
+    assert_accepted(&settlements, "sequential directional batch accepts");
     assert_eq!(
         focus_effects(&reply),
         vec![&WindowId("win-b".to_owned())],
@@ -1047,10 +1041,7 @@ fn rapid_input_two_implicit_focus_directionals_resolve_sequentially() {
         before.state_revision + 3,
         "setup plus catch-up plus batch advance three revisions"
     );
-    assert_eq!(
-        reply.command_result, settlements[1].result,
-        "the final publication carries the last command's result"
-    );
+    assert_eq!(settlements.len(), 2);
 }
 
 #[test]
@@ -1067,7 +1058,7 @@ fn rapid_input_implicit_focus_then_move_uses_post_prior_subject() {
     engine
         .handle_report_v4_for_test(&observe(1, windows(), "win-a"))
         .expect("admission observes");
-    let (setup, _) = run_batched(
+    let (setup, setup_settlements) = run_batched(
         &mut engine,
         &report(
             2,
@@ -1079,9 +1070,9 @@ fn rapid_input_implicit_focus_then_move_uses_post_prior_subject() {
         ),
         &[],
     );
-    assert_accepted(&setup, "setup focus win-a executes");
+    assert_accepted(&setup_settlements, "setup focus win-a executes");
     assert_admitted_left_right(&setup, "win-b", "win-a");
-    let (reply, settlements) = run_batched(
+    let (_reply, settlements) = run_batched(
         &mut engine,
         &observe(3, windows(), "win-a"),
         &[
@@ -1092,11 +1083,7 @@ fn rapid_input_implicit_focus_then_move_uses_post_prior_subject() {
     assert_eq!(settlements.len(), 2, "both commands settle exactly once");
     assert_ready_settlement(&settlements[0]);
     assert_ready_settlement(&settlements[1]);
-    assert_accepted(&reply, "focus then move batch accepts");
-    assert_eq!(
-        reply.command_result, settlements[1].result,
-        "the final publication carries the last command's result"
-    );
+    assert_accepted(&settlements, "focus then move batch accepts");
 }
 
 #[test]
@@ -1110,7 +1097,7 @@ fn rapid_input_alternating_implicit_directional_burst_resolves_sequentially() {
     engine
         .handle_report_v4_for_test(&observe(1, windows(), "win-a"))
         .expect("admission observes");
-    let (setup, _) = run_batched(
+    let (setup, setup_settlements) = run_batched(
         &mut engine,
         &report(
             2,
@@ -1122,10 +1109,14 @@ fn rapid_input_alternating_implicit_directional_burst_resolves_sequentially() {
         ),
         &[],
     );
-    assert_accepted(&setup, "setup focus win-b executes");
+    assert_accepted(&setup_settlements, "setup focus win-b executes");
     assert_admitted_left_right(&setup, "win-b", "win-a");
-    let (caught, _) = run_batched(&mut engine, &observe(3, windows(), "win-b"), &[]);
-    assert_accepted(&caught, "native fact catches up to the pre-batch focus");
+    let (_caught, caught_settlements) =
+        run_batched(&mut engine, &observe(3, windows(), "win-b"), &[]);
+    assert_accepted(
+        &caught_settlements,
+        "native fact catches up to the pre-batch focus",
+    );
     let mut queued: Vec<(u64, WorldCommand)> = Vec::new();
     for n in 2..=11u64 {
         let direction = if n % 2 == 0 { "right" } else { "left" };
@@ -1141,7 +1132,7 @@ fn rapid_input_alternating_implicit_directional_burst_resolves_sequentially() {
         assert_eq!(settlement.seq, index as u64 + 2, "settlements stay FIFO");
         assert_ready_settlement(settlement);
     }
-    assert_accepted(&reply, "alternating burst accepts");
+    assert_accepted(&settlements, "alternating burst accepts");
     assert_eq!(
         focus_effects(&reply),
         vec![&WindowId("win-b".to_owned())],
@@ -1206,7 +1197,7 @@ fn setup_float_subject(engine: &mut WorldEngine) {
     engine
         .handle_report_v4_for_test(&observe(1, windows(), "win-a"))
         .expect("admission observes");
-    let (setup, _) = run_batched(
+    let (setup, setup_settlements) = run_batched(
         &mut *engine,
         &report(
             2,
@@ -1218,10 +1209,14 @@ fn setup_float_subject(engine: &mut WorldEngine) {
         ),
         &[],
     );
-    assert_accepted(&setup, "setup focus win-b executes");
+    assert_accepted(&setup_settlements, "setup focus win-b executes");
     assert!(has_focus_effect(&setup, "win-b"));
-    let (caught, _) = run_batched(&mut *engine, &observe(3, windows(), "win-b"), &[]);
-    assert_accepted(&caught, "native fact catches up to the pre-batch focus");
+    let (_caught, caught_settlements) =
+        run_batched(&mut *engine, &observe(3, windows(), "win-b"), &[]);
+    assert_accepted(
+        &caught_settlements,
+        "native fact catches up to the pre-batch focus",
+    );
 }
 
 #[test]
@@ -1242,11 +1237,7 @@ fn rapid_input_implicit_float_intermediate_save_publishes() {
     assert_eq!(settlements[1].seq, 3, "settlements stay FIFO");
     assert_ready_settlement(&settlements[0]);
     assert_ready_settlement(&settlements[1]);
-    assert_accepted(&reply, "float then focus batch accepts");
-    assert_eq!(
-        reply.command_result, settlements[1].result,
-        "the final publication carries the last command's result"
-    );
+    assert_accepted(&settlements, "float then focus batch accepts");
     assert_eq!(reply.intent_desired.len(), 1, "{:?}", reply.intent_desired);
     assert_eq!(
         float_write_pair(&reply.intent_desired[0]),
@@ -1274,7 +1265,7 @@ fn rapid_input_mixed_implicit_explicit_float_batch_keeps_both_saves() {
     assert_eq!(settlements.len(), 2, "both commands settle exactly once");
     assert_ready_settlement(&settlements[0]);
     assert_ready_settlement(&settlements[1]);
-    assert_accepted(&reply, "mixed float batch accepts");
+    assert_accepted(&settlements, "mixed float batch accepts");
     let mut pairs: Vec<(String, IntentData)> =
         reply.intent_desired.iter().map(float_write_pair).collect();
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1332,7 +1323,6 @@ fn rapid_input_implicit_sticky_batch_keeps_command_and_rollback_saves() {
             (3, focus_cmd("win-b")),
         ],
     );
-    assert_accepted(&reply, "batch with mid refusal accepts");
     assert_eq!(settlements.len(), 3);
     assert!(
         settlements[0]
@@ -1398,11 +1388,7 @@ fn rapid_input_single_implicit_float_batch_publishes_resolved_save() {
     );
     assert_eq!(settlements[0].seq, 2, "settlements stay FIFO");
     assert_ready_settlement(&settlements[0]);
-    assert_accepted(&reply, "single implicit float batch accepts");
-    assert_eq!(
-        reply.command_result, settlements[0].result,
-        "the final publication carries the last command's result"
-    );
+    assert_accepted(&settlements, "single implicit float batch accepts");
     assert_eq!(reply.intent_desired.len(), 1, "{:?}", reply.intent_desired);
     assert_eq!(
         float_write_pair(&reply.intent_desired[0]),
@@ -1431,7 +1417,7 @@ fn rapid_input_implicit_fixed_tile_unfloat_records_tile_save() {
     engine
         .handle_report_v4_for_test(&observe(1, windows(), "win-a"))
         .expect("admission observes");
-    let (setup, _) = run_batched(
+    let (setup, setup_settlements) = run_batched(
         &mut engine,
         &report(
             2,
@@ -1443,10 +1429,14 @@ fn rapid_input_implicit_fixed_tile_unfloat_records_tile_save() {
         ),
         &[],
     );
-    assert_accepted(&setup, "setup focus win-a executes");
+    assert_accepted(&setup_settlements, "setup focus win-a executes");
     assert!(has_focus_effect(&setup, "win-a"));
-    let (caught, _) = run_batched(&mut engine, &observe(3, windows(), "win-a"), &[]);
-    assert_accepted(&caught, "native fact catches up to the pre-batch focus");
+    let (_caught, caught_settlements) =
+        run_batched(&mut engine, &observe(3, windows(), "win-a"), &[]);
+    assert_accepted(
+        &caught_settlements,
+        "native fact catches up to the pre-batch focus",
+    );
     let (reply, settlements) = run_batched(
         &mut engine,
         &observe(4, windows(), "win-a"),
@@ -1458,12 +1448,12 @@ fn rapid_input_implicit_fixed_tile_unfloat_records_tile_save() {
         "the single command settles exactly once"
     );
     assert_ready_settlement(&settlements[0]);
-    assert_accepted(&reply, "implicit fixed unfloat accepts");
-    match &reply.command_result {
+    assert_accepted(&settlements, "implicit fixed unfloat accepts");
+    match &settlements[0].result {
         Some(CommandResult::Float { window, .. }) => assert_eq!(
             window.0, "win-a",
             "tile result targets the resolved window: {:?}",
-            reply.command_result
+            settlements[0].result
         ),
         other => panic!("expected float result, got {other:?}"),
     }
@@ -1534,7 +1524,7 @@ fn rapid_input_implicit_send_freezes_pre_observation_retained_home() {
         run_batched(&mut engine, &capture, &[(2, implicit_send_numbered_home())]);
     assert_eq!(settlements.len(), 1, "the send settles exactly once");
     assert_ready_settlement(&settlements[0]);
-    assert_accepted(&reply, "implicit send at retained home accepts");
+    assert_accepted(&settlements, "implicit send at retained home accepts");
     let transfer = reply
         .transfers
         .iter()
@@ -1580,9 +1570,9 @@ fn rapid_input_implicit_send_later_command_uses_post_prior_home() {
         Some((10, 10)),
         vec!["out-a", "out-b"],
     );
-    let (focused, first_settlements) =
+    let (_focused, first_settlements) =
         run_batched(&mut engine, &capture, &[(2, focus_cmd("win-b"))]);
-    assert_accepted(&focused, "setup focus win-b executes");
+    assert_accepted(&first_settlements, "setup focus win-b executes");
     assert_eq!(first_settlements.len(), 1);
     assert_ready_settlement(&first_settlements[0]);
     assert_eq!(
@@ -1627,7 +1617,10 @@ fn rapid_input_implicit_send_first_command_uses_post_native_subject() {
         run_batched(&mut engine, &capture, &[(2, implicit_send_numbered_home())]);
     assert_eq!(settlements.len(), 1, "the send settles exactly once");
     assert_ready_settlement(&settlements[0]);
-    assert_accepted(&reply, "implicit send at the post-native subject accepts");
+    assert_accepted(
+        &settlements,
+        "implicit send at the post-native subject accepts",
+    );
     let transfer = reply
         .transfers
         .iter()
@@ -1714,7 +1707,7 @@ fn rapid_input_implicit_send_after_same_focus_batch_command_commits() {
     assert_eq!(settlements.len(), 2, "both commands settle exactly once");
     assert_ready_settlement(&settlements[0]);
     assert_ready_settlement(&settlements[1]);
-    assert_accepted(&reply, "focus plus following implicit send accepts");
+    assert_accepted(&settlements, "focus plus following implicit send accepts");
     assert!(
         engine.batch_command_focus.is_empty(),
         "accepted finish clears batch-only provenance, never retained: {:?}",
@@ -1972,7 +1965,7 @@ fn rapid_input_capture_boundary_stale_native_keeps_implicit_subject() {
     engine
         .handle_report_v4_for_test(&observe(1, windows(), "win-a"))
         .expect("admission observes");
-    let (setup, _) = run_batched(
+    let (setup, setup_settlements) = run_batched(
         &mut engine,
         &report(
             2,
@@ -1984,14 +1977,18 @@ fn rapid_input_capture_boundary_stale_native_keeps_implicit_subject() {
         ),
         &[],
     );
-    assert_accepted(&setup, "setup focus win-b executes");
+    assert_accepted(&setup_settlements, "setup focus win-b executes");
     assert!(has_focus_effect(&setup, "win-b"));
     // Named left/right prerequisite before command 1: the engine inserts
     // admitted clients into its own tiling order, so prove the plan (left
     // is win-b, right is win-a) rather than assuming raw rect order.
     assert_admitted_left_right(&setup, "win-b", "win-a");
-    let (caught, _) = run_batched(&mut engine, &observe(3, windows(), "win-b"), &[]);
-    assert_accepted(&caught, "native fact catches up to the pre-batch focus");
+    let (_caught, caught_settlements) =
+        run_batched(&mut engine, &observe(3, windows(), "win-b"), &[]);
+    assert_accepted(
+        &caught_settlements,
+        "native fact catches up to the pre-batch focus",
+    );
     assert_eq!(
         engine.logical_focus_cursor,
         Some(WindowId("win-b".to_owned())),
@@ -2040,7 +2037,7 @@ fn rapid_input_capture_boundary_stale_native_keeps_implicit_subject() {
     // window's outer right edge has no planning pair in this two-window
     // fixture, so left/outwards is the direction that plans (see the fresh
     // leg below).
-    let (stale_reply, stale_settlements) = run_batched(
+    let (_stale_reply, stale_settlements) = run_batched(
         &mut engine,
         &observe(5, windows(), "win-b"),
         &[(5, implicit_resize_press0("left", "outwards"))],
@@ -2048,12 +2045,8 @@ fn rapid_input_capture_boundary_stale_native_keeps_implicit_subject() {
     assert_eq!(stale_settlements.len(), 1, "stale leg settles exactly once");
     assert_ready_settlement(&stale_settlements[0]);
     assert_accepted(
-        &stale_reply,
+        &stale_settlements,
         "unchanged lagging native keeps the implicit subject",
-    );
-    assert_eq!(
-        stale_reply.command_result, stale_settlements[0].result,
-        "stale-leg result rides the final publication"
     );
     assert_eq!(
         engine.logical_focus_cursor,
@@ -2083,7 +2076,7 @@ fn rapid_input_capture_boundary_stale_native_keeps_implicit_subject() {
     // CHANGED leg: the native fact catches up to the slot (genuine new
     // focus event for win-a). Same slot, same command shape as the stale
     // leg; now the event focus matches the subject and the resize plans.
-    let (fresh_reply, fresh_settlements) = run_batched(
+    let (_fresh_reply, fresh_settlements) = run_batched(
         &mut engine,
         &observe(7, windows(), "win-a"),
         &[(7, implicit_resize_press0("left", "outwards"))],
@@ -2091,11 +2084,7 @@ fn rapid_input_capture_boundary_stale_native_keeps_implicit_subject() {
     assert_eq!(fresh_settlements.len(), 1, "fresh leg settles exactly once");
     assert_ready_settlement(&fresh_settlements[0]);
     assert_accepted(
-        &fresh_reply,
+        &fresh_settlements,
         "changed (caught-up) native lets the same implicit resize plan",
-    );
-    assert_eq!(
-        fresh_reply.command_result, fresh_settlements[0].result,
-        "final publication carries the fresh result"
     );
 }

@@ -816,38 +816,38 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
         "membership proof settles: {:?}",
         settled.transfers
     );
-    match engine
-        .handle_report(
-            &report(
-                4,
-                4,
-                two_screens(),
-                vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
-                vec![],
-                vec![],
-                "win-a",
-                Some(12),
-                Some(WorldCommand::Send {
-                    window: WindowId("win-a".to_owned()),
-                    target_output: OutputId("out-b".to_owned()),
-                    target_workspace: view_b,
-                    follow: true,
-                }),
-                true,
-                false,
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
+    match engine.handle_report(
+        &report(
+            4,
+            4,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "win-a",
+            Some(12),
+            Some(WorldCommand::Send {
+                window: WindowId("win-a".to_owned()),
+                target_output: OutputId("out-b".to_owned()),
+                target_workspace: view_b,
+                follow: true,
             }),
-            "expected cross-domain-mismatch"
+            true,
+            false,
         ),
-        other => panic!("expected cross-domain-mismatch, got {other:?}"),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "expected cross-domain-mismatch"
+            );
+        }
+        (other, _) => panic!("expected cross-domain-mismatch, got {other:?}"),
     }
     // Directional move resolves the strict neighbor locally.
     let reply = accepted(
@@ -1110,36 +1110,36 @@ fn selection_commands_resolve_over_logical_rings() {
     );
     // Unknown targets refuse without mutation.
     let seq = 4;
-    match engine
-        .handle_report(
-            &report(
-                4,
-                4,
-                two_screens(),
-                vec![minimized_fact("win-a", "out-a")],
-                vec![],
-                vec![],
-                "",
-                Some(13),
-                Some(WorldCommand::SelectWorkspace {
-                    output: OutputId("out-a".to_owned()),
-                    workspace: "ws-999".to_owned(),
-                }),
-                true,
-                false,
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::ViewTargetUnknown
+    match engine.handle_report(
+        &report(
+            4,
+            4,
+            two_screens(),
+            vec![minimized_fact("win-a", "out-a")],
+            vec![],
+            vec![],
+            "",
+            Some(13),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: "ws-999".to_owned(),
             }),
-            "expected view-target-unknown"
+            true,
+            false,
         ),
-        other => panic!("expected view-target-unknown, got {other:?}"),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::ViewTargetUnknown
+                }),
+                "expected view-target-unknown"
+            );
+        }
+        (other, _) => panic!("expected view-target-unknown, got {other:?}"),
     }
     let _ = seq;
     // Previous toggles back through recorded history.
@@ -1306,38 +1306,38 @@ fn numbered_send_mismatched_output_refuses_without_mutation() {
     // alike.
     for (i, (seq, index)) in [(2u64, 0u8), (3u64, 1u8)].iter().enumerate() {
         let command_seq = 11 + i as u64;
-        match engine
-            .handle_report(
-                &report(
-                    *seq,
-                    *seq,
-                    two_screens(),
-                    vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
-                    vec![],
-                    vec![],
-                    "win-a",
-                    Some(command_seq),
-                    Some(WorldCommand::SendNumbered {
-                        window: WindowId("win-a".to_owned()),
-                        source: SendSource::Explicit(OutputId("out-b".to_owned())),
-                        index: *index,
-                        follow: true,
-                    }),
-                    false,
-                    false,
-                ),
-                &[],
-            )
-            .0
-        {
-            WorldOutcome::Accepted(reply) => assert_eq!(
-                reply.command_result,
-                Some(CommandResult::Rejected {
-                    kind: CommandRejectKind::OperationRefused
+        match engine.handle_report(
+            &report(
+                *seq,
+                *seq,
+                two_screens(),
+                vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+                vec![],
+                vec![],
+                "win-a",
+                Some(command_seq),
+                Some(WorldCommand::SendNumbered {
+                    window: WindowId("win-a".to_owned()),
+                    source: SendSource::Explicit(OutputId("out-b".to_owned())),
+                    index: *index,
+                    follow: true,
                 }),
-                "expected cross-domain-mismatch"
+                false,
+                false,
             ),
-            other => panic!("expected cross-domain-mismatch, got {other:?}"),
+            &[],
+        ) {
+            (WorldOutcome::Accepted(_), settlements) => {
+                assert_eq!(settlements.len(), 1);
+                assert_eq!(
+                    settlements[0].result,
+                    Some(CommandResult::Rejected {
+                        kind: CommandRejectKind::OperationRefused
+                    }),
+                    "expected cross-domain-mismatch"
+                );
+            }
+            (other, _) => panic!("expected cross-domain-mismatch, got {other:?}"),
         }
     }
     // The refused commands minted nothing: rings, views, and creation
@@ -1475,34 +1475,34 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match engine
-        .handle_report(
-            &staged(
-                2,
-                vec![fact("win-a", "out-b", 800)],
-                "win-a",
-                None,
-                None,
-                vec!["out-a", "out-b"],
-                WorldCommand::SendNumbered {
-                    window: WindowId("win-a".to_owned()),
-                    source: SendSource::HomeThenAction,
-                    index: 1,
-                    follow: false,
-                },
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "rehomed mover must refuse mismatch"
+    match engine.handle_report(
+        &staged(
+            2,
+            vec![fact("win-a", "out-b", 800)],
+            "win-a",
+            None,
+            None,
+            vec!["out-a", "out-b"],
+            WorldCommand::SendNumbered {
+                window: WindowId("win-a".to_owned()),
+                source: SendSource::HomeThenAction,
+                index: 1,
+                follow: false,
+            },
         ),
-        other => panic!("rehomed mover must refuse mismatch, got {other:?}"),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "rehomed mover must refuse mismatch"
+            );
+        }
+        (other, _) => panic!("rehomed mover must refuse mismatch, got {other:?}"),
     }
     // Unhomed newcomer with a live cached output the staged affinity
     // disagrees with: the cached leg still refuses, never retargets.
@@ -1523,34 +1523,34 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match engine
-        .handle_report(
-            &staged(
-                2,
-                vec![fact("win-n", "out-a", 10)],
-                "win-n",
-                None,
-                Some("out-b"),
-                vec!["out-a", "out-b"],
-                WorldCommand::SendNumbered {
-                    window: WindowId("win-n".to_owned()),
-                    source: SendSource::HomeThenAction,
-                    index: 0,
-                    follow: false,
-                },
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "newcomer cache disagreement must refuse"
+    match engine.handle_report(
+        &staged(
+            2,
+            vec![fact("win-n", "out-a", 10)],
+            "win-n",
+            None,
+            Some("out-b"),
+            vec!["out-a", "out-b"],
+            WorldCommand::SendNumbered {
+                window: WindowId("win-n".to_owned()),
+                source: SendSource::HomeThenAction,
+                index: 0,
+                follow: false,
+            },
         ),
-        other => panic!("newcomer cache disagreement must refuse, got {other:?}"),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "newcomer cache disagreement must refuse"
+            );
+        }
+        (other, _) => panic!("newcomer cache disagreement must refuse, got {other:?}"),
     }
     // Live cached output resolves for the keyboard variant (and the
     // same-setup action variant would refuse): the cached leg filters to
@@ -1573,34 +1573,34 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match live_cached
-        .handle_report(
-            &staged(
-                2,
-                vec![fact("win-n", "out-a", 10)],
-                "win-n",
-                None,
-                Some("out-b"),
-                vec!["out-a", "out-b"],
-                WorldCommand::SendNumbered {
-                    window: WindowId("win-n".to_owned()),
-                    source: SendSource::HomeThenAction,
-                    index: 0,
-                    follow: false,
-                },
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "live cached mismatch must refuse"
+    match live_cached.handle_report(
+        &staged(
+            2,
+            vec![fact("win-n", "out-a", 10)],
+            "win-n",
+            None,
+            Some("out-b"),
+            vec!["out-a", "out-b"],
+            WorldCommand::SendNumbered {
+                window: WindowId("win-n".to_owned()),
+                source: SendSource::HomeThenAction,
+                index: 0,
+                follow: false,
+            },
         ),
-        other => panic!("live cached mismatch must refuse, got {other:?}"),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "live cached mismatch must refuse"
+            );
+        }
+        (other, _) => panic!("live cached mismatch must refuse, got {other:?}"),
     }
     // Keyboard versus CLI fallbacks disagree exactly where the old
     // routes did: a stale-but-registered cache pins the CLI variant
@@ -1623,34 +1623,34 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match cli
-        .handle_report(
-            &staged(
-                2,
-                vec![fact("win-n", "out-a", 10)],
-                "win-n",
-                None,
-                Some("out-z"),
-                vec!["out-a", "out-b", "out-z"],
-                WorldCommand::SendNumbered {
-                    window: WindowId("win-n".to_owned()),
-                    source: SendSource::HomeThenAction,
-                    index: 0,
-                    follow: false,
-                },
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "stale cache must refuse the CLI send"
+    match cli.handle_report(
+        &staged(
+            2,
+            vec![fact("win-n", "out-a", 10)],
+            "win-n",
+            None,
+            Some("out-z"),
+            vec!["out-a", "out-b", "out-z"],
+            WorldCommand::SendNumbered {
+                window: WindowId("win-n".to_owned()),
+                source: SendSource::HomeThenAction,
+                index: 0,
+                follow: false,
+            },
         ),
-        other => panic!("stale cache must refuse the CLI send, got {other:?}"),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "stale cache must refuse the CLI send"
+            );
+        }
+        (other, _) => panic!("stale cache must refuse the CLI send, got {other:?}"),
     }
     let mut keyboard = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
     accepted(
@@ -1669,34 +1669,34 @@ fn implicit_send_source_freezes_pre_observation_home() {
             false,
         ),
     );
-    match keyboard
-        .handle_report(
-            &staged(
-                2,
-                vec![fact("win-n", "out-a", 10), fact("win-m", "out-a", 100)],
-                "win-n",
-                None,
-                Some("out-z"),
-                vec!["out-a", "out-b", "out-z"],
-                WorldCommand::SendRelative {
-                    window: WindowId("win-n".to_owned()),
-                    source: SendSource::HomeThenAction,
-                    delta: 1,
-                    follow: false,
-                },
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::SendTargetUnknown
-            }),
-            "unavailable action-context target must refuse"
+    match keyboard.handle_report(
+        &staged(
+            2,
+            vec![fact("win-n", "out-a", 10), fact("win-m", "out-a", 100)],
+            "win-n",
+            None,
+            Some("out-z"),
+            vec!["out-a", "out-b", "out-z"],
+            WorldCommand::SendRelative {
+                window: WindowId("win-n".to_owned()),
+                source: SendSource::HomeThenAction,
+                delta: 1,
+                follow: false,
+            },
         ),
-        other => panic!("unavailable action-context target must refuse, got {other:?}"),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::SendTargetUnknown
+                }),
+                "unavailable action-context target must refuse"
+            );
+        }
+        (other, _) => panic!("unavailable action-context target must refuse, got {other:?}"),
     }
 }
 

@@ -11,12 +11,12 @@ use crate::ids::{CorrelationId, OwnerId};
 use crate::intent_data::{IntentData, encode_intent_data};
 use crate::world_engine::{EventIssue, WorldEngine};
 use crate::world_report::{
-    AttemptOutcome, AuthorityScope, CommandRejectKind, CommandResult, FrameAttempt, FrameSetter,
-    HeldPresentationRow, HeldWindowRow, IntentRecord, NativeObservation, NativeOccupancy,
-    NativeWorkspaceFact, PresentationIngressV4, PresentationPagerFrameV4, PresentationRowV4,
-    RenderTarget, RendererInput, RowDiagnosticKind, ScopeAuthority, ScreenReport, SendSource,
-    StateAttempt, StateProperty, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand,
-    WorldReportV4,
+    AttemptOutcome, AuthorityScope, BatchSettlement, CommandRejectKind, CommandResult,
+    FrameAttempt, FrameSetter, HeldPresentationRow, HeldWindowRow, IntentRecord, NativeObservation,
+    NativeOccupancy, NativeWorkspaceFact, PresentationIngressV4, PresentationPagerFrameV4,
+    PresentationRowV4, RenderTarget, RendererInput, RowDiagnosticKind, ScopeAuthority,
+    ScreenReport, SendSource, StateAttempt, StateProperty, WORLD_CONTRACT_VERSION_V4, WindowFact,
+    WorldCommand, WorldReportV4,
 };
 use crate::world_run_v4::V4RunOutcome;
 use crate::world_v4_support_tests::{fact, float_fact, screen};
@@ -186,6 +186,15 @@ fn observe(seq: u64, windows: Vec<WindowFact>, focused: &str) -> WorldReportV4 {
 fn run(engine: &mut WorldEngine, report: &WorldReportV4, consumed: bool) -> V4RunOutcome {
     let issuing = engine.state_revision.checked_add(1).expect("test issuing");
     engine.run_accepted_v4(report, &issue(report.request_seq), consumed, issuing)
+}
+
+fn run_with_settlements(
+    engine: &mut WorldEngine,
+    report: &WorldReportV4,
+    consumed: bool,
+) -> (V4RunOutcome, Vec<BatchSettlement>) {
+    let issuing = engine.state_revision.checked_add(1).expect("test issuing");
+    engine.run_accepted_v4_batched(report, &issue(report.request_seq), consumed, issuing, &[])
 }
 
 fn accepted_reply(report_seq: u64, outcome: V4RunOutcome) -> crate::world_report::WorldReplyV4 {
@@ -383,30 +392,28 @@ fn composed_sticky_clear_restages_and_keeps_tile_save() {
         ),
     );
     let win = WindowId("win-a".to_owned());
-    let set_on = accepted_reply(
-        2,
-        run(
-            &mut engine,
-            &report(
-                2,
-                vec![null_row.clone()],
-                "win-a",
-                ingress("win-a"),
-                Some(1),
-                Some(WorldCommand::SetSticky {
-                    window: win.clone(),
-                    value: true,
-                }),
-                None,
-                Vec::new(),
-            ),
-            false,
+    let (_set_on_outcome, set_on_settlements) = run_with_settlements(
+        &mut engine,
+        &report(
+            2,
+            vec![null_row.clone()],
+            "win-a",
+            ingress("win-a"),
+            Some(1),
+            Some(WorldCommand::SetSticky {
+                window: win.clone(),
+                value: true,
+            }),
+            None,
+            Vec::new(),
         ),
+        false,
     );
+    assert_eq!(set_on_settlements.len(), 1);
     assert!(
-        set_on.command_result.is_none(),
+        set_on_settlements[0].result.is_none(),
         "set-on executes: {:?}",
-        set_on.command_result
+        set_on_settlements
     );
     assert_eq!(
         engine.restored_sticky.get(&win),
@@ -414,33 +421,30 @@ fn composed_sticky_clear_restages_and_keeps_tile_save() {
         "tiled origin restores with a false prior"
     );
     let clear_data = encode_intent_data(&IntentData::new(None, None));
-    let cleared = accepted_reply(
-        3,
-        run(
-            &mut engine,
-            &report(
-                3,
-                vec![null_row],
-                "win-a",
-                ingress("win-a"),
-                Some(2),
-                Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                    window: "win-a".to_owned(),
-                    float_rect: None,
-                })),
-                None,
-                vec![("win-a".to_owned(), clear_data)],
-            ),
-            false,
+    let (_cleared_outcome, cleared_settlements) = run_with_settlements(
+        &mut engine,
+        &report(
+            3,
+            vec![null_row],
+            "win-a",
+            ingress("win-a"),
+            Some(2),
+            Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                window: "win-a".to_owned(),
+                float_rect: None,
+            })),
+            None,
+            vec![("win-a".to_owned(), clear_data)],
         ),
+        false,
     );
     assert!(
         matches!(
-            cleared.command_result,
+            cleared_settlements.first().and_then(|s| s.result.as_ref()),
             Some(CommandResult::Float { rect: None, .. })
         ),
         "toggle-float clear mints the tile result: {:?}",
-        cleared.command_result
+        cleared_settlements
     );
     assert!(
         !engine.restored_sticky.contains_key(&win),
@@ -471,7 +475,7 @@ fn ordinary_focus_command_dispatches_effect() {
         window: WindowId("win-b".to_owned()),
         direction: String::new(),
     };
-    let outcome = run(
+    let (outcome, settlements) = run_with_settlements(
         &mut engine,
         &report(
             2,
@@ -503,7 +507,8 @@ fn ordinary_focus_command_dispatches_effect() {
         crate::world_report::FocusRequestCause::ExplicitCommand
     );
     assert_eq!(request.cmd_seq, Some(1));
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     assert_eq!(engine.command_highwater, Some(1));
 }
 
@@ -529,7 +534,7 @@ fn consumed_command_reconciles_without_reexecution() {
         Vec::new(),
     );
     accepted_reply(2, run(&mut engine, &command_report, false));
-    let outcome = run(&mut engine, &command_report, true);
+    let (outcome, settlements) = run_with_settlements(&mut engine, &command_report, true);
     match outcome {
         V4RunOutcome::CommandConsumed(reply) => {
             assert!(reply.command_consumed);
@@ -540,7 +545,7 @@ fn consumed_command_reconciles_without_reexecution() {
                     .any(|effect| effect.command_seq == Some(1)),
                 "consumed sequences never re-execute"
             );
-            assert!(reply.command_result.is_none());
+            assert!(settlements.is_empty());
         }
         other => panic!("expected consumed v4 run, got {other:?}"),
     }
@@ -607,8 +612,8 @@ fn consumed_rerun_with_new_observation_reconciles_without_revalidation() {
         Some(stale),
         Vec::new(),
     );
-    match engine.run_accepted_v4(&rerun, &issue(3), true, issuing) {
-        V4RunOutcome::CommandConsumed(reply) => {
+    match engine.run_accepted_v4_batched(&rerun, &issue(3), true, issuing, &[]) {
+        (V4RunOutcome::CommandConsumed(reply), settlements) => {
             assert!(reply.command_consumed);
             assert!(
                 !reply
@@ -619,9 +624,9 @@ fn consumed_rerun_with_new_observation_reconciles_without_revalidation() {
                 reply.effects
             );
             assert!(
-                reply.command_result.is_none(),
+                settlements.is_empty(),
                 "consumed reruns never re-validate the stale renderer: {:?}",
-                reply.command_result
+                settlements
             );
             assert_eq!(reply.state_revision, issuing);
             assert_eq!(reply.presentation.rev, issuing);
@@ -719,32 +724,30 @@ fn refused_command_preserves_observation_without_command_mutation() {
             false,
         ),
     );
-    let sent = accepted_reply(
-        3,
-        run(
-            &mut engine,
-            &report(
-                3,
-                base_windows(),
-                "w0",
-                ingress("w0"),
-                Some(2),
-                Some(WorldCommand::Send {
-                    window: WindowId("w0".to_owned()),
-                    target_output: OutputId("out-a".to_owned()),
-                    target_workspace: "ws-2".to_owned(),
-                    follow: true,
-                }),
-                None,
-                Vec::new(),
-            ),
-            false,
+    let (_sent_outcome, sent_settlements) = run_with_settlements(
+        &mut engine,
+        &report(
+            3,
+            base_windows(),
+            "w0",
+            ingress("w0"),
+            Some(2),
+            Some(WorldCommand::Send {
+                window: WindowId("w0".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: "ws-2".to_owned(),
+                follow: true,
+            }),
+            None,
+            Vec::new(),
         ),
+        false,
     );
+    assert_eq!(sent_settlements.len(), 1);
     assert!(
-        sent.command_result.is_none(),
+        sent_settlements[0].result.is_none(),
         "occupying send executes, got {:?}",
-        sent.command_result
+        sent_settlements
     );
     assert!(
         engine
@@ -788,9 +791,10 @@ fn refused_command_preserves_observation_without_command_mutation() {
     control_obs.command_seq = None;
     control_obs.command = None;
     accepted_reply(4, run(&mut control, &control_obs, false));
-    let reply = accepted_reply(4, run(&mut engine, &refused, false));
+    let (reply_outcome, reply_settlements) = run_with_settlements(&mut engine, &refused, false);
+    let reply = accepted_reply(4, reply_outcome);
     assert_eq!(
-        reply.command_result,
+        reply_settlements.first().and_then(|s| s.result.clone()),
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::SendRefused
         }),
@@ -884,7 +888,7 @@ fn frozen_migration_source_refuses_without_fallback() {
     let command = WorldCommand::MigrateDirectional {
         direction: "left".to_owned(),
     };
-    let outcome = run(
+    let (outcome, settlements) = run_with_settlements(
         &mut engine,
         &report(
             2,
@@ -898,9 +902,9 @@ fn frozen_migration_source_refuses_without_fallback() {
         ),
         false,
     );
-    let reply = accepted_reply(2, outcome);
+    let _reply = accepted_reply(2, outcome);
     assert_eq!(
-        reply.command_result,
+        settlements.first().and_then(|s| s.result.clone()),
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::MigrationRefused
         })
@@ -956,9 +960,10 @@ fn frozen_new_view_refuses_despite_same_report_creation() {
         OutputId("out-b".to_owned()),
         OutputId("out-zzz".to_owned()),
     ];
-    let reply = accepted_reply(2, run(&mut engine, &hotplug, false));
+    let (hotplug_outcome, hotplug_settlements) = run_with_settlements(&mut engine, &hotplug, false);
+    let _reply = accepted_reply(2, hotplug_outcome);
     assert_eq!(
-        reply.command_result,
+        hotplug_settlements.first().and_then(|s| s.result.clone()),
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::MigrationRefused
         }),
@@ -995,7 +1000,7 @@ fn renderer_valid_target_proceeds_to_normal_command_gates() {
         window: WindowId("win-gone".to_owned()),
         direction: String::new(),
     };
-    let outcome = run(
+    let (outcome, settlements) = run_with_settlements(
         &mut engine,
         &report(
             2,
@@ -1009,9 +1014,9 @@ fn renderer_valid_target_proceeds_to_normal_command_gates() {
         ),
         false,
     );
-    let reply = accepted_reply(2, outcome);
+    let _reply = accepted_reply(2, outcome);
     assert_eq!(
-        reply.command_result,
+        settlements.first().and_then(|s| s.result.clone()),
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::FocusUnknown
         }),
@@ -1044,7 +1049,7 @@ fn renderer_unissued_revision_refuses_command() {
         window: WindowId("win-b".to_owned()),
         direction: String::new(),
     };
-    let outcome = run(
+    let (outcome, settlements) = run_with_settlements(
         &mut engine,
         &report(
             2,
@@ -1060,7 +1065,7 @@ fn renderer_unissued_revision_refuses_command() {
     );
     let reply = accepted_reply(2, outcome);
     assert_eq!(
-        reply.command_result,
+        settlements.first().and_then(|s| s.result.clone()),
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::StaleRenderTarget
         })
@@ -1111,27 +1116,26 @@ fn renderer_older_unchanged_target_executes_after_intervening_observation() {
         engine.latest_published_presentation_rev_v4, 2,
         "intervening observation advances the published revision"
     );
-    let reply = accepted_reply(
-        3,
-        run(
-            &mut engine,
-            &report(
-                3,
-                facts_pair(),
-                "win-a",
-                ingress("win-a"),
-                Some(1),
-                Some(WorldCommand::Focus {
-                    window: WindowId("win-b".to_owned()),
-                    direction: String::new(),
-                }),
-                Some(older),
-                Vec::new(),
-            ),
-            false,
+    let (reply_outcome, reply_settlements) = run_with_settlements(
+        &mut engine,
+        &report(
+            3,
+            facts_pair(),
+            "win-a",
+            ingress("win-a"),
+            Some(1),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-b".to_owned()),
+                direction: String::new(),
+            }),
+            Some(older),
+            Vec::new(),
         ),
+        false,
     );
-    assert!(reply.command_result.is_none());
+    let reply = accepted_reply(3, reply_outcome);
+    assert_eq!(reply_settlements.len(), 1);
+    assert!(reply_settlements[0].result.is_none());
     assert!(
         reply.effects.is_empty(),
         "focus never publishes as wire effects: {:?}",
@@ -1176,59 +1180,56 @@ fn renderer_target_rehomed_during_genuine_run_refuses_as_stale() {
             win: WindowId("win-a".to_owned()),
         },
     };
-    let moved = accepted_reply(
-        2,
-        run(
-            &mut engine,
-            &report(
-                2,
-                facts_pair(),
-                "win-a",
-                ingress("win-a"),
-                Some(1),
-                Some(WorldCommand::Send {
-                    window: WindowId("win-a".to_owned()),
-                    target_output: OutputId("out-a".to_owned()),
-                    target_workspace: "ws-2".to_owned(),
-                    follow: true,
-                }),
-                Some(old_renderer.clone()),
-                Vec::new(),
-            ),
-            false,
+    let (moved_outcome, moved_settlements) = run_with_settlements(
+        &mut engine,
+        &report(
+            2,
+            facts_pair(),
+            "win-a",
+            ingress("win-a"),
+            Some(1),
+            Some(WorldCommand::Send {
+                window: WindowId("win-a".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: "ws-2".to_owned(),
+                follow: true,
+            }),
+            Some(old_renderer.clone()),
+            Vec::new(),
         ),
+        false,
     );
+    let _moved = accepted_reply(2, moved_outcome);
+    assert_eq!(moved_settlements.len(), 1);
     assert!(
-        moved.command_result.is_none(),
+        moved_settlements[0].result.is_none(),
         "old target is still valid pre-move, got {:?}",
-        moved.command_result
+        moved_settlements
     );
     let new_home = engine
         .core_homing(&WindowId("win-a".to_owned()))
         .expect("rehomed window");
     assert_ne!(new_home, old_home, "the genuine run rehomed the target");
-    let reply = accepted_reply(
-        3,
-        run(
-            &mut engine,
-            &report(
-                3,
-                facts_pair(),
-                "win-a",
-                ingress("win-a"),
-                Some(2),
-                Some(WorldCommand::Focus {
-                    window: WindowId("win-a".to_owned()),
-                    direction: String::new(),
-                }),
-                Some(old_renderer),
-                Vec::new(),
-            ),
-            false,
+    let (reply_outcome, reply_settlements) = run_with_settlements(
+        &mut engine,
+        &report(
+            3,
+            facts_pair(),
+            "win-a",
+            ingress("win-a"),
+            Some(2),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-a".to_owned()),
+                direction: String::new(),
+            }),
+            Some(old_renderer),
+            Vec::new(),
         ),
+        false,
     );
+    let reply = accepted_reply(3, reply_outcome);
     assert_eq!(
-        reply.command_result,
+        reply_settlements.first().and_then(|s| s.result.clone()),
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::StaleRenderTarget
         })
@@ -1269,7 +1270,7 @@ fn renderer_equal_revision_with_exact_row_executes() {
         window: WindowId("win-b".to_owned()),
         direction: String::new(),
     };
-    let outcome = run(
+    let (outcome, settlements) = run_with_settlements(
         &mut engine,
         &report(
             2,
@@ -1284,7 +1285,8 @@ fn renderer_equal_revision_with_exact_row_executes() {
         false,
     );
     let reply = accepted_reply(2, outcome);
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     assert!(
         reply.effects.is_empty(),
         "focus never publishes as wire effects: {:?}",
@@ -1641,32 +1643,30 @@ fn creation_exhaustion_propagates_as_envelope_refusal() {
     // Occupy the live trailing empty with a same-output send so the next
     // trailing selection must create (the exhaustion path) instead of
     // reusing. The sole window relocates its session onto the target.
-    let occupy = accepted_reply(
-        2,
-        run(
-            &mut engine,
-            &report(
-                2,
-                single(),
-                "win-a",
-                ingress("win-a"),
-                Some(1),
-                Some(WorldCommand::Send {
-                    window: WindowId("win-a".to_owned()),
-                    target_output: OutputId("out-a".to_owned()),
-                    target_workspace: "ws-2".to_owned(),
-                    follow: false,
-                }),
-                None,
-                Vec::new(),
-            ),
-            false,
+    let (_occupy_outcome, occupy_settlements) = run_with_settlements(
+        &mut engine,
+        &report(
+            2,
+            single(),
+            "win-a",
+            ingress("win-a"),
+            Some(1),
+            Some(WorldCommand::Send {
+                window: WindowId("win-a".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: "ws-2".to_owned(),
+                follow: false,
+            }),
+            None,
+            Vec::new(),
         ),
+        false,
     );
+    assert_eq!(occupy_settlements.len(), 1);
     assert!(
-        occupy.command_result.is_none(),
+        occupy_settlements[0].result.is_none(),
         "occupying send executes, got {:?}",
-        occupy.command_result
+        occupy_settlements
     );
     let revision_before = engine.state_revision;
     let outcome = run(
@@ -1755,9 +1755,10 @@ fn migration_unknown_minimized_refuses_before_engine_commit() {
     control_obs.command_seq = None;
     control_obs.command = None;
     accepted_reply(2, run(&mut control, &control_obs, false));
-    let reply = accepted_reply(2, run(&mut engine, &refused, false));
+    let (reply_outcome, reply_settlements) = run_with_settlements(&mut engine, &refused, false);
+    let reply = accepted_reply(2, reply_outcome);
     assert_eq!(
-        reply.command_result,
+        reply_settlements.first().and_then(|s| s.result.clone()),
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::MigrationRefused
         }),
@@ -1967,31 +1968,30 @@ fn retained_all_desktop_core_sticky_on_off_roundtrip() {
         sibling_first.allocation.is_some(),
         "sibling keeps geometry from admit: {sibling_first:?}"
     );
-    let on_reply = accepted_reply(
-        2,
-        run(
-            &mut engine,
-            &host_command(
-                2,
-                vec![
-                    known_fact("win-a", "out-a", 0, HOST_N1),
-                    known_fact("win-s", "out-a", 100, HOST_N1),
-                ],
-                "win-a",
-                native(),
-                1,
-                WorldCommand::SetSticky {
-                    window: WindowId("win-s".to_owned()),
-                    value: true,
-                },
-            ),
-            false,
+    let (on_outcome, on_settlements) = run_with_settlements(
+        &mut engine,
+        &host_command(
+            2,
+            vec![
+                known_fact("win-a", "out-a", 0, HOST_N1),
+                known_fact("win-s", "out-a", 100, HOST_N1),
+            ],
+            "win-a",
+            native(),
+            1,
+            WorldCommand::SetSticky {
+                window: WindowId("win-s".to_owned()),
+                value: true,
+            },
         ),
+        false,
     );
+    let on_reply = accepted_reply(2, on_outcome);
+    assert_eq!(on_settlements.len(), 1);
     assert!(
-        on_reply.command_result.is_none(),
+        on_settlements[0].result.is_none(),
         "sticky-on executes: {:?}",
-        on_reply.command_result
+        on_settlements
     );
     assert_eq!(
         sticky_state_row(&on_reply, "win-s"),
@@ -2046,28 +2046,27 @@ fn retained_all_desktop_core_sticky_on_off_roundtrip() {
     let mut sticky_off = fact("win-s", "out-a", 100);
     sticky_off.sticky = Some(true);
     sticky_off.native_workspace = NativeWorkspaceFact::Omitted;
-    let off_reply = accepted_reply(
-        4,
-        run(
-            &mut engine,
-            &host_command(
-                4,
-                vec![known_fact("win-a", "out-a", 0, HOST_N1), sticky_off],
-                "win-a",
-                native(),
-                2,
-                WorldCommand::SetSticky {
-                    window: WindowId("win-s".to_owned()),
-                    value: false,
-                },
-            ),
-            false,
+    let (off_outcome, off_settlements) = run_with_settlements(
+        &mut engine,
+        &host_command(
+            4,
+            vec![known_fact("win-a", "out-a", 0, HOST_N1), sticky_off],
+            "win-a",
+            native(),
+            2,
+            WorldCommand::SetSticky {
+                window: WindowId("win-s".to_owned()),
+                value: false,
+            },
         ),
+        false,
     );
+    let off_reply = accepted_reply(4, off_outcome);
+    assert_eq!(off_settlements.len(), 1);
     assert!(
-        off_reply.command_result.is_none(),
+        off_settlements[0].result.is_none(),
         "sticky-off executes, not scope-held: {:?}",
-        off_reply.command_result
+        off_settlements
     );
     assert_eq!(
         on_home,
@@ -2297,28 +2296,27 @@ fn retained_all_desktop_native_sticky_off_no_prior_on() {
     let mut adopted_cmd = float_fact("win-f", "out-a", 100, 100);
     adopted_cmd.sticky = Some(true);
     adopted_cmd.native_workspace = NativeWorkspaceFact::Omitted;
-    let off_reply = accepted_reply(
-        3,
-        run(
-            &mut engine,
-            &host_command(
-                3,
-                vec![known_fact("win-a", "out-a", 0, HOST_N1), adopted_cmd],
-                "win-a",
-                native(),
-                1,
-                WorldCommand::SetSticky {
-                    window: WindowId("win-f".to_owned()),
-                    value: false,
-                },
-            ),
-            false,
+    let (off_outcome, off_settlements) = run_with_settlements(
+        &mut engine,
+        &host_command(
+            3,
+            vec![known_fact("win-a", "out-a", 0, HOST_N1), adopted_cmd],
+            "win-a",
+            native(),
+            1,
+            WorldCommand::SetSticky {
+                window: WindowId("win-f".to_owned()),
+                value: false,
+            },
         ),
+        false,
     );
+    let off_reply = accepted_reply(3, off_outcome);
+    assert_eq!(off_settlements.len(), 1);
     assert!(
-        off_reply.command_result.is_none(),
+        off_settlements[0].result.is_none(),
         "native sticky-off executes, not scope-held: {:?}",
-        off_reply.command_result
+        off_settlements
     );
     assert!(
         adopted_hold.is_empty() && !engine.hold_reasons.contains_key(&home),
@@ -2431,5 +2429,190 @@ fn retained_all_desktop_unknown_sticky_missing_membership_still_fenced() {
             reply.scopes
         );
         assert!(reply.transfers.is_empty(), "{tag}: fence never re-homes");
+    }
+}
+
+#[test]
+fn q1b_queued_and_inline_handle_report_emit_batch_settlements_and_non_issuing_stay_empty() {
+    let mut engine = engine();
+    let bootstrap = report(
+        1,
+        facts_pair(),
+        "win-a",
+        ingress("win-a"),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    let (boot_outcome, boot_settlements) = engine.handle_report(&bootstrap, &[]);
+    assert!(matches!(boot_outcome, V4RunOutcome::Accepted(_)));
+    assert!(boot_settlements.is_empty());
+
+    // Inline `report.command` (seq 1, SetSticky -> None outcome) + queued
+    // command (seq 2, ToggleFloat -> Float outcome) both settle in
+    // inline-then-queued order on the issuing `handle_report` call.
+    let issuing_report = report(
+        2,
+        facts_pair(),
+        "win-a",
+        ingress("win-a"),
+        Some(1),
+        Some(WorldCommand::SetSticky {
+            window: WindowId("win-a".to_owned()),
+            value: true,
+        }),
+        None,
+        Vec::new(),
+    );
+    let queued = [(
+        2,
+        WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: "win-b".to_owned(),
+            float_rect: None,
+        }),
+    )];
+    let (issuing_outcome, issuing_settlements) = engine.handle_report(&issuing_report, &queued);
+    assert!(matches!(issuing_outcome, V4RunOutcome::Accepted(_)));
+    assert_eq!(issuing_settlements.len(), 2);
+    assert_eq!(issuing_settlements[0].seq, 1);
+    assert!(
+        issuing_settlements[0].result.is_none(),
+        "inline SetSticky settles with None outcome: {:?}",
+        issuing_settlements[0]
+    );
+    assert_eq!(issuing_settlements[1].seq, 2);
+    assert!(
+        matches!(
+            issuing_settlements[1].result,
+            Some(CommandResult::Float { .. })
+        ),
+        "queued ToggleFloat settles with Float outcome: {:?}",
+        issuing_settlements[1]
+    );
+
+    // Exact Duplicate (same observation_seq + request_id) does not rerun and
+    // returns empty settlements.
+    let (dup_outcome, dup_settlements) = engine.handle_report(&issuing_report, &queued);
+    assert!(matches!(dup_outcome, V4RunOutcome::Duplicate(_)));
+    assert!(
+        dup_settlements.is_empty(),
+        "Duplicate must not rerun or reissue settlements: {dup_settlements:?}"
+    );
+
+    // Later commandless handle_report returns empty settlements.
+    let commandless = report(
+        3,
+        facts_pair(),
+        "win-a",
+        ingress("win-a"),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    let (quiet_outcome, quiet_settlements) = engine.handle_report(&commandless, &[]);
+    assert!(matches!(quiet_outcome, V4RunOutcome::Accepted(_)));
+    assert!(
+        quiet_settlements.is_empty(),
+        "commandless handle_report returns empty Vec: {quiet_settlements:?}"
+    );
+
+    // CommandConsumed (newer observation_seq reusing consumed command_seq)
+    // does not rerun and returns empty settlements.
+    let consumed_report = report(
+        4,
+        facts_pair(),
+        "win-a",
+        ingress("win-a"),
+        Some(2),
+        Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: "win-a".to_owned(),
+            float_rect: None,
+        })),
+        None,
+        Vec::new(),
+    );
+    let (consumed_outcome, consumed_settlements) = engine.handle_report(&consumed_report, &[]);
+    assert!(matches!(consumed_outcome, V4RunOutcome::CommandConsumed(_)));
+    assert!(
+        consumed_settlements.is_empty(),
+        "CommandConsumed must not rerun or reissue settlements: {consumed_settlements:?}"
+    );
+}
+
+#[test]
+fn retained_drag_preview_persists_across_skipped_publication_and_commandless_report() {
+    let mut engine = engine();
+    let bootstrap = report(
+        1,
+        facts_pair(),
+        "win-a",
+        ingress("win-a"),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    assert!(matches!(
+        engine.handle_report(&bootstrap, &[]).0,
+        V4RunOutcome::Accepted(_)
+    ));
+
+    let mut gesture_report = report(
+        2,
+        facts_pair(),
+        "win-a",
+        ingress("win-a"),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    gesture_report.gesture_barrier = true;
+    gesture_report.gesture = Some(crate::gesture::GestureIngress {
+        id: 7,
+        window: WindowId("win-a".to_owned()),
+        kind: crate::gesture::GestureKind::Move,
+        cursor: Some((160, 50)),
+        start_cursor: Some((10, 10)),
+        phase: crate::gesture::GesturePhase::Updated,
+        esc: false,
+        modal_move: true,
+        start_frame: Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 100,
+        },
+    });
+    // Caller receives the accepted reply but skips publishing it.
+    let (skipped_outcome, _) = engine.handle_report(&gesture_report, &[]);
+    let expected_preview = match skipped_outcome {
+        V4RunOutcome::Accepted(reply) => reply
+            .drag_preview
+            .expect("gesture update produces drag_preview"),
+        other => panic!("expected accepted gesture update, got {other:?}"),
+    };
+
+    // Subsequent commandless / omitted-ingress report still publishes the
+    // retained drag_preview.
+    let commandless = report(
+        3,
+        facts_pair(),
+        "win-a",
+        ingress("win-a"),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    let (next_outcome, next_settlements) = engine.handle_report(&commandless, &[]);
+    assert!(next_settlements.is_empty());
+    match next_outcome {
+        V4RunOutcome::Accepted(reply) => {
+            assert_eq!(reply.drag_preview, Some(expected_preview));
+        }
+        other => panic!("expected accepted commandless reply, got {other:?}"),
     }
 }

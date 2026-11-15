@@ -1020,10 +1020,14 @@ fn retained_settlements_grant_no_extra_writes_or_spend_pending_obligations() {
         true,
     );
     send_report.focused_global = "w2".to_owned();
-    let send = accepted(&mut engine, &send_report);
+    let (send_outcome, send_settlements) = engine.handle_report(&send_report, &[]);
+    let send = match send_outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted send, got {other:?}"),
+    };
     assert!(!send.command_consumed);
     assert!(!matches!(
-        send.command_result,
+        send_settlements.first().and_then(|s| s.result.as_ref()),
         Some(tiler_core::world_report::CommandResult::Rejected { .. })
     ));
     assert_eq!(
@@ -1140,12 +1144,16 @@ fn retained_settlements_grant_no_extra_writes_or_spend_pending_obligations() {
         true,
     );
     f1_report.focused_global = "w2".to_owned();
-    let f1_cmd = accepted(&mut engine, &f1_report);
+    let (f1_outcome, f1_settlements) = engine.handle_report(&f1_report, &[]);
+    let f1_cmd = match f1_outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted f1, got {other:?}"),
+    };
     assert!(!f1_cmd.command_consumed);
     assert!(matches!(
-        f1_cmd.command_result,
+        f1_settlements.first().and_then(|s| s.result.as_ref()),
         Some(tiler_core::world_report::CommandResult::Float {
-            ref window,
+            window,
             rect: Some(_),
             no_space: false,
         }) if window.0 == "w2"

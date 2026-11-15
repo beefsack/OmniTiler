@@ -1154,9 +1154,13 @@ fn rejected_command_keeps_admission_mapping_envelope_rejection_adopts_nothing() 
         window: WindowId("w-unknown".to_owned()),
         direction: "left".to_owned(),
     });
-    let reply = accepted(&mut engine, &refused);
+    let (outcome, settlements) = engine.handle_report(&refused, &[]);
+    let reply = match outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted refused, got {other:?}"),
+    };
     assert_eq!(
-        reply.command_result,
+        settlements.first().and_then(|s| s.result.clone()),
         Some(crate::world_report::CommandResult::Rejected {
             kind: crate::world_report::CommandRejectKind::FocusUnknown
         })

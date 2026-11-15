@@ -313,7 +313,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         windows: [],
         transfers: [],
         effects: [],
-        result: null,
+        dragPreview: null,
         ...extra,
     });
     const parsed = parseWorldReply(text);

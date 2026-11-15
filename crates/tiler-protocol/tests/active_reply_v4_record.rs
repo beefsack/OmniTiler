@@ -52,11 +52,11 @@ fn active_reply_witnesses_match_typed_recorder() {
         .into_iter()
         .filter(|fixture| fixture.family == "WorldReply")
         .collect();
-    assert_eq!(fixtures.len(), 138);
+    assert_eq!(fixtures.len(), 94);
 
     let valid = valid_cases::valid_reply_cases();
     let contextual = valid_cases::contextual_reject_cases();
-    assert_eq!(valid.len(), 113);
+    assert_eq!(valid.len(), 73);
     assert_eq!(contextual.len(), 3);
     let mut produced = BTreeMap::new();
     for (cases, expectation, require_context) in [
@@ -83,7 +83,7 @@ fn active_reply_witnesses_match_typed_recorder() {
         .iter()
         .filter(|f| f.expectation == "reject-wire" && f.context.is_none())
         .collect();
-    assert_eq!(negatives.len(), 22);
+    assert_eq!(negatives.len(), 18);
     for fixture in negatives {
         let invalid = fixture.invalid.as_ref().expect("negative metadata");
         let source_id = invalid.source.as_deref().expect("negative source");

@@ -16,7 +16,7 @@ use crate::world_engine::{
     KIND_REUSED, KIND_REVISION_EXHAUSTED, KIND_SNAPSHOT, KIND_SUPERSEDED, RawRouting, WorldEngine,
 };
 use crate::world_report::{
-    AfterShown, AfterShownMember, AfterShownScope, AttemptLaneV4, AuthorityScope,
+    AfterShown, AfterShownMember, AfterShownScope, AttemptLaneV4, AuthorityScope, BatchSettlement,
     CommandRejectKind, CommandResult, FocusRequest, FocusRequestCause, HeldAttemptRow,
     HeldWindowRow, IntentDesire, MAX_FOCUS_DEPARTING, MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED,
     MAX_FOCUS_VIEWS, PresentationIngressV4, PresentationRowV4, RowDiagnostic, RowDiagnosticKind,
@@ -56,6 +56,13 @@ fn issue(report: &WorldReportV4) -> EventIssue {
 
 fn admit(engine: &mut WorldEngine, report: &WorldReportV4) -> V4RunOutcome {
     engine.handle_report_v4(report, &issue(report))
+}
+
+fn admit_with_settlements(
+    engine: &mut WorldEngine,
+    report: &WorldReportV4,
+) -> (V4RunOutcome, Vec<BatchSettlement>) {
+    engine.handle_report_v4_batched(report, &issue(report), &[])
 }
 
 fn ingress(fg: &str) -> PresentationIngressV4 {
@@ -364,8 +371,8 @@ fn fresh_consumed_command_reconciles_without_reexecution() {
         Some(command),
         Vec::new(),
     );
-    match admit(&mut engine, &rerun) {
-        V4RunOutcome::CommandConsumed(reply) => {
+    match admit_with_settlements(&mut engine, &rerun) {
+        (V4RunOutcome::CommandConsumed(reply), settlements) => {
             assert!(reply.command_consumed);
             assert_eq!(reply.based_on_observation_seq, 3);
             assert!(
@@ -373,9 +380,9 @@ fn fresh_consumed_command_reconciles_without_reexecution() {
                 "consumed sequences never re-execute: {:?}",
                 reply.focus_request
             );
-            assert!(reply.command_result.is_none());
+            assert!(settlements.is_empty());
         }
-        other => panic!("expected consumed v4 admission, got {other:?}"),
+        (other, _) => panic!("expected consumed v4 admission, got {other:?}"),
     }
     assert_eq!(engine.state_revision, 3);
     assert_eq!(
@@ -436,16 +443,16 @@ fn pre_ready_bootstrap_emits_no_authority() {
         Vec::new(),
         false,
     );
-    match admit(&mut engine, &incomplete) {
-        V4RunOutcome::Accepted(reply) => {
+    match admit_with_settlements(&mut engine, &incomplete) {
+        (V4RunOutcome::Accepted(reply), settlements) => {
             assert!(!reply.ready);
             assert!(!reply.command_consumed);
             assert_eq!(reply.state_revision, 0);
             assert_eq!(reply.presentation.rev, 0);
-            assert!(reply.command_result.is_none());
+            assert!(settlements.is_empty());
             assert!(reply.effects.is_empty());
         }
-        other => panic!("expected pre-ready bootstrap, got {other:?}"),
+        (other, _) => panic!("expected pre-ready bootstrap, got {other:?}"),
     }
     assert_eq!(engine.state_revision, 0, "bootstrap advances no revision");
     assert!(
@@ -642,31 +649,29 @@ fn late_import_ingests_but_admitted_latch_ignores() {
         "tiled origin restores with a false prior"
     );
     let clear_data = encode_intent_data(&IntentData::new(None, None));
-    let cleared = accepted_reply(
-        3,
-        admit(
-            &mut engine,
-            &report(
-                3,
-                vec![null_row],
-                "win-a",
-                PresentationRowV4::Valid(ingress("win-a")),
-                Some(2),
-                Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                    window: "win-a".to_owned(),
-                    float_rect: None,
-                })),
-                vec![("win-a".to_owned(), clear_data)],
-            ),
+    let (cleared_outcome, cleared_settlements) = admit_with_settlements(
+        &mut engine,
+        &report(
+            3,
+            vec![null_row],
+            "win-a",
+            PresentationRowV4::Valid(ingress("win-a")),
+            Some(2),
+            Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                window: "win-a".to_owned(),
+                float_rect: None,
+            })),
+            vec![("win-a".to_owned(), clear_data)],
         ),
     );
+    let _cleared = accepted_reply(3, cleared_outcome);
     assert!(
         matches!(
-            cleared.command_result,
+            cleared_settlements.first().and_then(|s| s.result.as_ref()),
             Some(CommandResult::Float { rect: None, .. })
         ),
         "toggle-float clear mints the tile result: {:?}",
-        cleared.command_result
+        cleared_settlements
     );
     assert_eq!(
         engine.ingest_calls, 3,
@@ -1395,30 +1400,29 @@ fn refused_numbered_send_rolls_back_trailing_create_through_boundary() {
             ),
         ),
     );
-    let sent = accepted_reply(
-        3,
-        admit(
-            &mut engine,
-            &report(
-                3,
-                base_windows(),
-                "w0",
-                PresentationRowV4::Valid(ingress("w0")),
-                Some(2),
-                Some(WorldCommand::Send {
-                    window: WindowId("w0".to_owned()),
-                    target_output: OutputId("out-a".to_owned()),
-                    target_workspace: "ws-2".to_owned(),
-                    follow: true,
-                }),
-                Vec::new(),
-            ),
+    let (sent_outcome, sent_settlements) = admit_with_settlements(
+        &mut engine,
+        &report(
+            3,
+            base_windows(),
+            "w0",
+            PresentationRowV4::Valid(ingress("w0")),
+            Some(2),
+            Some(WorldCommand::Send {
+                window: WindowId("w0".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: "ws-2".to_owned(),
+                follow: true,
+            }),
+            Vec::new(),
         ),
     );
+    let _sent = accepted_reply(3, sent_outcome);
+    assert_eq!(sent_settlements.len(), 1);
     assert!(
-        sent.command_result.is_none(),
+        sent_settlements[0].result.is_none(),
         "occupying send executes, got {:?}",
-        sent.command_result
+        sent_settlements
     );
     assert!(
         engine
@@ -1461,9 +1465,10 @@ fn refused_numbered_send_rolls_back_trailing_create_through_boundary() {
     control_obs.command_seq = None;
     control_obs.command = None;
     accepted_reply(4, admit(&mut control, &control_obs));
-    let reply = accepted_reply(4, admit(&mut engine, &refused));
+    let (reply_outcome, reply_settlements) = admit_with_settlements(&mut engine, &refused);
+    let reply = accepted_reply(4, reply_outcome);
     assert_eq!(
-        reply.command_result,
+        reply_settlements.first().and_then(|s| s.result.clone()),
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::SendRefused
         }),
@@ -1563,30 +1568,29 @@ fn ingest_sensor_counts_adopted_and_discarded_trials() {
         2,
         "command restaging ingests exactly once per entry"
     );
-    let sent = accepted_reply(
-        3,
-        admit(
-            &mut engine,
-            &report(
-                3,
-                facts_pair(),
-                "win-a",
-                PresentationRowV4::Valid(ingress("win-a")),
-                Some(2),
-                Some(WorldCommand::Send {
-                    window: WindowId("win-a".to_owned()),
-                    target_output: OutputId("out-a".to_owned()),
-                    target_workspace: "ws-2".to_owned(),
-                    follow: false,
-                }),
-                Vec::new(),
-            ),
+    let (sent_outcome, sent_settlements) = admit_with_settlements(
+        &mut engine,
+        &report(
+            3,
+            facts_pair(),
+            "win-a",
+            PresentationRowV4::Valid(ingress("win-a")),
+            Some(2),
+            Some(WorldCommand::Send {
+                window: WindowId("win-a".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: "ws-2".to_owned(),
+                follow: false,
+            }),
+            Vec::new(),
         ),
     );
+    let _sent = accepted_reply(3, sent_outcome);
+    assert_eq!(sent_settlements.len(), 1);
     assert!(
-        sent.command_result.is_none(),
+        sent_settlements[0].result.is_none(),
         "occupying send executes, got {:?}",
-        sent.command_result
+        sent_settlements
     );
     assert_eq!(engine.ingest_calls, 3);
     assert_eq!(trials(&engine), 3, "third entry runs its own trial");
@@ -2254,13 +2258,13 @@ fn slice_7_1_invalid_screen_not_routing_authority() {
     control.action_outputs = vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
     control.held_screens = graded.held_screens.clone();
     accepted_reply(1, control_engine.handle_report_v4(&first, &issue(&first)));
-    let reply = accepted_reply(2, admit(&mut engine, &invalid));
-    let control_reply = accepted_reply(
-        2,
-        control_engine.handle_report_v4(&control, &issue(&control)),
-    );
+    let (reply_outcome, reply_settlements) = admit_with_settlements(&mut engine, &invalid);
+    let _reply = accepted_reply(2, reply_outcome);
+    let (control_outcome, control_settlements) =
+        control_engine.handle_report_v4_batched(&control, &issue(&control), &[]);
+    let _control_reply = accepted_reply(2, control_outcome);
     assert_eq!(
-        reply.command_result, control_reply.command_result,
+        reply_settlements, control_settlements,
         "invalid screen freezes as its held equivalent"
     );
     assert_eq!(

@@ -79,13 +79,14 @@ impl WorldEngine {
     /// Run one already-admitted v4 candidate plus a parked FIFO command
     /// batch drained inside the same capture/run/publication: native
     /// observations incorporate once, then every command executes in order
-    /// with core subject state after the preceding action, and exactly one
-    /// full publication carries the last command's result. The inline
-    /// report command (when present) runs first; queued commands follow in
-    /// FIFO order. Renderer validation applies to the inline command only:
-    /// queued commands never carried render proof. Returns the single run
-    /// outcome plus one per-command settlement index-aligned with `queued`
-    /// (inline results ride the final publication, never a settlement). A
+    /// with core subject state after the preceding action, and one full
+    /// publication is emitted for the batch (command outcomes ride
+    /// `Vec<BatchSettlement>`, not `WorldReplyV4`). The inline report command
+    /// (when present) runs first; queued commands follow in FIFO order.
+    /// Renderer validation applies to the inline command only: queued commands
+    /// never carried render proof. Returns the single run outcome plus one
+    /// per-command settlement aligned with the executed commands (inline
+    /// `report.command` first if present, then `queued`). A
     /// creation-exhausted command discards the whole staged candidate with
     /// empty settlements so the caller reparks the batch.
     pub(crate) fn run_accepted_v4_batched(
@@ -438,7 +439,7 @@ impl WorldEngine {
         self.command_result = None;
         match self.gesture_act(issue, &mut held_scopes) {
             GestureOutcome::Absent | GestureOutcome::Held => {}
-            GestureOutcome::Settled { committed, result } => {
+            GestureOutcome::Settled { committed, .. } => {
                 if committed {
                     let was_floating = self.floating_scopes.clone();
                     self.resweep_retiled(
@@ -450,7 +451,6 @@ impl WorldEngine {
                     self.build_staged_domains();
                     self.settle_intent_admissions();
                 }
-                self.command_result = result.map(|boxed| *boxed);
             }
         }
         let mut effects = self.take_admission_focus(&known_before, &held_scopes);
@@ -474,10 +474,10 @@ impl WorldEngine {
         }
         if consumed {
             // Consumed sequences reconcile only, never re-execute or
-            // re-validate: the result never re-emits, while a gesture
-            // result stays the gesture's own.
+            // re-validate: the result never re-emits, while retained
+            // gesture preview state stays owned by the active gesture.
             crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-            let result = self.command_result.take();
+            let _ = self.command_result.take();
             effects = self.drain_focus_candidates(effects, &held_scopes, report, issuing_revision);
             let reply = self.publish_v4(
                 PublishEnvelopeV4 {
@@ -489,7 +489,6 @@ impl WorldEngine {
                 },
                 report.command.as_ref(),
                 effects,
-                result,
                 &held_scopes,
             );
             return (self.finish_v4(report, issuing_revision, reply), Vec::new());
@@ -514,7 +513,7 @@ impl WorldEngine {
         // publishes. Focus is the only effect kind. Trailing non-focus
         // commands never clear the surviving focus.
         if commands.is_empty() {
-            let result = self.command_result.take();
+            let _ = self.command_result.take();
             crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
             effects = self.drain_focus_candidates(effects, &held_scopes, report, issuing_revision);
             let reply = self.publish_v4(
@@ -527,13 +526,11 @@ impl WorldEngine {
                 },
                 report.command.as_ref(),
                 effects,
-                result,
                 &held_scopes,
             );
             return (self.finish_v4(report, issuing_revision, reply), Vec::new());
         }
         let mut settlements: Vec<BatchSettlement> = Vec::new();
-        let mut last_result: Option<CommandResult> = None;
         // Baseline for in-batch focus resolution: post-observation session
         // state, before the first command runs. Observations applied once
         // above; every command below owns post-previous-command state.
@@ -597,9 +594,8 @@ impl WorldEngine {
                 }
                 settlements.push(BatchSettlement {
                     seq: command_seq,
-                    result: result.clone(),
+                    result,
                 });
-                last_result = result;
                 first = false;
                 continue;
             }
@@ -657,9 +653,8 @@ impl WorldEngine {
                     }
                     settlements.push(BatchSettlement {
                         seq: command_seq,
-                        result: result.clone(),
+                        result,
                     });
-                    last_result = result;
                     last_bookkeeping = Some(bookkeeping);
                 }
                 CommandApplied::NoEffect => {
@@ -683,9 +678,8 @@ impl WorldEngine {
                     }
                     settlements.push(BatchSettlement {
                         seq: command_seq,
-                        result: result.clone(),
+                        result,
                     });
-                    last_result = result;
                     last_bookkeeping = Some(bookkeeping);
                 }
                 CommandApplied::Rejected { kind, message } => {
@@ -726,9 +720,8 @@ impl WorldEngine {
                     }
                     settlements.push(BatchSettlement {
                         seq: command_seq,
-                        result: result.clone(),
+                        result,
                     });
-                    last_result = result;
                     last_bookkeeping = Some(bookkeeping);
                 }
             }
@@ -756,7 +749,6 @@ impl WorldEngine {
             },
             published_command.as_ref(),
             effects,
-            last_result,
             &held_scopes,
         );
         (self.finish_v4(report, issuing_revision, reply), settlements)

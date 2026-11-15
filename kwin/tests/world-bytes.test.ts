@@ -17,7 +17,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { startWorldAdapterEntry } from "../src/world-entry";
 import { parseWorldReply, isCoreWorldReply } from "../src/world-report";
-import { createMiniBroker } from "./world-wire-harness";
+import { createMiniBroker, parseRawEvalWithSettlements } from "./world-wire-harness";
 
 const FIXTURE_DIR = join("..", "test-fixtures", "kde-v4-active", "bytes");
 const UPDATE = process.env["UPDATE_KDE_V4_BYTE_FIXTURES"] === "1";
@@ -530,9 +530,9 @@ describe("world shared byte fixtures", () => {
             const startupExtreme = (startupInner["windows"] as Array<Record<string, unknown>>).find((w) => w["win"] === "win-extreme");
             assert.deepEqual(startupExtreme?.["rect"], [-16384, -16384, 16384, 16384], "raw initial extreme rect rides verbatim");
             const startupStamped = broker.stampCapture(startupPayload);
-            const startupRaw = await bridge.send("DescribeWorld", startupStamped);
+            const { reply: startupRaw, settlements: startupSettlements } = parseRawEvalWithSettlements(await bridge.send("DescribeWorldWithSettlements", startupStamped));
             assert.notEqual((JSON.parse(startupRaw) as Record<string, unknown>)["outcome"], "rejected", "genuine engine accepts the startup capture");
-            replyCall(flow, "DescribeWorld")(broker.bindReply(startupRaw, startupPayload));
+            replyCall(flow, "DescribeWorld")(broker.bindReply(startupRaw, startupPayload, startupSettlements));
             // A native close rides the next full report explicitly: the
             // window leaves the live inventory first, then the payload-free
             // removal event gates the cached-id difference.
@@ -574,9 +574,9 @@ describe("world shared byte fixtures", () => {
             // Genuine Rust reply for this exact report parses and applies
             // through the production entry (proves byte consumption).
             const stamped = broker.stampCapture(observePayload);
-            const raw = await bridge.send("DescribeWorld", stamped);
+            const { reply: raw, settlements } = parseRawEvalWithSettlements(await bridge.send("DescribeWorldWithSettlements", stamped));
             assert.notEqual((JSON.parse(raw) as Record<string, unknown>)["outcome"], "rejected", "genuine engine accepts the producer capture");
-            const bound = broker.bindReply(raw, observePayload);
+            const bound = broker.bindReply(raw, observePayload, settlements);
             checkOrWrite("reply-observe.json", maskSource(bound));
             const parsed = parseWorldReply(bound);
             assert.ok(parsed !== null && isCoreWorldReply(parsed), "genuine reply parses");
@@ -611,9 +611,9 @@ describe("world shared byte fixtures", () => {
             const sendStamped = broker.stampCapture(sendPayload);
             assert.equal(broker.drained.length, sendDrainedBefore + 1, "real queue drains exactly once");
             assert.equal((broker.drained[broker.drained.length - 1] as { globalCmd: string }).globalCmd, (JSON.parse(sendQueueReply) as Record<string, unknown>)["globalCmd"], "drain binds the filed command");
-            const sendRaw = await bridge.send("DescribeWorld", sendStamped);
+            const { reply: sendRaw, settlements: sendSettlements } = parseRawEvalWithSettlements(await bridge.send("DescribeWorldWithSettlements", sendStamped));
             assert.notEqual((JSON.parse(sendRaw) as Record<string, unknown>)["outcome"], "rejected", "genuine engine accepts the draining capture");
-            const sendBound = broker.bindReply(sendRaw, sendPayload);
+            const sendBound = broker.bindReply(sendRaw, sendPayload, sendSettlements);
             const sendParsed = parseWorldReply(sendBound);
             assert.ok(sendParsed !== null && isCoreWorldReply(sendParsed), "draining reply parses");
             replyCall(flow, "DescribeWorld")(sendBound);
@@ -657,9 +657,9 @@ describe("world shared byte fixtures", () => {
             // Accepted, never catchup-held: the neutral select rides the
             // next dispatch instead of being dropped to observation-only.
             const stamped = broker.stampCapture(observePayload);
-            const raw = await bridge.send("DescribeWorld", stamped);
+            const { reply: raw, settlements } = parseRawEvalWithSettlements(await bridge.send("DescribeWorldWithSettlements", stamped));
             assert.notEqual((JSON.parse(raw) as Record<string, unknown>)["outcome"], "rejected", "genuine engine accepts the size-hints capture");
-            replyCall(flow, "DescribeWorld")(broker.bindReply(raw, observePayload));
+            replyCall(flow, "DescribeWorld")(broker.bindReply(raw, observePayload, settlements));
             flow.handle.requestWorkspaceSelect(2);
             runTimers(flow);
             assert.ok(!flow.logs.some((l) => l.includes("shortcut-failed")), "select dispatched with its command");
@@ -680,9 +680,9 @@ describe("world shared byte fixtures", () => {
             const selDrainedBefore = broker.drained.length;
             const selStamped = broker.stampCapture(selectPayload);
             assert.equal(broker.drained.length, selDrainedBefore + 1, "real select drains exactly once");
-            const selRaw = await bridge.send("DescribeWorld", selStamped);
+            const { reply: selRaw, settlements: selSettlements } = parseRawEvalWithSettlements(await bridge.send("DescribeWorldWithSettlements", selStamped));
             assert.notEqual((JSON.parse(selRaw) as Record<string, unknown>)["outcome"], "rejected", "genuine engine accepts the select drain");
-            const selBound = broker.bindReply(selRaw, selectPayload);
+            const selBound = broker.bindReply(selRaw, selectPayload, selSettlements);
             const selParsed = parseWorldReply(selBound);
             assert.ok(selParsed !== null && isCoreWorldReply(selParsed), "select drain parses");
             replyCall(flow, "DescribeWorld")(selBound);

@@ -82,7 +82,7 @@ function replyText(opts: {
         transfers: [],
         effects: [],
         focusRequest: opts.focusRequest,
-        result: null,
+        dragPreview: null,
     });
 }
 
@@ -647,7 +647,7 @@ describe("world retained focus request", () => {
             windows: [],
             transfers: [],
             effects,
-            result: null,
+            dragPreview: null,
         });
         const good = { id: "focus-7", target: "win-c", rev: "7", cause: "positive-close", out: "out", ws: "ws1", cmdSeq: null, afterShown: null };
         assert.ok(parseWorldReply(text(good)) !== null, "well-formed request parses");

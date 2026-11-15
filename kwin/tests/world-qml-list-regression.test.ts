@@ -77,7 +77,7 @@ const REPLY_TEXT = JSON.stringify({
     ],
     transfers: [{ op: TRANSFER_OP, kind: "view", win: "", out: OUT, ws: WS_B, follow: false, held: false, cmdSeq: null }],
     effects: [],
-    result: null,
+    dragPreview: null,
 });
 
 // Array-like: indexed properties plus length on a plain object.

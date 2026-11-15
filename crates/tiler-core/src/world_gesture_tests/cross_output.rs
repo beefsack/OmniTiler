@@ -105,11 +105,8 @@ fn seed_mixed(seed_facts: Vec<WindowFact>) -> WorldEngine {
 /// Preview rect plus the resolving output name, for cross-output slot
 /// agreement checks.
 fn preview_slot(reply: &crate::world_report::WorldReplyV4) -> (Rect, String) {
-    let Some(CommandResult::DragPreview { rect, domain, .. }) = reply.command_result.clone() else {
-        panic!(
-            "expected drag-preview result, got {:?}",
-            reply.command_result
-        );
+    let Some(DragPreviewV4 { rect, domain, .. }) = reply.drag_preview.clone() else {
+        panic!("expected drag-preview, got {:?}", reply.drag_preview);
     };
     (rect, domain.output.0.clone())
 }
@@ -212,7 +209,7 @@ fn cross_slot(
         "move release records a committed terminal"
     );
     assert!(
-        released.command_result.is_none(),
+        released.drag_preview.is_none(),
         "release rides the snapshot"
     );
     let transfer = released

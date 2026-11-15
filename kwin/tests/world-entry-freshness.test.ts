@@ -240,7 +240,7 @@ function setup(onLog?: (message: string) => void): Harness {
         const text = JSON.stringify({
             v: 4, adapter: ADAPTER, gen: GEN, req: body.source, obs: String(rev), rev: String(rev),
             ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
-            windows: [], transfers: [], effects: [], result: null,
+            windows: [], transfers: [], effects: [], dragPreview: null,
             gestureSettled: settled, gestureAssoc: assoc,
             gestureSettledAssoc: settled !== null && assoc !== null && settled.id === assoc.coreId ? assoc : null,
             focusRequest: null,

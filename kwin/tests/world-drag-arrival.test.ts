@@ -62,7 +62,7 @@ function arrivalReply(): WorldReply {
             { op: "op-87", kind: "window", win: "win-a", out: "out-b", ws: "wb1", follow: false, held: false, cmdSeq: null },
         ],
         effects: [],
-        result: null,
+        dragPreview: null,
         intentDesired: [],
         switchSettled: [],
         diagnostics: [],

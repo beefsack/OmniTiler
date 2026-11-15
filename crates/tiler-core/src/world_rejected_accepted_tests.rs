@@ -212,12 +212,13 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
         operation_id: None,
         prewrite: None,
     }];
-    let reply = match engine.handle_report(&rejected, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("rejection must accept with typed result, got {other:?}"),
+    let (reply, settlements) = match engine.handle_report(&rejected, &[]) {
+        (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("rejection must accept with typed result, got {other:?}"),
     };
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        reply.command_result,
+        settlements[0].result,
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::FocusUnknown
         }),
@@ -277,29 +278,26 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
         Some(1000),
         "frame attempt settles pre-command"
     );
-    // A commandless observation-only followup carries no result.
-    match engine
-        .handle_report(
-            &report(
-                3,
-                vec![
-                    fact("w0", "out-a", 0),
-                    fact("w1", "out-a", 100),
-                    fact("w2", "out-a", 300),
-                ],
-                "w1",
-                vec![],
-                None,
-                None,
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(follow) => {
-            assert_eq!(
-                follow.command_result, None,
-                "observation-only followup has no result"
+    // A commandless observation-only followup carries no settlement.
+    match engine.handle_report(
+        &report(
+            3,
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fact("w2", "out-a", 300),
+            ],
+            "w1",
+            vec![],
+            None,
+            None,
+        ),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(follow), follow_settlements) => {
+            assert!(
+                follow_settlements.is_empty(),
+                "observation-only followup has no settlement: {follow_settlements:?}"
             );
             assert!(
                 row_window_ids(&follow).contains(&"w2".to_owned()),
@@ -340,12 +338,13 @@ fn rejected_seq_consumed_then_duplicate_replays() {
             direction: "left".to_owned(),
         }),
     );
-    let rejected_reply = match engine.handle_report(&rejected_report, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("rejection accepts, got {other:?}"),
+    let (rejected_reply, rejected_settlements) = match engine.handle_report(&rejected_report, &[]) {
+        (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("rejection accepts, got {other:?}"),
     };
+    assert_eq!(rejected_settlements.len(), 1);
     assert_eq!(
-        rejected_reply.command_result,
+        rejected_settlements[0].result,
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::FocusUnknown
         })
@@ -365,43 +364,46 @@ fn rejected_seq_consumed_then_duplicate_replays() {
     // No v4 presentation wire encoder exists in core (wire encoding lives
     // in the protocol crate), so byte identity is pinned typed: the full
     // presentation struct must compare equal.
-    match engine.handle_report(&rejected_report, &[]).0 {
-        WorldOutcome::Duplicate(cached) => {
+    match engine.handle_report(&rejected_report, &[]) {
+        (WorldOutcome::Duplicate(cached), dup_settlements) => {
+            assert!(
+                dup_settlements.is_empty(),
+                "duplicate reissues no settlement"
+            );
             assert_eq!(cached.state_revision, rejected_reply.state_revision);
-            assert_eq!(cached.command_result, rejected_reply.command_result);
             assert_eq!(cached.presentation.rev, rejected_reply.presentation.rev);
             assert_eq!(
                 cached.presentation, rejected_reply.presentation,
                 "duplicate replays identical presentation"
             );
         }
-        other => panic!("exact repeat replays duplicate, got {other:?}"),
+        (other, _) => panic!("exact repeat replays duplicate, got {other:?}"),
     }
     // Same consumed command sequence with fresh observation reconciles
-    // only: no re-execution, no result re-emission.
-    match engine
-        .handle_report(
-            &report(
-                3,
-                vec![
-                    fact("w0", "out-a", 0),
-                    fact("w1", "out-a", 100),
-                    fact("w2", "out-a", 200),
-                ],
-                "w0",
-                vec![],
-                Some(5),
-                Some(WorldCommand::Focus {
-                    window: WindowId("w-ghost".to_owned()),
-                    direction: "left".to_owned(),
-                }),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::CommandConsumed(reply) => {
-            assert_eq!(reply.command_result, None, "consumed emits no result");
+    // only: no re-execution, no settlement re-emission.
+    match engine.handle_report(
+        &report(
+            3,
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fact("w2", "out-a", 200),
+            ],
+            "w0",
+            vec![],
+            Some(5),
+            Some(WorldCommand::Focus {
+                window: WindowId("w-ghost".to_owned()),
+                direction: "left".to_owned(),
+            }),
+        ),
+        &[],
+    ) {
+        (WorldOutcome::CommandConsumed(reply), consumed_settlements) => {
+            assert!(
+                consumed_settlements.is_empty(),
+                "consumed emits no settlement"
+            );
             assert!(
                 row_window_ids(&reply).contains(&"w2".to_owned()),
                 "fresh obs still incorporates: {:?}",
@@ -430,30 +432,28 @@ fn noncatalog_legacy_refusal_normalizes_to_operation_refused_without_mutation() 
     }
     // Unknown-window local move surfaces a legacy session refusal string
     // (unknown-window), which is not in the closed command catalog.
-    let reply = match engine
-        .handle_report(
-            &report(
-                2,
-                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
-                "w0",
-                vec![],
-                Some(2),
-                Some(WorldCommand::Operation(CoreCommand::Move {
-                    window: "w-ghost".to_owned(),
-                    direction: "left".to_owned(),
-                    cross_output_transfer: false,
-                    same_axis_move: crate::directional::SameAxisMove::GroupWithNeighbor,
-                })),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("legacy refusal must accept with mapping, got {other:?}"),
+    let (reply, settlements) = match engine.handle_report(
+        &report(
+            2,
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "w0",
+            vec![],
+            Some(2),
+            Some(WorldCommand::Operation(CoreCommand::Move {
+                window: "w-ghost".to_owned(),
+                direction: "left".to_owned(),
+                cross_output_transfer: false,
+                same_axis_move: crate::directional::SameAxisMove::GroupWithNeighbor,
+            })),
+        ),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("legacy refusal must accept with mapping, got {other:?}"),
     };
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        reply.command_result,
+        settlements[0].result,
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::OperationRefused
         }),
@@ -590,21 +590,22 @@ fn creation_exhaustion_stays_envelope_without_adoption() {
             direction: "left".to_owned(),
         }),
     );
-    match engine.handle_report(&fresh, &[]).0 {
-        WorldOutcome::Accepted(reply) => {
+    match engine.handle_report(&fresh, &[]) {
+        (WorldOutcome::Accepted(reply), settlements) => {
             assert_eq!(
                 reply.state_revision,
                 rev_before + 1,
                 "next accepted revision is exactly one past the envelope base"
             );
+            assert_eq!(settlements.len(), 1);
             assert_eq!(
-                reply.command_result,
+                settlements[0].result,
                 Some(CommandResult::Rejected {
                     kind: CommandRejectKind::FocusUnknown
                 })
             );
         }
-        other => panic!("post-envelope sequence still fresh, got {other:?}"),
+        (other, _) => panic!("post-envelope sequence still fresh, got {other:?}"),
     }
 }
 
@@ -651,28 +652,26 @@ fn precommand_view_transfer_survives_rejection() {
     }
     // A later rejected command must keep the pre-command transfer and
     // still incorporate the fresh observation.
-    let reply = match engine
-        .handle_report(
-            &report(
-                3,
-                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
-                "w0",
-                vec![],
-                Some(3),
-                Some(WorldCommand::Focus {
-                    window: WindowId("w-ghost".to_owned()),
-                    direction: "left".to_owned(),
-                }),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("rejection accepts, got {other:?}"),
+    let (reply, settlements) = match engine.handle_report(
+        &report(
+            3,
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "w0",
+            vec![],
+            Some(3),
+            Some(WorldCommand::Focus {
+                window: WindowId("w-ghost".to_owned()),
+                direction: "left".to_owned(),
+            }),
+        ),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("rejection accepts, got {other:?}"),
     };
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        reply.command_result,
+        settlements[0].result,
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::FocusUnknown
         })
@@ -775,30 +774,28 @@ fn sticky_trailing_create_refusal_rolls_back_creation() {
     // send-refused originates only in execute_send, after the trailing
     // create in start_numbered_send (pre-create checks never return it),
     // so this result proves the creation was attempted then rolled back.
-    let reply = match engine
-        .handle_report(
-            &report(
-                4,
-                vec![fact("w0", "out-a", 0), sticky_fact("wSticky", "out-a", 100)],
-                "w0",
-                vec![],
-                Some(4),
-                Some(WorldCommand::SendNumbered {
-                    window: WindowId("wSticky".to_owned()),
-                    source: crate::world_report::SendSource::Explicit(OutputId("out-a".to_owned())),
-                    index: 0,
-                    follow: false,
-                }),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("sticky refusal must accept with mapping, got {other:?}"),
+    let (_reply, settlements) = match engine.handle_report(
+        &report(
+            4,
+            vec![fact("w0", "out-a", 0), sticky_fact("wSticky", "out-a", 100)],
+            "w0",
+            vec![],
+            Some(4),
+            Some(WorldCommand::SendNumbered {
+                window: WindowId("wSticky".to_owned()),
+                source: crate::world_report::SendSource::Explicit(OutputId("out-a".to_owned())),
+                index: 0,
+                follow: false,
+            }),
+        ),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("sticky refusal must accept with mapping, got {other:?}"),
     };
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        reply.command_result,
+        settlements[0].result,
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::SendRefused
         }),
@@ -844,30 +841,28 @@ fn keyboard_resize_unknown_subject_stays_operation_refused() {
     }
     // Unknown-subject keyboard resize surfaces a legacy session refusal
     // string (unknown-window), which is not in the closed command catalog.
-    let reply = match engine
-        .handle_report(
-            &report(
-                2,
-                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
-                "w0",
-                vec![],
-                Some(2),
-                Some(WorldCommand::Operation(CoreCommand::Resize {
-                    window: "w-ghost".to_owned(),
-                    direction: "left".to_owned(),
-                    mode: "outwards".to_owned(),
-                    press_index: 0,
-                })),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("legacy refusal must accept with mapping, got {other:?}"),
+    let (reply, settlements) = match engine.handle_report(
+        &report(
+            2,
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "w0",
+            vec![],
+            Some(2),
+            Some(WorldCommand::Operation(CoreCommand::Resize {
+                window: "w-ghost".to_owned(),
+                direction: "left".to_owned(),
+                mode: "outwards".to_owned(),
+                press_index: 0,
+            })),
+        ),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("legacy refusal must accept with mapping, got {other:?}"),
     };
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        reply.command_result,
+        settlements[0].result,
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::OperationRefused
         }),
@@ -900,30 +895,28 @@ fn keyboard_resize_singleton_no_neighbor_stays_operation_refused() {
     }
     // A singleton tile has no resize neighbor in any direction: the
     // legitimate refusal keeps the generic wire kind without mutation.
-    let reply = match engine
-        .handle_report(
-            &report(
-                2,
-                vec![fact("w0", "out-a", 0)],
-                "w0",
-                vec![],
-                Some(2),
-                Some(WorldCommand::Operation(CoreCommand::Resize {
-                    window: "w0".to_owned(),
-                    direction: "left".to_owned(),
-                    mode: "outwards".to_owned(),
-                    press_index: 0,
-                })),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("legacy refusal must accept with mapping, got {other:?}"),
+    let (reply, settlements) = match engine.handle_report(
+        &report(
+            2,
+            vec![fact("w0", "out-a", 0)],
+            "w0",
+            vec![],
+            Some(2),
+            Some(WorldCommand::Operation(CoreCommand::Resize {
+                window: "w0".to_owned(),
+                direction: "left".to_owned(),
+                mode: "outwards".to_owned(),
+                press_index: 0,
+            })),
+        ),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("legacy refusal must accept with mapping, got {other:?}"),
     };
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        reply.command_result,
+        settlements[0].result,
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::OperationRefused
         }),
@@ -1276,26 +1269,32 @@ fn keyboard_resize_singleton_no_neighbor_v4_stays_operation_refused() {
         Ok(_) => {}
         Err((kind, message)) => panic!("v4 base accepted, got {kind}: {message}"),
     }
-    match engine.handle_report_v4_for_test(&v4report(
-        2,
-        vec![fact("w0", "out-a", 0)],
-        "w0",
-        Some(2),
-        Some(WorldCommand::Operation(CoreCommand::Resize {
-            window: "w0".to_owned(),
-            direction: "left".to_owned(),
-            mode: "outwards".to_owned(),
-            press_index: 0,
-        })),
-    )) {
-        Ok(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "v4 no-neighbor resize maps to operation-refused"
+    match engine.handle_report(
+        &v4report(
+            2,
+            vec![fact("w0", "out-a", 0)],
+            "w0",
+            Some(2),
+            Some(WorldCommand::Operation(CoreCommand::Resize {
+                window: "w0".to_owned(),
+                direction: "left".to_owned(),
+                mode: "outwards".to_owned(),
+                press_index: 0,
+            })),
         ),
-        Err((kind, message)) => panic!("v4 refusal maps in-band, got {kind}: {message}"),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "v4 no-neighbor resize maps to operation-refused"
+            );
+        }
+        (other, _) => panic!("v4 refusal maps in-band, got {other:?}"),
     }
 }
 

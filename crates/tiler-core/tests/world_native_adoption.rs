@@ -379,7 +379,7 @@ fn four_native_bound_plus_ordinary_spare_no_moves_at_launch() {
         reply.transfers
     );
     assert!(reply.effects.is_empty(), "no launch effects");
-    assert!(reply.command_result.is_none(), "no launch result");
+    assert!(reply.drag_preview.is_none(), "no launch preview");
     // The N1 pair shares one logical workspace with a real tiled split:
     // both allocations present, x-ordered, non-overlapping, controlled.
     let row_a = reply

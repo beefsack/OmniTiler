@@ -1,11 +1,10 @@
-// World take-lane `result` parsing (strict v4): the correlated
-// per-command outcome arrives requester-only via TakeCommandResult; the
-// bound core reply decodes the same result truthfully (the broker strips it
-// to null on the actuator lane service-side, never a parser default).
-// Every v4 op shape (drag-preview, toggle-float, maximize, directional,
-// rejected, migrate-workspace) parses strictly; null (or a missing key)
-// means the snapshot alone is the outcome; unknown ops, retired group ops,
-// bad counters, and malformed bodies refuse.
+// World take-lane `result` and core `dragPreview` parsing (strict v4):
+// correlated per-command outcomes arrive requester-only via
+// TakeCommandResult (toggle-float, maximize, directional, rejected,
+// migrate-workspace), while active gesture preview state rides the core
+// WorldReply `dragPreview` lane (no `op`, canonical quoted u64 `id`/`rev`).
+// Old core `result`, missing `dragPreview`, `drag-preview` on Take, retired
+// group ops, bad counters, and malformed bodies refuse.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -14,6 +13,9 @@ import {
     isCoreWorldReply,
     isWorldRejection,
     parseWorldReply,
+    type WorldDirectionalCause,
+    type WorldDirectionalOutcome,
+    type WorldRejectKind,
     type WorldReply,
     type WorldTakeReply,
 } from "../src/world-report";
@@ -23,12 +25,12 @@ function baseTake(result: string): string {
 }
 
 // Synthetic strict-v4 bound reply with disabled anchored presentation.
-function baseCapture(result: string): string {
+function baseCapture(dragPreview: string): string {
     return `{"v":4,"adapter":"broker-1","gen":"gen-1","req":"req-1",` +
         `"obs":"1","rev":"1","ready":true,"consumed":false,` +
         `"scopes":[{"scope":{"kind":"output","out":"out-1"},"auth":"controlled","reason":""}],` +
         `"workspaces":[],"outputs":[],"windows":[],` +
-        `"transfers":[],"effects":[],"focusRequest":null,${result},` +
+        `"transfers":[],"effects":[],"focusRequest":null,${dragPreview},` +
         `"gestureSettled":null,"operationSettled":[],"nativeCreations":[],"warpCursor":null,` +
         `"presentation":{"foreground":"","rev":"0","border":{"visible":false,"reason":"disabled",` +
         `"subject":null,"outsets":null,"width":null,"radius":null,"witness":null},` +
@@ -47,29 +49,46 @@ function unwrapTake(text: string): WorldTakeReply {
     return parsed as WorldTakeReply;
 }
 
-describe("world reply result", () => {
-    it("parses every correlated op with exact provenance", () => {
-        const preview = unwrapTake(baseTake(
-            `"result":{"op":"drag-preview","rev":"7","domainOut":"out-1","domainWs":"ws-1",` +
+describe("world reply result and dragPreview", () => {
+    it("parses dragPreview on core WorldReply and every non-preview op on TakeCommandResult", () => {
+        const preview = parseWorldReply(baseCapture(
+            `"dragPreview":{"id":"1","rev":"7","domainOut":"out-1","domainWs":"ws-1",` +
             `"sourceOut":"out-1","sourceWs":"ws-1","rect":[0,0,396,600],"win":"win-a",` +
             `"hover":{"domainOut":"out-1","domainWs":"ws-1","leaf":"leaf-a","win":"win-a",` +
             `"rev":"7","prior":{"group":"grp","edge":"left"},"priorOut":"out-1","priorWs":"ws-1"}}`,
         ));
-        assert.equal(preview.outcome, "ready");
-        if (preview.outcome === "ready") {
-            assert.equal(preview.result?.op, "drag-preview");
-            if (preview.result?.op === "drag-preview") {
-                assert.deepEqual(preview.result.rect, [0, 0, 396, 600]);
-                assert.equal(preview.result.hover?.win, "win-a");
-                assert.equal(preview.result.hover?.prior?.edge, "left");
-                assert.equal(preview.result.rev, "7");
-            }
+        assert.ok(preview !== null && isCoreWorldReply(preview));
+        if (preview !== null && isCoreWorldReply(preview)) {
+            assert.ok(preview.dragPreview !== null);
+            assert.equal(preview.dragPreview?.id, "1");
+            assert.deepEqual(preview.dragPreview?.rect, [0, 0, 396, 600]);
+            assert.equal(preview.dragPreview?.hover?.win, "win-a");
+            assert.equal(preview.dragPreview?.hover?.prior?.edge, "left");
+            assert.equal(preview.dragPreview?.rev, "7");
         }
+        const previewNoHover = parseWorldReply(baseCapture(
+            `"dragPreview":{"id":"2","rev":"8","domainOut":"out-1","domainWs":"ws-1",` +
+            `"sourceOut":"out-1","sourceWs":"ws-1","rect":[0,0,396,600],"win":"win-a","hover":null}`,
+        ));
+        assert.ok(previewNoHover !== null && isCoreWorldReply(previewNoHover));
+        if (previewNoHover !== null && isCoreWorldReply(previewNoHover)) {
+            assert.equal(previewNoHover.dragPreview?.id, "2");
+            assert.equal(previewNoHover.dragPreview?.hover, null);
+        }
+
         const float = unwrapTake(baseTake(
             `"result":{"op":"toggle-float","win":"win-a","rect":[10,10,300,300]}`,
         ));
         if (float.outcome === "ready") {
-            assert.equal(float.result?.op, "toggle-float");
+            assert.deepEqual(float.result, { op: "toggle-float", win: "win-a", rect: [10, 10, 300, 300], noSpace: false });
+        } else {
+            assert.fail("expected ready");
+        }
+        const floatNoSpace = unwrapTake(baseTake(
+            `"result":{"op":"toggle-float","win":"win-a","rect":null,"noSpace":true}`,
+        ));
+        if (floatNoSpace.outcome === "ready") {
+            assert.deepEqual(floatNoSpace.result, { op: "toggle-float", win: "win-a", rect: null, noSpace: true });
         } else {
             assert.fail("expected ready");
         }
@@ -77,24 +96,7 @@ describe("world reply result", () => {
             `"result":{"op":"toggle-float","win":"win-a","rect":null}`,
         ));
         if (unfloat.outcome === "ready") {
-            assert.equal(unfloat.result?.op, "toggle-float");
-        } else {
-            assert.fail("expected ready");
-        }
-        const direction = unwrapTake(baseTake(
-            `"result":{"op":"directional","outcome":"focus-float-applied","win":"win-a",` +
-            `"rect":[10,10,300,300],"cause":null}`,
-        ));
-        if (direction.outcome === "ready") {
-            assert.equal(direction.result?.op, "directional");
-        } else {
-            assert.fail("expected ready");
-        }
-        const rejected = unwrapTake(baseTake(
-            `"result":{"op":"rejected","kind":"focus-unknown"}`,
-        ));
-        if (rejected.outcome === "ready") {
-            assert.equal(rejected.result?.op, "rejected");
+            assert.deepEqual(unfloat.result, { op: "toggle-float", win: "win-a", rect: null, noSpace: false });
         } else {
             assert.fail("expected ready");
         }
@@ -114,7 +116,59 @@ describe("world reply result", () => {
         }
     });
 
-    it("parses the maximize result with exact preimage provenance", () => {
+    it("parses all 16 directional outcomes and 5 nullable causes on TakeCommandResult", () => {
+        const outcomes: WorldDirectionalOutcome[] = [
+            "focus-refused-floating", "move-refused-floating",
+            "focus-refused-workspace-floating", "move-refused-workspace-floating",
+            "move-refused-fullscreen", "focus-refused-maximize",
+            "focus-float-retained", "focus-unfocused-retained",
+            "focus-float-refused-stale", "move-float-refused-stale",
+            "move-float-refused-invalid-geometry", "move-float-refused-constraints",
+            "move-float-unknown-output", "focus-float-applied", "move-float-applied",
+            "move-maximize-clear",
+        ];
+        const causes: Array<WorldDirectionalCause | null> = [
+            null, "no-target", "unknown-window", "focus-present", "no-source", "no-adjacent-output",
+        ];
+        for (const outcome of outcomes) {
+            for (const cause of causes) {
+                const parsed = unwrapTake(baseTake(
+                    `"result":{"op":"directional","outcome":${JSON.stringify(outcome)},"win":"win-a","rect":[10,10,300,300],"cause":${JSON.stringify(cause)}}`,
+                ));
+                assert.equal(parsed.outcome, "ready");
+                if (parsed.outcome === "ready") {
+                    assert.deepEqual(parsed.result, {
+                        op: "directional", outcome, win: "win-a", rect: [10, 10, 300, 300], cause,
+                    });
+                }
+            }
+        }
+        assert.equal(parseWorldReply(baseTake(
+            `"result":{"op":"directional","outcome":"unknown-outcome","win":null,"rect":null,"cause":null}`,
+        )), null);
+        assert.equal(parseWorldReply(baseTake(
+            `"result":{"op":"directional","outcome":"focus-float-applied","win":null,"rect":null,"cause":"unknown-cause"}`,
+        )), null);
+    });
+
+    it("parses all 17 rejection kinds on TakeCommandResult", () => {
+        const kinds: WorldRejectKind[] = [
+            "focus-unknown", "send-target-unknown", "send-window-unknown", "send-refused",
+            "view-output-unknown", "view-target-unknown", "transfer-in-flight", "direction-invalid",
+            "scope-held", "selection-unknown", "migration-refused", "operation-refused",
+            "tiling-target-unknown", "state-unsupported", "state-unknown", "fullscreen-not-exitable",
+            "stale-render-target",
+        ];
+        for (const kind of kinds) {
+            const parsed = unwrapTake(baseTake(`"result":{"op":"rejected","kind":${JSON.stringify(kind)}}`));
+            assert.equal(parsed.outcome, "ready");
+            if (parsed.outcome === "ready") {
+                assert.deepEqual(parsed.result, { op: "rejected", kind });
+            }
+        }
+    });
+
+    it("parses the maximize result with exact preimage provenance on TakeCommandResult", () => {
         assert.deepEqual(cmdToggleMaximize("win-a"), { op: "toggle-maximize", win: "win-a" });
         const parsed = unwrapTake(baseTake(
             `"result":{"op":"maximize","win":"win-a","maximized":true,"clearFullscreen":true,"wasMaximized":false}`,
@@ -147,11 +201,6 @@ describe("world reply result", () => {
         assert.equal(parseWorldReply(baseTake(
             `"result":{"op":"maximize","win":"win a","maximized":true,"clearFullscreen":false,"wasMaximized":false}`,
         )), null, "non-opaque win refuses");
-        const boundMaximize = parseWorldReply(baseCapture(
-            `"result":{"op":"maximize","win":"win-a","maximized":true,"clearFullscreen":true,"wasMaximized":false}`,
-        ));
-        assert.ok(boundMaximize !== null && isCoreWorldReply(boundMaximize), "bound lane decodes the terminal maximize result truthfully");
-        assert.equal((boundMaximize as WorldReply).result?.op, "maximize");
     });
 
     it("reads a null take result as the snapshot-only outcome", () => {
@@ -167,48 +216,51 @@ describe("world reply result", () => {
         }
     });
 
-    it("refuses retired ops and malformed take bodies, decodes the bound lane truthfully", () => {
-        // Retired group ops refuse on both lanes (no v4 contract).
+    it("refuses retired ops, legacy core result, missing dragPreview, and malformed shapes", () => {
+        // Retired group ops and drag-preview refuse on TakeCommandResult.
         assert.equal(parseWorldReply(baseTake(`"result":{"op":"active-group","rev":"3","group":"grp"}`)), null);
         assert.equal(parseWorldReply(baseTake(`"result":{"op":"no-group","reason":"pending","rev":null}`)), null);
-        assert.equal(parseWorldReply(baseCapture(`"result":{"op":"active-group","rev":"3","group":"grp"}`)), null);
-        assert.equal(parseWorldReply(baseCapture(`"result":{"op":"no-group","reason":"pending","rev":null}`)), null);
-        const capture = parseWorldReply(baseCapture(`"result":null`));
+        assert.equal(parseWorldReply(baseTake(
+            `"result":{"op":"drag-preview","rev":"7","domainOut":"out-1","domainWs":"ws-1",` +
+            `"sourceOut":"out-1","sourceWs":"ws-1","rect":[0,0,396,600],"win":"win-a","hover":null}`,
+        )), null, "drag-preview is removed from TakeCommandResult");
+        // Core reply with null dragPreview decodes; legacy result or missing dragPreview refuses.
+        const capture = parseWorldReply(baseCapture(`"dragPreview":null`));
         assert.ok(capture !== null && isCoreWorldReply(capture));
-        assert.equal((capture as WorldReply).result, null);
-        // Take-lane strictness mirrors the old reply checks.
+        assert.equal((capture as WorldReply).dragPreview, null);
+        assert.equal(parseWorldReply(baseCapture(`"result":null`)), null, "legacy result key on core reply refuses");
+        assert.equal(parseWorldReply(baseCapture(`"dragPreview":null,"result":null`)), null, "extra result key on core reply refuses");
+        // Malformed and counter-overflow dragPreview shapes refuse.
+        assert.equal(parseWorldReply(baseCapture(
+            `"dragPreview":{"op":"drag-preview","id":"1","rev":"7","domainOut":"out-1","domainWs":"ws-1",` +
+            `"sourceOut":"out-1","sourceWs":"ws-1","rect":[0,0,396,600],"win":"win-a","hover":null}`,
+        )), null, "op key on dragPreview refuses");
+        assert.equal(parseWorldReply(baseCapture(
+            `"dragPreview":{"id":"01","rev":"7","domainOut":"out-1","domainWs":"ws-1",` +
+            `"sourceOut":"out-1","sourceWs":"ws-1","rect":[0,0,396,600],"win":"win-a","hover":null}`,
+        )), null, "non-canonical id refuses");
+        assert.equal(parseWorldReply(baseCapture(
+            `"dragPreview":{"id":"18446744073709551616","rev":"7","domainOut":"out-1","domainWs":"ws-1",` +
+            `"sourceOut":"out-1","sourceWs":"ws-1","rect":[0,0,396,600],"win":"win-a","hover":null}`,
+        )), null, "u64 overflow id refuses");
+        assert.equal(parseWorldReply(baseCapture(
+            `"dragPreview":{"id":"1","rev":"07","domainOut":"out-1","domainWs":"ws-1",` +
+            `"sourceOut":"out-1","sourceWs":"ws-1","rect":[0,0,396,600],"win":"win-a","hover":null}`,
+        )), null, "non-canonical rev refuses");
+        assert.equal(parseWorldReply(baseCapture(
+            `"dragPreview":{"id":"1","rev":"7","domainOut":"out-1","domainWs":"ws-1",` +
+            `"sourceOut":"out-1","sourceWs":"ws-1","rect":[0,0,-1,600],"win":"win-a","hover":null}`,
+        )), null, "invalid rect refuses");
+        // Take-lane strictness.
         assert.equal(parseWorldReply(baseTake(`"result":{"op":"move","win":"win-a"}`)), null);
-        assert.equal(parseWorldReply(baseTake(`"result":{"op":"drag-preview"}`)), null);
-        assert.equal(
-            parseWorldReply(baseTake(
-                `"result":{"op":"drag-preview","rev":"07","domainOut":"out-1","domainWs":"ws-1",` +
-                `"sourceOut":"out-1","sourceWs":"ws-1","rect":[0,0,396,600],"win":"win-a","hover":null}`,
-            )),
-            null,
-            "non-canonical rev refuses",
-        );
-        assert.equal(
-            parseWorldReply(baseTake(
-                `"result":{"op":"toggle-float","win":"win a","rect":null}`,
-            )),
-            null,
-            "non-opaque win refuses",
-        );
-        assert.equal(
-            parseWorldReply(baseTake(
-                `"result":{"op":"rejected","kind":"bogus"}`,
-            )),
-            null,
-            "unknown reject kind refuses",
-        );
-        assert.equal(
-            parseWorldReply(baseTake(
-                `"result":{"op":"migrate-workspace","direction":"sideways",` +
-                `"sourceOut":"out-a","sourceWs":"wa1","targetOut":"out-b","targetWs":"wa1",` +
-                `"members":[],"floats":0}`,
-            )),
-            null,
-        );
+        assert.equal(parseWorldReply(baseTake(`"result":{"op":"toggle-float","win":"win-a","rect":null,"noSpace":false}`)), null, "present-but-false noSpace refuses");
+        assert.equal(parseWorldReply(baseTake(`"result":{"op":"toggle-float","win":"win a","rect":null}`)), null, "non-opaque win refuses");
+        assert.equal(parseWorldReply(baseTake(`"result":{"op":"rejected","kind":"bogus"}`)), null, "unknown reject kind refuses");
+        assert.equal(parseWorldReply(baseTake(
+            `"result":{"op":"migrate-workspace","direction":"sideways",` +
+            `"sourceOut":"out-a","sourceWs":"wa1","targetOut":"out-b","targetWs":"wa1",` +
+            `"members":[],"floats":0}`,
+        )), null);
         assert.equal(parseWorldReply(baseTake(`"result":[]`)), null);
     });
 });

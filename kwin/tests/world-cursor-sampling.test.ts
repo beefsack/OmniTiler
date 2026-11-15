@@ -60,7 +60,7 @@ function acceptedReply(source: string, nativeInvalid: string, rev: string, extra
         windows: [],
         transfers: [],
         effects: [],
-        result: null,
+        dragPreview: null,
         focusRequest: null,
         ...extra,
     });

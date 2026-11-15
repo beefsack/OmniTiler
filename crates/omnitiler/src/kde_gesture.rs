@@ -254,6 +254,15 @@ impl KdeGestureMap {
         self.active_assoc.as_ref()
     }
 
+    /// Pinned association matching the given retained core active id, if any.
+    #[must_use]
+    pub fn active_assoc_for(&self, active_id: Option<u64>) -> Option<&GestureAssoc> {
+        let id = active_id?;
+        self.active_assoc
+            .as_ref()
+            .filter(|assoc| assoc.core_id == id)
+    }
+
     /// Pinned association matching the given retained core terminal id, if any.
     #[must_use]
     pub fn terminal_assoc_for(&self, settled_id: Option<u64>) -> Option<&GestureAssoc> {
@@ -884,5 +893,37 @@ mod tests {
         // Unrelated ingress while terminal 5 stays retained leaves pin intact.
         map.reconcile_pins(None, Some(5), Some(&assoc6));
         assert_eq!(map.terminal_assoc_for(Some(5)), Some(&assoc5));
+    }
+
+    #[test]
+    fn active_assoc_for_matches_exact_id_only() {
+        let mut map = KdeGestureMap::new();
+        assert_eq!(map.active_assoc_for(None), None);
+        assert_eq!(map.active_assoc_for(Some(1)), None);
+
+        let assoc1 = GestureAssoc {
+            instance: "gesture-1".to_owned(),
+            serial: "1".to_owned(),
+            core_id: 1,
+        };
+        let assoc2 = GestureAssoc {
+            instance: "gesture-1".to_owned(),
+            serial: "2".to_owned(),
+            core_id: 2,
+        };
+        map.reconcile_pins(Some(1), None, Some(&assoc1));
+        assert_eq!(map.active_assoc_for(Some(1)), Some(&assoc1));
+        assert_eq!(map.active_assoc_for(Some(2)), None);
+        assert_eq!(map.active_assoc_for(None), None);
+
+        // Unrelated newcomer ingress while active 1 stays retained cannot relabel.
+        map.reconcile_pins(Some(1), None, Some(&assoc2));
+        assert_eq!(map.active_assoc_for(Some(1)), Some(&assoc1));
+        assert_eq!(map.active_assoc_for(Some(2)), None);
+
+        // Clearing active pin clears exact-id lookup.
+        map.reconcile_pins(None, Some(1), None);
+        assert_eq!(map.active_assoc_for(Some(1)), None);
+        assert_eq!(map.terminal_assoc_for(Some(1)), Some(&assoc1));
     }
 }

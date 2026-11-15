@@ -156,17 +156,22 @@ export interface WorldReplyTransfer {
     // never a parsed id). Quoted decimal on the wire, null when absent.
     cmdSeq: string | null;
 }
-// Correlated per-command outcome coexisting with the snapshot (mirrors
-// tiler-core world_report::CommandResult exactly; unknown ops refuse).
-// Move/resize/tiled-admit/focus/send results ride the snapshot,
-// transfers, and the retained focus request with `result: null`: the snapshot IS the result.
-// The actuator lane strips the terminal result service-side (the reply the
-// script receives carries null); the take lane serves it requester-only.
+// Retained active drag-preview state on WorldReply (separated from
+// command outcomes; mirrors tiler-core world_report::DragPreviewV4).
 export interface WorldDragHover {
     domainOut: string; domainWs: string; leaf: string; win: string;
     rev: string; prior: { group: string; edge: "left" | "right" | "top" | "bottom" | "center" } | null;
     priorOut: string; priorWs: string;
 }
+export interface WorldDragPreview {
+    id: string; rev: string;
+    domainOut: string; domainWs: string; sourceOut: string; sourceWs: string;
+    rect: [number, number, number, number];
+    hover: WorldDragHover | null;
+    win: string;
+}
+// Correlated per-command outcome on the TakeCommandResult lane (mirrors
+// tiler-core world_report::CommandResult without DragPreview).
 export type WorldDirectionalOutcome =
     | "focus-refused-floating" | "move-refused-floating"
     | "focus-refused-workspace-floating" | "move-refused-workspace-floating"
@@ -185,13 +190,6 @@ export type WorldRejectKind =
     | "tiling-target-unknown" | "state-unsupported" | "state-unknown" | "fullscreen-not-exitable"
     | "stale-render-target";
 export type WorldReplyResult =
-    | {
-        op: "drag-preview"; rev: string;
-        domainOut: string; domainWs: string; sourceOut: string; sourceWs: string;
-        rect: [number, number, number, number];
-        hover: WorldDragHover | null;
-        win: string;
-    }
     | { op: "toggle-float"; win: string; rect: [number, number, number, number] | null; noSpace: boolean }
     | { op: "maximize"; win: string; maximized: boolean; clearFullscreen: boolean; wasMaximized: boolean }
     | {
@@ -561,7 +559,9 @@ export interface WorldReply {
     // Required nullable retained focus request (bootstrap and not-ready
     // replies carry null). Missing or malformed refuses.
     focusRequest: WorldFocusRequest | null;
-    result: WorldReplyResult | null;
+    // Required nullable retained active drag preview (bootstrap and
+    // non-preview replies carry null). Missing or malformed refuses.
+    dragPreview: WorldDragPreview | null;
     gestureSettled: { id: string; committed: boolean } | null;
     // Broker-only bound actuator association for the actual normalized
     // ingress (`{instance, serial, coreId}`), cached in the exact response
@@ -1784,7 +1784,7 @@ export function parseIntentDesired(value: unknown): WorldIntentDesire[] | null {
 // bootstrap lane (no capture flown yet) carries exactly the 24 core keys;
 // the bindings default without validation.
 const CORE_REPLY_KEYS = ["v", "adapter", "gen", "req", "obs", "rev", "ready", "consumed",
-    "scopes", "workspaces", "outputs", "windows", "transfers", "effects", "focusRequest", "result",
+    "scopes", "workspaces", "outputs", "windows", "transfers", "effects", "focusRequest", "dragPreview",
     "gestureSettled", "operationSettled", "nativeCreations", "warpCursor", "presentation",
     "intentDesired", "switchSettled", "diagnostics"] as const;
 const BOUND_REPLY_KEYS = [...CORE_REPLY_KEYS, "source", "nativeInvalid", "clock", "gestureAssoc", "gestureSettledAssoc"] as const;
@@ -1884,10 +1884,10 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
         // command correlation and frozen selection dependencies. Missing or
         // malformed refuses.
         const focusRequest = parseFocusRequestRow(r["focusRequest"]);
-        // The parser decodes the correlated result truthfully (null or the
-        // exact op shape). Actuator-side null-stripping is broker behavior
-        // (strip_result), never a parser default.
-        const result = parseResult(r["result"]);
+        // Required nullable retained active drag preview: null or the exact
+        // protocol object {id, rev, domainOut, domainWs, sourceOut, sourceWs,
+        // rect, hover, win}. Missing or malformed refuses.
+        const dragPreview = parseDragPreview(r["dragPreview"]);
         const gestureRaw = r["gestureSettled"];
         let gestureSettled: WorldReply["gestureSettled"] = null;
         if (gestureRaw !== null && gestureRaw !== undefined) {
@@ -1977,7 +1977,7 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
         return {
             adapter, gen, req, obs, rev,
             ready: r["ready"] as boolean, consumed: r["consumed"] as boolean,
-            scopes, workspaces, outputs, windows, transfers, effects, focusRequest, result,
+            scopes, workspaces, outputs, windows, transfers, effects, focusRequest, dragPreview,
             gestureSettled, gestureAssoc, gestureSettledAssoc, operationSettled, nativeCreations, warpCursor, intentDesired, presentation,
             switchSettled, diagnostics,
             source, nativeInvalid, clock,
@@ -2294,19 +2294,96 @@ export function buildPresentationReadRequest(req: string): string | null {
     return JSON.stringify({ v: WORLD_CONTRACT_VERSION, req });
 }
 
-const RESULT_OPS = new Set(["drag-preview", "toggle-float", "maximize", "directional", "rejected", "migrate-workspace"]);
+const RESULT_OPS = new Set(["toggle-float", "maximize", "directional", "rejected", "migrate-workspace"]);
 const DIRECTIONAL_CAUSES = new Set(["no-target", "unknown-window", "focus-present", "no-source", "no-adjacent-output"]);
 
-// Strict result parse (mirrors tiler-core world_report::CommandResult
-// exactly): null (or a missing key) means no correlated outcome; any
-// present object must match its op shape exactly, with exact key sets.
-// u64 counters stay canonical strings. The parser decodes truthfully:
-// actuator-side null-stripping is broker behavior, never a parser default.
-function parseResult(value: unknown): WorldReplyResult | null {
-    if (value === undefined || value === null) {
+// Strict retained dragPreview parse (mirrors tiler-protocol
+// decode_drag_preview): null means no active preview; any present object
+// must carry exact keys {id, rev, domainOut, domainWs, sourceOut, sourceWs,
+// rect, hover, win} with canonical quoted u64 id/rev and valid geometry/hover.
+function parseDragPreview(value: unknown): WorldDragPreview | null {
+    if (value === null) {
         return null;
     }
-    if (typeof value !== "object" || Array.isArray(value)) {
+    if (value === undefined || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("drag-preview");
+    }
+    const o = value as Record<string, unknown>;
+    if (!hasExactKeys(o, ["id", "rev", "domainOut", "domainWs", "sourceOut", "sourceWs", "rect", "hover", "win"])) {
+        throw new Error("drag-preview-keys");
+    }
+    const id = (v: unknown): string => {
+        if (!isOpaqueId(v)) {
+            throw new Error("drag-preview-id");
+        }
+        return v as string;
+    };
+    const rect = (v: unknown): [number, number, number, number] => {
+        if (!isCarriedRect(v)) {
+            throw new Error("drag-preview-rect");
+        }
+        return v;
+    };
+    const u64 = (v: unknown): string => {
+        if (typeof v !== "string" || !isCanonicalU64(v)) {
+            throw new Error("drag-preview-u64");
+        }
+        return v;
+    };
+    const hoverRaw = o["hover"];
+    let hover: WorldDragHover | null = null;
+    if (hoverRaw !== null) {
+        if (typeof hoverRaw !== "object" || Array.isArray(hoverRaw)) {
+            throw new Error("drag-preview-hover");
+        }
+        const h = hoverRaw as Record<string, unknown>;
+        if (!hasExactKeys(h, ["domainOut", "domainWs", "leaf", "win", "rev", "prior", "priorOut", "priorWs"])) {
+            throw new Error("drag-preview-hover-keys");
+        }
+        const priorRaw = h["prior"];
+        let prior: { group: string; edge: "left" | "right" | "top" | "bottom" | "center" } | null = null;
+        if (priorRaw !== null) {
+            if (typeof priorRaw !== "object" || Array.isArray(priorRaw)) {
+                throw new Error("drag-preview-prior");
+            }
+            const p = priorRaw as Record<string, unknown>;
+            if (!hasExactKeys(p, ["group", "edge"])) {
+                throw new Error("drag-preview-prior-keys");
+            }
+            const edge = p["edge"];
+            if (typeof edge !== "string" || !DRAG_EDGES.has(edge)) {
+                throw new Error("drag-preview-prior-edge");
+            }
+            prior = { group: id(p["group"]), edge: edge as "left" | "right" | "top" | "bottom" | "center" };
+        }
+        hover = {
+            domainOut: id(h["domainOut"]), domainWs: id(h["domainWs"]),
+            leaf: id(h["leaf"]), win: id(h["win"]), rev: u64(h["rev"]),
+            prior, priorOut: id(h["priorOut"]), priorWs: id(h["priorWs"]),
+        };
+    }
+    return {
+        id: u64(o["id"]),
+        rev: u64(o["rev"]),
+        domainOut: id(o["domainOut"]),
+        domainWs: id(o["domainWs"]),
+        sourceOut: id(o["sourceOut"]),
+        sourceWs: id(o["sourceWs"]),
+        rect: rect(o["rect"]),
+        hover,
+        win: id(o["win"]),
+    };
+}
+
+// Strict TakeCommandResult parse (mirrors tiler-core
+// world_report::CommandResult without DragPreview): null means the snapshot
+// alone is the outcome; any present object must match its op shape
+// exactly, with exact key sets.
+function parseResult(value: unknown): WorldReplyResult | null {
+    if (value === null) {
+        return null;
+    }
+    if (value === undefined || typeof value !== "object" || Array.isArray(value)) {
         throw new Error("result");
     }
     const o = value as Record<string, unknown>;
@@ -2320,61 +2397,6 @@ function parseResult(value: unknown): WorldReplyResult | null {
         }
         return v as string;
     };
-    const rect = (v: unknown): [number, number, number, number] => {
-        if (!isCarriedRect(v)) {
-            throw new Error("result-rect");
-        }
-        return v;
-    };
-    const u64 = (v: unknown): string => {
-        if (typeof v !== "string" || !isCanonicalU64(v)) {
-            throw new Error("result-rev");
-        }
-        return v;
-    };
-    if (op === "drag-preview") {
-        if (!hasExactKeys(o, ["op", "rev", "domainOut", "domainWs", "sourceOut", "sourceWs", "rect", "hover", "win"])) {
-            throw new Error("result-preview-keys");
-        }
-        const hoverRaw = o["hover"];
-        let hover: Extract<WorldReplyResult, { op: "drag-preview" }>["hover"] = null;
-        if (hoverRaw !== null) {
-            if (typeof hoverRaw !== "object" || Array.isArray(hoverRaw)) {
-                throw new Error("result-hover");
-            }
-            const h = hoverRaw as Record<string, unknown>;
-            if (!hasExactKeys(h, ["domainOut", "domainWs", "leaf", "win", "rev", "prior", "priorOut", "priorWs"])) {
-                throw new Error("result-hover-keys");
-            }
-            const priorRaw = h["prior"];
-            let prior: { group: string; edge: "left" | "right" | "top" | "bottom" | "center" } | null = null;
-            if (priorRaw !== null) {
-                if (typeof priorRaw !== "object" || Array.isArray(priorRaw)) {
-                    throw new Error("result-prior");
-                }
-                const p = priorRaw as Record<string, unknown>;
-                if (!hasExactKeys(p, ["group", "edge"])) {
-                    throw new Error("result-prior-keys");
-                }
-                const edge = p["edge"];
-                if (typeof edge !== "string" || !DRAG_EDGES.has(edge)) {
-                    throw new Error("result-prior-edge");
-                }
-                prior = { group: id(p["group"]), edge: edge as "left" | "right" | "top" | "bottom" | "center" };
-            }
-            hover = {
-                domainOut: id(h["domainOut"]), domainWs: id(h["domainWs"]),
-                leaf: id(h["leaf"]), win: id(h["win"]), rev: u64(h["rev"]),
-                prior, priorOut: id(h["priorOut"]), priorWs: id(h["priorWs"]),
-            };
-        }
-        return {
-            op: "drag-preview", rev: u64(o["rev"]),
-            domainOut: id(o["domainOut"]), domainWs: id(o["domainWs"]),
-            sourceOut: id(o["sourceOut"]), sourceWs: id(o["sourceWs"]),
-            rect: rect(o["rect"]), hover, win: id(o["win"]),
-        };
-    }
     if (op === "toggle-float") {
         const keys = Object.keys(o);
         // Explicit-tile no-space retry marker: present only when true;

@@ -31,7 +31,7 @@ function makeBaseReply(over: Record<string, unknown> = {}): Record<string, unkno
         transfers: [],
         effects: [],
         focusRequest: null,
-        result: null,
+        dragPreview: null,
         gestureSettled: null,
         operationSettled: [],
         nativeCreations: [],

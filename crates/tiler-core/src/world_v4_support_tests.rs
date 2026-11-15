@@ -182,9 +182,16 @@ pub(crate) fn report(
 }
 
 pub(crate) fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
-    match engine.handle_report(report, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("expected accepted, got {other:?}"),
+    accepted_with_settlements(engine, report).0
+}
+
+pub(crate) fn accepted_with_settlements(
+    engine: &mut WorldEngine,
+    report: &WorldReportV4,
+) -> (WorldReplyV4, Vec<crate::world_report::BatchSettlement>) {
+    match engine.handle_report(report, &[]) {
+        (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("expected accepted, got {other:?}"),
     }
 }
 

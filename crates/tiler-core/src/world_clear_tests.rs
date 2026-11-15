@@ -13,7 +13,8 @@ use crate::world_report::{
     CommandResult, ScopeAuthority, ScreenReport, WindowFact, WorldCommand, WorldReportV4,
 };
 use crate::world_v4_support_tests::{
-    accepted, desire, fact, float_fact, outcome_str, rect, report, report_full, screen,
+    accepted, accepted_with_settlements, desire, fact, float_fact, outcome_str, rect, report,
+    report_full, screen,
 };
 
 fn clear_attempt(
@@ -117,7 +118,7 @@ fn commandless_clear_continuation_float() {
             None,
         ),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report_full(
             2,
@@ -134,8 +135,9 @@ fn commandless_clear_continuation_float() {
             }),
         ),
     );
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        outcome_str(&reply.command_result),
+        outcome_str(&settlements[0].result),
         Some("move-maximize-clear")
     );
     assert_eq!(engine.retained_clears.len(), 1);
@@ -239,7 +241,7 @@ fn tiled_maximize_publishes_clear_before_attempt() {
             None,
         ),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report_full(
             2,
@@ -256,8 +258,9 @@ fn tiled_maximize_publishes_clear_before_attempt() {
             }),
         ),
     );
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        outcome_str(&reply.command_result),
+        outcome_str(&settlements[0].result),
         Some("move-maximize-clear")
     );
     assert_eq!(
@@ -293,7 +296,7 @@ fn commandless_clear_continuation_tiled() {
             None,
         ),
     );
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report_full(
             2,
@@ -310,12 +313,13 @@ fn commandless_clear_continuation_tiled() {
             }),
         ),
     );
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        outcome_str(&reply.command_result),
+        outcome_str(&settlements[0].result),
         Some("move-maximize-clear")
     );
     assert!(!engine.retained_clears[0].float_route);
-    let reply = accepted(
+    let (reply, follow_settlements) = accepted_with_settlements(
         &mut engine,
         &report_clears(
             3,
@@ -337,9 +341,9 @@ fn commandless_clear_continuation_tiled() {
         "proof consumes the binding exactly once"
     );
     assert!(
-        reply.command_result.is_none(),
-        "commandless continuation carries no directional result, got {:?}",
-        reply.command_result
+        follow_settlements.is_empty(),
+        "commandless continuation carries no directional settlement, got {:?}",
+        follow_settlements
     );
     assert!(
         reply.transfers.iter().any(|transfer| {
@@ -701,7 +705,10 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
         }),
     );
     fresh.clear_attempts = Vec::new();
-    let reply = accepted(&mut engine, &fresh);
+    let (outcome, settlements) = engine.handle_report(&fresh, &[]);
+    let WorldOutcome::Accepted(reply) = outcome else {
+        panic!("expected accepted report, got {outcome:?}");
+    };
     assert!(
         reply.operation_settled.iter().any(|event| {
             event.operation_id == "op-13"
@@ -723,8 +730,9 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
         "superseded op-13 never continues, got {:?}",
         reply.operation_settled
     );
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        outcome_str(&reply.command_result),
+        outcome_str(&settlements[0].result),
         Some("move-float-applied"),
         "fresh intent works independently under its own op"
     );
@@ -1292,7 +1300,7 @@ fn clear_close_prunes_and_abandoned_binding_never_reapplies() {
     assert!(engine.retained_floats.is_empty(), "close settles");
     // A later independent intent in the same direction binds fresh and
     // proceeds on its own proof, unaffected by the abandoned binding.
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report_full(
             4,
@@ -1309,8 +1317,9 @@ fn clear_close_prunes_and_abandoned_binding_never_reapplies() {
             }),
         ),
     );
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        outcome_str(&reply.command_result),
+        outcome_str(&settlements[0].result),
         Some("move-maximize-clear")
     );
     assert_eq!(engine.retained_clears.len(), 1);
@@ -1358,7 +1367,7 @@ fn clear_same_window_new_intent_supersedes_without_consuming() {
     assert_eq!(engine.retained_clears[0].operation_id, "op-13");
     // A same-window move in another direction supersedes: the old op
     // never continues, the fresh intent binds under its own op.
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report_full(
             3,
@@ -1375,8 +1384,9 @@ fn clear_same_window_new_intent_supersedes_without_consuming() {
             }),
         ),
     );
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        outcome_str(&reply.command_result),
+        outcome_str(&settlements[0].result),
         Some("move-maximize-clear")
     );
     assert_eq!(engine.retained_clears.len(), 1);
@@ -1833,9 +1843,10 @@ fn clear_same_report_refused_intent_still_supersedes() {
         Some(true),
         Some(false),
     )];
-    let reply = accepted(&mut engine, &both);
+    let (reply, settlements) = accepted_with_settlements(&mut engine, &both);
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        outcome_str(&reply.command_result),
+        outcome_str(&settlements[0].result),
         Some("move-refused-fullscreen"),
         "new refusal stays truthful"
     );
@@ -2176,7 +2187,7 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
         window: WindowId("win-max".to_owned()),
         direction: "right".to_owned(),
     };
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             2,
@@ -2187,15 +2198,16 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
             Some(focus()),
         ),
     );
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        outcome_str(&reply.command_result),
+        outcome_str(&settlements[0].result),
         Some("focus-float-retained")
     );
     assert!(
         engine.retained_clears.is_empty(),
         "focus fences without binding a clear"
     );
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report_full(
             3,
@@ -2212,8 +2224,9 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
             }),
         ),
     );
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        outcome_str(&reply.command_result),
+        outcome_str(&settlements[0].result),
         Some("move-maximize-clear")
     );
     assert_eq!(engine.retained_clears.len(), 1);
@@ -2242,7 +2255,7 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
     ];
     for (index, (command, outcome)) in unknown.into_iter().enumerate() {
         let seq = 20 + index as u64;
-        let reply = accepted(
+        let (reply, settlements) = accepted_with_settlements(
             &mut engine,
             &report(
                 seq,
@@ -2259,10 +2272,11 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
                 Some(command),
             ),
         );
-        assert_eq!(outcome_str(&reply.command_result), Some(outcome));
+        assert_eq!(settlements.len(), 1);
+        assert_eq!(outcome_str(&settlements[0].result), Some(outcome));
         assert_eq!(
-            reply
-                .command_result
+            settlements[0]
+                .result
                 .as_ref()
                 .and_then(|result| match result {
                     CommandResult::Directional { cause, .. } => cause.clone(),
@@ -2304,7 +2318,7 @@ fn sticky_maximize_publishes_clear_before_attempt() {
             None,
         ),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report_full(
             2,
@@ -2324,8 +2338,9 @@ fn sticky_maximize_publishes_clear_before_attempt() {
             }),
         ),
     );
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        outcome_str(&reply.command_result),
+        outcome_str(&settlements[0].result),
         Some("move-maximize-clear")
     );
     assert_eq!(
@@ -2357,7 +2372,7 @@ fn float_settled_outcomes_retain_and_replay_cached() {
             None,
         ),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             2,
@@ -2375,8 +2390,9 @@ fn float_settled_outcomes_retain_and_replay_cached() {
             }),
         ),
     );
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        outcome_str(&reply.command_result),
+        outcome_str(&settlements[0].result),
         Some("move-float-applied")
     );
     assert!(reply.operation_settled.is_empty(), "bind emits nothing");
@@ -2995,7 +3011,7 @@ fn newer_clear_intent_supersedes_retained_float_placement() {
     );
     // R4: cmd13 directional move needs a clear; the newer intent
     // supersedes the stale placement.
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report_full(
             4,
@@ -3012,8 +3028,9 @@ fn newer_clear_intent_supersedes_retained_float_placement() {
             }),
         ),
     );
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        outcome_str(&reply.command_result),
+        outcome_str(&settlements[0].result),
         Some("move-maximize-clear")
     );
     assert!(
@@ -3210,10 +3227,9 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
         Some("op-14")
     );
     assert_eq!(desire(&while_pending, "win-max").frame_operation, None);
-    assert!(while_pending.command_result.is_none());
 
     // Rejected command while P2 is pending clears nothing.
-    let refused_cmd = accepted(
+    let (refused_cmd, refused_settlements) = accepted_with_settlements(
         &mut engine,
         &report_full(
             7,
@@ -3231,8 +3247,9 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             )),
         ),
     );
+    assert_eq!(refused_settlements.len(), 1);
     assert!(matches!(
-        refused_cmd.command_result,
+        refused_settlements[0].result,
         Some(CommandResult::Rejected { .. })
     ));
     assert_eq!(engine.retained_clears.len(), 1);

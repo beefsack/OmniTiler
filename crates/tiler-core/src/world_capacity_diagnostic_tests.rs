@@ -404,8 +404,17 @@ fn place_float(
     window: &str,
     target: Option<Rect>,
 ) -> WorldReplyV4 {
-    accepted(
-        engine,
+    place_float_with_settlements(engine, seq, windows, window, target).0
+}
+
+fn place_float_with_settlements(
+    engine: &mut WorldEngine,
+    seq: u64,
+    windows: Vec<WindowFact>,
+    window: &str,
+    target: Option<Rect>,
+) -> (WorldReplyV4, Vec<crate::world_report::BatchSettlement>) {
+    match engine.handle_report(
         &report(
             seq,
             vec![screen_sized("out-a", 0, 800, 560)],
@@ -417,7 +426,11 @@ fn place_float(
                 float_rect: target,
             })),
         ),
-    )
+        &[],
+    ) {
+        (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("expected accepted, got {other:?}"),
+    }
 }
 
 fn two_tiled() -> Vec<WindowFact> {
@@ -435,13 +448,14 @@ fn float_placement_carries_operation_until_observed() {
     let target = rect(10, 10, 200, 150);
     // A tiled sibling stays behind and keeps its allocation while the
     // mover is excepted (the sole-float case is covered separately).
-    let reply = place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
+    let (reply, settlements) =
+        place_float_with_settlements(&mut engine, 2, two_tiled(), "win-a", Some(target));
     let row = row_of(&reply, "win-a");
     assert!(row.floating, "placement floats: {row:?}");
     assert_eq!(row.frame_operation.as_deref(), Some("op-12"));
     assert_eq!(row.effective_frame, Some(target));
     assert!(matches!(
-        reply.command_result,
+        settlements.first().and_then(|s| s.result.as_ref()),
         Some(crate::world_report::CommandResult::Float { .. })
     ));
     // The tiled sibling keeps its allocation while the mover is excepted.
@@ -596,7 +610,7 @@ fn sole_toggle_float_publishes_controlled_exception_row() {
     // tree is a valid logical state, so the scope stays Controlled with
     // the explicit float row instead of a constraint-clamp hold.
     let target = rect(10, 10, 200, 150);
-    let reply = place_float(
+    let (reply, settlements) = place_float_with_settlements(
         &mut engine,
         2,
         vec![fact("win-a", "out-a", 0)],
@@ -604,7 +618,7 @@ fn sole_toggle_float_publishes_controlled_exception_row() {
         Some(target),
     );
     assert!(matches!(
-        reply.command_result,
+        settlements.first().and_then(|s| s.result.as_ref()),
         Some(crate::world_report::CommandResult::Float { .. })
     ));
     let view = sole_view(&reply);
@@ -817,8 +831,7 @@ fn float_ambiguous_third_frame_holds_across_ack() {
     assert_eq!(row.effective_frame, Some(target));
     // Ack disappears but the same third frame persists: never infer external
     // input from ambiguity. The token holds with no re-actuation.
-    let held = accepted(
-        &mut engine,
+    let (held_outcome, held_settlements) = engine.handle_report(
         &report(
             4,
             roomy.clone(),
@@ -830,7 +843,11 @@ fn float_ambiguous_third_frame_holds_across_ack() {
             None,
             None,
         ),
+        &[],
     );
+    let WorldOutcome::Accepted(held) = held_outcome else {
+        panic!("expected accepted, got {held_outcome:?}");
+    };
     let row = row_of(&held, "win-a");
     assert_eq!(
         engine.retained_floats.len(),
@@ -839,7 +856,7 @@ fn float_ambiguous_third_frame_holds_across_ack() {
     );
     assert_eq!(row.frame_operation, None, "still withheld: {row:?}");
     assert_eq!(row.effective_frame, Some(target));
-    assert_eq!(held.command_result, None, "no replay while held");
+    assert!(held_settlements.is_empty(), "no replay while held");
 }
 
 #[test]
@@ -1435,8 +1452,7 @@ fn float_gap_clamp_recovers_without_repeated_row() {
         );
         // Recovery carries no repeated attempt: the shared consumed
         // watermark already forgot it. Retained evidence still holds.
-        let recovered = accepted(
-            &mut engine,
+        let (recovered_outcome, recovered_settlements) = engine.handle_report(
             &report_with_frames(
                 4,
                 roomy.clone(),
@@ -1449,7 +1465,11 @@ fn float_gap_clamp_recovers_without_repeated_row() {
                 None,
                 vec![],
             ),
+            &[],
         );
+        let WorldOutcome::Accepted(recovered) = recovered_outcome else {
+            panic!("expected accepted, got {recovered_outcome:?}");
+        };
         assert_eq!(
             engine.retained_floats.len(),
             1,
@@ -1458,7 +1478,7 @@ fn float_gap_clamp_recovers_without_repeated_row() {
         if expect_effective {
             assert_eq!(row_of(&recovered, "win-a").effective_frame, Some(target));
         }
-        assert_eq!(recovered.command_result, None, "{name}: no replay");
+        assert!(recovered_settlements.is_empty(), "{name}: no replay");
     }
 }
 
@@ -1672,14 +1692,22 @@ fn float_lost_result_recovers_stale_never_replays() {
         &report(1, roomy.clone(), two_tiled(), "", None, None),
     );
     let target = rect(10, 10, 200, 150);
-    let first = place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
-    assert!(first.command_result.is_some(), "one-shot result");
-    // Lost reply: unrelated snapshot still carries the exact token.
-    let next = accepted(
-        &mut engine,
-        &report(3, roomy.clone(), two_tiled(), "", None, None),
+    let (_first, first_settlements) =
+        place_float_with_settlements(&mut engine, 2, two_tiled(), "win-a", Some(target));
+    assert!(
+        first_settlements
+            .first()
+            .and_then(|s| s.result.as_ref())
+            .is_some(),
+        "one-shot result"
     );
-    assert_eq!(next.command_result, None);
+    // Lost reply: unrelated snapshot still carries the exact token.
+    let (next_outcome, next_settlements) =
+        engine.handle_report(&report(3, roomy.clone(), two_tiled(), "", None, None), &[]);
+    let WorldOutcome::Accepted(next) = next_outcome else {
+        panic!("expected accepted, got {next_outcome:?}");
+    };
+    assert!(next_settlements.is_empty());
     assert_eq!(
         row_of(&next, "win-a").frame_operation.as_deref(),
         Some("op-12")
@@ -1694,9 +1722,9 @@ fn float_lost_result_recovers_stale_never_replays() {
         })),
         ..report(4, roomy, two_tiled(), "", None, None)
     };
-    match engine.handle_report(&replay, &[]).0 {
-        WorldOutcome::CommandConsumed(reply) => {
-            assert_eq!(reply.command_result, None);
+    match engine.handle_report(&replay, &[]) {
+        (WorldOutcome::CommandConsumed(reply), replay_settlements) => {
+            assert!(replay_settlements.is_empty());
             assert_eq!(
                 row_of(&reply, "win-a").frame_operation.as_deref(),
                 Some("op-12")

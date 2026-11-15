@@ -28,13 +28,16 @@
 //   at-most-one drained head, `monotonicMs` the advancing dispatch clock)
 //   around the raw inner report with at most one queued command drained, and
 //   capture replies bind the source correlation, the native watermark, and
-//   the dispatch clock with the terminal result nulled (requester-only via
-//   take). Queue/take answers are per-command correlated (monotonic global
+//   the dispatch clock; terminal command outcomes come from the real
+//   issuing `handle_report` `Vec<BatchSettlement>` via the test-only
+//   `DescribeWorldWithSettlements` evaluator method and settle per-command
+//   for requester-only `TakeCommandResult` (never fabricated or inferred).
+//   Queue/take answers are per-command correlated (monotonic global
 //   seq, one terminal settlement per filed command): pending only while
-//   nothing drained, ready (possibly null) once settled, never a stale last
-//   result reused. `gestureAssoc` and `gestureSettledAssoc` stay null here
-//   (the seam strips `nativeGesture` and carries no broker gesture map;
-//   never a fabricated binding).
+//   nothing drained or unsettled, ready (possibly null) or failed once
+//   settled, never a stale last result reused. `gestureAssoc` and
+//   `gestureSettledAssoc` stay null here (the seam strips `nativeGesture`
+//   and carries no broker gesture map; never a fabricated binding).
 //
 // The inner report arrives as genuine v4 producer bytes (strict codec owned
 // shapes including `rendererInput`, `views` refused, no v3 conversion, no
@@ -92,12 +95,66 @@ function increment(text: string): string {
 // broker-owned sequencing namespace is stamped here, never normalized
 // there. This file carries no classifier copy.
 
+export interface RawEvalSettlement {
+    seq: string;
+    result: unknown;
+}
+
+export interface RawEvalReplyWithSettlements {
+    reply: string;
+    settlements: RawEvalSettlement[];
+}
+
+function validateSettlementRow(row: unknown): RawEvalSettlement {
+    if (row === null || typeof row !== "object" || Array.isArray(row)) {
+        throw new Error(`expected settlement object, got ${JSON.stringify(row)}`);
+    }
+    const r = row as Record<string, unknown>;
+    if (!isCanonicalU64(r["seq"])) {
+        throw new Error(`expected canonical u64 settlement seq, got ${JSON.stringify(r["seq"])}`);
+    }
+    if (!("result" in r) || r["result"] === undefined) {
+        throw new Error(`settlement seq=${r["seq"] as string} missing required result`);
+    }
+    const res = r["result"];
+    if (res !== null) {
+        if (typeof res !== "object" || Array.isArray(res)) {
+            throw new Error(`settlement seq=${r["seq"] as string} expected null or object result`);
+        }
+        const obj = res as Record<string, unknown>;
+        if (obj["op"] === "rejected") {
+            const kind = obj["kind"];
+            if (typeof kind !== "string" || kind.length === 0) {
+                throw new Error(`settlement seq=${r["seq"] as string} rejected result missing valid kind`);
+            }
+        }
+    }
+    return { seq: r["seq"] as string, result: res };
+}
+
+export function parseRawEvalWithSettlements(line: string): RawEvalReplyWithSettlements {
+    const parsed = JSON.parse(line) as unknown;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error(`expected {reply, settlements} object from DescribeWorldWithSettlements, got ${line.slice(0, 200)}`);
+    }
+    const obj = parsed as Record<string, unknown>;
+    if (typeof obj["reply"] !== "string" || !Array.isArray(obj["settlements"])) {
+        throw new Error(`expected {reply, settlements} from DescribeWorldWithSettlements, got ${line.slice(0, 200)}`);
+    }
+    return {
+        reply: obj["reply"],
+        settlements: (obj["settlements"] as unknown[]).map(validateSettlementRow),
+    };
+}
+
 interface TerminalSettlement {
     client: unknown;
     clientCmd: unknown;
     globalCmd: string;
+    cmdSeq: string;
     result: unknown;
-    /** False until the draining capture's core result binds. */
+    failedKind: string | null;
+    /** False until the draining capture's issuing BatchSettlement binds. */
     settled: boolean;
     /** True once a take collected this settlement (never re-served twice). */
     collected: boolean;
@@ -119,8 +176,9 @@ export interface MiniBroker {
     // with the capture-only lanes stripped.
     stampCapture(envelopePayload: string): string;
     // Bind one core reply for the actuator lane: source/watermark/clock
-    // plus a nulled terminal result. Records the core result for take.
-    bindReply(coreReplyJson: string, envelopePayload: string): string;
+    // (no fabricated result lane). Correlates real issuing BatchSettlements
+    // by cmdSeq for the requester-only take lane.
+    bindReply(coreReplyJson: string, envelopePayload: string, settlements: ReadonlyArray<RawEvalSettlement>): string;
     // File one queued command (FIFO). Replies queued with a fresh
     // per-command global seq; a re-filed (client, clientCmd) pair is a
     // duplicate under the same seq and never re-executes. A stale
@@ -199,7 +257,7 @@ export function createMiniBroker(): MiniBroker {
                 cmdSeqValue = cmdSeq;
                 const entry = { client: next?.client ?? null, clientCmd: next?.clientCmd ?? null, globalCmd: next?.globalCmd ?? "0" };
                 drained.push(entry);
-                settlements.push({ ...entry, result: null, settled: false, collected: false });
+                settlements.push({ ...entry, cmdSeq: cmdSeqValue, result: null, failedKind: null, settled: false, collected: false });
             }
             return JSON.stringify({
                 ...inner,
@@ -213,23 +271,29 @@ export function createMiniBroker(): MiniBroker {
                 monotonicMs: clock,
             });
         },
-        bindReply(coreReplyJson: string, envelopePayload: string): string {
+        bindReply(coreReplyJson: string, envelopePayload: string, batchSettlements: ReadonlyArray<RawEvalSettlement>): string {
             const envelope = JSON.parse(envelopePayload) as Record<string, unknown>;
             const core = JSON.parse(coreReplyJson) as Record<string, unknown>;
-            const result = (core["result"] as unknown) ?? null;
-            lastResult = result;
-            for (let i = settlements.length - 1; i >= 0; i -= 1) {
-                const settlement = settlements[i] as TerminalSettlement;
-                if (!settlement.settled) {
-                    settlement.result = result;
-                    settlement.settled = true;
-                    break;
+            for (const raw of batchSettlements) {
+                const s = validateSettlementRow(raw);
+                lastResult = s.result;
+                const target = settlements.find((entry) => !entry.settled && entry.cmdSeq === s.seq);
+                if (target === undefined) {
+                    continue;
                 }
+                const res = s.result;
+                if (res !== null && (res as Record<string, unknown>)["op"] === "rejected") {
+                    target.failedKind = (res as Record<string, unknown>)["kind"] as string;
+                    target.result = null;
+                } else {
+                    target.result = res;
+                    target.failedKind = null;
+                }
+                target.settled = true;
             }
             clock = increment(clock);
             return JSON.stringify({
                 ...core,
-                result: null,
                 gestureAssoc: null,
                 gestureSettledAssoc: null,
                 source: envelope["source"],
@@ -286,6 +350,12 @@ export function createMiniBroker(): MiniBroker {
                 return JSON.stringify({ v: 4, outcome: "pending", gen });
             }
             open.collected = true;
+            if (open.failedKind !== null) {
+                return JSON.stringify({
+                    v: 4, outcome: "failed", gen, globalCmd: open.globalCmd,
+                    kind: open.failedKind, message: open.failedKind,
+                });
+            }
             return JSON.stringify({ v: 4, outcome: "ready", gen, globalCmd: open.globalCmd, result: open.result });
         },
     };

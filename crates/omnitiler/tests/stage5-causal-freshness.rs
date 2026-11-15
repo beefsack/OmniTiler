@@ -403,8 +403,8 @@ fn stage5_red_preview_requires_producing_identity() {
     )
     .expect("drained is JSON");
     assert!(
-        drained["result"].is_null(),
-        "actuator lane keeps no terminal result"
+        drained.get("result").is_none(),
+        "actuator lane carries no result field"
     );
     assert!(
         drained["gestureAssoc"].is_null(),

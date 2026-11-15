@@ -197,7 +197,7 @@ describe("world genuine-producer output disconnect and return journeys", () => {
             // the command lane: no queue filing, no take, null result.
             assert.equal(h.calls.filter((call) => call.method === "QueueWorldCommand").length, 0, "displacement files no command");
             assert.equal(takeReadys(h).length, 0, "displacement settles no takes");
-            assert.equal(reply["result"], null, "actuator lane carries a null result");
+            assert.equal("result" in reply, false, "actuator lane omits result");
             // Settled quiescence leaks nothing: no in-flight transfer and no
             // outstanding creation desire ride the publication.
             assert.deepEqual(reply["transfers"] ?? [], [], "displacement leaves no in-flight transfer");
@@ -304,7 +304,7 @@ describe("world genuine-producer output disconnect and return journeys", () => {
             // Commandless return: no queue filing, no take, null result.
             assert.equal(h.calls.filter((call) => call.method === "QueueWorldCommand").length, 0, "return files no command");
             assert.equal(takeReadys(h).length, 0, "return settles no takes");
-            assert.equal(reply["result"], null, "actuator lane carries a null result");
+            assert.equal("result" in reply, false, "actuator lane omits result");
             // The adapter drives exactly the home move and nothing else:
             // one cross-output send per displaced window, no echo re-home,
             // no view switch. Settled quiescence leaks nothing.
@@ -376,7 +376,7 @@ describe("world genuine-producer output disconnect and return journeys", () => {
             appliedMatchesReply(h, reply);
             assert.deepEqual(reply["transfers"] ?? [], [], "displacement leaves no in-flight transfer");
             assert.deepEqual(reply["nativeCreations"] ?? [], [], "displacement leaves no outstanding creation");
-            assert.equal(reply["result"], null, "actuator lane carries a null result");
+            assert.equal("result" in reply, false, "actuator lane omits result");
         } finally {
             await h.stop();
         }

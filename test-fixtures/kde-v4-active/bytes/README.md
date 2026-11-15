@@ -11,9 +11,12 @@ Boundary vs the preserved historical `test-fixtures/kde-v4/bytes` family:
 - Every `report-*.json` carries the `foregroundKnown` provenance bit
   (`kwin/src/world-observe.ts`).
 - `reply-observe.json` carries the required nullable `focusRequest` lane
-  (`kwin/src/world-report.ts`).
+  (`kwin/src/world-report.ts`) and required nullable `dragPreview` lane (`null`
+  on this non-gesture path), with no `result` field (command outcomes ride
+  issuing `Vec<BatchSettlement>` and requester-only `TakeCommandResult`).
 - Bound replies carry required nullable `gestureSettledAssoc`; the byte
   fixture's non-gesture path truthfully emits null.
 
-Regenerate only via the test's generator mode; normal runs assert
-byte-identically with volatile `source`/`req` masked, never re-serialized.
+Regenerate only via the test's generator mode (`UPDATE_KDE_V4_BYTE_FIXTURES=1 npm test`
+in `kwin/`); normal runs assert byte-identically with volatile `source`/`req`
+masked, never re-serialized.

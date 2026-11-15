@@ -34,7 +34,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
-import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
+import { createMiniBroker, parseRawEvalWithSettlements, type MiniBroker } from "./world-wire-harness";
 
 function repoRoot(): string {
     let dir = resolve(process.cwd());
@@ -446,8 +446,8 @@ async function makeSpareHarness(): Promise<Harness> {
             // with a nulled terminal result.
             const envelope = (harness.calls[index] as CapturedCall).payload;
             const stamped = harness.broker.stampCapture(envelope);
-            const coreReply = await harness.bridge.send("DescribeWorld", stamped);
-            const reply = harness.broker.bindReply(coreReply, envelope);
+            const { reply: coreReply, settlements } = parseRawEvalWithSettlements(await harness.bridge.send("DescribeWorldWithSettlements", stamped));
+            const reply = harness.broker.bindReply(coreReply, envelope, settlements);
             harness.answered.add(index);
             harness.replies.set(index, reply);
             (harness.calls[index] as CapturedCall).callback(reply);

@@ -419,7 +419,7 @@ fn full_steps() -> Vec<Step> {
         Step {
             envelopes: &["envelope-cover2-0.json", "envelope-cover2-1.json"],
             projection: "projection-cover2.json",
-            preview: None,
+            preview: Some(("gesture-1", "1")),
             hold_barrier: false,
         },
         Step {

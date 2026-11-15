@@ -579,25 +579,23 @@ fn view_return_fallback_records_effect_target_not_remembered() {
 fn rejected_unknown_focus_records_nothing() {
     let (mut engine, key) = bootstrap_two_tiled();
     let before = remembered_window(&engine, &key);
-    let outcome = engine
-        .handle_report(
-            &report(
-                2,
-                two_screens(),
-                vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 200)],
-                "win-a",
-                Some(11),
-                Some(WorldCommand::Focus {
-                    window: WindowId("win-gone".to_owned()),
-                    direction: "right".to_owned(),
-                }),
-            ),
-            &[],
-        )
-        .0;
+    let (outcome, settlements) = engine.handle_report(
+        &report(
+            2,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 200)],
+            "win-a",
+            Some(11),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-gone".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+        &[],
+    );
     match outcome {
         WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
+            settlements.first().and_then(|s| s.result.clone()),
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::FocusUnknown
             }),

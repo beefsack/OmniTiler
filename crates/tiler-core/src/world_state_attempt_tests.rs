@@ -143,8 +143,7 @@ fn exact_match_success_confirms_sticky() {
     );
     let mut sticky_fact = fact("win-a", "out-a", 0);
     sticky_fact.sticky = Some(true);
-    let reply = accepted(
-        &mut engine,
+    let (outcome, settlements) = engine.handle_report(
         &with_attempts(
             report_full(
                 2,
@@ -158,14 +157,19 @@ fn exact_match_success_confirms_sticky() {
             ),
             vec![row.clone()],
         ),
+        &[],
     );
+    let reply = match outcome {
+        crate::world_engine::WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted report, got {other:?}"),
+    };
     let bound = binding(&engine, "win-a", StateProperty::Sticky).expect("binding retained");
     assert!(bound.spent);
     assert_eq!(bound.pending.as_ref(), Some(&row));
     assert_eq!(bound.pending.as_ref().map(|row| row.attempt_ms), Some(7));
     assert_eq!(bound.disposition, AttemptOutcome::Applied);
     assert!(reply.diagnostics.is_empty());
-    assert!(reply.command_result.is_none());
+    assert!(settlements.is_empty());
     assert!(reply.operation_settled.is_empty());
     assert!(reply.effects.is_empty());
     assert!(reply.windows.iter().all(|row| row.state.is_empty()));

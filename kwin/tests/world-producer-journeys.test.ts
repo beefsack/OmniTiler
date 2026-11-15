@@ -367,7 +367,7 @@ describe("world genuine-producer admission, close, float and refusal journeys", 
                 "refused move writes no native geometry",
             );
             const reply = lastDescribeReply(h);
-            assert.equal(reply["result"], null, "actuator lane never carries the terminal result");
+            assert.equal("result" in reply, false, "actuator lane never carries the terminal result");
             appliedMatchesReply(h, reply);
         } finally {
             await h.stop();
@@ -958,7 +958,7 @@ describe("world genuine-producer workspace selection journeys", () => {
             assert.equal(takes[0]?.["globalCmd"], "1", "take rides sequence 1");
             assert.equal(takes[0]?.["result"], null, "take resolves null: queue/take is report-result delivery, not a switch receipt");
             const reply = lastDescribeReply(h);
-            assert.equal(reply["result"], null, "actuator lane never carries the selection terminal");
+            assert.equal("result" in reply, false, "actuator lane never carries the selection terminal");
             // The fake has no `windowAt` shown/arrival witness, so the
             // focus-bearing binding cannot prove focus (`selection_terminal`
             // in world_selection.rs: complete needs no effect or proven
@@ -1034,7 +1034,7 @@ describe("world genuine-producer workspace selection journeys", () => {
             assert.equal(takes[0]?.["globalCmd"], "1", "take rides sequence 1");
             assert.equal(takes[0]?.["result"], null, "take resolves null: queue/take is report-result delivery, not a switch receipt");
             const reply = lastDescribeReply(h);
-            assert.equal(reply["result"], null, "actuator lane never carries the selection terminal");
+            assert.equal("result" in reply, false, "actuator lane never carries the selection terminal");
             // Focusless completion (workspaces decision): no required focus
             // target, so the binding reports `unproven` and completes once
             // visibility obligations are satisfied, with `failed: []`. This
@@ -1096,7 +1096,7 @@ describe("world genuine-producer workspace selection journeys", () => {
             assert.deepEqual(takes.map((t) => t["globalCmd"]), ["1", "2"], "takes ride fresh sequences 1/2");
             assert.ok(takes.every((t) => t["result"] === null), "takes resolve null, never a switch receipt");
             const reply = lastDescribeReply(h);
-            assert.equal(reply["result"], null, "actuator lane never carries a terminal");
+            assert.equal("result" in reply, false, "actuator lane never carries a terminal");
             assert.deepEqual(reply["switchSettled"], [], "superseded open parent emits no terminal");
             assert.deepEqual(reply["effects"], [], "no arrival focus effect is filed");
             assert.deepEqual(h.focused, [], "no native focus actuation");

@@ -49,6 +49,15 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   amended strict shape. Genuine current production-route recordings use
   `test-fixtures/stage5-v4-active` and `test-fixtures/kde-v4-active`; existing
   `stage5` and `stage5-v4` recordings remain historical.
+- The pre-release retained `dragPreview` and command-result amendment
+  ([Q1=B](../changes/retained-command-result.md#user-decisions-2026-11-15))
+  also keeps version 4 with no alias or dual shape: `WorldReplyV4` carries the
+  required nullable retained identity-bound `dragPreview` (`DragPreviewV4`)
+  lane and removes `result` (and `CommandResult::DragPreview` is removed from
+  `CommandResult`). Per-command outcomes ride only the issuing `handle_report`
+  `Vec<BatchSettlement>` (including inline `report.command`) and the
+  broker's requester-only `TakeCommandResult` lane (`MAX_SETTLED_RESULTS = 1024`).
+  Offline conformance is not native acceptance.
 
 ## Ownership and G4 exceptions
 
@@ -746,8 +755,11 @@ acceptance or adopt the separate close-focus amendment.
   null `win` remains invalid. The object has exactly one key with boolean
   `true`; extra keys, false and other types refuse. Implicit maximize uses core-resolved focus instead of
   a settled-native-focus equality check; explicit maximize keeps its gate.
-- The capture returns one final full actuator publication for the batch, with
-  per-command results retained on the queued transport's requester-only take lane. Native
+- The capture returns one final full actuator publication for the batch, while
+  `handle_report` returns `Vec<BatchSettlement>` for every executed command
+  (including any inline `report.command` first, then queued commands in FIFO
+  order) and the broker retains per-command results on the requester-only
+  `TakeCommandResult` lane (`MAX_SETTLED_RESULTS = 1024`). Native
   application keeps only the newest pending publication and follows the
   [normative apply rule](#normative-apply-rule).
   Superseding native work never discards incoming `closed` or attempt evidence.
@@ -790,7 +802,9 @@ acceptance or adopt the separate close-focus amendment.
   source refuses, never retargets. [Send source](../decisions/contract.md#send-source-fallback).
 - Remove `switch-view` and `operation`. Do not promote direct nested
   drag-preview/drag-drop/pointer-resize or maintenance/duplicate move/focus/send
-  routes. Native gesture lifecycle and `DragPreview` replies remain unchanged.
+  routes. Native gesture lifecycle remains unchanged; live drag preview rides
+  the retained nullable wire `dragPreview` slot (Rust `WorldReplyV4.drag_preview`) rather than
+  `CommandResult`.
   [R6](../changes/core-interface-review.md#original-backlog-lines-159-186).
 
 | SendSource key (exclusive arms) | Type | Null/absence | Meaning |
@@ -875,10 +889,14 @@ acceptance or adopt the separate close-focus amendment.
 ### CommandResult and diagnostics
 
 - An accepted report always incorporates its trustworthy observations, even if
-  its command is rejected. `result` keeps the existing `DragPreview,Float,
-  Migration,Directional,Maximize` variants and null behavior: null is permitted
-  for successful snapshot-only commands and observation-only replies, not a
-  universal no-op label. Add only `Rejected {kind}`; no Applied/NoOp wrapper.
+  its command is rejected. `WorldReplyV4` carries no `result` field;
+  per-command outcomes are returned only on the issuing `handle_report`
+  `Vec<BatchSettlement>` (including inline `report.command`) and retained per
+  requester on the broker `TakeCommandResult` lane (`MAX_SETTLED_RESULTS = 1024`).
+  `CommandResult` keeps `Float`, `Migration`, `Directional`, `Maximize`, and
+  `Rejected {kind}` (`CommandResult::DragPreview` is removed; no Applied/NoOp
+  wrapper). `null` in a settlement/take payload is permitted for successful
+  snapshot-only commands, not a universal no-op label.
   [Outcome decision](../decisions/contract.md#command-outcome-in-reply).
 
 | Changed/new record | Key | Type | Null/absence | Meaning |
@@ -925,7 +943,7 @@ acceptance or adopt the separate close-focus amendment.
 | `transfers` | TransferTarget[] | no | Retained transfer correlations. |
 | `effects` | empty array | no | No admissible entries or actuation authority; reserved raise/stack shapes are removed. |
 | `focusRequest` | FocusRequest | yes | Required nullable retained request for every cause, independent of effects. |
-| `result` | CommandResult | yes | Issuing-reply-only result. |
+| `dragPreview` | DragPreviewV4 | yes | Required nullable retained identity-bound drag-preview overlay state (`{id,rev,domainOut,domainWs,sourceOut,sourceWs,rect,hover,win}` on the wire; Rust `WorldReplyV4.drag_preview`). |
 | `gestureSettled` | GestureSettled | yes | Retained latest core mutation outcome, not native completion. |
 | `operationSettled` | OperationEvent[] | no | Complete retained latest clear/float outcomes keyed by `(win,kind)`. |
 | `nativeCreations` | NativeCreationDesire[] | no | Only authorization for native desktop creation. |
@@ -1050,6 +1068,35 @@ acceptance or adopt the separate close-focus amendment.
   broker and KDE, without alias, fallback or version bump. Other ports must adopt
   retained identity matching before claiming compatibility; offline KDE proofs
   establish no native acceptance.
+
+### Retained dragPreview
+
+- The wire `dragPreview` field (`DragPreviewV4 | null`, Rust
+  `WorldReplyV4.drag_preview: Option<DragPreviewV4>`) is a required nullable
+  slot per `(adapter, gen)`. On the wire it encodes the flattened keys
+  `{id, rev, domainOut, domainWs, sourceOut, sourceWs, rect, hover, win}`
+  (`id` and `rev` as bounded quoted decimals), corresponding to the conceptual
+  `DragPreviewV4` members `{id, revision, domain, source, rect, hover, target}`.
+  `id` (`u64` from `retained.id`) binds the preview to the active gesture so a
+  stale preview cannot repaint a replacement gesture and redelivery is inert.
+- Omitted/commandless ingress while a gesture is active preserves the latest
+  `dragPreview` across omitted ingress and skipped replies, unless
+  `prune_drag_preview` invalidates it against current-session safety, scope,
+  domain, or neighbor fences (`gesture_continue_fences`, `gesture_game_paused`,
+  `is_owned_composed_float`, non-`Move`, unreadable/held `domain`, or
+  departed/closed/held/hidden/floating/sticky/overlay `target` neighbor).
+- Genuine current-session active `Held` no-preview outcomes (bind-only
+  `Started`, safety/pause/composed-float/non-`Move` gates, missing cursor, zero
+  movement, `gesture_pair_preview`/`gesture_local_event` `None`, and engine
+  refusals) clear `dragPreview` to `null`. Mismatched ignored newcomers cannot
+  relabel an old `id` or authorize a newcomer preview. Explicit `Released`,
+  `Cancelled`, proven owner departure (`staged.closes`), or fresh
+  handshake/new generation also clears `dragPreview` to `null`.
+- Broker `CarriedPreview` keeps the output-level suspension gate
+  (`domain.output == presentation.suspended_output`) and matches `dragPreview.id`
+  against the existing `kde_gesture::active_assoc` pin via the read-only
+  exact-id `active_assoc_for` accessor (reconciled before projection). Missing
+  or mismatched association stays unproven (`producer: null`), never guessed.
 
 <a id="retained-positive-close-focus"></a>
 
@@ -1536,7 +1583,10 @@ acceptance or adopt the separate close-focus amendment.
   not move command watermark. Transport timeout is not an engine verdict or
   permission to mint a new duplicate command. [Sequencing](world-contract-v3.md#3-identity-sequencing-and-dedup).
 - `effects` is required empty; retained transfers remain until observed,
-  externally superseded or proven refused. Command `result` remains issuing-only;
+  externally superseded or proven refused. `WorldReplyV4` carries no `result`
+  field (command outcomes ride only the issuing `handle_report`
+  `Vec<BatchSettlement>` and the broker's requester-only `TakeCommandResult`
+  lane within `MAX_SETTLED_RESULTS = 1024`);
   [settlement outcomes](#retained-settlement-outcomes) are latest-completed state,
   not issuing-only delivery or native-write authority.
   The separate retained `focusRequest` lane follows its
@@ -1694,7 +1744,7 @@ acceptance or adopt the separate close-focus amendment.
 | `FrameAttempt`, `ClearAttempt`, `OperationOutcome` | [Settlement](world-contract-v3.md#5-raw-attempts-and-settlement), [world_report.rs](../../crates/tiler-core/src/world_report.rs) |
 | `WindowSizeHints`, `FixedSizePredicate` | [size_hints.rs](../../crates/tiler-core/src/size_hints.rs) |
 | `WorkspaceMode`, `MigrationSourceRefill`, `AnchorFallback`, `NoSpaceResult`, `SwitchTarget`, `FreshPlacement`, `BornMaximized` | [Settings baseline](world-contract-v3.md#current-message-shapes-v3), [catalog](../../crates/tiler-core/src/settings_catalog.rs) |
-| `CommandResult::DragPreview`, `CommandResult::Float`, `CommandResult::Migration`, `CommandResult::Maximize`, `DirectionalOutcome` | [Results](world-contract-v3.md#current-message-shapes-v3), [world_sizing.rs](../../crates/tiler-core/src/world_sizing.rs), [world_directional.rs](../../crates/tiler-core/src/world_directional.rs) |
+| `CommandResult::Float`, `CommandResult::Migration`, `CommandResult::Maximize`, `DirectionalOutcome` | [Results](world-contract-v3.md#current-message-shapes-v3), [world_sizing.rs](../../crates/tiler-core/src/world_sizing.rs), [world_directional.rs](../../crates/tiler-core/src/world_directional.rs) |
 | `GestureIngress`, `GestureSettled`, `DragHoverPrior`, `PriorGroupEdge`, `DragSide`, `Direction`, `SameAxisMove` | [Wire baseline](world-contract-v3.md#current-message-shapes-v3), [gesture.rs](../../crates/tiler-core/src/gesture.rs), [world_protocol.rs](../../crates/tiler-protocol/src/world_protocol.rs) |
 | `PresentationUnderlay`, `PresentationUnderlayFound`, `GroupHideReason`, `ActiveGroupMember`, `PagerScreen`, `PagerWorkspace`, `PagerWindow` | [Presentation](world-contract-v3.md#8-border-underlay-drop-preview-and-pager), [world_presentation.rs](../../crates/tiler-core/src/world_presentation.rs), [world_sizing.rs](../../crates/tiler-core/src/world_sizing.rs) |
 | `BorderHideReason` except HostHidden spelling | [visual.rs](../../crates/tiler-core/src/visual.rs) |

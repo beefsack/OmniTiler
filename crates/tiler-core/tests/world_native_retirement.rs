@@ -765,8 +765,7 @@ fn known_raw_current_vetoes_despite_command_moved_view() {
     let d3 = logical_for(&first, "out-a", "d3").expect("d3 bound");
     // The command moves the desired view to d3, but the raw native
     // current still names d2: adapter truth wins, d2 stays.
-    let reply = accepted(
-        &mut engine,
+    let (outcome, settlements) = engine.handle_report(
         &report(
             2,
             2,
@@ -780,7 +779,12 @@ fn known_raw_current_vetoes_despite_command_moved_view() {
             }),
             true,
         ),
+        &[],
     );
+    let reply = match outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted reply, got {other:?}"),
+    };
     assert_eq!(
         existence(&reply, "out-a", &d2),
         Some(true),
@@ -791,10 +795,10 @@ fn known_raw_current_vetoes_despite_command_moved_view() {
     // current wins: the desired view stays on d2.
     assert!(
         matches!(
-            reply.command_result,
+            settlements.first().and_then(|s| s.result.as_ref()),
             Some(tiler_core::world_report::CommandResult::Rejected { .. })
         ),
-        "retiring target rejected: {reply:?}"
+        "retiring target rejected: {settlements:?}"
     );
     assert_eq!(
         reply

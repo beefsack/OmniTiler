@@ -377,9 +377,19 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("expected accepted, got {other:?}"),
+    accepted_with_settlements(engine, report).0
+}
+
+fn accepted_with_settlements(
+    engine: &mut WorldEngine,
+    report: &WorldReportV4,
+) -> (
+    crate::world_report::WorldReplyV4,
+    Vec<crate::world_report::BatchSettlement>,
+) {
+    match engine.handle_report(report, &[]) {
+        (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("expected accepted, got {other:?}"),
     }
 }
 
@@ -2022,15 +2032,18 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         inventory_complete: true,
         ..report(2, 2, vec![], "", None, None, vec![], vec![])
     };
-    match engine.handle_report(&east, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::MigrationRefused
-            }),
-            "eastmost right must refuse no-target"
-        ),
-        other => panic!("eastmost right must refuse no-target, got {other:?}"),
+    match engine.handle_report(&east, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::MigrationRefused
+                }),
+                "eastmost right must refuse no-target"
+            );
+        }
+        (other, _) => panic!("eastmost right must refuse no-target, got {other:?}"),
     }
 
     // Incomplete inventory.
@@ -2045,15 +2058,18 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
     );
     inv.inventory_complete = false;
-    match engine.handle_report(&inv, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::MigrationRefused
-            }),
-            "incomplete inventory must refuse"
-        ),
-        other => panic!("incomplete inventory must refuse, got {other:?}"),
+    match engine.handle_report(&inv, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::MigrationRefused
+                }),
+                "incomplete inventory must refuse"
+            );
+        }
+        (other, _) => panic!("incomplete inventory must refuse, got {other:?}"),
     }
 
     // Stale registered cache: a mapped-but-removed source still selects
@@ -2072,15 +2088,18 @@ fn directional_fences_carry_distinct_fixed_reasons() {
     );
     ghost.action_outputs.push(OutputId("out-z".to_owned()));
     ghost.action_cached = Some(OutputId("out-z".to_owned()));
-    match engine.handle_report(&ghost, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::MigrationRefused
-            }),
-            "ghost source must refuse"
-        ),
-        other => panic!("ghost source must refuse, got {other:?}"),
+    match engine.handle_report(&ghost, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::MigrationRefused
+                }),
+                "ghost source must refuse"
+            );
+        }
+        (other, _) => panic!("ghost source must refuse, got {other:?}"),
     }
 
     // Source unreadable: homed window with no rect.
@@ -2098,15 +2117,18 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
         vec![],
     );
-    match engine.handle_report(&bad_src, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::MigrationRefused
-            }),
-            "unreadable source must refuse"
-        ),
-        other => panic!("unreadable source must refuse, got {other:?}"),
+    match engine.handle_report(&bad_src, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::MigrationRefused
+                }),
+                "unreadable source must refuse"
+            );
+        }
+        (other, _) => panic!("unreadable source must refuse, got {other:?}"),
     }
 
     // Target incomplete via the named path (directional topology runs
@@ -2128,15 +2150,18 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
     );
     tgt.screens = inc_screens.clone();
-    match engine.handle_report(&tgt, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::MigrationRefused
-            }),
-            "incomplete target must refuse"
-        ),
-        other => panic!("incomplete target must refuse, got {other:?}"),
+    match engine.handle_report(&tgt, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::MigrationRefused
+                }),
+                "incomplete target must refuse"
+            );
+        }
+        (other, _) => panic!("incomplete target must refuse, got {other:?}"),
     }
 
     // Directional topology unreadable: incomplete screens clear the
@@ -2152,15 +2177,18 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
     );
     topo.screens = inc_screens;
-    match engine.handle_report(&topo, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::MigrationRefused
-            }),
-            "unreadable topology must refuse"
-        ),
-        other => panic!("unreadable topology must refuse, got {other:?}"),
+    match engine.handle_report(&topo, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::MigrationRefused
+                }),
+                "unreadable topology must refuse"
+            );
+        }
+        (other, _) => panic!("unreadable topology must refuse, got {other:?}"),
     }
 
     // Second migrate after a commit resolves the source's current view
@@ -2206,10 +2234,11 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![],
         vec![],
     );
-    match flight_engine.handle_report(&again, &[]).0 {
-        WorldOutcome::Accepted(reply) => {
-            let source = reply
-                .command_result
+    match flight_engine.handle_report(&again, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            let source = settlements[0]
+                .result
                 .clone()
                 .and_then(|result| match result {
                     crate::world_report::CommandResult::Migration { source, .. } => Some(source),
@@ -2218,7 +2247,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
                 .expect("migration provenance");
             assert_eq!(source.output.0, "out-a", "resolves the live source");
         }
-        other => panic!("second migrate after commit must apply current view, got {other:?}"),
+        (other, _) => panic!("second migrate after commit must apply current view, got {other:?}"),
     }
 }
 
@@ -2961,28 +2990,28 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
     // A stale-but-registered cache still selects and refuses downstream
     // instead of silently retargeting live state.
     let (mut engine, _, _) = seeded();
-    match engine
-        .handle_report(
-            &context_cmd(
-                2,
-                registry(&["out-a", "out-b", "out-z"]),
-                None,
-                None,
-                Some("out-z"),
-                "right",
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::MigrationRefused
-            }),
-            "stale cache must refuse the source"
+    match engine.handle_report(
+        &context_cmd(
+            2,
+            registry(&["out-a", "out-b", "out-z"]),
+            None,
+            None,
+            Some("out-z"),
+            "right",
         ),
-        other => panic!("stale cache must refuse the source, got {other:?}"),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::MigrationRefused
+                }),
+                "stale cache must refuse the source"
+            );
+        }
+        (other, _) => panic!("stale cache must refuse the source, got {other:?}"),
     }
     // No known registry at all refuses without inventing focus. The
     // struct-update base carries a registry, so clear it explicitly:
@@ -3005,15 +3034,18 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
         }),
         ..report(2, 2, vec![], "", None, None, vec![], vec![])
     };
-    match engine.handle_report(&empty, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::MigrationRefused
-            }),
-            "empty registry must refuse the source"
-        ),
-        other => panic!("empty registry must refuse the source, got {other:?}"),
+    match engine.handle_report(&empty, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::MigrationRefused
+                }),
+                "empty registry must refuse the source"
+            );
+        }
+        (other, _) => panic!("empty registry must refuse the source, got {other:?}"),
     }
 }
 
@@ -3037,15 +3069,18 @@ fn migrate_directional_freezes_source_view_pre_observation() {
         }),
         ..report(1, 1, vec![], "", None, None, vec![], vec![])
     };
-    match fresh.handle_report(&unbootstrapped, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::MigrationRefused
-            }),
-            "unbootstrapped migration must refuse"
-        ),
-        other => panic!("unbootstrapped migration must refuse, got {other:?}"),
+    match fresh.handle_report(&unbootstrapped, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::MigrationRefused
+                }),
+                "unbootstrapped migration must refuse"
+            );
+        }
+        (other, _) => panic!("unbootstrapped migration must refuse, got {other:?}"),
     }
     // The same command after a prior observation applies: the retained
     // view resolves the frozen source.
@@ -3143,15 +3178,20 @@ fn migrate_directional_ignores_same_report_view_creation() {
             vec![],
         )
     };
-    match engine.handle_report(&hotplug, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::MigrationRefused
-            }),
-            "hotplug source must refuse without a pre-observation view"
-        ),
-        other => panic!("hotplug source must refuse without a pre-observation view, got {other:?}"),
+    match engine.handle_report(&hotplug, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::MigrationRefused
+                }),
+                "hotplug source must refuse without a pre-observation view"
+            );
+        }
+        (other, _) => {
+            panic!("hotplug source must refuse without a pre-observation view, got {other:?}")
+        }
     }
     // The observation-only catch-up retains the new screen's view, so the
     // same context on the next report applies instead of refusing.
@@ -3171,7 +3211,7 @@ fn migrate_directional_ignores_same_report_view_creation() {
             vec![],
         ),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &WorldReportV4 {
             screens: vec![screen("out-a", 0), screen("out-b", 800)],
@@ -3203,7 +3243,8 @@ fn migrate_directional_ignores_same_report_view_creation() {
     // command result) but retains no flight: zero members means zero
     // membership to await, so the issuing reply carries no Migration
     // transfer.
-    let target = match &reply.command_result {
+    assert_eq!(settlements.len(), 1);
+    let target = match &settlements[0].result {
         Some(CommandResult::Migration { target, .. }) => target.clone(),
         other => panic!("migration applies once the view is retained: {:?}", other),
     };

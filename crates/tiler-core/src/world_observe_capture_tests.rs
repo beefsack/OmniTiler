@@ -20,13 +20,13 @@ use crate::world_gesture::GestureOutcome;
 use crate::world_members::MemberState;
 use crate::world_report::{
     ArrivalBracket, ArrivalLocation, AttemptLaneV4, AttemptOutcome, AuthorityScope, ClearAttempt,
-    CommandResult, EffectCause, FocusFeedback, FrameAttempt, FrameSetter, HeldAttemptRow,
-    HeldNativeRow, HeldScreenRow, HeldWindowRow, HoldReason, IntentRecord, LastWrite,
-    LastWritePath, LastWriteProperty, MemberAttempt, NativeCreationAttempt, NativeObservation,
-    NativeOccupancy, NativeWorkspaceFact, OneShotEffect, OutputIdentity, PresentationIngressV4,
-    PresentationRowV4, RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind,
-    RowDiagnosticLane, ScopeAuthority, ScreenReport, StateAttempt, StateProperty, SwitchOutcome,
-    TransferKind, TransferTarget, ViewAttempt, VisibilityFact, VisibilityReason, VisibilitySample,
+    EffectCause, FocusFeedback, FrameAttempt, FrameSetter, HeldAttemptRow, HeldNativeRow,
+    HeldScreenRow, HeldWindowRow, HoldReason, IntentRecord, LastWrite, LastWritePath,
+    LastWriteProperty, MemberAttempt, NativeCreationAttempt, NativeObservation, NativeOccupancy,
+    NativeWorkspaceFact, OneShotEffect, OutputIdentity, PresentationIngressV4, PresentationRowV4,
+    RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
+    ScopeAuthority, ScreenReport, StateAttempt, StateProperty, SwitchOutcome, TransferKind,
+    TransferTarget, ViewAttempt, VisibilityFact, VisibilityReason, VisibilitySample,
     VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowDesire, WindowFact, WorkspaceRef,
     WorldCommand, WorldReplyV4, WorldReportV4,
 };
@@ -6005,10 +6005,9 @@ fn staged_gesture_act_watermark_guard_drives_preview() {
         Vec::new(),
     );
     match engine.gesture_act(&test_issue(&contra_v4(5, windows())), &mut BTreeSet::new()) {
-        GestureOutcome::Settled {
-            committed: false,
-            result: Some(boxed),
-        } if matches!(*boxed, CommandResult::DragPreview { .. }) => {}
+        GestureOutcome::Settled { committed: false } => {
+            assert!(engine.drag_preview.is_some());
+        }
         _ => panic!("next staged watermark previews"),
     }
     assert!(
@@ -6057,10 +6056,9 @@ fn staged_gesture_continue_fences_gate_update_and_release() {
     // Staged complete previews.
     stage_gesture(&mut engine, 7, windows(), Some(updated()), true, Vec::new());
     match engine.gesture_act(&test_issue(&contra_v4(7, windows())), &mut BTreeSet::new()) {
-        GestureOutcome::Settled {
-            committed: false,
-            result: Some(boxed),
-        } if matches!(*boxed, CommandResult::DragPreview { .. }) => {}
+        GestureOutcome::Settled { committed: false } => {
+            assert!(engine.drag_preview.is_some());
+        }
         _ => panic!("staged complete previews"),
     }
     // Released under a staged gap records uncommitted with no commit,
@@ -8882,7 +8880,6 @@ fn staged_frame_clock_drives_suppression_and_burst() {
         },
         None,
         Vec::new(),
-        None,
         &BTreeSet::new(),
     );
     let row_a = reply
@@ -8929,7 +8926,6 @@ fn staged_frame_clock_drives_suppression_and_burst() {
         },
         None,
         Vec::new(),
-        None,
         &BTreeSet::new(),
     );
     let row_a = reply
@@ -9032,7 +9028,6 @@ fn staged_frame_clock_drives_suppression_and_burst() {
         },
         None,
         Vec::new(),
-        None,
         &BTreeSet::new(),
     );
     let row = reply
@@ -9063,7 +9058,6 @@ fn staged_frame_clock_drives_suppression_and_burst() {
         },
         None,
         Vec::new(),
-        None,
         &BTreeSet::new(),
     );
     let row = reply
@@ -9146,7 +9140,6 @@ fn staged_frame_clock_drives_suppression_and_burst() {
         },
         None,
         Vec::new(),
-        None,
         &BTreeSet::new(),
     );
     let row = reply
@@ -9183,7 +9176,6 @@ fn staged_frame_clock_drives_suppression_and_burst() {
         },
         None,
         Vec::new(),
-        None,
         &BTreeSet::new(),
     );
     let row = reply

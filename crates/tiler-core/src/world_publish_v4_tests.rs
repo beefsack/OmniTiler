@@ -279,7 +279,7 @@ fn clean_publish_authorizes_without_holds() {
         "win-a",
         ingress_v4("win-a"),
     );
-    let reply = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let reply = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     assert_eq!(reply.contract_version, WORLD_CONTRACT_VERSION_V4);
     assert_eq!(reply.adapter_incarnation, "adapter-1");
     assert_eq!(reply.request_id, "req-7");
@@ -333,7 +333,7 @@ fn transfer_seq_survives_commandless_and_unrelated() {
         "ws-x",
     ));
     // Commandless publication keeps the originating sequence.
-    let first = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let first = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     assert_eq!(first.transfers.len(), 1);
     assert_eq!(first.transfers[0].operation_id, "op-7");
     assert_eq!(first.transfers[0].command_seq, Some(7));
@@ -343,13 +343,7 @@ fn transfer_seq_survives_commandless_and_unrelated() {
         window: WindowId("win-a".to_owned()),
         direction: "left".to_owned(),
     };
-    let second = engine.publish_v4(
-        envelope(8),
-        Some(&unrelated),
-        Vec::new(),
-        None,
-        &BTreeSet::new(),
-    );
+    let second = engine.publish_v4(envelope(8), Some(&unrelated), Vec::new(), &BTreeSet::new());
     assert_eq!(second.transfers.len(), 1);
     assert_eq!(second.transfers[0].command_seq, Some(7));
 }
@@ -378,7 +372,7 @@ fn transfer_seq_never_parsed_from_operation_id() {
     engine.retained.push(retained_window(
         "op-12", None, "win-t2", "out-b", "out-b", "ws-y",
     ));
-    let reply = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let reply = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     assert_eq!(reply.transfers.len(), 2);
     let explicit = reply
         .transfers
@@ -426,7 +420,7 @@ fn diagnostics_preserve_staged_order() {
         },
     ];
     engine.staged.diagnostics = staged.clone();
-    let reply = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let reply = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     assert_eq!(reply.diagnostics, staged);
 }
 
@@ -466,7 +460,7 @@ fn terminals_retain_across_publications() {
             fallback: false,
         },
     );
-    let first = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let first = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     assert_eq!(
         first.gesture_settled,
         Some(GestureSettled {
@@ -476,7 +470,7 @@ fn terminals_retain_across_publications() {
     );
     assert_eq!(first.operation_settled.len(), 1);
     assert_eq!(first.switch_settled.len(), 1);
-    let second = engine.publish_v4(envelope(8), None, Vec::new(), None, &BTreeSet::new());
+    let second = engine.publish_v4(envelope(8), None, Vec::new(), &BTreeSet::new());
     assert_eq!(second.gesture_settled, first.gesture_settled);
     assert_eq!(second.operation_settled, first.operation_settled);
     assert_eq!(second.switch_settled, first.switch_settled);
@@ -499,13 +493,13 @@ fn presentation_stamp_and_published_rev() {
     assert_eq!(engine.latest_published_presentation_rev_v4, 2);
     let before = engine.staged.presentation_v4.clone();
     assert!(matches!(before, Some(PresentationRowV4::Valid(_))));
-    let first = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let first = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     assert_eq!(first.presentation.rev, 7);
     assert_eq!(first.state_revision, 7);
     assert_eq!(engine.latest_published_presentation_rev_v4, 7);
     // The staged producer row is never rewritten by publication.
     assert_eq!(engine.staged.presentation_v4, before);
-    let second = engine.publish_v4(envelope(9), None, Vec::new(), None, &BTreeSet::new());
+    let second = engine.publish_v4(envelope(9), None, Vec::new(), &BTreeSet::new());
     assert_eq!(second.presentation.rev, 9);
     assert_eq!(engine.latest_published_presentation_rev_v4, 9);
 }
@@ -538,7 +532,7 @@ fn publish_leaves_pager_retention_untouched() {
     let order_before = engine.presentation_order_v4.clone();
     let live_before = engine.presentation_live_v4.clone();
     let focused_before = engine.presentation_focused_v4.clone();
-    let _ = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let _ = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     assert_eq!(engine.presentation_order_v4, order_before);
     assert_eq!(engine.presentation_live_v4, live_before);
     assert_eq!(engine.presentation_focused_v4, focused_before);
@@ -577,7 +571,7 @@ fn style_hold_suppresses_held_output_writes() {
     engine.retained.push(retained_window(
         "op-t2", None, "win-t2", "out-b", "out-b", "ws-y",
     ));
-    let reply = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let reply = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     let out_a = reply
         .outputs
         .iter()
@@ -738,7 +732,6 @@ fn style_hold_filters_held_output_native_desires() {
         },
         None,
         Vec::new(),
-        None,
         &BTreeSet::new(),
     );
     let ops: Vec<&str> = reply
@@ -827,7 +820,7 @@ fn born_tokens_withhold_on_style_held_output() {
             pending: None,
             ambiguous: false,
         });
-    let reply = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let reply = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     let row_a = reply
         .windows
         .iter()
@@ -861,7 +854,7 @@ fn minimized_fact_on_style_held_output_holds_membership() {
         "win-a",
         ingress_v4("win-a"),
     );
-    let reply = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let reply = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     let row = reply
         .windows
         .iter()
@@ -898,7 +891,7 @@ fn source_held_transfer_redirect_holds() {
         "ws-x",
     ));
     assert_eq!(engine.staged_homing(&WindowId("win-t".to_owned())), None);
-    let reply = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let reply = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     let row = reply
         .windows
         .iter()
@@ -932,7 +925,7 @@ fn missing_domain_target_redirect_holds() {
         "ws-ghost",
     ));
     assert_eq!(engine.staged_homing(&WindowId("win-u".to_owned())), None);
-    let reply = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let reply = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     let row = reply
         .windows
         .iter()
@@ -981,7 +974,7 @@ fn focus_effects_filter_held_output() {
         7,
         "win-a",
     );
-    let reply = engine.publish_v4(envelope(7), None, effects, None, &BTreeSet::new());
+    let reply = engine.publish_v4(envelope(7), None, effects, &BTreeSet::new());
     assert!(
         reply.effects.is_empty(),
         "focus never publishes as wire effects: {:?}",
@@ -1012,7 +1005,7 @@ fn style_boundary_1024_holds_only_past_cap() {
         ingress_v4("win-a"),
     );
     assert!(clean.presentation_style_hold_v4().is_none());
-    let reply = clean.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let reply = clean.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     for row in &reply.outputs {
         assert_eq!(row.hold, None, "at-cap output holds nothing");
     }
@@ -1033,7 +1026,7 @@ fn style_boundary_1024_holds_only_past_cap() {
         held.presentation_style_hold_v4().map(|(output, _)| output),
         Some(OutputId("out-a".to_owned()))
     );
-    let reply = held.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let reply = held.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     let out_a = reply
         .outputs
         .iter()
@@ -1061,7 +1054,7 @@ fn held_presentation_publishes_without_style_hold() {
         },
     ));
     assert!(engine.presentation_style_hold_v4().is_none());
-    let reply = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let reply = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     for row in &reply.outputs {
         assert_eq!(row.hold, None, "held presentation holds no output");
     }
@@ -1133,7 +1126,7 @@ fn genuine_send_projects_explicit_seq() {
         .find(|retained| matches!(&retained.target.kind, TransferKind::Window(w) if w.0 == "win-a"))
         .expect("retained send");
     assert_eq!(retained.command_seq, Some(11));
-    let reply = engine.publish_v4(envelope(12), None, Vec::new(), None, &BTreeSet::new());
+    let reply = engine.publish_v4(envelope(12), None, Vec::new(), &BTreeSet::new());
     let row = reply
         .transfers
         .iter()
@@ -1180,7 +1173,7 @@ fn genuine_select_workspace_projects_view_seq() {
         })
         .expect("retained view");
     assert_eq!(retained.command_seq, Some(13));
-    let reply = engine.publish_v4(envelope(14), None, Vec::new(), None, &BTreeSet::new());
+    let reply = engine.publish_v4(envelope(14), None, Vec::new(), &BTreeSet::new());
     assert!(
         reply
             .transfers
@@ -1230,7 +1223,7 @@ fn genuine_migrate_workspace_projects_parent_seq() {
         })
         .expect("retained migration parent");
     assert_eq!(retained.command_seq, Some(15));
-    let reply = engine.publish_v4(envelope(16), None, Vec::new(), None, &BTreeSet::new());
+    let reply = engine.publish_v4(envelope(16), None, Vec::new(), &BTreeSet::new());
     assert!(
         reply
             .transfers
@@ -1281,7 +1274,7 @@ fn genuine_null_gesture_send_projects_no_seq() {
         .expect("gesture send");
     assert_eq!(transfer.command_seq, None);
     engine.retained.push(transfer);
-    let reply = engine.publish_v4(envelope(15), None, Vec::new(), None, &BTreeSet::new());
+    let reply = engine.publish_v4(envelope(15), None, Vec::new(), &BTreeSet::new());
     let row = reply
         .transfers
         .iter()
@@ -1304,7 +1297,7 @@ fn publish_placeholders_rev_zero_and_latest_stamp() {
     assert_eq!(engine.presentation_for_publish_v4().rev, 0);
     // Genuine v4 seed admissions stamp the latest rev to base+1 (see above).
     assert_eq!(engine.latest_published_presentation_rev_v4, 2);
-    let _ = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let _ = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     assert_eq!(engine.latest_published_presentation_rev_v4, 7);
 }
 
@@ -1333,7 +1326,7 @@ fn floating_boundary_mover_style_hold() {
         &home.output.0,
         &home.workspace.0,
     ));
-    let reply = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let reply = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     let row = reply
         .windows
         .iter()
@@ -1370,7 +1363,7 @@ fn floating_boundary_mover_clean_stays_controlled() {
         &home.output.0,
         &home.workspace.0,
     ));
-    let reply = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let reply = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     let row = reply
         .windows
         .iter()
@@ -1417,7 +1410,7 @@ fn minimized_source_held_to_clean_target_holds() {
         "out-b",
         &clean_ws,
     ));
-    let reply = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let reply = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     let row = reply
         .windows
         .iter()
@@ -1462,7 +1455,7 @@ fn minimized_source_held_to_missing_slot_holds() {
         "out-b",
         "ws-ghost",
     ));
-    let reply = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let reply = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     let row = reply
         .windows
         .iter()
@@ -1493,7 +1486,7 @@ fn publish_on_clone_leaves_original_rev() {
     // Genuine v4 seed admissions stamp the latest rev to base+1 (see above).
     assert_eq!(engine.latest_published_presentation_rev_v4, 2);
     let mut clone = engine.clone();
-    let reply = clone.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let reply = clone.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     assert_eq!(reply.state_revision, 7);
     assert_eq!(clone.latest_published_presentation_rev_v4, 7);
     assert_eq!(
@@ -1526,7 +1519,7 @@ fn retained_operation_phase_slots_and_q1_q2_pruning_with_trace() {
         OperationOutcome::FloatFrameProven,
         None,
     );
-    let r1 = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let r1 = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     assert_eq!(r1.operation_settled.len(), 2);
     assert_eq!(r1.operation_settled[0].kind, OperationKind::Clear);
     assert_eq!(r1.operation_settled[1].kind, OperationKind::Float);
@@ -1547,7 +1540,7 @@ fn retained_operation_phase_slots_and_q1_q2_pruning_with_trace() {
             ambiguous: false,
             pending: None,
         });
-    let r2 = engine.publish_v4(envelope(8), None, Vec::new(), None, &BTreeSet::new());
+    let r2 = engine.publish_v4(envelope(8), None, Vec::new(), &BTreeSet::new());
     assert_eq!(r2.operation_settled.len(), 2);
 
     // Q2 A: explicit close drops owner BEFORE publish_v4 projects and buffers
@@ -1560,7 +1553,7 @@ fn retained_operation_phase_slots_and_q1_q2_pruning_with_trace() {
         .push(WindowId("win-a".to_owned()));
     let mut r3_opt = None;
     let premature = crate::world_engine::with_focus_trace_capture(|| {
-        let r3 = engine.publish_v4(envelope(9), None, Vec::new(), None, &BTreeSet::new());
+        let r3 = engine.publish_v4(envelope(9), None, Vec::new(), &BTreeSet::new());
         assert!(r3.operation_settled.is_empty());
         r3_opt = Some(r3);
     });
@@ -1608,7 +1601,7 @@ fn retained_switch_outcome_retains_and_prunes_on_output_departure() {
             fallback: false,
         },
     );
-    let r1 = engine.publish_v4(envelope(7), None, Vec::new(), None, &BTreeSet::new());
+    let r1 = engine.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new());
     assert_eq!(r1.switch_settled.len(), 1);
     assert_eq!(r1.switch_settled[0].output, OutputId("out-b".to_owned()));
 
@@ -1621,7 +1614,7 @@ fn retained_switch_outcome_retains_and_prunes_on_output_departure() {
         .retain(|screen| screen.output != OutputId("out-b".to_owned()));
     let mut r2_opt = None;
     let premature = crate::world_engine::with_focus_trace_capture(|| {
-        let r2 = engine.publish_v4(envelope(8), None, Vec::new(), None, &BTreeSet::new());
+        let r2 = engine.publish_v4(envelope(8), None, Vec::new(), &BTreeSet::new());
         assert!(r2.switch_settled.is_empty());
         r2_opt = Some(r2);
     });
@@ -3282,7 +3275,7 @@ fn q2_dropped_trace_rejects_outbound_gate_preserves_same_obs_and_dedups() {
     );
     r4_rej.closed = vec![WindowId("win-a".to_owned())];
     let rej_drops = crate::world_engine::with_focus_trace_capture(|| {
-        let mut forged = staged.publish_v4(envelope(4), None, Vec::new(), None, &BTreeSet::new());
+        let mut forged = staged.publish_v4(envelope(4), None, Vec::new(), &BTreeSet::new());
         assert!(forged.operation_settled.is_empty());
         assert_eq!(staged.staged_dropped_operations.len(), 1);
         forged.intent_desired = vec![crate::world_report::IntentDesire {

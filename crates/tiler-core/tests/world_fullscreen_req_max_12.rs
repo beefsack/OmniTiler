@@ -408,13 +408,17 @@ fn host_owned_focused_fullscreen_toggle_orientation_and_move_refuse() {
             window: "w1".to_owned(),
         })),
     );
-    let toggle_reply = accepted(&mut engine, &toggle_orient);
+    let (toggle_outcome, toggle_settlements) = engine.handle_report(&toggle_orient, &[]);
+    let toggle_reply = match toggle_outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted toggle_orient, got {other:?}"),
+    };
     assert!(
         !toggle_reply.command_consumed,
         "fullscreen ToggleOrientation must not consume as accepted mutation: {toggle_reply:?}"
     );
     assert_eq!(
-        toggle_reply.command_result,
+        toggle_settlements.first().and_then(|s| s.result.clone()),
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::OperationRefused,
         })
@@ -456,10 +460,17 @@ fn host_owned_focused_fullscreen_toggle_orientation_and_move_refuse() {
             same_axis: SameAxisMove::default(),
         }),
     );
-    let move_reply = accepted(&mut engine, &move_fs);
+    let (move_outcome, move_settlements) = engine.handle_report(&move_fs, &[]);
+    let move_reply = match move_outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted move_fs, got {other:?}"),
+    };
     assert!(
-        move_reply.command_result.is_some(),
-        "MoveDirectional on fullscreen produces directional refusal result: {move_reply:?}"
+        move_settlements
+            .first()
+            .and_then(|s| s.result.as_ref())
+            .is_some(),
+        "MoveDirectional on fullscreen produces directional refusal result: {move_settlements:?}"
     );
     assert_eq!(desire(&move_reply, "w2").allocation, w2_before_toggle);
     assert!(desire(&move_reply, "w1").state.is_empty());

@@ -686,8 +686,7 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
     let mut floated = fact("wf", "out-a", 200);
     floated.transient = Some(true);
     floated.hints = Some(fixed_hints());
-    let untiled = accepted(
-        &mut engine,
+    let (untiled_outcome, untiled_settlements) = engine.handle_report(
         &report_full(
             3,
             3,
@@ -701,8 +700,12 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
                 float_rect: None,
             })),
         ),
+        &[],
     );
-    match &untiled.command_result {
+    let WorldOutcome::Accepted(untiled) = untiled_outcome else {
+        panic!("expected accepted, got {untiled_outcome:?}");
+    };
+    match untiled_settlements.first().and_then(|s| s.result.as_ref()) {
         Some(crate::world_report::CommandResult::Float {
             window,
             rect,
@@ -902,9 +905,9 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
     report.command = Some(WorldCommand::MigrateDirectional {
         direction: "right".to_owned(),
     });
-    match eng.handle_report(&report, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
+    match eng.handle_report(&report, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.clone()),
             Some(crate::world_report::CommandResult::Rejected {
                 kind: crate::world_report::CommandRejectKind::MigrationRefused
             }),
@@ -938,13 +941,15 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
     report.command = Some(WorldCommand::MigrateDirectional {
         direction: "right".to_owned(),
     });
-    match sticky_engine.handle_report(&report, &[]).0 {
-        WorldOutcome::Accepted(reply) => match &reply.command_result {
-            Some(crate::world_report::CommandResult::Migration { members, .. }) => {
-                assert!(members.is_empty(), "sticky stays: {members:?}");
+    match sticky_engine.handle_report(&report, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            match settlements.first().and_then(|s| s.result.as_ref()) {
+                Some(crate::world_report::CommandResult::Migration { members, .. }) => {
+                    assert!(members.is_empty(), "sticky stays: {members:?}");
+                }
+                other => panic!("expected migration result, got {other:?}"),
             }
-            other => panic!("expected migration result, got {other:?}"),
-        },
+        }
         other => panic!("proven sticky stays, got {other:?}"),
     }
 

@@ -17,7 +17,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
-import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
+import { createMiniBroker, parseRawEvalWithSettlements, type MiniBroker } from "./world-wire-harness";
 
 function repoRoot(): string {
     let dir = resolve(process.cwd());
@@ -369,8 +369,8 @@ async function makeHarness(): Promise<Harness> {
             // with a nulled terminal result.
             const envelope = (harness.calls[index] as CapturedCall).payload;
             const stamped = harness.broker.stampCapture(envelope);
-            const coreReply = await harness.bridge.send("DescribeWorld", stamped);
-            const reply = harness.broker.bindReply(coreReply, envelope);
+            const { reply: coreReply, settlements } = parseRawEvalWithSettlements(await harness.bridge.send("DescribeWorldWithSettlements", stamped));
+            const reply = harness.broker.bindReply(coreReply, envelope, settlements);
             harness.answered.add(index);
             harness.replies.set(index, reply);
             (harness.calls[index] as CapturedCall).callback(reply);
@@ -600,7 +600,7 @@ function lastReply(h: Harness): Record<string, unknown> {
     const raw = h.replies.get(Math.max(...indices) as number) as string;
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     assert.equal(parsed["outcome"] ?? "accepted", "accepted", `fresh reply accepted, got ${raw.slice(0, 300)}`);
-    assert.equal(parsed["result"], null, "terminal result rides the take lane only, never the capture reply");
+    assert.equal("result" in parsed, false, "terminal result rides the take lane only, never the capture reply");
     return parsed;
 }
 

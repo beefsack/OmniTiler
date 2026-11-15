@@ -1558,7 +1558,7 @@ fn golden_bootstrap_reply_bytes_lock_wire_shape() {
         "{\"v\":4,\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\"req\":\"req-1\",\
         \"obs\":\"1\",\"rev\":\"0\",\"ready\":false,\"consumed\":false,\"scopes\":[],\
         \"workspaces\":[],\"outputs\":[],\"windows\":[],\"transfers\":[],\"effects\":[],\
-        \"focusRequest\":null,\"result\":null,\"gestureSettled\":null,\"operationSettled\":[],\"nativeCreations\":[],\
+        \"focusRequest\":null,\"dragPreview\":null,\"gestureSettled\":null,\"operationSettled\":[],\"nativeCreations\":[],\
         \"warpCursor\":null,\"presentation\":{\"foreground\":\"\",\"rev\":\"0\",\
         \"border\":{\"visible\":false,\"reason\":\"\",\"subject\":null,\"outsets\":null,\
         \"width\":null,\"radius\":null,\"witness\":null},\
@@ -2105,7 +2105,7 @@ fn focus_directional_no_focus_decodes_and_crosses_end_to_end() {
     assert_eq!(request.cmd_seq, Some(11));
     assert_eq!(request.issued_revision, reply.state_revision);
     assert_eq!(request.id, format!("focus-{}", reply.state_revision));
-    assert!(reply.command_result.is_none());
+    assert!(reply.drag_preview.is_none());
     reply_wire(&reply);
 }
 
@@ -2240,11 +2240,14 @@ fn toggle_maximize_decodes_and_result_encodes() {
             ..Default::default()
         },
     );
-    let reply = match engine.handle_report(&report, &[]).0 {
+    let (outcome, settlements) = engine.handle_report(&report, &[]);
+    let reply = match outcome {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
-    match &reply.command_result {
+    assert!(reply.drag_preview.is_none());
+    assert_eq!(settlements.len(), 1, "issuing report settles command");
+    match &settlements[0].result {
         Some(R::Maximize {
             window,
             maximized,
@@ -2261,13 +2264,13 @@ fn toggle_maximize_decodes_and_result_encodes() {
     }
     let wire = reply_wire(&reply);
     assert!(
-        wire.contains("\"op\":\"maximize\""),
-        "maximize result round-trips, got {wire}"
+        wire.contains("\"dragPreview\":null"),
+        "wire carries dragPreview:null, got {wire}"
     );
     let mut encoded = String::new();
-    tiler_core::world_sizing::encode_command_result(&mut encoded, &reply.command_result);
+    tiler_core::world_sizing::encode_command_result(&mut encoded, &settlements[0].result);
     assert_eq!(
-        tiler_core::world_sizing::command_result_estimate(&reply.command_result),
+        tiler_core::world_sizing::command_result_estimate(&settlements[0].result),
         encoded.len() + 10,
         "result estimate is exact: {encoded}"
     );
@@ -2368,20 +2371,65 @@ fn sticky_commands_decode_typed_and_rejected_result_encodes_exact() {
             encoded.len() + 10,
             "result estimate is exact: {encoded}"
         );
-        let staged = decode_request(&one_window_request()).expect("decodes");
-        let mut engine = connected_engine("gen-1", HostCapabilities::default());
-        let mut reply = match engine.handle_report(&staged, &[]).0 {
-            WorldOutcome::Accepted(reply) => reply,
-            other => panic!("expected accepted, got {other:?}"),
-        };
-        reply.command_result = result;
+    }
+}
+
+#[test]
+fn drag_preview_v4_exact_sizing_bounds() {
+    use tiler_core::contract::DragSide;
+    use tiler_core::directional::{NodeId, OutputId, WindowId, WorkspaceId};
+    use tiler_core::geometry::Rect;
+    use tiler_core::policy::PriorGroupEdge;
+    use tiler_core::session::{DomainKey, DragHoverPrior};
+    use tiler_core::world_report::DragPreviewV4;
+
+    let staged = decode_request(&one_window_request()).expect("decodes");
+    let mut engine = connected_engine("gen-1", HostCapabilities::default());
+    let base_reply = match engine.handle_report(&staged, &[]).0 {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    let domain = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId("ws-a".to_owned()),
+    };
+    let preview_no_hover = DragPreviewV4 {
+        id: 42,
+        rect: Rect {
+            x: -12,
+            y: 8,
+            w: 400,
+            h: 600,
+        },
+        hover: None,
+        domain: domain.clone(),
+        source: domain.clone(),
+        target: WindowId("win-a".to_owned()),
+        revision: 7,
+    };
+    let preview_with_hover = DragPreviewV4 {
+        hover: Some(DragHoverPrior {
+            domain: domain.clone(),
+            source_leaf: NodeId("leaf-a".to_owned()),
+            source_window: WindowId("win-a".to_owned()),
+            revision: 3,
+            prior: Some(PriorGroupEdge {
+                group: NodeId("group-a".to_owned()),
+                edge: DragSide::Left,
+            }),
+            prior_domain: domain,
+        }),
+        ..preview_no_hover.clone()
+    };
+
+    for preview in [None, Some(preview_no_hover), Some(preview_with_hover)] {
+        let mut reply = base_reply.clone();
+        reply.drag_preview = preview;
         let wire = reply_wire(&reply);
-        assert!(
-            wire.contains(&format!(
-                "\"op\":\"rejected\",\"kind\":\"{}\"",
-                kind.as_str()
-            )),
-            "rejected result round-trips, got {wire}"
+        assert_eq!(
+            tiler_core::world_sizing_v4::reply_exact_bytes_v4(&reply),
+            wire.len(),
+            "exact sizing matches wire: {wire}"
         );
         let estimate = reply_estimate_v4(&reply);
         assert!(
@@ -4447,11 +4495,16 @@ fn consumed_command_replays_no_explicit_effect_with_metadata() {
         value
     };
     let retry = decode_request(&retry_value.to_string()).expect("decodes");
-    let reply = match engine.handle_report(&retry, &[]).0 {
+    let (outcome, settlements) = engine.handle_report(&retry, &[]);
+    let reply = match outcome {
         WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     assert!(reply.command_consumed, "repeat consumes: {reply:?}");
+    assert!(
+        settlements.is_empty(),
+        "consumed command emits no new settlement: {settlements:?}"
+    );
     assert!(
         reply
             .effects
@@ -4466,9 +4519,9 @@ fn consumed_command_replays_no_explicit_effect_with_metadata() {
         "consumed path retains the identical row, never a new mint: {reply:?}"
     );
     assert!(
-        reply.command_result.is_none(),
-        "consumed command carries no result: {:?}",
-        reply.command_result
+        reply.drag_preview.is_none(),
+        "consumed command carries no drag preview: {:?}",
+        reply.drag_preview
     );
     reply_wire(&reply);
 }

@@ -118,7 +118,7 @@ function applyBoundReply(target: string, id: string, request: { cause: "automati
         outputs: [],
         windows: [], transfers: [],
         effects: [],
-        result: null,
+        dragPreview: null,
     });
     const parsed = parseWorldReply(text);
     assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
@@ -547,7 +547,7 @@ function entryAcceptedReply(gen: string, source: string, nativeInvalid: string, 
         windows: [],
         transfers: [],
         effects: [],
-        result: null,
+        dragPreview: null,
         ...extra,
     });
     const parsed = parseWorldReply(text);

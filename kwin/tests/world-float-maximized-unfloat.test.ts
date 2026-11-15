@@ -233,7 +233,7 @@ function makeHarness(mode: ClearMode) {
             intentDesired: [], switchSettled: [], diagnostics: [],
             presentation: DISABLED_PRESENTATION,
             scopes: [{ scope: { kind: "workspace", out: OUT, ws: WS_A }, auth: "controlled", reason: "" }],
-            workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
+            workspaces: [], outputs: [], windows: [], transfers: [], effects: [], dragPreview: null,
             ...snapshot,
         });
         const parsed = parseWorldReply(text);
@@ -383,7 +383,7 @@ describe("world B9 deferred maximized unfloat", () => {
         assert.ok(!("command" in (body["report"] as Record<string, unknown>)), "clear schedules observation first");
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, rev, {
             windows: [h.winRow(WIN_A, FLOAT_A, "untouched"), h.winRow(WIN_B, TILE_B, "controlled")],
-            result: null,
+            dragPreview: null,
         }));
     };
 
@@ -474,7 +474,7 @@ describe("world B9 deferred maximized unfloat", () => {
         const body = JSON.parse(call.payload) as Record<string, unknown>;
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
             windows: [h.winRow(WIN_B, TILE_B, "controlled")],
-            result: null,
+            dragPreview: null,
         }));
         assert.ok(h.logs.some((l) => l.includes("float-refused-maximize-clear") && l.includes("cause=observe-missing")));
         assert.equal(toggleCount(h), 1, "only the seed float command");
@@ -536,7 +536,7 @@ describe("world B9 deferred maximized unfloat", () => {
         assert.equal(cmd["op"], "resize");
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
             windows: [h.winRow(WIN_A, FLOAT_A, "untouched"), h.winRow(WIN_B, TILE_B, "controlled")],
-            result: null,
+            dragPreview: null,
         }));
         assert.equal(toggleCount(h), 1, "superseded attempt never completes");
         assert.ok(!h.logs.some((l) => l.includes("outcome=observed-cleared")));
@@ -599,7 +599,7 @@ describe("world B9 deferred maximized unfloat", () => {
         const autoBody = JSON.parse(auto.payload) as Record<string, unknown>;
         auto.callback(h.accepted("gen-2", autoBody["source"] as string, autoBody["nativeInvalid"] as string, "3", {
             windows: [h.winRow(WIN_A, FLOAT_A, "untouched"), h.winRow(WIN_B, TILE_B, "controlled")],
-            result: null,
+            dragPreview: null,
         }));
         assert.equal(toggleCount(h), 1, "rebind settles with no admission");
     });

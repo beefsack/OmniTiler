@@ -962,7 +962,7 @@ fn check(case: &CaseFile, pairs: &[(WorldReportV4, WorldReplyV4)]) -> Result<Vec
                     return Err(fail(at, "effect issued_revision != reply revision"));
                 }
             }
-            if reply.command_result.is_some()
+            if reply.drag_preview.is_some()
                 || reply.gesture_settled.is_some()
                 || !reply.operation_settled.is_empty()
                 || reply.cursor_warp.is_some()

@@ -16,7 +16,9 @@ use crate::world_report::{
     CommandRejectKind, CommandResult, IntentRecord, ScopeAuthority, StateProperty,
     VisibilityTarget, WindowDesire, WindowFact, WorldCommand, WorldReportV4,
 };
-use crate::world_v4_support_tests::{accepted, fact, float_fact, report_full, screen};
+use crate::world_v4_support_tests::{
+    accepted, accepted_with_settlements, fact, float_fact, report_full, screen,
+};
 
 fn composed_caps() -> HostCapabilities {
     HostCapabilities {
@@ -164,7 +166,7 @@ fn set_sticky_on_from_tiled_floats_with_false_prior_save() {
     let mut engine = composed_engine();
     accepted(&mut engine, &bootstrap(vec![cfact("win-a", "out-a", 0)]));
     assert!(is_tiled(&engine, "win-a"));
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -173,7 +175,8 @@ fn set_sticky_on_from_tiled_floats_with_false_prior_save() {
             set_sticky("win-a", true),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     assert_eq!(
         engine.restored_sticky.get(&WindowId("win-a".to_owned())),
         Some(&false)
@@ -243,7 +246,7 @@ fn set_sticky_on_from_float_keeps_true_prior() {
 fn sticky_on_from_tiled_takes_centered_sixty_percent_placement() {
     let mut engine = composed_engine();
     accepted(&mut engine, &bootstrap(vec![cfact("win-a", "out-a", 0)]));
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -252,7 +255,8 @@ fn sticky_on_from_tiled_takes_centered_sixty_percent_placement() {
             set_sticky("win-a", true),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     // Intentional-float placement over the 800x560 work area, matching the
     // ordinary float toggle: no retained geometry exists yet, so the
     // centered 60% fallback wins (never the observed tile frame). The
@@ -308,7 +312,7 @@ fn sticky_on_from_tiled_reuses_retained_float_placement() {
         h: 326,
     };
     assert_ne!(user, fallback);
-    let placed = accepted(
+    let (placed, placed_settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -317,7 +321,8 @@ fn sticky_on_from_tiled_reuses_retained_float_placement() {
             toggle_float_rect("win-a", user),
         ),
     );
-    match &placed.command_result {
+    assert_eq!(placed_settlements.len(), 1);
+    match &placed_settlements[0].result {
         Some(CommandResult::Float { rect, .. }) => assert_eq!(
             *rect,
             Some(user),
@@ -569,7 +574,7 @@ fn set_same_state_consumes_without_a_repeat_save() {
         "retained at publish"
     );
     let before = engine.intent_desired.clone();
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -578,7 +583,8 @@ fn set_same_state_consumes_without_a_repeat_save() {
             set_sticky("win-a", true),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     assert_eq!(reply.intent_desired.len(), 1, "retained projects again");
     assert_eq!(engine.intent_desired, before);
     // A consumed duplicate never re-executes either: same command
@@ -648,7 +654,7 @@ fn toggle_float_clears_sticky_and_tiles_for_both_priors() {
         );
         seq += 1;
         cmd_seq += 1;
-        let reply = accepted(
+        let (_reply, settlements) = accepted_with_settlements(
             &mut engine,
             &cmd(
                 seq,
@@ -657,14 +663,15 @@ fn toggle_float_clears_sticky_and_tiles_for_both_priors() {
                 toggle_float("win-a"),
             ),
         );
-        match reply.command_result {
+        assert_eq!(settlements.len(), 1);
+        match &settlements[0].result {
             Some(CommandResult::Float {
                 window,
                 rect,
                 no_space,
             }) => {
-                assert_eq!(window, WindowId("win-a".to_owned()));
-                assert_eq!(rect, None);
+                assert_eq!(window.0, "win-a");
+                assert!(rect.is_none());
                 assert!(!no_space);
             }
             other => panic!("expected tile float result, got {other:?}"),
@@ -706,7 +713,7 @@ fn toggle_float_tiles_a_transient_origin_through_the_explicit_event() {
         engine.restored_sticky.get(&WindowId("win-a".to_owned())),
         Some(&true)
     );
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -715,14 +722,15 @@ fn toggle_float_tiles_a_transient_origin_through_the_explicit_event() {
             toggle_float("win-a"),
         ),
     );
-    match reply.command_result {
+    assert_eq!(settlements.len(), 1);
+    match &settlements[0].result {
         Some(CommandResult::Float {
             window,
             rect,
             no_space,
         }) => {
-            assert_eq!(window, WindowId("win-a".to_owned()));
-            assert_eq!(rect, None);
+            assert_eq!(window.0, "win-a");
+            assert!(rect.is_none());
             assert!(!no_space);
         }
         other => panic!("expected tile float result, got {other:?}"),
@@ -1080,12 +1088,13 @@ fn unsupported_route_consumes_with_state_unsupported() {
     let mut seed = cfact("win-a", "out-a", 0);
     seed.maximized = None;
     accepted(&mut engine, &bootstrap(vec![seed.clone()]));
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(2, 1, vec![seed], set_sticky("win-a", true)),
     );
+    assert_eq!(settlements.len(), 1);
     assert_eq!(
-        reply.command_result,
+        settlements[0].result,
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::StateUnsupported
         })
@@ -1099,7 +1108,7 @@ fn unsupported_route_consumes_with_state_unsupported() {
 fn native_route_accepts_sticky_on_with_target() {
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(&mut engine, &bootstrap(vec![fact("win-a", "out-a", 0)]));
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             2,
@@ -1108,7 +1117,8 @@ fn native_route_accepts_sticky_on_with_target() {
             set_sticky("win-a", true),
         ),
     );
-    assert!(reply.command_result.is_none());
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     assert_eq!(
         engine.restored_sticky.get(&WindowId("win-a".to_owned())),
         Some(&false)
@@ -1163,26 +1173,26 @@ fn held_scope_refuses_without_mutation() {
     // sibling command must refuse without touching anything.
     let mut held_fact = fact("win-b", "out-a", 100);
     held_fact.sticky = Some(false);
-    match engine
-        .handle_report(
-            &cmd(
-                2,
-                1,
-                vec![cfact("win-a", "out-a", 0), held_fact],
-                set_sticky("win-a", true),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::ScopeHeld
-            }),
-            "expected held refusal"
+    match engine.handle_report(
+        &cmd(
+            2,
+            1,
+            vec![cfact("win-a", "out-a", 0), held_fact],
+            set_sticky("win-a", true),
         ),
-        other => panic!("expected held refusal, got {other:?}"),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::ScopeHeld
+                }),
+                "expected held refusal"
+            );
+        }
+        (other, _) => panic!("expected held refusal, got {other:?}"),
     }
     assert!(engine.restored_sticky.is_empty());
     assert!(
@@ -1198,33 +1208,33 @@ fn minimized_and_excluded_subjects_refuse_without_mutation() {
     accepted(&mut engine, &bootstrap(vec![cfact("win-a", "out-a", 0)]));
     let mut minimized = cfact("win-a", "out-a", 0);
     minimized.minimized = Some(true);
-    match engine
-        .handle_report(&cmd(2, 1, vec![minimized], set_sticky("win-a", true)), &[])
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "expected refusal"
-        ),
-        other => panic!("expected refusal, got {other:?}"),
+    match engine.handle_report(&cmd(2, 1, vec![minimized], set_sticky("win-a", true)), &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "expected refusal"
+            );
+        }
+        (other, _) => panic!("expected refusal, got {other:?}"),
     }
     let mut excluded = cfact("win-a", "out-a", 0);
     excluded.privileged = Some(true);
-    match engine
-        .handle_report(&cmd(3, 2, vec![excluded], set_sticky("win-a", true)), &[])
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "expected refusal"
-        ),
-        other => panic!("expected refusal, got {other:?}"),
+    match engine.handle_report(&cmd(3, 2, vec![excluded], set_sticky("win-a", true)), &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "expected refusal"
+            );
+        }
+        (other, _) => panic!("expected refusal, got {other:?}"),
     }
     assert!(engine.restored_sticky.is_empty());
     assert!(engine.intent_desired.is_empty(), "refusal stores nothing");
@@ -1234,26 +1244,26 @@ fn minimized_and_excluded_subjects_refuse_without_mutation() {
 fn unknown_window_refuses_without_mutation() {
     let mut engine = composed_engine();
     accepted(&mut engine, &bootstrap(vec![cfact("win-a", "out-a", 0)]));
-    match engine
-        .handle_report(
-            &cmd(
-                2,
-                1,
-                vec![cfact("win-a", "out-a", 0)],
-                set_sticky("win-ghost", true),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "expected refusal"
+    match engine.handle_report(
+        &cmd(
+            2,
+            1,
+            vec![cfact("win-a", "out-a", 0)],
+            set_sticky("win-ghost", true),
         ),
-        other => panic!("expected refusal, got {other:?}"),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "expected refusal"
+            );
+        }
+        (other, _) => panic!("expected refusal, got {other:?}"),
     }
     assert!(engine.restored_sticky.is_empty());
     assert!(
@@ -2064,7 +2074,7 @@ fn toggle_float_clears_sticky_on_the_current_workspace_for_both_priors() {
             .expect("trailing view");
         seq += 1;
         cmd_seq += 1;
-        let reply = accepted(
+        let (_reply, settlements) = accepted_with_settlements(
             &mut engine,
             &cmd(
                 seq,
@@ -2073,14 +2083,15 @@ fn toggle_float_clears_sticky_on_the_current_workspace_for_both_priors() {
                 toggle_float("win-a"),
             ),
         );
-        match reply.command_result {
+        assert_eq!(settlements.len(), 1);
+        match &settlements[0].result {
             Some(CommandResult::Float {
                 window,
                 rect,
                 no_space,
             }) => {
-                assert_eq!(window, WindowId("win-a".to_owned()));
-                assert_eq!(rect, None);
+                assert_eq!(window.0, "win-a");
+                assert!(rect.is_none());
                 assert!(!no_space);
             }
             other => panic!("prior {prior}: expected tile float result, got {other:?}"),
@@ -2160,7 +2171,7 @@ fn toggle_float_from_a_floating_source_still_tiles_the_current_workspace() {
             .iter()
             .any(|key| key.workspace.0 == "ws-1")
     );
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             5,
@@ -2169,7 +2180,8 @@ fn toggle_float_from_a_floating_source_still_tiles_the_current_workspace() {
             toggle_float("win-a"),
         ),
     );
-    match reply.command_result {
+    assert_eq!(settlements.len(), 1);
+    match &settlements[0].result {
         Some(CommandResult::Float {
             rect: None,
             no_space: false,
@@ -2227,7 +2239,7 @@ fn toggle_float_into_a_floating_destination_lands_float_with_tile_base() {
             },
         ),
     );
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             5,
@@ -2236,14 +2248,15 @@ fn toggle_float_into_a_floating_destination_lands_float_with_tile_base() {
             toggle_float("win-a"),
         ),
     );
-    match reply.command_result {
+    assert_eq!(settlements.len(), 1);
+    match &settlements[0].result {
         Some(CommandResult::Float {
             window,
             rect,
             no_space,
         }) => {
-            assert_eq!(window, WindowId("win-a".to_owned()));
-            assert_eq!(rect, None);
+            assert_eq!(window.0, "win-a");
+            assert!(rect.is_none());
             assert!(!no_space);
         }
         other => panic!("expected float landing result, got {other:?}"),
@@ -2321,7 +2334,7 @@ fn set_sticky_off_prior_false_with_transient_origin_tiles_via_explicit() {
     // The raw origin turns transient while sticky: convergence alone keeps
     // classifying float, so off-to-tile must ride the explicit event rather
     // than refuse.
-    let reply = accepted(
+    let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
             3,
@@ -2330,8 +2343,9 @@ fn set_sticky_off_prior_false_with_transient_origin_tiles_via_explicit() {
             set_sticky("win-a", false),
         ),
     );
+    assert_eq!(settlements.len(), 1);
     assert!(
-        reply.command_result.is_none(),
+        settlements[0].result.is_none(),
         "off carries no float result"
     );
     assert!(
@@ -2364,26 +2378,26 @@ fn sticky_on_refuses_when_the_joint_ledger_is_full_without_mutation() {
     let revision = engine.state_revision;
     let sticky = engine.restored_sticky.clone();
     let saved = engine.intent_desired.clone();
-    match engine
-        .handle_report(
-            &cmd(
-                2,
-                1,
-                vec![cfact("win-a", "out-a", 0)],
-                set_sticky("win-a", true),
-            ),
-            &[],
-        )
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "expected joint-cap refusal"
+    match engine.handle_report(
+        &cmd(
+            2,
+            1,
+            vec![cfact("win-a", "out-a", 0)],
+            set_sticky("win-a", true),
         ),
-        other => panic!("expected joint-cap refusal, got {other:?}"),
+        &[],
+    ) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "expected joint-cap refusal"
+            );
+        }
+        (other, _) => panic!("expected joint-cap refusal, got {other:?}"),
     }
     assert_eq!(engine.state_revision, revision + 1, "refusal issues");
     assert_eq!(engine.command_highwater, Some(1), "command consumed");
@@ -2631,8 +2645,9 @@ fn sticky_on_replaces_superseded_block_at_exact_cap() {
         set_sticky("win-a", true),
     );
     command.inventory_complete = false;
-    let reply = accepted(&mut engine, &command);
-    assert!(reply.command_result.is_none());
+    let (_reply, settlements) = accepted_with_settlements(&mut engine, &command);
+    assert_eq!(settlements.len(), 1);
+    assert!(settlements[0].result.is_none());
     assert_eq!(
         engine.restored_sticky.get(&WindowId("win-a".to_owned())),
         Some(&false)
@@ -2746,18 +2761,18 @@ fn sticky_clear_refuses_whole_candidate_when_no_space_and_smaller_retry_wins() {
     let highwater = engine.command_highwater;
     let sticky = engine.restored_sticky.clone();
     let saved = engine.intent_desired.clone();
-    match engine
-        .handle_report(&tiny_cmd(3, 2, echo.clone(), toggle_float(&victim)), &[])
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "expected no-space refusal"
-        ),
-        other => panic!("expected no-space refusal, got {other:?}"),
+    match engine.handle_report(&tiny_cmd(3, 2, echo.clone(), toggle_float(&victim)), &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "expected no-space refusal"
+            );
+        }
+        (other, _) => panic!("expected no-space refusal, got {other:?}"),
     }
     assert_eq!(engine.state_revision, revision + 1, "refusal issues");
     assert_eq!(
@@ -2778,8 +2793,10 @@ fn sticky_clear_refuses_whole_candidate_when_no_space_and_smaller_retry_wins() {
         .find(|name| *name != victim)
         .expect("a filler to close");
     let smaller: Vec<WindowFact> = echo.into_iter().filter(|w| w.window.0 != dropped).collect();
-    let retry = accepted(&mut engine, &tiny_cmd(4, 3, smaller, toggle_float(&victim)));
-    match retry.command_result {
+    let (retry, retry_settlements) =
+        accepted_with_settlements(&mut engine, &tiny_cmd(4, 3, smaller, toggle_float(&victim)));
+    assert_eq!(retry_settlements.len(), 1);
+    match &retry_settlements[0].result {
         Some(CommandResult::Float {
             rect: None,
             no_space: false,
@@ -3114,18 +3131,18 @@ fn null_null_first_then_valid_differs_latches_native_refuses() {
     // Retained pending keeps sticky_current true, so same-state ON would
     // NoEffect-accept before the fence; OFF reaches the exact-knowledge
     // gate while raw stays known false (never a StateUnknown mask).
-    match engine
-        .handle_report(&cmd(4, 1, facts(), set_sticky("win-a", false)), &[])
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "expected fail-closed native refusal"
-        ),
-        other => panic!("expected fail-closed native refusal, got {other:?}"),
+    match engine.handle_report(&cmd(4, 1, facts(), set_sticky("win-a", false)), &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "expected fail-closed native refusal"
+            );
+        }
+        (other, _) => panic!("expected fail-closed native refusal, got {other:?}"),
     }
     assert!(engine.intent_desired.is_empty(), "no save staged");
     assert!(
@@ -3213,18 +3230,18 @@ fn valid_first_then_null_null_differs_latches_native_refuses() {
     // Retained pending keeps sticky_current true, so same-state ON would
     // NoEffect-accept before the fence; OFF reaches the exact-knowledge
     // gate while raw stays known false (never a StateUnknown mask).
-    match engine
-        .handle_report(&cmd(4, 1, facts(), set_sticky("win-a", false)), &[])
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "expected fail-closed native refusal"
-        ),
-        other => panic!("expected fail-closed native refusal, got {other:?}"),
+    match engine.handle_report(&cmd(4, 1, facts(), set_sticky("win-a", false)), &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "expected fail-closed native refusal"
+            );
+        }
+        (other, _) => panic!("expected fail-closed native refusal, got {other:?}"),
     }
     assert!(engine.intent_desired.is_empty(), "no save staged");
     assert!(

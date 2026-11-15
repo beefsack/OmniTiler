@@ -264,17 +264,14 @@ fn explicit_set_keeps_genuine_set_semantics() {
 fn toggle_unknown_workspace_refuses_like_set() {
     let (mut engine, _ws) = bootstrap_workspace();
     let windows = vec![fact("win-a", "out-a", 0)];
-    match engine
-        .handle_report(&report(2, windows, Some(11), Some(toggle("ws-nope"))), &[])
-        .0
-    {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
+    match engine.handle_report(&report(2, windows, Some(11), Some(toggle("ws-nope"))), &[]) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.clone()),
             Some(CommandResult::Rejected {
                 kind: CommandRejectKind::TilingTargetUnknown
             }),
             "expected tiling-target refusal"
         ),
-        other => panic!("expected tiling-target refusal, got {other:?}"),
+        (other, _) => panic!("expected tiling-target refusal, got {other:?}"),
     }
 }

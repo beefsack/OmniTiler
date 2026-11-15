@@ -1495,6 +1495,12 @@ pub struct WorldEngine {
     /// `committed` value. Generation-scoped (including after its subject
     /// closes); fresh handshake/new generation clears it.
     pub(crate) gesture_terminal: Option<GestureSettled>,
+    /// Retained active drag-preview overlay state per `(adapter, gen)`.
+    /// Preserved across omitted/commandless ingress and skipped replies
+    /// while current-session safety/scope/domain/neighbor fences hold;
+    /// cleared on genuine current-session Held no-preview outcomes,
+    /// release/cancel/Esc, owner staged close, or new generation.
+    pub(crate) drag_preview: Option<crate::world_report::DragPreviewV4>,
     /// Fresh-placement bootstrap phase: false until the first accepted
     /// complete inventory establishes the startup lifetime set (including
     /// an empty roster). Once true, genuinely new lifetimes observed
@@ -1985,6 +1991,7 @@ impl WorldEngine {
             gesture: None,
             consumed_gesture_seq: 0,
             gesture_terminal: None,
+            drag_preview: None,
             last_views: BTreeMap::new(),
             mapping: BTreeMap::new(),
             native_map: BTreeMap::new(),

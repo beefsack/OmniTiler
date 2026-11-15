@@ -25,7 +25,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
-import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
+import { createMiniBroker, parseRawEvalWithSettlements, type MiniBroker } from "./world-wire-harness";
 
 function repoRoot(): string {
     let dir = resolve(process.cwd());
@@ -385,8 +385,8 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
                 const drained = harness.broker.drained[harness.broker.drained.length - 1] as { clientCmd: unknown };
                 harness.drainCapture.set(drained.clientCmd, index);
             }
-            const coreReply = await harness.bridge.send("DescribeWorld", stamped);
-            const reply = harness.broker.bindReply(coreReply, envelope);
+            const { reply: coreReply, settlements } = parseRawEvalWithSettlements(await harness.bridge.send("DescribeWorldWithSettlements", stamped));
+            const reply = harness.broker.bindReply(coreReply, envelope, settlements);
             harness.answered.add(index);
             harness.replies.set(index, reply);
             (harness.calls[index] as CapturedCall).callback(reply);
@@ -577,11 +577,13 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
             if (method !== "DiscoverWorld" && method !== "DescribeWorld" && method !== "QueueWorldCommand" && method !== "TakeCommandResult") {
                 return;
             }
+            const callIndex = harness.calls.length;
             harness.calls.push({ method, payload, callback });
             if (method === "QueueWorldCommand") {
                 callback(harness.broker.answerQueue(payload));
             } else if (method === "TakeCommandResult") {
                 const takeReply = harness.broker.answerTake(payload);
+                harness.replies.set(callIndex, takeReply);
                 harness.takeReplies.push(takeReply);
                 callback(takeReply);
             }
@@ -970,10 +972,23 @@ describe("world split-edge selection through the production entry (real Engine)"
             // take lane (plus the broker record), never top-level
             // outcome/kind keys.
             assert.equal(focusReply["consumed"], false, "refused focus consumes no command");
-            assert.equal(focusReply["result"], null, "actuator-lane result stays nulled");
+            assert.equal("result" in focusReply, false, "actuator-lane result stays omitted");
             assert.deepEqual(h.broker.lastResult, { op: "rejected", kind: "operation-refused" }, "core records the typed semantic refusal");
-            const focusTake = lastTakeResult(h);
-            assert.equal(focusTake["op"], "rejected", "take lane carries the typed refusal");
+            const focusBody = (focuses[0] as { body: Record<string, unknown> }).body;
+            const focusTakes = h.calls
+                .map((call, index) => ({ call, index }))
+                .filter(({ call }) => {
+                    if (call.method !== "TakeCommandResult") {
+                        return false;
+                    }
+                    const req = JSON.parse(call.payload) as Record<string, unknown>;
+                    return req["client"] === focusBody["client"] && req["clientCmd"] === focusBody["clientCmd"];
+                })
+                .map(({ index }) => JSON.parse(h.replies.get(index) as string) as Record<string, unknown>)
+                .filter((r) => r["outcome"] !== "pending");
+            assert.equal(focusTakes.length, 1, "exactly one terminal take reply for the refused focus command");
+            const focusTake = focusTakes[0] as Record<string, unknown>;
+            assert.equal(focusTake["outcome"], "failed", "correlated take lane settles failed");
             assert.equal(focusTake["kind"], "operation-refused", "refusal kind stays the closed token");
             const active = h.workspace["activeWindow"] as FakeWindow;
             assert.equal(active.output.name, "out-top", "focus never leaves the source output");

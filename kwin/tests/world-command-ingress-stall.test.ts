@@ -11,7 +11,7 @@ import { createInterface } from "node:readline";
 import { dirname, join, resolve } from "node:path";
 
 import { startWorldAdapterEntry } from "../src/world-entry";
-import { createMiniBroker } from "./world-wire-harness";
+import { createMiniBroker, parseRawEvalWithSettlements } from "./world-wire-harness";
 import {
     cmdFocus,
     cmdFocusDirectional,
@@ -194,12 +194,12 @@ describe("kde command ingress stall", () => {
             const stamped = broker.stampCapture(envelope);
             const stampedCmd = (JSON.parse(stamped) as Record<string, unknown>)["command"] as Record<string, unknown> | null;
             stampedOps.push(stampedCmd === null ? "(commandless)" : String(stampedCmd["op"]));
-            const coreText = await bridge.send("DescribeWorld", stamped);
+            const { reply: coreText, settlements } = parseRawEvalWithSettlements(await bridge.send("DescribeWorldWithSettlements", stamped));
             const core = JSON.parse(coreText) as Record<string, unknown>;
             if (stampedCmd !== null) {
                 commandReplies.push({ op: String(stampedCmd["op"]), reply: core });
             }
-            const bound = broker.bindReply(coreText, envelope);
+            const bound = broker.bindReply(coreText, envelope, settlements);
             answered.add(index);
             calls[index]!.callback(bound);
             return core;
@@ -328,9 +328,9 @@ describe("kde command ingress stall", () => {
                 if (op === "send-numbered" || op === "send-relative") {
                     assert.deepEqual(stampedCmd["source"], { implicit: "home-then-action" }, `${op} callsite source${tail()}`);
                 }
-                const text = await bridge.send("DescribeWorld", stamped);
+                const { reply: text, settlements } = parseRawEvalWithSettlements(await bridge.send("DescribeWorldWithSettlements", stamped));
                 const reply = JSON.parse(text) as Record<string, unknown>;
-                broker.bindReply(text, template);
+                broker.bindReply(text, template, settlements);
                 assert.ok(
                     reply["outcome"] !== "rejected" || (reply["kind"] !== "unknown-value" && reply["kind"] !== "unknown-field" && reply["kind"] !== "malformed"),
                     `${op} decodes, got ${JSON.stringify(reply).slice(0, 200)}${tail()}`,
@@ -377,11 +377,11 @@ describe("kde command ingress stall", () => {
             const probeCmd = (JSON.parse(probeStamped) as Record<string, unknown>)["command"] as Record<string, unknown> | null;
             assert.ok(probeCmd !== null && String(probeCmd["op"]) === "send-numbered", `probe carries the mutated retired head${tail()}`);
             assert.deepEqual(probeCmd["source"], { implicit: "home-then-cached-live" });
-            const probeText = await bridge.send("DescribeWorld", probeStamped);
+            const { reply: probeText, settlements: probeSettlements } = parseRawEvalWithSettlements(await bridge.send("DescribeWorldWithSettlements", probeStamped));
             const probeReply = JSON.parse(probeText) as Record<string, unknown>;
             assert.equal(probeReply["outcome"], "rejected", `retired token refuses on the real decoder${tail()}`);
             assert.equal(probeReply["kind"], "unknown-value", "retired source fails command decoding");
-            broker.bindReply(probeText, template);
+            broker.bindReply(probeText, template, probeSettlements);
             heldQueue[0]!.callback(JSON.stringify({ v: 4, outcome: "rejected", kind: "snapshot-invalid", message: "command-invalid", gen, source: "", nativeInvalid: "0", clock: "1", gestureAssoc: null, gestureSettledAssoc: null }));
             heldQueue.length = 0;
             holdQueue = false;
@@ -420,9 +420,9 @@ describe("kde command ingress stall", () => {
             } else {
                 const stamped = broker.stampCapture(template);
                 assert.ok((JSON.parse(stamped) as Record<string, unknown>)["command"] === null, `observe is commandless${tail()}`);
-                const text = await bridge.send("DescribeWorld", stamped);
+                const { reply: text, settlements } = parseRawEvalWithSettlements(await bridge.send("DescribeWorldWithSettlements", stamped));
                 core = JSON.parse(text) as Record<string, unknown>;
-                broker.bindReply(text, template);
+                broker.bindReply(text, template, settlements);
             }
             assert.notEqual(core["outcome"], "rejected", `commandless observe accepted after the drop${tail()}`);
             assert.ok(BigInt(revOf(core)) > BigInt(revBase), "observe advances beyond the baseline revision");

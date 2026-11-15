@@ -837,8 +837,8 @@ fn actuator_reply_carries_no_terminal_result_but_presentation_hides_tokens() {
     // issuer exists here.
     assert!(dispatched.get("effects").is_some());
     assert!(
-        dispatched["result"].is_null(),
-        "actuator reply carries no terminal result"
+        dispatched.get("result").is_none(),
+        "actuator reply carries no result field"
     );
     // The issuer collects the real verdict via take.
     let ready = parse(
@@ -1372,8 +1372,8 @@ fn failed_drain_falls_back_to_fresh_facts_without_poisoning_cache() {
     assert_eq!(observed["ready"], true);
     assert_eq!(observed["rev"], "1");
     assert!(
-        observed["result"].is_null(),
-        "actuator lane keeps no result"
+        observed.get("result").is_none(),
+        "actuator lane carries no result field"
     );
     let failed = parse(
         &service
@@ -3810,8 +3810,8 @@ fn drop_preview_projection_is_shared_read_only_and_cleared_by_fresh_facts() {
     );
     assert_eq!(drained["rev"], "3");
     assert!(
-        drained["result"].is_null(),
-        "actuator lane keeps no terminal result"
+        drained.get("result").is_none(),
+        "actuator lane carries no result field"
     );
     // Any subscriber reads the shared trimmed preview beside the snapshot:
     // paint geometry plus subject proof with the producing-gesture identity,
@@ -3856,11 +3856,16 @@ fn drop_preview_projection_is_shared_read_only_and_cleared_by_fresh_facts() {
         assert!(window.get("frame_op").is_none());
         assert!(window.get("clear_op").is_none());
     }
-    // A preview-less follow-up accept clears the shared preview (drag
-    // termination): last accepted capture wins, snapshot stays fresh.
+    // Terminating the drag (cancelled) clears the shared preview: last
+    // accepted capture wins, snapshot stays fresh.
+    let cancelled_inner = with_preview_gesture(
+        &inner,
+        &preview_gesture_raw("gesture-1", "1", "3", "cancelled", "[155,50]"),
+        "[155,50]",
+    );
     let next = parse(
         &service
-            .evaluate_capture(&capture(ADAPTER, &generation, 4, 4, &inner))
+            .evaluate_capture(&capture(ADAPTER, &generation, 4, 4, &cancelled_inner))
             .expect("accepted"),
     );
     assert_eq!(next["rev"], "4");
@@ -3886,7 +3891,7 @@ fn drop_preview_projection_is_shared_read_only_and_cleared_by_fresh_facts() {
             .evaluate_capture(&capture(ADAPTER, &generation, 5, 5, &inner))
             .expect("drained"),
     );
-    assert!(toggled["result"].is_null());
+    assert!(toggled.get("result").is_none());
     let settled = parse(
         &service
             .take_result(SENDER_A, &take_req(&generation, "panel-1", "1"))
@@ -3954,8 +3959,9 @@ fn preview_survives_rejected_captures_but_fallback_clears_it() {
         kept["preview"], seeded["preview"],
         "rejections never touch the cached preview"
     );
-    // A failed drain settles terminally, then the same fresh facts dispatch
-    // observation-only: the fallback accept clears the preview.
+    // A failed drain settles terminally, then the same fresh facts (with the
+    // gesture cancelled) dispatch observation-only: the fallback accept
+    // clears the preview.
     service
         .queue_command(
             SENDER_A,
@@ -3967,13 +3973,18 @@ fn preview_survives_rejected_captures_but_fallback_clears_it() {
             ),
         )
         .expect("queued");
+    let cancelled_inner = with_preview_gesture(
+        &inner,
+        &preview_gesture_raw("gesture-1", "1", "3", "cancelled", "[155,50]"),
+        "[155,50]",
+    );
     let fallback = parse(
         &service
-            .evaluate_capture(&capture(ADAPTER, &generation, 4, 4, &inner))
+            .evaluate_capture(&capture(ADAPTER, &generation, 4, 4, &cancelled_inner))
             .expect("fallback accepted"),
     );
     assert_eq!(fallback["rev"], "4");
-    assert!(fallback["result"].is_null());
+    assert!(fallback.get("result").is_none());
     let failed = parse(
         &service
             .take_result(SENDER_A, &take_req(&generation, "panel-1", "1"))
@@ -4294,4 +4305,153 @@ fn preview_drops_on_rotation_and_reseeds_for_the_new_lifetime() {
     assert_trimmed_preview(&reseeded["preview"]);
     assert_proven_producer(&reseeded["preview"], "gesture-1", "1");
     assert_eq!(reseeded["gen"].as_str(), Some(gen_b.as_str()));
+}
+
+#[test]
+fn take_retains_across_commandless_captures_isolates_senders_and_evicts_at_1024() {
+    let (service, generation) = discovered_service();
+    let inner = preview_inner(&preview_windows());
+    service
+        .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &inner))
+        .expect("admit");
+
+    // Queue on distinct (sender, client) namespaces.
+    assert_eq!(
+        parse(
+            &service
+                .queue_command(
+                    SENDER_A,
+                    &queue_req(
+                        &generation,
+                        "panel-1",
+                        "1",
+                        "{\"op\":\"select-numbered\",\"out\":null,\"index\":1}",
+                    ),
+                )
+                .expect("in-band"),
+        )["outcome"],
+        "queued"
+    );
+    assert_eq!(
+        parse(
+            &service
+                .queue_command(
+                    SENDER_A,
+                    &queue_req(
+                        &generation,
+                        "panel-2",
+                        "1",
+                        "{\"op\":\"select-numbered\",\"out\":null,\"index\":1}",
+                    ),
+                )
+                .expect("in-band"),
+        )["outcome"],
+        "queued"
+    );
+    assert_eq!(
+        parse(
+            &service
+                .queue_command(
+                    SENDER_B,
+                    &queue_req(
+                        &generation,
+                        "panel-1",
+                        "1",
+                        "{\"op\":\"select-numbered\",\"out\":null,\"index\":1}",
+                    ),
+                )
+                .expect("in-band"),
+        )["outcome"],
+        "queued"
+    );
+
+    let drained = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &inner))
+            .expect("drained"),
+    );
+    assert!(drained.get("result").is_none());
+
+    // Later commandless captures never clear or overwrite settled Take outcomes.
+    let mut seq = 3u64;
+    for _ in 0..3 {
+        let idle = parse(
+            &service
+                .evaluate_capture(&capture(ADAPTER, &generation, seq, seq, &inner))
+                .expect("commandless"),
+        );
+        assert!(idle.get("result").is_none());
+        seq += 1;
+    }
+
+    // Sender/client isolation: SENDER_B cannot take SENDER_A's panel-2 cmd 1.
+    let cross_sender = parse(
+        &service
+            .take_result(SENDER_B, &take_req(&generation, "panel-2", "1"))
+            .expect("in-band"),
+    );
+    assert_eq!(cross_sender["outcome"], "rejected");
+    assert_eq!(cross_sender["kind"], "unknown-command");
+
+    // Both senders/clients retain their own ready outcomes across commandless captures.
+    assert_eq!(
+        parse(
+            &service
+                .take_result(SENDER_A, &take_req(&generation, "panel-2", "1"))
+                .expect("in-band"),
+        )["outcome"],
+        "ready"
+    );
+    assert_eq!(
+        parse(
+            &service
+                .take_result(SENDER_B, &take_req(&generation, "panel-1", "1"))
+                .expect("in-band"),
+        )["outcome"],
+        "ready"
+    );
+
+    // Fill SENDER_A/panel-1 past MAX_SETTLED_RESULTS (1024) in bounded batches
+    // without taking cmd 1 first: oldest-first eviction drops cmd 1 from
+    // `settled`, while cmd 1 is still remembered via high-water as `duplicate`.
+    let mut next_cmd = 2u64;
+    for _ in 0..11 {
+        for _ in 0..100 {
+            let cmd_id = next_cmd.to_string();
+            next_cmd += 1;
+            let queued = parse(
+                &service
+                    .queue_command(
+                        SENDER_A,
+                        &queue_req(
+                            &generation,
+                            "panel-1",
+                            &cmd_id,
+                            "{\"op\":\"select-numbered\",\"out\":null,\"index\":1}",
+                        ),
+                    )
+                    .expect("in-band"),
+            );
+            assert_eq!(queued["outcome"], "queued");
+        }
+        service
+            .evaluate_capture(&capture(ADAPTER, &generation, seq, seq, &inner))
+            .expect("drain batch");
+        seq += 1;
+    }
+
+    let evicted = parse(
+        &service
+            .take_result(SENDER_A, &take_req(&generation, "panel-1", "1"))
+            .expect("in-band"),
+    );
+    assert_eq!(evicted["outcome"], "duplicate");
+
+    let newest_id = (next_cmd - 1).to_string();
+    let newest = parse(
+        &service
+            .take_result(SENDER_A, &take_req(&generation, "panel-1", &newest_id))
+            .expect("in-band"),
+    );
+    assert_eq!(newest["outcome"], "ready");
 }

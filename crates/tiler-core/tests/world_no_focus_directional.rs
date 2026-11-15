@@ -281,17 +281,20 @@ fn no_focus_journey_focuses_remembered_then_converges() {
         "retained scope follows routing: {:?}",
         crossed.focus_request
     );
-    let arrival = accepted(
-        &mut engine,
+    let (arrival_outcome, arrival_settlements) = engine.handle_report(
         &report(6, screens, four_windows(), "win-b2", None, None, None),
+        &[],
     );
+    let arrival = match arrival_outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted arrival, got {other:?}"),
+    };
     // Observing the retained target satisfies it: the lane clears instead
     // of minting a refocus or retaining the old row.
     assert_quiet_no_request(&arrival);
     assert!(
-        arrival.command_result.is_none(),
-        "quiet arrival: {:?}",
-        arrival.command_result
+        arrival_settlements.is_empty(),
+        "quiet arrival: {arrival_settlements:?}"
     );
 }
 
@@ -312,8 +315,7 @@ fn no_focus_noop_journey_stays_quiet() {
     );
     // Observation-only loss mints nothing: the retained lane stays absent.
     assert_quiet_no_request(&loss);
-    let noop = accepted(
-        &mut engine,
+    let (noop_outcome, noop_settlements) = engine.handle_report(
         &report(
             3,
             screens.clone(),
@@ -326,7 +328,12 @@ fn no_focus_noop_journey_stays_quiet() {
             }),
             Some("out-a"),
         ),
+        &[],
     );
+    let noop = match noop_outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted noop, got {other:?}"),
+    };
     assert!(
         noop.effects.is_empty(),
         "no neighbor mints no wire effects: {:?}",
@@ -337,7 +344,7 @@ fn no_focus_noop_journey_stays_quiet() {
         "no-op decision retains nothing: {:?}",
         noop.focus_request
     );
-    match &noop.command_result {
+    match noop_settlements.first().and_then(|s| s.result.as_ref()) {
         Some(tiler_core::world_report::CommandResult::Directional { outcome, cause, .. }) => {
             assert_eq!(outcome.as_str(), "focus-unfocused-retained");
             assert_eq!(cause.as_deref(), Some("no-adjacent-output"));

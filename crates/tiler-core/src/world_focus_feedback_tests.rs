@@ -123,7 +123,11 @@ fn output_arm_with_nulls_accepts_and_preserves() {
             output_bracket("win-a", 1, None),
         ],
     )];
-    let reply = accepted(&mut engine, &with_feedback(base(1), rows.clone()));
+    let (outcome, settlements) = engine.handle_report(&with_feedback(base(1), rows.clone()), &[]);
+    let reply = match outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted report, got {other:?}"),
+    };
     assert_eq!(
         engine
             .last_report_v4
@@ -136,7 +140,7 @@ fn output_arm_with_nulls_accepts_and_preserves() {
     assert!(reply.effects.is_empty());
     assert!(reply.transfers.is_empty());
     assert!(reply.operation_settled.is_empty());
-    assert!(reply.command_result.is_none());
+    assert!(settlements.is_empty());
 }
 
 #[test]

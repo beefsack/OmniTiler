@@ -783,9 +783,19 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("expected accepted, got {other:?}"),
+    accepted_with_settlements(engine, report).0
+}
+
+fn accepted_with_settlements(
+    engine: &mut WorldEngine,
+    report: &WorldReportV4,
+) -> (
+    crate::world_report::WorldReplyV4,
+    Vec<crate::world_report::BatchSettlement>,
+) {
+    match engine.handle_report(report, &[]) {
+        (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("expected accepted, got {other:?}"),
     }
 }
 
@@ -1210,7 +1220,7 @@ fn world_fullscreen_float_vertical_retains() {
     );
     // A same-output float waits above, but the fullscreen subject pressing
     // Up must retain without dispatch.
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             2,
@@ -1230,10 +1240,13 @@ fn world_fullscreen_float_vertical_retains() {
             }),
         ),
     );
-    let outcome = reply.command_result.as_ref().map(|result| match result {
-        crate::world_report::CommandResult::Directional { outcome, .. } => outcome.as_str(),
-        _ => "other",
-    });
+    let outcome = settlements
+        .first()
+        .and_then(|s| s.result.as_ref())
+        .map(|result| match result {
+            crate::world_report::CommandResult::Directional { outcome, .. } => outcome.as_str(),
+            _ => "other",
+        });
     assert_eq!(outcome, Some("focus-float-retained"));
     assert!(
         reply.focus_request.is_none(),
@@ -1261,7 +1274,7 @@ fn world_fullscreen_float_single_output_retains() {
     );
     // A same-output float waits to the right, but with no adjacent output
     // the fullscreen subject pressing Right must retain without dispatch.
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             2,
@@ -1281,10 +1294,13 @@ fn world_fullscreen_float_single_output_retains() {
             }),
         ),
     );
-    let outcome = reply.command_result.as_ref().map(|result| match result {
-        crate::world_report::CommandResult::Directional { outcome, .. } => outcome.as_str(),
-        _ => "other",
-    });
+    let outcome = settlements
+        .first()
+        .and_then(|s| s.result.as_ref())
+        .map(|result| match result {
+            crate::world_report::CommandResult::Directional { outcome, .. } => outcome.as_str(),
+            _ => "other",
+        });
     assert_eq!(outcome, Some("focus-float-retained"));
     assert!(
         reply.focus_request.is_none(),
@@ -1704,7 +1720,7 @@ fn world_native_maximized_float_no_vertical_neighbor_retains() {
     );
     // A same-output float waits above and a horizontal neighbor exists, but
     // with no vertical adjacent output pressing Up must retain without dispatch.
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             2,
@@ -1722,10 +1738,13 @@ fn world_native_maximized_float_no_vertical_neighbor_retains() {
             }),
         ),
     );
-    let outcome = reply.command_result.as_ref().map(|result| match result {
-        crate::world_report::CommandResult::Directional { outcome, .. } => outcome.as_str(),
-        _ => "other",
-    });
+    let outcome = settlements
+        .first()
+        .and_then(|s| s.result.as_ref())
+        .map(|result| match result {
+            crate::world_report::CommandResult::Directional { outcome, .. } => outcome.as_str(),
+            _ => "other",
+        });
     assert_eq!(outcome, Some("focus-float-retained"));
     assert!(
         reply.focus_request.is_none(),
@@ -1753,7 +1772,7 @@ fn world_native_maximized_float_single_output_retains() {
     );
     // A same-output float waits right, but with no adjacent output the
     // maximized subject must retain without dispatch.
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             2,
@@ -1770,10 +1789,13 @@ fn world_native_maximized_float_single_output_retains() {
             }),
         ),
     );
-    let outcome = reply.command_result.as_ref().map(|result| match result {
-        crate::world_report::CommandResult::Directional { outcome, .. } => outcome.as_str(),
-        _ => "other",
-    });
+    let outcome = settlements
+        .first()
+        .and_then(|s| s.result.as_ref())
+        .map(|result| match result {
+            crate::world_report::CommandResult::Directional { outcome, .. } => outcome.as_str(),
+            _ => "other",
+        });
     assert_eq!(outcome, Some("focus-float-retained"));
     assert!(
         reply.focus_request.is_none(),

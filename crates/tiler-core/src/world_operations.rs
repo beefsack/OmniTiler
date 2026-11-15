@@ -1853,14 +1853,6 @@ impl WorldEngine {
         reply: &CoreReply,
     ) -> Option<CommandResult> {
         match reply {
-            CoreReply::DragPreview(plan) => Some(CommandResult::DragPreview {
-                rect: plan.preview.proposed_rect,
-                hover: Some(plan.preview.hover_prior()),
-                domain: plan.preview.domain.clone(),
-                source: plan.preview.source_domain.clone(),
-                target: plan.preview.target_window.clone(),
-                revision: plan.preview.revision,
-            }),
             CoreReply::Tiled(plan) if plan.kind == TiledKind::ToggleFloat => {
                 // A capacity re-float (D5 explicit-tile no-space retry)
                 // carries the float window with no rect: the window stays

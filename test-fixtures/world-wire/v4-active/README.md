@@ -50,15 +50,17 @@ conformance target.
   `crates/tiler-protocol/tests/connection_settings_v4_record.rs` asserts exact byte
   equality in normal mode and re-records under
   `UPDATE_SETTINGS_V4_FIXTURES=1`.
-- Reply witnesses (138 WorldReply: 113 valid-wire, 25 reject-wire) are
+- Reply witnesses (94 WorldReply: 73 valid-wire, 21 reject-wire) are
   typed schema witnesses (not engine-produced behavioral evidence) recorded
   from explicit typed Rust values through the genuine strict reply encoder
   (`encode_reply_v4`, never decoded from old fixture replies or string-patched):
-  - The 113 valid-wire witnesses plus the 3 handshake-contextual rejects
-    start as explicit typed `DecodedReplyV4` values in
+  - The 73 valid-wire witnesses plus the 3 handshake-contextual rejects
+    (`invalid-above-unsupported`, `invalid-warp-unsupported`,
+    `invalid-sticky-native-free-target`) start as explicit typed
+    `DecodedReplyV4` values in
     `crates/tiler-protocol/tests/active_reply_v4_record/valid_cases.rs`
     and round-trip strictly through `decode_reply_v4`.
-  - The 22 context-free rejects are deliberate mutations of freshly encoded
+  - The 18 context-free rejects are deliberate mutations of freshly encoded
     typed witnesses at the manifest `invalid.pointer` in
     `crates/tiler-protocol/tests/active_reply_v4_record/invalid_cases.rs`,
     preserving the manifest exact kind/message and single-pointer
@@ -67,14 +69,29 @@ conformance target.
     `invalid-above-unsupported` shares wire bytes with `reply-above-true`
     (contextual only); the warp and sticky rejects decode context-free
     and refuse only under their declared handshake capabilities.
+  - Under the in-place `dragPreview` / `result`-removal amendment,
+    `WorldReplyV4` carries required nullable `dragPreview` (`DragPreviewV4`)
+    and removes `result` (and `CommandResult::DragPreview`). Compared to the
+    untouched frozen `../v4` census (138 WorldReply: 113 valid-wire, 25
+    reject-wire), 44 `result`-only/legacy witnesses are retired from the
+    active census (16 directional outcomes + 5 causes + 17 rejected + 2
+    result-only + 4 invalid, plus 3 redundant `dragPreview`-null spot checks
+    dropped with retired files), while the row witnesses
+    `reply-result-float-placed` and `reply-result-maximize` remain. Requester
+    typed outcomes and strict `dragPreview` tests remain; scenario exact
+    rejection proof is in
+    `crates/tiler-protocol/tests/raw_attempt_settlement_v4.rs`
+    (`window_state_preserves_exact_issuing_settlement_rejections`).
   - Reproduction route: `crates/tiler-protocol/tests/active_reply_v4_record.rs`
     verifies committed `messages/*.json` bytes against the same typed
     producers in normal mode, and writes only local active `WorldReply`
     messages under `UPDATE_ACTIVE_REPLY_V4_FIXTURES=1 cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture`.
-    Combined active-reply, visibility, and retained-intent recording runs with:
-    `UPDATE_ACTIVE_REPLY_V4_FIXTURES=1 UPDATE_VISIBILITY_V4_FIXTURES=1 UPDATE_INTENT_RETAINED_FIXTURE=1 cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture`
-    (existing visibility and intent recorders remain separate genuine
-    `WorldEngine` producers).
+    Combined active-reply, visibility, retained-intent, and settings recording runs with:
+    `UPDATE_ACTIVE_REPLY_V4_FIXTURES=1 UPDATE_VISIBILITY_V4_FIXTURES=1 UPDATE_INTENT_RETAINED_FIXTURE=1 UPDATE_SETTINGS_V4_FIXTURES=1 cargo test -q -p tiler-core -p tiler-protocol -p omnitiler -- --skip workspace_unsafe_posture`
+    (existing visibility (`visibility_engine_record.rs`, shared real-engine
+    producer) and intent (`intent_retained_record.rs`) recorders remain
+    separate genuine `WorldEngine` producers; update-enabled reuse in
+    `raw_attempt` consumer avoids ordering).
   - Frozen `../v4` reply bytes are untouched history. The retired
     `raise`/`stack` effect shapes refuse as unknown values; their former
     valid-wire witnesses and effect-lane reject derivatives are retired
@@ -105,7 +122,7 @@ conformance target.
   Normal mode verifies the committed messages against the same producers.
 - Retained intent-desire amendment: the required `intentWrites` lane is now
   `intentDesired` (typed `IntentDesire`, unique by `win`, opaque canonical
-  string or null, no alias). The 138 active reply witnesses are recorded by
+  string or null, no alias). The 94 active reply witnesses are recorded by
   the typed schema recorder (`active_reply_v4_record.rs`), while the ten
   embedded scenario adapter replies are recorded by the genuine engine
   visibility producer (`visibility_engine_record.rs`). Scenario jq assertions

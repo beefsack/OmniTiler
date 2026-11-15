@@ -220,9 +220,19 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("expected accepted, got {other:?}"),
+    accepted_with_settlements(engine, report).0
+}
+
+fn accepted_with_settlements(
+    engine: &mut WorldEngine,
+    report: &WorldReportV4,
+) -> (
+    crate::world_report::WorldReplyV4,
+    Vec<crate::world_report::BatchSettlement>,
+) {
+    match engine.handle_report(report, &[]) {
+        (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("expected accepted, got {other:?}"),
     }
 }
 
@@ -986,7 +996,7 @@ fn selection_refusal_consumed_and_envelope_keep_first_feedback() {
     };
     check_latched(&engine);
     // A refused command restores the pre-command image: the latch survives.
-    let refused = accepted(
+    let (_refused, refused_settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             5,
@@ -1001,9 +1011,10 @@ fn selection_refusal_consumed_and_envelope_keep_first_feedback() {
             "",
         ),
     );
+    assert_eq!(refused_settlements.len(), 1);
     assert!(
         matches!(
-            refused.command_result,
+            refused_settlements[0].result,
             Some(crate::world_report::CommandResult::Rejected { .. })
         ),
         "unknown workspace refuses"
@@ -1411,7 +1422,7 @@ fn selection_without_suppression_caps_binds_focusless_with_direct_effect() {
     let ring = ring_ids(&boot, "out-a");
     let (home, away) = (ring[0].clone(), ring[1].clone());
     let _ = home;
-    let sent = accepted(
+    let (_sent, sent_settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             2,
@@ -1428,7 +1439,11 @@ fn selection_without_suppression_caps_binds_focusless_with_direct_effect() {
             "w2",
         ),
     );
-    assert!(sent.command_result.is_none(), "send commits: {sent:?}");
+    assert_eq!(sent_settlements.len(), 1);
+    assert!(
+        sent_settlements[0].result.is_none(),
+        "send commits: {sent_settlements:?}"
+    );
     let reply = accepted(
         &mut engine,
         &report(
@@ -4220,7 +4235,7 @@ fn selection_composed_sticky_members_join_frozen_arrival_with_precedence() {
     fn setup() -> (WorldEngine, String, crate::world_report::WorldReplyV4) {
         let (mut engine, _home, away) = boot_three();
         let _ = send_to(&mut engine, 2, "w2", &away);
-        let sticky = accepted(
+        let (_sticky, sticky_settlements) = accepted_with_settlements(
             &mut engine,
             &report(
                 3,
@@ -4235,9 +4250,10 @@ fn selection_composed_sticky_members_join_frozen_arrival_with_precedence() {
                 "",
             ),
         );
+        assert_eq!(sticky_settlements.len(), 1);
         assert!(
-            sticky.command_result.is_none(),
-            "sticky commits: {sticky:?}"
+            sticky_settlements[0].result.is_none(),
+            "sticky commits: {sticky_settlements:?}"
         );
         assert!(
             engine
@@ -5535,10 +5551,11 @@ fn switch_rejected_command_keeps_presettled_terminal_and_consumes_seq() {
         )],
         "",
     );
-    let reply = accepted(&mut engine, &refused_settle);
+    let (reply, settlements) = accepted_with_settlements(&mut engine, &refused_settle);
+    assert_eq!(settlements.len(), 1);
     assert!(
         matches!(
-            reply.command_result,
+            settlements[0].result,
             Some(crate::world_report::CommandResult::Rejected { .. })
         ),
         "unknown workspace refuses"
@@ -8211,10 +8228,9 @@ fn q1_switch_predecessor_remains_through_successor_pending_and_replaces_at_termi
         while_pending.focus_request.as_ref().map(|r| r.id.as_str()),
         Some(s2_effect.id.as_str())
     );
-    assert!(while_pending.command_result.is_none());
 
     // Rejected command while S2 is pending clears nothing.
-    let refused = accepted(
+    let (refused, refused_settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             7,
@@ -8229,8 +8245,9 @@ fn q1_switch_predecessor_remains_through_successor_pending_and_replaces_at_termi
             "",
         ),
     );
+    assert_eq!(refused_settlements.len(), 1);
     assert!(matches!(
-        refused.command_result,
+        refused_settlements[0].result,
         Some(crate::world_report::CommandResult::Rejected { .. })
     ));
     assert_eq!(
@@ -8934,13 +8951,21 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
             renderer_input: None,
         }
     };
+    let accepted_v4_with_settlements = |engine: &mut WorldEngine,
+                                        report: &crate::world_report::WorldReportV4|
+     -> (
+        crate::world_report::WorldReplyV4,
+        Vec<crate::world_report::BatchSettlement>,
+    ) {
+        match engine.handle_report(report, &[]) {
+            (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),
+            (other, _) => panic!("expected accepted v4, got {other:?}"),
+        }
+    };
     let accepted_v4 = |engine: &mut WorldEngine,
                        report: &crate::world_report::WorldReportV4|
      -> crate::world_report::WorldReplyV4 {
-        match engine.handle_report_v4_for_test(report) {
-            Ok(reply) => reply,
-            Err((kind, message)) => panic!("expected accepted v4, got {kind}: {message}"),
-        }
+        accepted_v4_with_settlements(engine, report).0
     };
     // Native-tagged attempt: logical target with native pre/post/baseline.
     let attempt_for =
@@ -8982,7 +9007,7 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
         &mut engine,
         &host_v4(2, staged(), "n0", None, None, "w2", vec![]),
     );
-    let grant = accepted_v4(
+    let (grant, grant_settlements) = accepted_v4_with_settlements(
         &mut engine,
         &host_v4(
             3,
@@ -9019,7 +9044,8 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
     );
     assert!(grant.switch_settled.is_empty());
     assert!(!grant.command_consumed);
-    assert!(grant.command_result.is_none());
+    assert_eq!(grant_settlements.len(), 1);
+    assert!(grant_settlements[0].result.is_none());
     let binding = engine
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
@@ -9041,7 +9067,7 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
         } else {
             (away.clone(), "w2", "n1".to_owned())
         };
-        let reply = accepted_v4(
+        let (reply, reply_settlements) = accepted_v4_with_settlements(
             &mut engine,
             &host_v4(
                 seq,
@@ -9087,7 +9113,8 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
             Some(seq)
         );
         assert!(!reply.command_consumed);
-        assert!(reply.command_result.is_none());
+        assert_eq!(reply_settlements.len(), 1);
+        assert!(reply_settlements[0].result.is_none());
         assert_eq!(engine.retained_selection.len(), 1);
         let binding = engine
             .retained_selection
@@ -9154,7 +9181,7 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
             .any(|binding| binding.parent_op == "op-7")
     );
     let (before1, before2) = (frame_in(&quiet, "w1"), frame_in(&quiet, "w2"));
-    let other = accepted_v4(
+    let (other, other_settlements) = accepted_v4_with_settlements(
         &mut engine,
         &host_v4(
             101,
@@ -9172,7 +9199,8 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
     );
     assert!(other.switch_settled.is_empty());
     assert!(!other.command_consumed);
-    assert!(other.command_result.is_none());
+    assert_eq!(other_settlements.len(), 1);
+    assert!(other_settlements[0].result.is_none());
     assert!(other.effects.is_empty());
     assert!(
         engine
@@ -9915,7 +9943,7 @@ fn host_owned_focusless_refused_command_keeps_staged_terminal() {
     // A refused selection command on the proof report: the pre-command
     // image keeps the staged terminal for the pending binding, while the
     // refused command mints nothing itself.
-    let settled = accepted(
+    let (settled, settled_settlements) = accepted_with_settlements(
         &mut engine,
         &host_native_report(
             3,
@@ -9939,9 +9967,13 @@ fn host_owned_focusless_refused_command_keeps_staged_terminal() {
     assert!(event.failed.is_empty());
     assert_eq!(event.focus, SwitchFocus::Unproven);
     assert!(!event.fallback);
+    assert_eq!(settled_settlements.len(), 1);
     assert!(
-        matches!(settled.command_result, Some(CommandResult::Rejected { .. })),
-        "refusal reported: {settled:?}"
+        matches!(
+            settled_settlements[0].result,
+            Some(CommandResult::Rejected { .. })
+        ),
+        "refusal reported: {settled_settlements:?}"
     );
     assert!(
         !engine
@@ -13437,7 +13469,7 @@ fn d23_minimized_refused_command_still_forgets() {
     );
     let mut b_away = b_min.clone();
     b_away.native_workspace = crate::world_report::NativeWorkspaceFact::Value("n1".to_owned());
-    let refused = accepted(
+    let (_refused, refused_settlements) = accepted_with_settlements(
         &mut engine,
         &host_native_report(
             4,
@@ -13450,12 +13482,13 @@ fn d23_minimized_refused_command_still_forgets() {
             }),
         ),
     );
+    assert_eq!(refused_settlements.len(), 1);
     assert!(
         matches!(
-            refused.command_result,
+            refused_settlements[0].result,
             Some(crate::world_report::CommandResult::Rejected { .. })
         ),
-        "unknown workspace refuses: {refused:?}"
+        "unknown workspace refuses: {refused_settlements:?}"
     );
     assert!(
         engine

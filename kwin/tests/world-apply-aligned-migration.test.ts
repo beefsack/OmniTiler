@@ -96,9 +96,9 @@ function loadMigrationReply(): WorldReply {
         { op: "op-61", kind: "migration", win: "", out: "out-b", ws: "al-1", follow: false, held: false, cmdSeq: null },
         { op: "op-61-refill", kind: "view", win: "", out: "out-a", ws: "al-4", follow: false, held: false, cmdSeq: null },
     ];
-    // Actuator-lane result stays null (terminal results ride the take lane
-    // only); the correlated outcome rides takeResult at each call site.
-    reply.result = null;
+    // Core replies carry dragPreview (null here), never result (terminal
+    // outcomes ride the take lane only, via takeResult at each call site).
+    reply.dragPreview = null;
     reply.effects = [];
     // The reshaped scenario must strict-parse as v4, not just the base
     // envelope: validates the authored bindings, transfers, and scopes
@@ -416,7 +416,7 @@ describe("world migration apply", () => {
         }
         reply.transfers = [];
         reply.windows = [];
-        reply.result = null;
+        reply.dragPreview = null;
         const world = baseWorld();
         const state = freshState(reply);
         const env = makeEnv(state, world);

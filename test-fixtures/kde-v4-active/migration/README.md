@@ -30,8 +30,10 @@ Retained input sequence (mirrors the historical README):
    drains the command. The bound drain reply retains the migration
    transfer `op-1` (`out-b`/`ws-1`, `cmdSeq` 1) plus its paired
    source-refill child `op-1-refill` (`out-a`/`ws-6`); the migrated row is
-   unbound (`bind` `""`) until the creation-flow proof; the actuator-lane
-   `result` is nulled (terminal results ride the take lane only).
+   unbound (`bind` `""`) until the creation-flow proof; `WorldReplyV4` carries
+   no `result` field (terminal results ride issuing `Vec<BatchSettlement>` and
+   the requester-only `TakeCommandResult` lane) and carries required nullable
+   `dragPreview: null`.
 6. `take.request.json` / `MIGRATE_TAKE.result.json`: the terminal
    `migrate-workspace` result (`out-a`/`ws-1` right to `out-b`/`ws-1`,
    members `["win-a"]`, `floats` 0), byte-identical in shape to the
@@ -61,7 +63,7 @@ is `ws-6` (historical: `ws-3`); the take result and the op-1/op-1-refill
 pairing semantics are unchanged.
 
 What this is NOT: the binding envelope (`source`, `nativeInvalid`,
-`clock`, nulled `result`) is applied by the test-only `MiniBroker`
-transport shim, not the production broker; the producer is synthetic
+`clock`, `gestureAssoc`, `gestureSettledAssoc`) is applied by the test-only
+`MiniBroker` transport shim, not the production broker; the producer is synthetic
 (`pid` 1234 is a scripted fact, no real paths, pids, or native UUIDs ride
 here); nothing here is live native proof or production-service output.

@@ -232,9 +232,19 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> crate::world_report::WorldReplyV4 {
-    match engine.handle_report(report, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("expected accepted, got {other:?}"),
+    accepted_with_settlements(engine, report).0
+}
+
+fn accepted_with_settlements(
+    engine: &mut WorldEngine,
+    report: &WorldReportV4,
+) -> (
+    crate::world_report::WorldReplyV4,
+    Vec<crate::world_report::BatchSettlement>,
+) {
+    match engine.handle_report(report, &[]) {
+        (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("expected accepted, got {other:?}"),
     }
 }
 
@@ -255,8 +265,15 @@ fn focus_effects(
         .collect()
 }
 
-fn retained_outcome(reply: &crate::world_report::WorldReplyV4) -> (String, Option<String>) {
-    match &reply.command_result {
+fn retained_outcome(
+    settlements: &[crate::world_report::BatchSettlement],
+) -> (String, Option<String>) {
+    assert_eq!(
+        settlements.len(),
+        1,
+        "expected one settlement: {settlements:?}"
+    );
+    match &settlements[0].result {
         Some(crate::world_report::CommandResult::Directional { outcome, cause, .. }) => {
             (outcome.as_str().to_owned(), cause.clone())
         }
@@ -339,7 +356,7 @@ fn no_focus_crosses_occupied_origin_to_existing_selection() {
     // both destination leaves touch the Right entry edge and the seeded
     // MRU leaf (win-b2) wins. Never a current-workspace window.
     let mut engine = seeded_history();
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             5,
@@ -375,10 +392,11 @@ fn no_focus_crosses_occupied_origin_to_existing_selection() {
     );
     assert_eq!(request.cmd_seq, Some(11));
     assert_eq!(request.after_shown, None);
+    assert_eq!(settlements.len(), 1);
     assert!(
-        reply.command_result.is_none(),
+        settlements[0].result.is_none(),
         "success rides the effect like focused crossing: {:?}",
-        reply.command_result
+        settlements[0].result
     );
     assert!(
         engine.retained_transfers().is_empty(),
@@ -781,7 +799,7 @@ fn no_focus_without_adjacent_output_is_noop() {
             None,
         ),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             2,
@@ -797,7 +815,7 @@ fn no_focus_without_adjacent_output_is_noop() {
     );
     assert!(reply.effects.is_empty(), "no neighbor: {:?}", reply.effects);
     assert_eq!(
-        retained_outcome(&reply),
+        retained_outcome(&settlements),
         (
             "focus-unfocused-retained".to_owned(),
             Some("no-adjacent-output".to_owned())
@@ -825,7 +843,7 @@ fn no_focus_without_destination_selection_is_noop() {
             None,
         ),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             2,
@@ -845,7 +863,7 @@ fn no_focus_without_destination_selection_is_noop() {
         reply.effects
     );
     assert_eq!(
-        retained_outcome(&reply),
+        retained_outcome(&settlements),
         (
             "focus-unfocused-retained".to_owned(),
             Some("no-target".to_owned())
@@ -875,10 +893,10 @@ fn no_focus_without_resolvable_source_is_noop() {
         None,
     );
     crossing.action_outputs.clear();
-    let reply = accepted(&mut engine, &crossing);
+    let (reply, settlements) = accepted_with_settlements(&mut engine, &crossing);
     assert!(reply.effects.is_empty(), "no source: {:?}", reply.effects);
     assert_eq!(
-        retained_outcome(&reply),
+        retained_outcome(&settlements),
         (
             "focus-unfocused-retained".to_owned(),
             Some("no-source".to_owned())
@@ -944,7 +962,7 @@ fn no_focus_contradictory_focus_present_is_noop() {
     // The adapter claimed no subject while the report carries a focused
     // window: fail closed instead of crossing.
     let mut engine = seeded_history();
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             5,
@@ -969,7 +987,7 @@ fn no_focus_contradictory_focus_present_is_noop() {
         reply.effects
     );
     assert_eq!(
-        retained_outcome(&reply),
+        retained_outcome(&settlements),
         (
             "focus-unfocused-retained".to_owned(),
             Some("focus-present".to_owned())
@@ -982,7 +1000,7 @@ fn no_focus_unknown_window_stays_stale() {
     // A named but unknown window is a stale subject, not a no-focus
     // start: existing refusal vocabulary is unchanged.
     let mut engine = seeded_history();
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             5,
@@ -1005,7 +1023,8 @@ fn no_focus_unknown_window_stays_stale() {
         ),
     );
     assert!(reply.effects.is_empty(), "stale: {:?}", reply.effects);
-    match &reply.command_result {
+    assert_eq!(settlements.len(), 1);
+    match &settlements[0].result {
         Some(crate::world_report::CommandResult::Directional { outcome, cause, .. }) => {
             assert_eq!(outcome.as_str(), "focus-float-refused-stale");
             assert_eq!(cause.as_deref(), Some("unknown-window"));
@@ -1071,7 +1090,7 @@ fn host_focus_loss_observation_emits_no_focus() {
         ),
         (3u64, vec![fact("win-b1", "out-b", 810)]),
     ] {
-        let reply = accepted(
+        let (reply, settlements) = accepted_with_settlements(
             &mut engine,
             &report(
                 seq,
@@ -1091,9 +1110,8 @@ fn host_focus_loss_observation_emits_no_focus() {
             reply.effects
         );
         assert!(
-            reply.command_result.is_none(),
-            "loss mints no result (seq {seq}): {:?}",
-            reply.command_result
+            settlements.is_empty(),
+            "loss mints no settlement (seq {seq}): {settlements:?}",
         );
     }
 }
@@ -1127,7 +1145,7 @@ fn no_focus_floating_source_stops_navigation() {
             None,
         ),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             6,
@@ -1151,7 +1169,8 @@ fn no_focus_floating_source_stops_navigation() {
         "floating source: {:?}",
         reply.effects
     );
-    match &reply.command_result {
+    assert_eq!(settlements.len(), 1);
+    match &settlements[0].result {
         Some(crate::world_report::CommandResult::Directional { outcome, cause, .. }) => {
             assert_eq!(outcome.as_str(), "focus-refused-workspace-floating");
             assert!(cause.is_none());
@@ -1189,7 +1208,7 @@ fn no_focus_floating_destination_is_noop() {
             None,
         ),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             6,
@@ -1214,7 +1233,7 @@ fn no_focus_floating_destination_is_noop() {
         reply.effects
     );
     assert_eq!(
-        retained_outcome(&reply),
+        retained_outcome(&settlements),
         (
             "focus-unfocused-retained".to_owned(),
             Some("no-target".to_owned())
@@ -1260,15 +1279,18 @@ fn no_focus_unreadable_source_refuses() {
         Some("out-a"),
         None,
     );
-    match engine.handle_report(&report, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
-            }),
-            "expected operation refusal"
-        ),
-        other => panic!("expected operation refusal, got {other:?}"),
+    match engine.handle_report(&report, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(
+                settlements[0].result,
+                Some(CommandResult::Rejected {
+                    kind: CommandRejectKind::OperationRefused
+                }),
+                "expected operation refusal"
+            );
+        }
+        (other, _) => panic!("expected operation refusal, got {other:?}"),
     }
     assert_eq!(
         engine.state_revision(),
@@ -1302,7 +1324,7 @@ fn no_focus_unreadable_destination_is_noop() {
             None,
         ),
     );
-    let reply = accepted(
+    let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
             2,
@@ -1325,7 +1347,7 @@ fn no_focus_unreadable_destination_is_noop() {
         reply.effects
     );
     assert_eq!(
-        retained_outcome(&reply),
+        retained_outcome(&settlements),
         (
             "focus-unfocused-retained".to_owned(),
             Some("no-target".to_owned())

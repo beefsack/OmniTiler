@@ -920,7 +920,7 @@ describe("world migration producer", () => {
             );
             assert.ok(drainIndex >= 0, "queued command drains on a fresh capture");
             const leg1reply = JSON.parse(h.replies.get(drainIndex) as string) as Record<string, unknown>;
-            assert.equal(leg1reply["result"], null, "actuator lane never carries the terminal result");
+            assert.equal("result" in leg1reply, false, "actuator lane never carries the terminal result");
             const leg1result = await nextTakeResult(h, takesBeforeLeg1, "leg1");
             assert.equal(leg1result["op"], "migrate-workspace");
             assert.equal(leg1result["sourceOut"], RIGHT);
@@ -1053,7 +1053,7 @@ describe("world migration producer", () => {
             );
             assert.ok(leg2drain >= 0, "return command drains on a fresh capture");
             const leg2reply = JSON.parse(h.replies.get(leg2drain) as string) as Record<string, unknown>;
-            assert.equal(leg2reply["result"], null, "actuator lane never carries the terminal result");
+            assert.equal("result" in leg2reply, false, "actuator lane never carries the terminal result");
             const leg2result = await nextTakeResult(h, takesBeforeLeg2, "leg2");
             assert.equal(leg2result["op"], "migrate-workspace");
             assert.equal(leg2result["sourceOut"], LEFT);
@@ -1141,7 +1141,7 @@ describe("world migration producer", () => {
             );
             assert.ok(leg3drain >= 0, "empty command drains on a fresh capture");
             const leg3reply = JSON.parse(h.replies.get(leg3drain) as string) as Record<string, unknown>;
-            assert.equal(leg3reply["result"], null, "actuator lane never carries the terminal result");
+            assert.equal("result" in leg3reply, false, "actuator lane never carries the terminal result");
             const leg3result = await nextTakeResult(h, takesBeforeLeg3, "leg3");
             assert.equal(leg3result["op"] ?? null, "migrate-workspace", "empty migration commits");
             assert.deepEqual(leg3result["members"] as string[], [], "empty migration carries no members");

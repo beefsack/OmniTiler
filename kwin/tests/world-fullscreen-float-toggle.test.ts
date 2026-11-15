@@ -364,7 +364,7 @@ function makeHarness(initial: LiveSpec[]) {
             intentDesired: [], switchSettled: [], diagnostics: [],
             presentation: DISABLED_PRESENTATION,
             scopes: [{ scope: { kind: "workspace", out: OUT, ws: WS_A }, auth: "controlled", reason: "" }],
-            workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
+            workspaces: [], outputs: [], windows: [], transfers: [], effects: [], dragPreview: null,
             ...snapshot,
         });
         const parsed = parseWorldReply(text);
@@ -652,7 +652,7 @@ describe("world fullscreen float toggle", () => {
                 winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true }),
                 winRow(WIN_B, TILE_B_FULL, "controlled"),
             ],
-            result: null,
+            dragPreview: null,
         }));
         assert.deepEqual(h.liveFrame(WIN_A), FLOAT_A, "exit reveals the durable retained placement");
     });
@@ -701,7 +701,7 @@ describe("world fullscreen float toggle", () => {
                 winRow(WIN_A, TILE_A, "controlled"),
                 winRow(WIN_B, TILE_B_HALF, "controlled"),
             ],
-            result: null,
+            dragPreview: null,
         }));
         assert.deepEqual(h.liveFrame(WIN_A), TILE_A, "exit reveals the tile slot");
         assert.deepEqual(h.liveFrame(WIN_B), TILE_B_HALF);
@@ -1014,7 +1014,7 @@ describe("world maximize toggle", () => {
         const body = JSON.parse(call.payload) as Record<string, unknown>;
         call.callback(g.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "1", {
             windows: tiledWindows(),
-            result: null,
+            dragPreview: null,
         }));
         assert.deepEqual(g.subjectNativeWrites(`{${WIN_A}}`), [], "no explicit command means zero fullscreen native writes");
         assert.equal(g.live.get(`{${WIN_A}}`)?.fullScreen, true, "fullscreen untouched");

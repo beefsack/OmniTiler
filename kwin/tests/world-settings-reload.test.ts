@@ -237,7 +237,7 @@ function accept(gen: string, source: string, nativeInvalid: string, rev: string)
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
         workspaces: [], outputs: [], windows: [],
-        transfers: [], effects: [], result: null,
+        transfers: [], effects: [], dragPreview: null,
     });
     const parsed = parseWorldReply(text);
     assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");

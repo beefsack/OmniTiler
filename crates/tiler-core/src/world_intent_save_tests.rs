@@ -218,16 +218,19 @@ fn toggle_tile_to_float_emits_true_save() {
         ),
     );
     assert!(is_tiled(&engine, "win-a"));
-    let reply = accepted(
-        &mut engine,
+    let (outcome, settlements) = engine.handle_report(
         &toggle_report(
             2,
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
         ),
+        &[],
     );
+    let WorldOutcome::Accepted(reply) = outcome else {
+        panic!("expected accepted, got {outcome:?}");
+    };
     assert_save(&reply, "win-a", &float_true());
     assert!(is_floated(&engine, "win-a"));
-    match &reply.command_result {
+    match settlements.first().and_then(|s| s.result.as_ref()) {
         Some(crate::world_report::CommandResult::Float {
             window,
             rect,
@@ -357,8 +360,7 @@ fn no_space_retry_emits_no_save_and_stays_float() {
             w
         })
         .collect();
-    let reply = accepted(
-        &mut engine,
+    let (outcome, settlements) = engine.handle_report(
         &report_full(
             2,
             2,
@@ -369,8 +371,12 @@ fn no_space_retry_emits_no_save_and_stays_float() {
             Some(2),
             Some(toggle(&victim)),
         ),
+        &[],
     );
-    match &reply.command_result {
+    let WorldOutcome::Accepted(reply) = outcome else {
+        panic!("expected accepted, got {outcome:?}");
+    };
+    match settlements.first().and_then(|s| s.result.as_ref()) {
         Some(crate::world_report::CommandResult::Float {
             window,
             rect,
@@ -452,11 +458,11 @@ fn consumed_command_report_emits_no_save() {
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
     );
     consumed.command_seq = Some(2);
-    match engine.handle_report(&consumed, &[]).0 {
-        WorldOutcome::CommandConsumed(reply) => {
+    match engine.handle_report(&consumed, &[]) {
+        (WorldOutcome::CommandConsumed(reply), settlements) => {
             assert!(reply.command_consumed);
             assert_eq!(reply.based_on_observation_seq, 3);
-            assert!(reply.command_result.is_none(), "{:?}", reply.command_result);
+            assert!(settlements.is_empty(), "{settlements:?}");
             // Retained desire projects on consumed replies too, never drains.
             assert_eq!(
                 reply.intent_desired.len(),
@@ -498,12 +504,12 @@ fn refused_unknown_window_preserves_state_for_retry() {
         Some(2),
         Some(toggle("win-nope")),
     );
-    match engine.handle_report(&bad, &[]).0 {
-        WorldOutcome::Accepted(reply) => {
+    match engine.handle_report(&bad, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => {
             // Unknown toggle subject never reaches the engine: the staged
             // observation cannot prove it.
             assert_eq!(
-                reply.command_result,
+                settlements.first().and_then(|s| s.result.clone()),
                 Some(crate::world_report::CommandResult::Rejected {
                     kind: crate::world_report::CommandRejectKind::OperationRefused
                 }),
@@ -553,9 +559,9 @@ fn held_scope_toggle_refuses_without_mutation() {
         Some(2),
         Some(toggle("win-a")),
     );
-    match engine.handle_report(&held, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
+    match engine.handle_report(&held, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.clone()),
             Some(crate::world_report::CommandResult::Rejected {
                 kind: crate::world_report::CommandRejectKind::OperationRefused
             }),
@@ -602,9 +608,9 @@ fn hints_null_toggle_refuses_without_mutation() {
         Some(2),
         Some(toggle("win-a")),
     );
-    match engine.handle_report(&refused, &[]).0 {
-        WorldOutcome::Accepted(reply) => assert_eq!(
-            reply.command_result,
+    match engine.handle_report(&refused, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+            settlements.first().and_then(|s| s.result.clone()),
             Some(crate::world_report::CommandResult::Rejected {
                 kind: crate::world_report::CommandRejectKind::OperationRefused
             }),
