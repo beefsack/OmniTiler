@@ -8111,6 +8111,494 @@ fn host_owned_focus_bearing_shared_partial_then_external_move_drops_binding() {
 }
 
 #[test]
+fn q1_switch_predecessor_remains_through_successor_pending_and_replaces_at_terminal() {
+    let (mut engine, home, away) = select_setup();
+
+    // S1 (op-3): select away and confirm arrival + focus; skip/ignore issuing reply.
+    let s1_grant = select(&mut engine, 3, &away);
+    let s1_effect = s1_grant.focus_request.clone().expect("s1 focus request");
+    let s1_rev = s1_grant.state_revision;
+    let s1_frame = row(&s1_grant, "w2").effective_frame;
+    let s1_settled = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![
+                with_lw(
+                    sfact("w1", "out-a", 0),
+                    last_write_confirmed(false, s1_rev, 4),
+                ),
+                with_lw(
+                    sfact("w2", "out-a", 100),
+                    last_write_confirmed(true, s1_rev, 4),
+                ),
+            ],
+            vec![],
+            None,
+            None,
+            vec![feedback_row(
+                &s1_effect.id,
+                "w2",
+                s1_effect.issued_revision,
+                true,
+                Some("w2"),
+                vec![bracket("w2", "out-a", 4, s1_frame)],
+            )],
+            "",
+        ),
+    );
+    assert_eq!(s1_settled.switch_settled.len(), 1);
+    assert_eq!(s1_settled.switch_settled[0].operation_id, "op-3");
+    assert_eq!(
+        s1_settled.switch_settled[0].outcome,
+        SwitchOutcome::Complete
+    );
+    assert_eq!(s1_settled.switch_settled[0].focus, SwitchFocus::Proven);
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned()))
+    );
+
+    // Admit successor S2 (op-4): select home without arrival/focus proof.
+    let s2_grant = select(&mut engine, 5, &home);
+    let s2_effect = s2_grant.focus_request.clone().expect("s2 focus request");
+    let s2_rev = s2_grant.state_revision;
+    let s2_frame = row(&s2_grant, "w1").effective_frame;
+    assert_eq!(
+        engine
+            .retained_selection
+            .get(&OutputId("out-a".to_owned()))
+            .map(|b| b.parent_op.as_str()),
+        Some("op-5")
+    );
+    assert_eq!(
+        s2_grant.switch_settled, s1_settled.switch_settled,
+        "Q1: admitting S2 keeps S1 terminal readable"
+    );
+
+    // Observation-only while S2 is pending: S1 remains readable, S2 stays pending,
+    // and S1 grants no extra setter/focus authority.
+    let while_pending = accepted(
+        &mut engine,
+        &report(
+            6,
+            vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+        ),
+    );
+    assert_eq!(
+        engine
+            .retained_selection
+            .get(&OutputId("out-a".to_owned()))
+            .map(|b| b.parent_op.as_str()),
+        Some("op-5")
+    );
+    assert_eq!(while_pending.switch_settled, s1_settled.switch_settled);
+    assert_eq!(
+        row(&while_pending, "w1").visibility.expect("show").revision,
+        s2_rev
+    );
+    assert_eq!(
+        row(&while_pending, "w2").visibility.expect("hide").revision,
+        s2_rev
+    );
+    assert_eq!(
+        while_pending.focus_request.as_ref().map(|r| r.id.as_str()),
+        Some(s2_effect.id.as_str())
+    );
+    assert!(while_pending.command_result.is_none());
+
+    // Rejected command while S2 is pending clears nothing.
+    let refused = accepted(
+        &mut engine,
+        &report(
+            7,
+            vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+            vec![],
+            Some(7),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: "ws-nope".to_owned(),
+            }),
+            vec![],
+            "",
+        ),
+    );
+    assert!(matches!(
+        refused.command_result,
+        Some(crate::world_report::CommandResult::Rejected { .. })
+    ));
+    assert_eq!(
+        engine
+            .retained_selection
+            .get(&OutputId("out-a".to_owned()))
+            .map(|b| b.parent_op.as_str()),
+        Some("op-5")
+    );
+    assert_eq!(refused.switch_settled, s1_settled.switch_settled);
+
+    // Settle S2 (op-5) with arrival + refused focus -> replaces out-a with op-5 CompletedWithFailures/Refused.
+    let s2_settled = accepted(
+        &mut engine,
+        &report(
+            8,
+            vec![
+                with_lw(
+                    sfact("w1", "out-a", 0),
+                    last_write_confirmed(true, s2_rev, 8),
+                ),
+                with_lw(
+                    sfact("w2", "out-a", 100),
+                    last_write_confirmed(false, s2_rev, 8),
+                ),
+            ],
+            vec![],
+            None,
+            None,
+            vec![refused_feedback(
+                &s2_effect.id,
+                "w1",
+                s2_effect.issued_revision,
+            )],
+            "",
+        ),
+    );
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-a".to_owned()))
+    );
+    assert_eq!(s2_settled.switch_settled.len(), 1);
+    let ev = &s2_settled.switch_settled[0];
+    assert_eq!(ev.output.0, "out-a");
+    assert_eq!(ev.operation_id, "op-5");
+    assert_eq!(ev.outcome, SwitchOutcome::CompletedWithFailures);
+    assert_eq!(ev.focus, SwitchFocus::Refused);
+    let _ = s2_frame;
+}
+
+#[test]
+fn q2_switch_output_retention_and_departure_with_trace_and_reuse() {
+    let mut engine = engine();
+    let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    let windows = || {
+        vec![
+            sfact("w1", "out-a", 0),
+            sfact("w2", "out-a", 100),
+            sfact("w3", "out-b", 800),
+            sfact("w4", "out-b", 900),
+        ]
+    };
+    let boot = accepted(
+        &mut engine,
+        &report_multi(
+            1,
+            windows(),
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+            screens.clone(),
+        ),
+    );
+    let ring = |output: &str| {
+        boot.workspaces
+            .iter()
+            .filter(|row| row.output.0 == output)
+            .map(|row| row.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let (away_a, away_b) = (ring("out-a")[1].clone(), ring("out-b")[1].clone());
+    for (seq, window, output, away) in [(2, "w2", "out-a", &away_a), (3, "w4", "out-b", &away_b)] {
+        let _ = accepted(
+            &mut engine,
+            &report_multi(
+                seq,
+                windows(),
+                vec![],
+                Some(seq),
+                Some(WorldCommand::Send {
+                    window: WindowId(window.to_owned()),
+                    target_output: OutputId(output.to_owned()),
+                    target_workspace: away.clone(),
+                    follow: false,
+                }),
+                vec![],
+                window,
+                screens.clone(),
+            ),
+        );
+    }
+
+    let grant_a = accepted(
+        &mut engine,
+        &report_multi(
+            4,
+            windows(),
+            vec![],
+            Some(4),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: away_a,
+            }),
+            vec![],
+            "",
+            screens.clone(),
+        ),
+    );
+    let rev_a = grant_a.state_revision;
+    let eff_a = grant_a.focus_request.clone().expect("eff a");
+    let frame_a = row(&grant_a, "w2").effective_frame;
+
+    let grant_b = accepted(
+        &mut engine,
+        &report_multi(
+            5,
+            windows(),
+            vec![],
+            Some(5),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-b".to_owned()),
+                workspace: away_b,
+            }),
+            vec![],
+            "",
+            screens.clone(),
+        ),
+    );
+    let rev_b = grant_b.state_revision;
+    let eff_b = grant_b.focus_request.clone().expect("eff b");
+    let frame_b = row(&grant_b, "w4").effective_frame;
+
+    let both_settled = accepted(
+        &mut engine,
+        &report_multi(
+            6,
+            vec![
+                with_lw(
+                    sfact("w1", "out-a", 0),
+                    last_write_confirmed(false, rev_a, 6),
+                ),
+                with_lw(
+                    sfact("w2", "out-a", 100),
+                    last_write_confirmed(true, rev_a, 6),
+                ),
+                with_lw(
+                    sfact("w3", "out-b", 800),
+                    last_write_confirmed(false, rev_b, 6),
+                ),
+                with_lw(
+                    sfact("w4", "out-b", 900),
+                    last_write_confirmed(true, rev_b, 6),
+                ),
+            ],
+            vec![],
+            None,
+            None,
+            vec![
+                feedback_row(
+                    &eff_a.id,
+                    "w2",
+                    eff_a.issued_revision,
+                    true,
+                    Some("w2"),
+                    vec![bracket("w2", "out-a", 6, frame_a)],
+                ),
+                feedback_row(
+                    &eff_b.id,
+                    "w4",
+                    eff_b.issued_revision,
+                    true,
+                    Some("w4"),
+                    vec![bracket("w4", "out-b", 6, frame_b)],
+                ),
+            ],
+            "",
+            screens.clone(),
+        ),
+    );
+    assert_eq!(both_settled.switch_settled.len(), 2);
+
+    // 1. Held screen retains out-b switch_settled, zero dropped trace.
+    let held_trace = crate::world_engine::with_focus_trace_capture(|| {
+        let mut r = report_multi(
+            7,
+            vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+            vec![screen("out-a", 0)],
+        );
+        r.held_screens = vec![held_screen_row("out-b", 1)];
+        let reply = accepted(&mut engine, &r);
+        assert_eq!(reply.switch_settled.len(), 2);
+    });
+    assert!(
+        held_trace
+            .iter()
+            .all(|l| !l.contains("switch-settled-dropped")),
+        "held screen must not prune switch_settled: {held_trace:?}"
+    );
+
+    // 2. Incomplete inventory omission retains out-b switch_settled, zero trace.
+    let inc_trace = crate::world_engine::with_focus_trace_capture(|| {
+        let mut r = report_multi(
+            8,
+            vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+            vec![screen("out-a", 0)],
+        );
+        r.inventory_complete = false;
+        let reply = accepted(&mut engine, &r);
+        assert_eq!(reply.switch_settled.len(), 2);
+    });
+    assert!(
+        inc_trace
+            .iter()
+            .all(|l| !l.contains("switch-settled-dropped")),
+        "incomplete inventory must not prune switch_settled: {inc_trace:?}"
+    );
+
+    // 3. Minimized occupant on out-b retains switch_settled, zero trace.
+    let min_trace = crate::world_engine::with_focus_trace_capture(|| {
+        let mut w4_min = sfact("w4", "out-b", 900);
+        w4_min.minimized = Some(true);
+        w4_min.rect = None;
+        let reply = accepted(
+            &mut engine,
+            &report_multi(
+                9,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100), w4_min],
+                vec![],
+                None,
+                None,
+                vec![],
+                "",
+                screens.clone(),
+            ),
+        );
+        assert_eq!(reply.switch_settled.len(), 2);
+    });
+    assert!(
+        min_trace
+            .iter()
+            .all(|l| !l.contains("switch-settled-dropped")),
+        "minimized occupant must not prune switch_settled: {min_trace:?}"
+    );
+
+    // 4. Proven output departure (out-b omitted with inventory_complete=true)
+    //    prunes out-b, keeps out-a, and emits trace carrying final dropped payload.
+    let dep_trace = crate::world_engine::with_focus_trace_capture(|| {
+        let reply = accepted(
+            &mut engine,
+            &report_multi(
+                10,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                None,
+                None,
+                vec![],
+                "",
+                vec![screen("out-a", 0)],
+            ),
+        );
+        assert_eq!(reply.switch_settled.len(), 1);
+        assert_eq!(reply.switch_settled[0].output.0, "out-a");
+        assert_eq!(reply.switch_settled[0].operation_id, "op-4");
+    });
+    assert_eq!(
+        dep_trace
+            .iter()
+            .filter(|l| l.contains("ev=switch-settled-dropped"))
+            .count(),
+        1,
+        "expected exactly one dropped switch trace: {dep_trace:?}"
+    );
+    assert_eq!(
+        dep_trace
+            .iter()
+            .filter(|l| {
+                *l == "omnitiler:core:trace ev=switch-settled-dropped gen=gen-1 obs=10 out=out-b op=op-5 outcome=complete focus=proven fallback=false failed="
+            })
+            .count(),
+        1,
+        "missing exact switch dropped trace: {dep_trace:?}"
+    );
+
+    // Skip two publications, then re-introduce out-b: no inherited outcome or authority.
+    for seq in 11..=12 {
+        let r = accepted(
+            &mut engine,
+            &report_multi(
+                seq,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                None,
+                None,
+                vec![],
+                "",
+                vec![screen("out-a", 0)],
+            ),
+        );
+        assert_eq!(r.switch_settled.len(), 1);
+    }
+    let reused_out = accepted(
+        &mut engine,
+        &report_multi(13, windows(), vec![], None, None, vec![], "", screens),
+    );
+    assert!(
+        reused_out
+            .switch_settled
+            .iter()
+            .all(|ev| ev.output.0 != "out-b"),
+        "reintroduced out-b cannot inherit departed outcome: {:?}",
+        reused_out.switch_settled
+    );
+    assert!(
+        !engine
+            .retained_selection
+            .contains_key(&OutputId("out-b".to_owned()))
+    );
+    assert_eq!(reused_out.focus_request, None);
+
+    // 5. Disabled trace check on output departure: zero lines emitted.
+    let disabled_lines = crate::world_engine::with_focus_trace_capture(|| {
+        crate::world_engine::with_focus_trace_disabled(|| {
+            let reply = accepted(
+                &mut engine,
+                &report_multi(
+                    14,
+                    vec![sfact("w3", "out-b", 800), sfact("w4", "out-b", 900)],
+                    vec![],
+                    None,
+                    None,
+                    vec![],
+                    "",
+                    vec![screen("out-b", 800)],
+                ),
+            );
+            assert!(reply.switch_settled.is_empty());
+        });
+    });
+    assert!(
+        disabled_lines.is_empty(),
+        "disabled trace must emit zero lines: {disabled_lines:?}"
+    );
+}
+
+#[test]
 fn host_owned_focus_bearing_shared_nonfocus_own_refusal_pends_then_fails() {
     use crate::connection::RawSettingValue;
     use crate::world_report::{NativeObservation, NativeOccupancy};

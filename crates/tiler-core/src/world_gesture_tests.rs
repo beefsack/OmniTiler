@@ -2682,6 +2682,293 @@ fn rejected_report_consumes_no_gesture_identity() {
     preview_of(&previewed);
 }
 
+#[test]
+fn q1_gesture_predecessor_remains_through_successor_pending_and_replaces_at_terminal() {
+    let (mut engine, ra, rb) = rig();
+    let moved_a = rect(100, 0, 40, 90);
+    // Complete G1 (id=1, committed=true); skip/withhold its issuing reply.
+    let g1_terminal = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![fact("win-a", "out-a", moved_a), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                Some((150, 50)),
+                GesturePhase::Released,
+                ra,
+                1,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert_eq!(
+        g1_terminal.gesture_settled,
+        Some(crate::gesture::GestureSettled {
+            id: 1,
+            committed: true,
+        })
+    );
+    assert!(engine.gesture.is_none(), "G1 is settled and cleared");
+    let g1_alloc_a = row_of(&g1_terminal, "win-a")
+        .allocation
+        .expect("win-a allocation");
+    let g1_alloc_b = row_of(&g1_terminal, "win-b")
+        .allocation
+        .expect("win-b allocation");
+
+    // Start successor G2 (id=2) without releasing: G2 is pending, G1 remains readable.
+    let g2_start = ingress_id(
+        "win-a",
+        GestureKind::Move,
+        Some((150, 50)),
+        GesturePhase::Started,
+        g1_alloc_a,
+        2,
+    );
+    let started = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![
+                fact("win-a", "out-a", g1_alloc_a),
+                fact("win-b", "out-a", g1_alloc_b),
+            ],
+            "win-a",
+            Some(g2_start),
+            vec![],
+            true,
+        ),
+    );
+    assert_eq!(
+        engine.gesture.as_ref().map(|g| g.id),
+        Some(2),
+        "G2 must be pending"
+    );
+    assert_eq!(
+        started.gesture_settled,
+        Some(crate::gesture::GestureSettled {
+            id: 1,
+            committed: true,
+        }),
+        "Q1: predecessor G1 terminal remains readable while G2 is pending"
+    );
+
+    let updated = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![
+                fact("win-a", "out-a", g1_alloc_a),
+                fact("win-b", "out-a", g1_alloc_b),
+            ],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                Some((650, 50)),
+                GesturePhase::Updated,
+                g1_alloc_a,
+                2,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert_eq!(engine.gesture.as_ref().map(|g| g.id), Some(2));
+    assert_eq!(
+        updated.gesture_settled,
+        Some(crate::gesture::GestureSettled {
+            id: 1,
+            committed: true,
+        }),
+        "Q1: G1 terminal stays readable across G2 updates"
+    );
+
+    // Rejected report (id=0) and stale consumed replay (id=1) while G2 is pending
+    // clear nothing and do not replace G1.
+    let bad = report(
+        5,
+        5,
+        vec![
+            fact("win-a", "out-a", g1_alloc_a),
+            fact("win-b", "out-a", g1_alloc_b),
+        ],
+        "win-a",
+        Some(ingress_id(
+            "win-a",
+            GestureKind::Move,
+            Some((150, 50)),
+            GesturePhase::Released,
+            g1_alloc_a,
+            0,
+        )),
+        vec![],
+        true,
+    );
+    assert!(matches!(
+        engine.handle_report(&bad, &[]).0,
+        WorldOutcome::Rejected { .. }
+    ));
+    let stale_replay = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            vec![
+                fact("win-a", "out-a", g1_alloc_a),
+                fact("win-b", "out-a", g1_alloc_b),
+            ],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                Some((150, 50)),
+                GesturePhase::Released,
+                g1_alloc_a,
+                1,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert_eq!(engine.gesture.as_ref().map(|g| g.id), Some(2));
+    assert_eq!(
+        stale_replay.gesture_settled,
+        Some(crate::gesture::GestureSettled {
+            id: 1,
+            committed: true,
+        })
+    );
+
+    // Complete G2 with Cancelled (committed=false): slot replaces only at G2 terminal.
+    let g2_terminal = accepted(
+        &mut engine,
+        &report(
+            6,
+            6,
+            vec![
+                fact("win-a", "out-a", g1_alloc_a),
+                fact("win-b", "out-a", g1_alloc_b),
+            ],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                Some((180, 50)),
+                GesturePhase::Cancelled,
+                g1_alloc_a,
+                2,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert!(engine.gesture.is_none());
+    assert_eq!(
+        g2_terminal.gesture_settled,
+        Some(crate::gesture::GestureSettled {
+            id: 2,
+            committed: false,
+        }),
+        "G2 terminal replaces G1"
+    );
+}
+
+#[test]
+fn q2_gesture_survives_subject_close_within_generation_and_clears_on_new_generation() {
+    let (mut engine, ra, rb) = rig();
+    let moved_a = rect(100, 0, 40, 90);
+    let released = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![fact("win-a", "out-a", moved_a), fact("win-b", "out-a", rb)],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                Some((150, 50)),
+                GesturePhase::Released,
+                ra,
+                1,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert_eq!(
+        released.gesture_settled,
+        Some(crate::gesture::GestureSettled {
+            id: 1,
+            committed: true,
+        })
+    );
+
+    // Close win-a and follow with an unrelated observation (even reusing win-a):
+    // gesture_settled is generation-scoped and survives subject close.
+    let closed_reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![fact("win-b", "out-a", rb)],
+            "win-b",
+            None,
+            vec![WindowId("win-a".to_owned())],
+            true,
+        ),
+    );
+    assert_eq!(closed_reply.gesture_settled, released.gesture_settled);
+
+    let reused_reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+            "win-b",
+            None,
+            vec![],
+            true,
+        ),
+    );
+    assert_eq!(reused_reply.gesture_settled, released.gesture_settled);
+
+    // Fresh handshake / new generation clears all retained settlement owners.
+    rebind(&mut engine, "adapter-1");
+    let gen2_bootstrap = engine.handle_report(
+        &WorldReportV4 {
+            core_generation: engine.core_generation().to_owned(),
+            ..report(
+                1,
+                1,
+                vec![fact("win-a", "out-a", ra), fact("win-b", "out-a", rb)],
+                "win-a",
+                None,
+                vec![],
+                true,
+            )
+        },
+        &[],
+    );
+    match gen2_bootstrap.0 {
+        WorldOutcome::Accepted(reply) => {
+            assert_eq!(reply.gesture_settled, None);
+            assert!(reply.operation_settled.is_empty());
+            assert!(reply.switch_settled.is_empty());
+        }
+        other => panic!("expected accepted in new generation, got {other:?}"),
+    }
+}
+
 // Cross-output gesture release suite: pair-targeted slot agreement,
 // retained transfer fences, and gap bookkeeping live in the child;
 // shared rig helpers above are used via `super::*`.

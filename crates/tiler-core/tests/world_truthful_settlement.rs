@@ -971,3 +971,294 @@ fn explicit_close_settles_across_gaps() {
         settled.transfers
     );
 }
+
+#[test]
+fn retained_settlements_grant_no_extra_writes_or_spend_pending_obligations() {
+    use tiler_core::world_report::{
+        ArrivalBracket, ArrivalLocation, FocusFeedback, LastWrite, LastWritePath,
+        LastWriteProperty, OperationKind, OperationOutcome, SwitchOutcome, VisibilityFact,
+        VisibilityReason, VisibilitySample, VisibilitySetter,
+    };
+
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let boot = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![fact("w1", "out-a", 0), fact("w2", "out-a", 100)],
+            vec![],
+            None,
+            None,
+            vec![],
+            true,
+        ),
+    );
+    let ring: Vec<String> = boot
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let home = ring[0].clone();
+    let away = ring[1].clone();
+
+    // Move w2 to away workspace so both workspaces are occupied.
+    let mut send_report = report(
+        2,
+        2,
+        vec![fact("w1", "out-a", 0), fact("w2", "out-a", 100)],
+        vec![],
+        Some(2),
+        Some(WorldCommand::Send {
+            window: WindowId("w2".to_owned()),
+            target_output: OutputId("out-a".to_owned()),
+            target_workspace: away.clone(),
+            follow: false,
+        }),
+        vec![],
+        true,
+    );
+    send_report.focused_global = "w2".to_owned();
+    let send = accepted(&mut engine, &send_report);
+    assert!(!send.command_consumed);
+    assert!(!matches!(
+        send.command_result,
+        Some(tiler_core::world_report::CommandResult::Rejected { .. })
+    ));
+    assert_eq!(
+        send.windows
+            .iter()
+            .find(|row| row.lifetime.0 == "w2")
+            .expect("w2 row")
+            .workspace,
+        away
+    );
+
+    // 1. Settle a switch (S1) on out-a.
+    let s1 = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![fact("w1", "out-a", 0), fact("w2", "out-a", 100)],
+            vec![],
+            Some(3),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: away.clone(),
+            }),
+            vec![],
+            true,
+        ),
+    );
+    let s1_eff = s1.focus_request.clone().expect("s1 focus request");
+    let s1_rev = s1.state_revision;
+    let s1_frame = s1
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "w2")
+        .expect("w2 row")
+        .effective_frame;
+    let sample = |obs: u64, shown: bool| VisibilitySample {
+        obs,
+        lifetime_matched: Some(true),
+        visibility: VisibilityFact {
+            visible: Some(shown),
+            suppression_owned: Some(false),
+        },
+        minimized: Some(false),
+        host_hidden: Some(false),
+    };
+    let with_lw = |mut f: WindowFact, shown: bool, rev: u64, obs: u64| {
+        f.last_write = Some(LastWrite {
+            property: LastWriteProperty::Visibility,
+            target: shown,
+            revision: rev,
+            path: LastWritePath::Staged,
+            setter: VisibilitySetter::Accepted,
+            reason: VisibilityReason::Empty,
+            pre: None,
+            post: Some(sample(obs, shown)),
+        });
+        f
+    };
+    let mut s1_settle_report = report(
+        4,
+        4,
+        vec![
+            with_lw(fact("w1", "out-a", 0), false, s1_rev, 4),
+            with_lw(fact("w2", "out-a", 100), true, s1_rev, 4),
+        ],
+        vec![],
+        None,
+        None,
+        vec![],
+        true,
+    );
+    s1_settle_report.focused_global = "w2".to_owned();
+    s1_settle_report.focus_feedback = vec![FocusFeedback {
+        id: s1_eff.id.clone(),
+        target: WindowId("w2".to_owned()),
+        revision: s1_eff.issued_revision,
+        setter: VisibilitySetter::Accepted,
+        reason: VisibilityReason::Empty,
+        pre: Some(WindowId("w1".to_owned())),
+        post: Some(WindowId("w2".to_owned())),
+        foreground_proven: true,
+        arrival: vec![ArrivalBracket {
+            window: WindowId("w2".to_owned()),
+            obs: 4,
+            before: sample(4, true),
+            location: ArrivalLocation::Output {
+                out: Some(OutputId("out-a".to_owned())),
+            },
+            frame: s1_frame,
+            after: sample(4, true),
+        }],
+        attempt_ms: 7,
+    }];
+    let s1_done = accepted(&mut engine, &s1_settle_report);
+    assert_eq!(s1_done.switch_settled.len(), 1);
+    assert_eq!(s1_done.switch_settled[0].operation_id, "op-3");
+    assert_eq!(s1_done.switch_settled[0].outcome, SwitchOutcome::Complete);
+
+    // 2. Also settle a float operation (P1) for w2 while on away.
+    let mut f1_report = report(
+        5,
+        5,
+        vec![fact("w1", "out-a", 0), fact("w2", "out-a", 100)],
+        vec![],
+        Some(5),
+        Some(WorldCommand::Operation(
+            tiler_core::boundary::CoreCommand::ToggleFloat {
+                window: "w2".to_owned(),
+                float_rect: Some(rect(50, 50, 300, 200)),
+            },
+        )),
+        vec![],
+        true,
+    );
+    f1_report.focused_global = "w2".to_owned();
+    let f1_cmd = accepted(&mut engine, &f1_report);
+    assert!(!f1_cmd.command_consumed);
+    assert!(matches!(
+        f1_cmd.command_result,
+        Some(tiler_core::world_report::CommandResult::Float {
+            ref window,
+            rect: Some(_),
+            no_space: false,
+        }) if window.0 == "w2"
+    ));
+    let f1_row = f1_cmd
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "w2")
+        .expect("w2 row");
+    assert!(f1_row.floating);
+    assert_eq!(f1_row.frame_operation.as_deref(), Some("op-5"));
+    let f1_target = f1_row.effective_frame.expect("float target");
+    let mut w2_arrived = fact("w2", "out-a", 50);
+    w2_arrived.rect = Some(f1_target);
+    let mut f1_done_report = report(
+        6,
+        6,
+        vec![fact("w1", "out-a", 0), w2_arrived.clone()],
+        vec![],
+        None,
+        None,
+        vec![],
+        true,
+    );
+    f1_done_report.focused_global = "w2".to_owned();
+    let f1_done = accepted(&mut engine, &f1_done_report);
+    assert_eq!(f1_done.operation_settled.len(), 1);
+    assert_eq!(f1_done.operation_settled[0].kind, OperationKind::Float);
+    assert_eq!(
+        f1_done.operation_settled[0].outcome,
+        OperationOutcome::FloatFrameProven
+    );
+    assert_eq!(
+        f1_done
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "w2")
+            .expect("w2 row")
+            .frame_operation,
+        None
+    );
+
+    // 3. Admit successor switch (S2: op-7) without raw arrival/focus receipts.
+    let mut s2_report = report(
+        7,
+        7,
+        vec![fact("w1", "out-a", 0), w2_arrived.clone()],
+        vec![],
+        Some(7),
+        Some(WorldCommand::SelectWorkspace {
+            output: OutputId("out-a".to_owned()),
+            workspace: home,
+        }),
+        vec![],
+        true,
+    );
+    s2_report.focused_global = "w2".to_owned();
+    let s2 = accepted(&mut engine, &s2_report);
+    let s2_eff = s2.focus_request.clone().expect("s2 focus request");
+    let s2_vis_w1 = s2
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "w1")
+        .expect("w1 row")
+        .visibility
+        .expect("w1 show")
+        .revision;
+    assert_eq!(s2.switch_settled, s1_done.switch_settled);
+    assert_eq!(s2.operation_settled, f1_done.operation_settled);
+
+    // Fresh accepted observation-only reply retains both settlement rows,
+    // grants zero extra writes (no clear_operation, no frame_operation, no
+    // visibility revision bump, no transfers, no state targets), and does NOT spend
+    // or satisfy pending S2 (op-7).
+    let mut fresh_report = report(
+        8,
+        8,
+        vec![fact("w1", "out-a", 0), w2_arrived],
+        vec![],
+        None,
+        None,
+        vec![],
+        true,
+    );
+    fresh_report.focused_global = "w2".to_owned();
+    let fresh = accepted(&mut engine, &fresh_report);
+    assert_eq!(fresh.switch_settled, s1_done.switch_settled);
+    assert_eq!(fresh.operation_settled, f1_done.operation_settled);
+    assert_eq!(
+        fresh
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "w1")
+            .expect("w1 row")
+            .visibility
+            .expect("w1 show")
+            .revision,
+        s2_vis_w1
+    );
+    assert_eq!(
+        fresh.focus_request.as_ref().map(|r| r.id.as_str()),
+        Some(s2_eff.id.as_str())
+    );
+    assert!(!s2.transfers.is_empty());
+    assert_eq!(fresh.transfers, s2.transfers);
+    for row in &fresh.windows {
+        let s2_row = s2
+            .windows
+            .iter()
+            .find(|prev| prev.lifetime == row.lifetime)
+            .expect("s2 window row");
+        assert_eq!(row.clear_operation, s2_row.clear_operation);
+        assert_eq!(row.frame_operation, s2_row.frame_operation);
+        assert_eq!(row.state, s2_row.state);
+    }
+}

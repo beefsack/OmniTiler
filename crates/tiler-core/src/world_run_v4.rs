@@ -789,6 +789,13 @@ impl WorldEngine {
             ringed.contains(&state.home) || self.displaced.contains_key(&state.home.output.0)
         });
         self.latch_floating_admissions();
+        // Finalized membership and floating admissions can drop windows or
+        // outputs that were still in pre-reconcile `self.members` during
+        // `publish_v4`; re-prune and re-project the settled outcome slices
+        // against finalized lifetime state before returning the reply.
+        self.prune_settled_outcomes();
+        reply.operation_settled = self.operation_settled.values().cloned().collect();
+        reply.switch_settled = self.switch_settled.values().cloned().collect();
         // Pager retention settles against converged membership, then the
         // reply carries the retained pager image.
         self.retain_pager_presentation_v4();

@@ -3037,3 +3037,684 @@ fn newer_clear_intent_supersedes_retained_float_placement() {
         "slot carries the surviving token, got {row:?}"
     );
 }
+
+#[test]
+fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() {
+    use crate::world_report::{OperationKind, OperationOutcome};
+
+    // Part A: Clear-then-float sharing op-13, then successor clear P2 (op-14)
+    // pending while P1 (op-13) remains readable in (win-max, clear).
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let maximized = || WindowFact {
+        maximized: Some(true),
+        transient: Some(true),
+        ..fact("win-max", "out-a", 100)
+    };
+    let cleared = || WindowFact {
+        maximized: Some(false),
+        ..maximized()
+    };
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
+            None,
+            None,
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
+            Vec::new(),
+            "win-max",
+            Some(13),
+            Some(WorldCommand::MoveDirectional {
+                window: WindowId("win-max".to_owned()),
+                direction: "right".to_owned(),
+                same_axis: crate::directional::SameAxisMove::default(),
+            }),
+        ),
+    );
+    assert_eq!(engine.retained_clears.len(), 1);
+    assert_eq!(engine.retained_clears[0].operation_id, "op-13");
+
+    // Settle clear -> ClearContinuedFloat under op-13, and float resumes under op-13.
+    let continued = accepted(
+        &mut engine,
+        &report_clears(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![cleared(), float_fact("win-target", "out-a", 300, 100)],
+            "win-max",
+            vec![clear_attempt(
+                "op-13",
+                "win-max",
+                crate::world_report::FrameSetter::Accepted,
+                Some(true),
+                Some(false),
+            )],
+        ),
+    );
+    assert!(engine.retained_clears.is_empty());
+    assert_eq!(engine.retained_floats.len(), 1);
+    assert_eq!(engine.retained_floats[0].operation_id, "op-13");
+    assert_eq!(
+        continued.operation_settled.len(),
+        1,
+        "only clear phase settled so far: {:?}",
+        continued.operation_settled
+    );
+    assert_eq!(continued.operation_settled[0].kind, OperationKind::Clear);
+    assert_eq!(continued.operation_settled[0].operation_id, "op-13");
+    assert_eq!(
+        continued.operation_settled[0].outcome,
+        OperationOutcome::ClearContinuedFloat
+    );
+
+    // Settle float under the same op-13: both phases remain keyed by (win, kind).
+    let half = rect(404, 8, 388, 544);
+    let arrived = || WindowFact {
+        rect: Some(half),
+        maximized: Some(false),
+        ..maximized()
+    };
+    let float_done = accepted(
+        &mut engine,
+        &report_clears(
+            4,
+            4,
+            vec![screen("out-a", 0)],
+            vec![arrived(), float_fact("win-target", "out-a", 300, 100)],
+            "win-max",
+            Vec::new(),
+        ),
+    );
+    assert!(engine.retained_floats.is_empty());
+    assert_eq!(float_done.operation_settled.len(), 2);
+    assert!(float_done.operation_settled.iter().any(|ev| {
+        ev.window.0 == "win-max"
+            && ev.kind == OperationKind::Clear
+            && ev.operation_id == "op-13"
+            && ev.outcome == OperationOutcome::ClearContinuedFloat
+    }));
+    assert!(float_done.operation_settled.iter().any(|ev| {
+        ev.window.0 == "win-max"
+            && ev.kind == OperationKind::Float
+            && ev.operation_id == "op-13"
+            && ev.outcome == OperationOutcome::FloatFrameProven
+    }));
+
+    // Admit successor clear P2 (op-14) without settling it; skip its issuing reply.
+    let max_again = || WindowFact {
+        maximized: Some(true),
+        rect: Some(half),
+        ..maximized()
+    };
+    let p2_admitted = accepted(
+        &mut engine,
+        &report_full(
+            5,
+            5,
+            vec![screen("out-a", 0)],
+            vec![max_again(), float_fact("win-target", "out-a", 300, 100)],
+            Vec::new(),
+            "win-max",
+            Some(14),
+            Some(WorldCommand::MoveDirectional {
+                window: WindowId("win-max".to_owned()),
+                direction: "left".to_owned(),
+                same_axis: crate::directional::SameAxisMove::default(),
+            }),
+        ),
+    );
+    assert_eq!(engine.retained_clears.len(), 1);
+    assert_eq!(engine.retained_clears[0].operation_id, "op-14");
+    assert_eq!(
+        desire(&p2_admitted, "win-max").clear_operation.as_deref(),
+        Some("op-14")
+    );
+    assert_eq!(
+        p2_admitted.operation_settled, float_done.operation_settled,
+        "Q1: admitting P2 keeps P1 terminal readable"
+    );
+
+    // Observation-only while P2 is pending: P1 (op-13) stays readable, P2 stays pending,
+    // and no extra setter authority is fabricated.
+    let while_pending = accepted(
+        &mut engine,
+        &report(
+            6,
+            6,
+            vec![screen("out-a", 0)],
+            vec![max_again(), float_fact("win-target", "out-a", 300, 100)],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(engine.retained_clears.len(), 1);
+    assert_eq!(engine.retained_clears[0].operation_id, "op-14");
+    assert_eq!(
+        while_pending.operation_settled, float_done.operation_settled,
+        "Q1: predecessor clear outcome remains while P2 is pending"
+    );
+    assert_eq!(
+        desire(&while_pending, "win-max").clear_operation.as_deref(),
+        Some("op-14")
+    );
+    assert_eq!(desire(&while_pending, "win-max").frame_operation, None);
+    assert!(while_pending.command_result.is_none());
+
+    // Rejected command while P2 is pending clears nothing.
+    let refused_cmd = accepted(
+        &mut engine,
+        &report_full(
+            7,
+            7,
+            vec![screen("out-a", 0)],
+            vec![max_again(), float_fact("win-target", "out-a", 300, 100)],
+            Vec::new(),
+            "win-max",
+            Some(15),
+            Some(WorldCommand::Operation(
+                crate::boundary::CoreCommand::ToggleFloat {
+                    window: "win-ghost".to_owned(),
+                    float_rect: None,
+                },
+            )),
+        ),
+    );
+    assert!(matches!(
+        refused_cmd.command_result,
+        Some(CommandResult::Rejected { .. })
+    ));
+    assert_eq!(engine.retained_clears.len(), 1);
+    assert_eq!(refused_cmd.operation_settled, float_done.operation_settled);
+
+    // Settle P2 via external clear -> replaces (win-max, clear) with op-14 while
+    // leaving (win-max, float) op-13 untouched.
+    let unmax_external = WindowFact {
+        maximized: Some(false),
+        ..max_again()
+    };
+    let p2_settled = accepted(
+        &mut engine,
+        &report_clears(
+            8,
+            8,
+            vec![screen("out-a", 0)],
+            vec![unmax_external, float_fact("win-target", "out-a", 300, 100)],
+            "win-max",
+            Vec::new(),
+        ),
+    );
+    assert!(engine.retained_clears.is_empty());
+    assert!(p2_settled.operation_settled.iter().any(|ev| {
+        ev.window.0 == "win-max"
+            && ev.kind == OperationKind::Clear
+            && ev.operation_id == "op-14"
+            && ev.outcome == OperationOutcome::ClearAbandonedExternalClear
+    }));
+    assert!(p2_settled.operation_settled.iter().any(|ev| {
+        ev.window.0 == "win-max"
+            && ev.kind == OperationKind::Float
+            && ev.operation_id == "op-13"
+            && ev.outcome == OperationOutcome::FloatFrameProven
+    }));
+
+    // Part B: Q1 Float: complete P1 (op-21), admit P2 (op-22) without frame proof,
+    // verify P1 remains readable while P2 stays pending, then replace at P2 terminal.
+    let mut f_engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    accepted(
+        &mut f_engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![
+                float_fact("win-subject", "out-a", 100, 100),
+                float_fact("win-target", "out-a", 300, 100),
+            ],
+            None,
+            None,
+        ),
+    );
+    accepted(
+        &mut f_engine,
+        &report(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![
+                float_fact("win-subject", "out-a", 100, 100),
+                float_fact("win-target", "out-a", 300, 100),
+            ],
+            Some(21),
+            Some(WorldCommand::MoveDirectional {
+                window: WindowId("win-subject".to_owned()),
+                direction: "right".to_owned(),
+                same_axis: crate::directional::SameAxisMove::default(),
+            }),
+        ),
+    );
+    let p1_arrived = || WindowFact {
+        rect: Some(rect(404, 8, 388, 544)),
+        ..float_fact("win-subject", "out-a", 100, 100)
+    };
+    let p1_settled = accepted(
+        &mut f_engine,
+        &report(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![p1_arrived(), float_fact("win-target", "out-a", 300, 100)],
+            None,
+            None,
+        ),
+    );
+    assert!(f_engine.retained_floats.is_empty());
+    assert_eq!(p1_settled.operation_settled.len(), 1);
+    assert_eq!(p1_settled.operation_settled[0].operation_id, "op-21");
+
+    // Admit P2 (op-22) without frame proof.
+    let p2_float = accepted(
+        &mut f_engine,
+        &report(
+            4,
+            4,
+            vec![screen("out-a", 0)],
+            vec![p1_arrived(), float_fact("win-target", "out-a", 300, 100)],
+            Some(22),
+            Some(WorldCommand::MoveDirectional {
+                window: WindowId("win-subject".to_owned()),
+                direction: "left".to_owned(),
+                same_axis: crate::directional::SameAxisMove::default(),
+            }),
+        ),
+    );
+    let p2_target = desire(&p2_float, "win-subject")
+        .effective_frame
+        .expect("p2 target frame");
+    assert_eq!(f_engine.retained_floats.len(), 1);
+    assert_eq!(f_engine.retained_floats[0].operation_id, "op-22");
+
+    // Observation-only while P2 is still at P1's rect: P1 remains readable, P2 stays pending.
+    let f_pending = accepted(
+        &mut f_engine,
+        &report(
+            5,
+            5,
+            vec![screen("out-a", 0)],
+            vec![p1_arrived(), float_fact("win-target", "out-a", 300, 100)],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(f_engine.retained_floats.len(), 1);
+    assert_eq!(f_engine.retained_floats[0].operation_id, "op-22");
+    assert_eq!(
+        f_pending.operation_settled, p1_settled.operation_settled,
+        "Q1: predecessor float op-21 remains readable while op-22 is pending"
+    );
+    assert_eq!(
+        desire(&f_pending, "win-subject").frame_operation.as_deref(),
+        Some("op-22")
+    );
+    assert_eq!(desire(&f_pending, "win-subject").clear_operation, None);
+
+    // Arrival at P2's target replaces (win-subject, float) with op-22.
+    let p2_arrived = WindowFact {
+        rect: Some(p2_target),
+        ..float_fact("win-subject", "out-a", 100, 100)
+    };
+    let p2_done = accepted(
+        &mut f_engine,
+        &report(
+            6,
+            6,
+            vec![screen("out-a", 0)],
+            vec![p2_arrived, float_fact("win-target", "out-a", 300, 100)],
+            None,
+            None,
+        ),
+    );
+    assert!(f_engine.retained_floats.is_empty());
+    assert_eq!(p2_done.operation_settled.len(), 1);
+    assert_eq!(p2_done.operation_settled[0].operation_id, "op-22");
+    assert_eq!(
+        p2_done.operation_settled[0].outcome,
+        OperationOutcome::FloatFrameProven
+    );
+}
+
+#[test]
+fn q2_operation_settled_retains_holds_minimize_incomplete_and_prunes_departure_with_trace_and_reuse()
+ {
+    use crate::world_report::{HeldWindowRow, OperationKind, OperationOutcome};
+
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let maximized = || WindowFact {
+        maximized: Some(true),
+        transient: Some(true),
+        ..fact("win-max", "out-a", 100)
+    };
+    let cleared = || WindowFact {
+        maximized: Some(false),
+        ..maximized()
+    };
+    let half = rect(404, 8, 388, 544);
+    let arrived_max = || WindowFact {
+        rect: Some(half),
+        maximized: Some(false),
+        ..maximized()
+    };
+
+    // Boot and settle both clear (op-13) and float (op-13) for win-max, plus
+    // a float (op-15) for win-other (unrelated key must survive win-max departure).
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![maximized(), float_fact("win-other", "out-a", 300, 100)],
+            None,
+            None,
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![maximized(), float_fact("win-other", "out-a", 300, 100)],
+            Vec::new(),
+            "win-max",
+            Some(13),
+            Some(WorldCommand::MoveDirectional {
+                window: WindowId("win-max".to_owned()),
+                direction: "right".to_owned(),
+                same_axis: crate::directional::SameAxisMove::default(),
+            }),
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report_clears(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![cleared(), float_fact("win-other", "out-a", 300, 100)],
+            "win-max",
+            vec![clear_attempt(
+                "op-13",
+                "win-max",
+                crate::world_report::FrameSetter::Accepted,
+                Some(true),
+                Some(false),
+            )],
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![screen("out-a", 0)],
+            vec![arrived_max(), float_fact("win-other", "out-a", 300, 100)],
+            None,
+            None,
+        ),
+    );
+    let other_float_cmd = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            vec![screen("out-a", 0)],
+            vec![arrived_max(), float_fact("win-other", "out-a", 300, 100)],
+            Some(15),
+            Some(WorldCommand::MoveDirectional {
+                window: WindowId("win-other".to_owned()),
+                direction: "left".to_owned(),
+                same_axis: crate::directional::SameAxisMove::default(),
+            }),
+        ),
+    );
+    let other_target = desire(&other_float_cmd, "win-other")
+        .effective_frame
+        .expect("other target");
+    let arrived_other = || WindowFact {
+        rect: Some(other_target),
+        ..float_fact("win-other", "out-a", 300, 100)
+    };
+    let all_settled = accepted(
+        &mut engine,
+        &report(
+            6,
+            6,
+            vec![screen("out-a", 0)],
+            vec![arrived_max(), arrived_other()],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(all_settled.operation_settled.len(), 3);
+
+    // 1. Minimized win-max retains both (win-max, clear) and (win-max, float), zero trace.
+    let min_trace = crate::world_engine::with_focus_trace_capture(|| {
+        let min_max = WindowFact {
+            minimized: Some(true),
+            rect: None,
+            ..arrived_max()
+        };
+        let reply = accepted(
+            &mut engine,
+            &report(
+                7,
+                7,
+                vec![screen("out-a", 0)],
+                vec![min_max, arrived_other()],
+                None,
+                None,
+            ),
+        );
+        assert_eq!(reply.operation_settled.len(), 3);
+    });
+    assert!(
+        min_trace
+            .iter()
+            .all(|l| !l.contains("operation-settled-dropped")),
+        "minimized window must not prune operation_settled: {min_trace:?}"
+    );
+    // Unminimize win-max before testing held/incomplete/departure so it is no
+    // longer in the minimized slot.
+    let unmin_reply = accepted(
+        &mut engine,
+        &report(
+            8,
+            8,
+            vec![screen("out-a", 0)],
+            vec![arrived_max(), arrived_other()],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(unmin_reply.operation_settled.len(), 3);
+
+    // 2. Held win-max retains both outcomes, zero trace.
+    let held_trace = crate::world_engine::with_focus_trace_capture(|| {
+        let mut held_report = report(
+            9,
+            9,
+            vec![screen("out-a", 0)],
+            vec![arrived_other()],
+            None,
+            None,
+        );
+        held_report.held_windows = vec![HeldWindowRow {
+            window: WindowId("win-max".to_owned()),
+            ordinal: 0,
+            output: Some(OutputId("out-a".to_owned())),
+            fields: Vec::new(),
+            diagnostic: None,
+            kind: crate::world_report::RowDiagnosticKind::InvalidFact,
+        }];
+        let reply = accepted(&mut engine, &held_report);
+        assert_eq!(reply.operation_settled.len(), 3);
+    });
+    assert!(
+        held_trace
+            .iter()
+            .all(|l| !l.contains("operation-settled-dropped")),
+        "held window must not prune operation_settled: {held_trace:?}"
+    );
+
+    // 3. Incomplete inventory omission retains win-max outcomes, zero trace.
+    let inc_trace = crate::world_engine::with_focus_trace_capture(|| {
+        let mut inc_report = report(
+            10,
+            10,
+            vec![screen("out-a", 0)],
+            vec![arrived_other()],
+            None,
+            None,
+        );
+        inc_report.inventory_complete = false;
+        let reply = accepted(&mut engine, &inc_report);
+        assert_eq!(reply.operation_settled.len(), 3);
+    });
+    assert!(
+        inc_trace
+            .iter()
+            .all(|l| !l.contains("operation-settled-dropped")),
+        "incomplete inventory must not prune operation_settled: {inc_trace:?}"
+    );
+
+    // 4. Proven departure (omitted with inventory_complete=true) prunes win-max
+    //    outcomes and emits trace diagnostics carrying final dropped payloads;
+    //    win-other remains untouched.
+    let dep_trace = crate::world_engine::with_focus_trace_capture(|| {
+        let reply = accepted(
+            &mut engine,
+            &report(
+                11,
+                11,
+                vec![screen("out-a", 0)],
+                vec![arrived_other()],
+                None,
+                None,
+            ),
+        );
+        assert_eq!(reply.operation_settled.len(), 1);
+        assert_eq!(reply.operation_settled[0].window.0, "win-other");
+    });
+    assert_eq!(
+        dep_trace
+            .iter()
+            .filter(|l| l.contains("ev=operation-settled-dropped"))
+            .count(),
+        2,
+        "expected exactly two dropped operation traces (clear + float): {dep_trace:?}"
+    );
+    assert_eq!(
+        dep_trace
+            .iter()
+            .filter(|l| {
+                *l == "omnitiler:core:trace ev=operation-settled-dropped gen=gen-1 obs=11 win=win-max kind=clear op=op-13 outcome=continued-float cause=-"
+            })
+            .count(),
+        1,
+        "missing exact clear dropped trace: {dep_trace:?}"
+    );
+    assert_eq!(
+        dep_trace
+            .iter()
+            .filter(|l| {
+                *l == "omnitiler:core:trace ev=operation-settled-dropped gen=gen-1 obs=11 win=win-max kind=float op=op-13 outcome=float-frame-proven cause=-"
+            })
+            .count(),
+        1,
+        "missing exact float dropped trace: {dep_trace:?}"
+    );
+
+    // Skip two publications, then reuse native handle win-max in a new lifetime:
+    // no inherited outcome or replacement authority.
+    for seq in 12..=13 {
+        let r = accepted(
+            &mut engine,
+            &report(
+                seq,
+                seq,
+                vec![screen("out-a", 0)],
+                vec![arrived_other()],
+                None,
+                None,
+            ),
+        );
+        assert_eq!(r.operation_settled.len(), 1);
+    }
+    let reused = accepted(
+        &mut engine,
+        &report(
+            14,
+            14,
+            vec![screen("out-a", 0)],
+            vec![float_fact("win-max", "out-a", 100, 100), arrived_other()],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        reused
+            .operation_settled
+            .iter()
+            .all(|ev| ev.window.0 != "win-max"),
+        "reused handle cannot inherit departed outcome: {:?}",
+        reused.operation_settled
+    );
+    assert_eq!(desire(&reused, "win-max").clear_operation, None);
+    assert_eq!(desire(&reused, "win-max").frame_operation, None);
+    assert!(engine.retained_clears.is_empty());
+    assert!(engine.retained_floats.is_empty());
+
+    // 5. Explicit close (even under incomplete inventory) prunes win-other;
+    //    disabled trace emits zero lines.
+    let disabled_lines = crate::world_engine::with_focus_trace_capture(|| {
+        crate::world_engine::with_focus_trace_disabled(|| {
+            let mut close_report = report(
+                15,
+                15,
+                vec![screen("out-a", 0)],
+                vec![float_fact("win-max", "out-a", 100, 100)],
+                None,
+                None,
+            );
+            close_report.inventory_complete = false;
+            close_report.closed = vec![WindowId("win-other".to_owned())];
+            let reply = accepted(&mut engine, &close_report);
+            assert!(
+                reply.operation_settled.is_empty(),
+                "explicit close prunes win-other even when inventory_complete=false: {:?}",
+                reply.operation_settled
+            );
+        });
+    });
+    assert!(
+        disabled_lines.is_empty(),
+        "disabled trace must emit zero lines: {disabled_lines:?}"
+    );
+    assert_eq!(OperationKind::Clear.as_str(), "clear");
+    assert_eq!(
+        OperationOutcome::FloatFrameProven.as_str(),
+        "float-frame-proven"
+    );
+}
