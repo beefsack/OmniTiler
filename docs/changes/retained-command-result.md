@@ -1,6 +1,6 @@
 # Retained command result and drag preview
 
-- Status: proposed design note for the final [C3 conversion](core-v4-review.md#user-decisions-2026-11-12); Q1 requires user choice before code or contract amendment. No acknowledged-events lane or every-historical-result delivery promise.
+- Status: approved design note for the final [C3 conversion](core-v4-review.md#user-decisions-2026-11-12); Q1 decided B ([user decisions](#user-decisions-2026-11-15)). Implementation pending. No acknowledged-events lane or every-historical-result delivery promise.
 - Scope: separate live `dragPreview` from command outcomes, and decide whether `WorldReplyV4` retains or removes non-preview `result`. Preserves broker requester-only `TakeCommandResult` ownership (`docs/decisions/contract.md:70`), `intentDesired`, `focusRequest`, and [retained settlement](retained-settlements.md#user-decisions-2026-11-14) lifetime/cleanup rules.
 
 ## Today (source evidence)
@@ -34,7 +34,12 @@
 - Pre-release in-place v4 amendment (`docs/decisions/contract.md#contract-authority-and-v4-migration`): no version bump, alias, or dual shape. Core, protocol, broker, KDE, and macOS shared types update together. Frozen `test-fixtures/world-wire/v4`, `stage5`, `stage5-v4`, and historical `kde-v4` stay byte-identical; active producer fixtures refresh through real producers.
 - KDE: broker keeps `TakeCommandResult` (`MAX_SETTLED_RESULTS = 1024`) and updates `CarriedPreview` to read `dragPreview` + `active_assoc()`. macOS: `map_gesture_preview` reads `reply.dragPreview` and checks active gesture id. Windows: adopts in future v4 port using `dragPreview` and issuing `BatchSettlement` (or `WorldReplyV4.result` if Q1 A).
 
-## Open question (user choice required)
+## User decisions (2026-11-15)
+
+- Q1: **B**. Remove `result` from `WorldReplyV4`; the issuing `Vec<BatchSettlement>` and broker requester-only `TakeCommandResult` are the sole command-outcome path. Why: no production v4 adapter reads non-preview `result`, one mechanism per job, and Tier 1 delivers command outcomes only to the requesting caller. Accepted cost: protocol-only inline callers inspecting only `WorldReplyV4` lose non-preview outcomes. Q1 A material below is historical.
+- The mechanical `dragPreview` separation and its retained lifecycle proceed as proposed (presented with Q1, no objection).
+
+## Q1 record (decided)
 
 ### Q1: Retain latest-wins `result` on `WorldReplyV4` or remove it?
 
