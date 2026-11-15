@@ -79,6 +79,35 @@ interface WorldTraceProbe {
         },
         sourceToken: string,
     ): (ref: object, rect: { x: number; y: number; w: number; h: number }) => boolean;
+    noteSettlementReceipt(parsed: WorldReply): void;
+    noteSettlementApplied(parsed: WorldReply): void;
+    noteGestureSettlementDecision(
+        path: "discharge" | "in-apply",
+        parsed: WorldReply,
+        flight: CaptureFlight,
+        pending: { instance: string; serial: string; win: string } | null,
+        ackPending: { instance: string; serial: string } | null,
+        boundGen: string | null,
+        adapter: string,
+    ): void;
+    noteGestureAckArmed(
+        ack: object,
+        parsed: WorldReply,
+        matched: { instance: string; serial: string; coreId: string },
+    ): void;
+    noteGestureAckSend(ack: object, nonce: number): void;
+    noteGestureAckResponse(
+        nonce: number,
+        status: "fenced" | "unproven" | "retired",
+        reason: string,
+        ack: { gen: string; instance: string; serial: string } | null,
+        parsed: NativeGestureSnapshot | null,
+    ): void;
+    noteGestureReset(): void;
+    noteReplySkipped(stage: string, gen: string, req: string, rev: string, obs: string, reason: string): void;
+    noteIntentHeld(next: object, prev: object | null, parsed: WorldReply): void;
+    noteIntentCleared(prev: object | null, stage: "intent-hold" | "intent-persist", reason: string): void;
+    noteIntentGateSkipped(next: object, reason: string): void;
     stop(): void;
 }
 // A weak key preserves per-adapter isolation without leaving an unused local
@@ -553,6 +582,63 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         const traceDiagId = (value: unknown): string => (
             isOpaqueId(value) ? value as string : "-"
         );
+        const traceLogSafe = (line: string): void => {
+            try {
+                log(line);
+            } catch (error) {
+                void error;
+            }
+        };
+        let traceLastRetiredGesture: { gen: string; instance: string; serial: string; coreId: string } | null = null;
+        const traceAckByPending = new WeakMap<object, {
+            gen: string; req: string; rev: string; obs: string; instance: string; serial: string; coreId: string;
+        }>();
+        const traceAckCorrelations = new Map<number, {
+            gen: string; req: string; rev: string; obs: string; instance: string; serial: string; coreId: string;
+        }>();
+        const traceIntentMeta = new WeakMap<object, {
+            gen: string; req: string; rev: string; obs: string;
+        }>();
+        const traceEmitSettlementSnapshot = (phase: "receipt" | "apply", parsed: WorldReply): void => {
+            const gen = traceDiagId(parsed.gen);
+            const req = traceDiagId(parsed.req);
+            const rev = traceDiagId(parsed.rev);
+            const obs = traceDiagId(parsed.obs);
+            const ev = phase === "receipt" ? "settlement-receipt" : "settlement-applied";
+            traceLogSafe(
+                `omnitiler:world:trace ev=${ev} gen=${gen} req=${req} rev=${rev} obs=${obs} ` +
+                `ops=${parsed.operationSettled.length} switches=${parsed.switchSettled.length} ` +
+                `gesture=${parsed.gestureSettled !== null ? "present" : "none"}`,
+            );
+            if (parsed.gestureSettled !== null) {
+                const g = parsed.gestureSettled;
+                const assoc = parsed.gestureSettledAssoc;
+                traceLogSafe(
+                    `omnitiler:world:trace ev=settlement-gesture phase=${phase} gen=${gen} req=${req} rev=${rev} obs=${obs} ` +
+                    `id=${traceDiagId(g.id)} committed=${g.committed ? "true" : "false"} ` +
+                    `assocInstance=${assoc !== null ? traceDiagId(assoc.instance) : "-"} ` +
+                    `assocSerial=${assoc !== null ? traceDiagId(assoc.serial) : "-"} ` +
+                    `assocCoreId=${assoc !== null ? traceDiagId(assoc.coreId) : "-"}`,
+                );
+            }
+            for (const row of parsed.operationSettled) {
+                traceLogSafe(
+                    `omnitiler:world:trace ev=settlement-operation phase=${phase} gen=${gen} req=${req} rev=${rev} obs=${obs} ` +
+                    `win=${traceDiagId(row.win)} kind=${traceDiagId(row.kind)} op=${traceDiagId(row.op)} ` +
+                    `outcome=${traceDiagId(row.outcome)} cause=${traceDiagId(row.cause)}`,
+                );
+            }
+            for (const row of parsed.switchSettled) {
+                const shown = row.failed.slice(0, 8).map((w) => traceDiagId(w)).join(",");
+                const failedStr = shown !== "" ? shown : "-";
+                const omitted = Math.max(0, row.failed.length - 8);
+                const base =
+                    `omnitiler:world:trace ev=settlement-switch phase=${phase} gen=${gen} req=${req} rev=${rev} obs=${obs} ` +
+                    `out=${traceDiagId(row.out)} op=${traceDiagId(row.op)} outcome=${traceDiagId(row.outcome)} ` +
+                    `focus=${traceDiagId(row.focus)} fallback=${row.fallback ? "true" : "false"} failed=${failedStr}`;
+                traceLogSafe(omitted > 0 ? `${base} failedOmitted=${omitted}` : base);
+            }
+        };
         const traceDiagRect = (value: unknown): string => {
             if (Array.isArray(value) && value.length === 4 &&
                 (value as ReadonlyArray<unknown>).every((n) => typeof n === "number" && Number.isInteger(n))) {
@@ -1440,6 +1526,200 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     return base.setGeometry;
                 }
             },
+            noteSettlementReceipt: (parsed) => {
+                traceEmitSettlementSnapshot("receipt", parsed);
+            },
+            noteSettlementApplied: (parsed) => {
+                traceEmitSettlementSnapshot("apply", parsed);
+            },
+            noteGestureSettlementDecision: (path, parsed, flight, pending, ackPending, boundGen, adapter) => {
+                if (parsed.gestureSettled === null && pending === null) {
+                    return;
+                }
+                const settled = parsed.gestureSettled;
+                const settledAssoc = parsed.gestureSettledAssoc;
+                let decision: string;
+                let reason: string;
+                if (boundGen === null || parsed.gen !== boundGen) {
+                    decision = "fenced";
+                    reason = "gen";
+                } else if (parsed.adapter !== adapter) {
+                    decision = "fenced";
+                    reason = "adapter";
+                } else if (parsed.req !== flight.source) {
+                    decision = "fenced";
+                    reason = "req";
+                } else if (parsed.source !== flight.source) {
+                    decision = "fenced";
+                    reason = "source";
+                } else if (parsed.nativeInvalid !== flight.watermark) {
+                    decision = "fenced";
+                    reason = "nativeInvalid";
+                } else if (settled === null) {
+                    decision = "no-settled";
+                    reason = "no-settled";
+                } else if (pending === null) {
+                    if (
+                        settledAssoc !== null &&
+                        traceLastRetiredGesture !== null &&
+                        traceLastRetiredGesture.gen === parsed.gen &&
+                        traceLastRetiredGesture.instance === settledAssoc.instance &&
+                        traceLastRetiredGesture.serial === settledAssoc.serial &&
+                        traceLastRetiredGesture.coreId === settledAssoc.coreId &&
+                        settled.id === settledAssoc.coreId
+                    ) {
+                        decision = "inert-already-retired";
+                        reason = "already-retired";
+                    } else {
+                        decision = "no-pending-head";
+                        reason = "no-pending-head";
+                    }
+                } else if (settledAssoc === null) {
+                    decision = "fenced";
+                    reason = "missing-association";
+                } else if (typeof settled.id !== "string" || settled.id === "" || settled.id !== settledAssoc.coreId) {
+                    decision = "fenced";
+                    reason = "coreId";
+                } else if (settledAssoc.instance !== pending.instance || settledAssoc.serial !== pending.serial) {
+                    decision = "fenced";
+                    reason = "native-identity";
+                } else if (ackPending !== null) {
+                    if (ackPending.instance === pending.instance && ackPending.serial === pending.serial) {
+                        decision = "ack-already-underway";
+                        reason = "already-underway";
+                    } else {
+                        decision = "fenced";
+                        reason = "ack-busy";
+                    }
+                } else {
+                    decision = "ack-armed";
+                    reason = "matched";
+                }
+                const fg = flight.gesture !== null
+                    ? `${traceDiagId(flight.gesture.instance)}:${traceDiagId(flight.gesture.serial)}:${traceDiagId(flight.gesture.win)}`
+                    : "null";
+                traceLogSafe(
+                    `omnitiler:world:trace ev=gesture-settlement-decision path=${path} ` +
+                    `gen=${traceDiagId(parsed.gen)} req=${traceDiagId(parsed.req)} rev=${traceDiagId(parsed.rev)} obs=${traceDiagId(parsed.obs)} ` +
+                    `decision=${decision} reason=${reason} ` +
+                    `settledId=${settled !== null ? traceDiagId(settled.id) : "-"} ` +
+                    `assocInstance=${settledAssoc !== null ? traceDiagId(settledAssoc.instance) : "-"} ` +
+                    `assocSerial=${settledAssoc !== null ? traceDiagId(settledAssoc.serial) : "-"} ` +
+                    `assocCoreId=${settledAssoc !== null ? traceDiagId(settledAssoc.coreId) : "-"} ` +
+                    `pendingInstance=${pending !== null ? traceDiagId(pending.instance) : "-"} ` +
+                    `pendingSerial=${pending !== null ? traceDiagId(pending.serial) : "-"} ` +
+                    `pendingWin=${pending !== null ? traceDiagId(pending.win) : "-"} ` +
+                    `flightGesture=${fg}`,
+                );
+            },
+            noteGestureAckArmed: (ack, parsed, matched) => {
+                traceAckByPending.set(ack, {
+                    gen: parsed.gen,
+                    req: parsed.req,
+                    rev: parsed.rev,
+                    obs: parsed.obs,
+                    instance: matched.instance,
+                    serial: matched.serial,
+                    coreId: matched.coreId,
+                });
+            },
+            noteGestureAckSend: (ack, nonce) => {
+                const corr = traceAckByPending.get(ack);
+                if (corr === undefined) {
+                    return;
+                }
+                traceAckCorrelations.delete(nonce);
+                while (traceAckCorrelations.size >= 8) {
+                    const oldest = traceAckCorrelations.keys().next();
+                    if (oldest.done) {
+                        break;
+                    }
+                    traceAckCorrelations.delete(oldest.value as number);
+                }
+                traceAckCorrelations.set(nonce, corr);
+            },
+            noteGestureAckResponse: (nonce, status, reason, ack, parsed) => {
+                const corr = traceAckCorrelations.get(nonce) ?? null;
+                if (status === "retired" && ack !== null && corr !== null) {
+                    traceLastRetiredGesture = {
+                        gen: corr.gen,
+                        instance: corr.instance,
+                        serial: corr.serial,
+                        coreId: corr.coreId,
+                    };
+                }
+                traceLogSafe(
+                    `omnitiler:world:trace ev=gesture-ack-response ` +
+                    `gen=${corr !== null ? traceDiagId(corr.gen) : "-"} ` +
+                    `req=${corr !== null ? traceDiagId(corr.req) : "-"} ` +
+                    `rev=${corr !== null ? traceDiagId(corr.rev) : "-"} ` +
+                    `obs=${corr !== null ? traceDiagId(corr.obs) : "-"} ` +
+                    `instance=${corr !== null ? traceDiagId(corr.instance) : "-"} ` +
+                    `serial=${corr !== null ? traceDiagId(corr.serial) : "-"} ` +
+                    `coreId=${corr !== null ? traceDiagId(corr.coreId) : "-"} ` +
+                    `status=${status} reason=${reason} ` +
+                    `nextPhase=${parsed !== null ? traceDiagId(parsed.phase) : "-"} ` +
+                    `nextInstance=${parsed !== null ? traceDiagId(parsed.instance) : "-"} ` +
+                    `nextSerial=${parsed !== null ? traceDiagId(parsed.serial) : "-"}`,
+                );
+            },
+            noteGestureReset: () => {
+                traceLastRetiredGesture = null;
+                traceAckCorrelations.clear();
+            },
+            noteReplySkipped: (stage, gen, req, rev, obs, reason) => {
+                traceLogSafe(
+                    `omnitiler:world:trace ev=reply-skipped stage=${stage} ` +
+                    `gen=${traceDiagId(gen)} req=${traceDiagId(req)} rev=${traceDiagId(rev)} obs=${traceDiagId(obs)} ` +
+                    `reason=${reason}`,
+                );
+            },
+            noteIntentHeld: (next, prev, parsed) => {
+                if (prev !== null) {
+                    const prevMeta = traceIntentMeta.get(prev);
+                    if (prevMeta !== undefined) {
+                        traceLogSafe(
+                            `omnitiler:world:trace ev=reply-skipped stage=intent-hold ` +
+                            `gen=${traceDiagId(prevMeta.gen)} req=${traceDiagId(prevMeta.req)} ` +
+                            `rev=${traceDiagId(prevMeta.rev)} obs=${traceDiagId(prevMeta.obs)} ` +
+                            `reason=replaced-by-newer-reply`,
+                        );
+                    }
+                }
+                traceIntentMeta.set(next, {
+                    gen: parsed.gen,
+                    req: parsed.req,
+                    rev: parsed.rev,
+                    obs: parsed.obs,
+                });
+            },
+            noteIntentCleared: (prev, stage, reason) => {
+                if (prev === null) {
+                    return;
+                }
+                const prevMeta = traceIntentMeta.get(prev);
+                if (prevMeta === undefined) {
+                    return;
+                }
+                traceLogSafe(
+                    `omnitiler:world:trace ev=reply-skipped stage=${stage} ` +
+                    `gen=${traceDiagId(prevMeta.gen)} req=${traceDiagId(prevMeta.req)} ` +
+                    `rev=${traceDiagId(prevMeta.rev)} obs=${traceDiagId(prevMeta.obs)} ` +
+                    `reason=${reason}`,
+                );
+            },
+            noteIntentGateSkipped: (next, reason) => {
+                const meta = traceIntentMeta.get(next);
+                if (meta === undefined) {
+                    return;
+                }
+                traceLogSafe(
+                    `omnitiler:world:trace ev=reply-skipped stage=intent-gate ` +
+                    `gen=${traceDiagId(meta.gen)} req=${traceDiagId(meta.req)} ` +
+                    `rev=${traceDiagId(meta.rev)} obs=${traceDiagId(meta.obs)} ` +
+                    `reason=${reason}`,
+                );
+            },
             stop: () => {
                 try {
                     for (const win of [...traceRequested.keys()]) {
@@ -1450,6 +1730,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     traceCmdSubjects.clear();
                     traceFlightCmds.clear();
                     traceAttemptSnap = [];
+                    traceLastRetiredGesture = null;
+                    traceAckCorrelations.clear();
                 } catch (error) {
                     void error;
                 }
@@ -3244,6 +3526,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         dropFollowup = null;
                         clearGestureAck();
                         clearTerminalCaptureRetry();
+                        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                            worldTraceProbes.get(state)?.noteGestureReset();
+                        }
                         lastResolvedCaptureSource = null;
                         gestureWaiterOutstanding = false;
                         gestureWaiterGen = null;
@@ -4208,6 +4493,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         gestureAckNonce += 1;
         ack.nonce = gestureAckNonce;
         const nonce = ack.nonce;
+        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+            worldTraceProbes.get(state)?.noteGestureAckSend(ack, nonce);
+        }
         const gestureCall = resolveGestureCallDbus();
         if (gestureCall === null) {
             noteGestureAckFailed();
@@ -4311,16 +4599,25 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
         const ack = gestureAckPending;
         if (ack === null || nonce !== ack.nonce) {
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                worldTraceProbes.get(state)?.noteGestureAckResponse(nonce, "fenced", "stale-nonce", ack, null);
+            }
             log("omnitiler:world:gesture-ack-stale recovery=ignore");
             return;
         }
         if (state.boundGen === null || state.boundGen !== ack.gen) {
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                worldTraceProbes.get(state)?.noteGestureAckResponse(nonce, "fenced", "stale-gen", ack, null);
+            }
             log("omnitiler:world:gesture-ack-stale recovery=ignore");
             return;
         }
         clearGestureAck();
         const parsed = parseNativeGesture(reply);
         if (parsed === null) {
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                worldTraceProbes.get(state)?.noteGestureAckResponse(nonce, "unproven", "malformed", ack, null);
+            }
             log("omnitiler:world:gesture-ack-malformed recovery=host-deadline-unknown");
             gestureSnapshot = null;
             gestureTerminalPending = null;
@@ -4330,6 +4627,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return;
         }
         if (!parsed.available) {
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                worldTraceProbes.get(state)?.noteGestureAckResponse(nonce, "unproven", "unavailable", ack, parsed);
+            }
             log("omnitiler:world:gesture-ack-unavailable recovery=host-deadline-unknown");
             gestureSnapshot = null;
             gestureTerminalPending = null;
@@ -4339,6 +4639,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return;
         }
         if (parsed.superseded) {
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                worldTraceProbes.get(state)?.noteGestureAckResponse(nonce, "unproven", "superseded", ack, parsed);
+            }
             log("omnitiler:world:gesture-ack-superseded recovery=host-deadline");
             gestureTerminalPending = null;
             scheduleGestureRecovery();
@@ -4347,6 +4650,30 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         gestureSnapshot = parsed;
         gestureTerminalPending = null;
         const terminal = parsed.phase === "released" || parsed.phase === "cancelled";
+        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+            let status: "unproven" | "retired" = "retired";
+            let reason: string = parsed.phase;
+            if (parsed.instance !== ack.instance) {
+                status = "unproven";
+                reason = "rotated-instance";
+            } else if (parsed.phase === "idle") {
+                status = "retired";
+                reason = "idle";
+            } else {
+                const cmp = compareU64(parsed.serial, ack.serial);
+                if (cmp === 0) {
+                    status = "unproven";
+                    reason = "same-head";
+                } else if (cmp < 0) {
+                    status = "unproven";
+                    reason = "older-head";
+                } else {
+                    status = "retired";
+                    reason = terminal ? "next-terminal" : parsed.phase;
+                }
+            }
+            worldTraceProbes.get(state)?.noteGestureAckResponse(nonce, status, reason, ack, parsed);
+        }
         if (terminal) {
             gestureTerminalPending = { instance: parsed.instance, serial: parsed.serial, win: parsed.win };
             log(`omnitiler:world:gesture-ack-terminal phase=${parsed.phase} serial=${parsed.serial}`);
@@ -4427,6 +4754,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         gestureAckNonce += 1;
         const nonce = gestureAckNonce;
         gestureAckPending = { instance: matched.instance, serial: matched.serial, gen, nonce, attempts: 1 };
+        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+            worldTraceProbes.get(state)?.noteGestureAckArmed(gestureAckPending, parsed, matched);
+        }
         log(`omnitiler:world:gesture-ack id=${token(matched.coreId)} serial=${matched.serial}`);
         sendGestureAck();
     };
@@ -4471,6 +4801,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     const tryDischargeTerminalSettlement = (parsed: WorldReply, flight: CaptureFlight): boolean => {
         if (stopped) {
             return false;
+        }
+        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+            worldTraceProbes.get(state)?.noteGestureSettlementDecision(
+                "discharge", parsed, flight, gestureTerminalPending, gestureAckPending, state.boundGen, state.adapter,
+            );
         }
         const matched = matchingPendingGestureTerminal(parsed, flight);
         if (matched === null) {
@@ -4778,9 +5113,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // recovery the accept path uses; true runs it.
     const gateIntentApply = (next: IntentPendingApply): boolean => {
         if (stopped) {
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                worldTraceProbes.get(state)?.noteIntentGateSkipped(next, "stopped");
+            }
             return false;
         }
         if (state.boundGen === null || next.gen !== state.boundGen) {
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                worldTraceProbes.get(state)?.noteIntentGateSkipped(next, "generation-mismatch");
+            }
             log("omnitiler:world:take-stale recovery=catchup");
             if (state.dirty || pendingQueue.length > 0) {
                 scheduleDispatch();
@@ -4789,21 +5130,33 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return false;
         }
         if (settingsAcceptedGen !== state.boundGen) {
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                worldTraceProbes.get(state)?.noteIntentGateSkipped(next, "settings-gen-mismatch");
+            }
             scheduleDispatch();
             wakeFollowup();
             return false;
         }
         if (pendingSettings !== null && pendingSettings.gen === state.boundGen) {
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                worldTraceProbes.get(state)?.noteIntentGateSkipped(next, "settings-pending");
+            }
             scheduleDispatch();
             wakeFollowup();
             return false;
         }
         if (next.settingsRev !== settingsAcceptedRev) {
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                worldTraceProbes.get(state)?.noteIntentGateSkipped(next, "settings-rev-mismatch");
+            }
             scheduleDispatch();
             wakeFollowup();
             return false;
         }
         if (compareU64(next.rev, state.lastAcceptedRev) < 0) {
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                worldTraceProbes.get(state)?.noteIntentGateSkipped(next, "superseded-rev");
+            }
             log("omnitiler:world:stale reason=superseded-during-persist recovery=catchup");
             try {
                 presentationSubscriber.notifyInvalidated();
@@ -4817,6 +5170,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return false;
         }
         if (state.currentInvalid !== next.watermark) {
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                worldTraceProbes.get(state)?.noteIntentGateSkipped(next, "superseded-watermark");
+            }
             log("omnitiler:world:stale reason=superseded-during-persist recovery=catchup");
             try {
                 presentationSubscriber.notifyInvalidated();
@@ -4834,6 +5190,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     const startIntentWrite = (): void => {
         if (intentWriteBusy || stopped) {
             if (stopped) {
+                if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                    worldTraceProbes.get(state)?.noteIntentCleared(intentPendingApply, "intent-hold", "stopped");
+                }
                 intentPendingApply = null;
             }
             return;
@@ -4845,6 +5204,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         intentStore.persist((ok) => {
             intentWriteBusy = false;
             if (stopped) {
+                if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                    worldTraceProbes.get(state)?.noteIntentCleared(intentPendingApply, "intent-hold", "stopped");
+                }
                 intentPendingApply = null;
                 return;
             }
@@ -4853,6 +5215,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 // writes: report once, keep the desired target, drop the
                 // held reply, and let the next accepted reply drive the
                 // covering write. No auto-retry, no old-reply resume.
+                if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                    worldTraceProbes.get(state)?.noteIntentCleared(intentPendingApply, "intent-persist", "intent-write-failed");
+                }
                 log("omnitiler:world:intent-write-failed recovery=on-next-accept");
                 intentPendingApply = null;
                 return;
@@ -4950,6 +5315,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // Exact-identity gesture ack: routes through the same
                     // pending-FIFO-head check using the retained terminal
                     // and its broker-pinned association.
+                    if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                        worldTraceProbes.get(state)?.noteGestureSettlementDecision(
+                            "in-apply", parsed, flight, gestureTerminalPending, gestureAckPending, state.boundGen, state.adapter,
+                        );
+                    }
                     try {
                         ackGestureTerminal(parsed, flight);
                     } catch (error) {
@@ -5420,6 +5790,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // no local keepAbove classification writes.
                     log(`omnitiler:world:applied rev=${token(parsed.rev)} geom=${applied.geometryWrites} member=${applied.membershipWrites} views=${applied.viewWrites} mk=${applied.creations} rm=${applied.removals} fx=${applied.effects} held=${applied.held}`);
                     if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                        worldTraceProbes.get(state)?.noteSettlementApplied(parsed);
                         worldTraceProbes.get(state)?.noteTraceApplied(flight, parsed, fresh, takePairs);
                     }
                     // B9 single-observation boundary: the first accepted
@@ -5461,6 +5832,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // runApply run only after durable equality plus the
                     // freshness recheck. Equality means zero disk writes.
                     if (parsed.gen !== state.boundGen) {
+                        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                            worldTraceProbes.get(state)?.noteReplySkipped("post-accept", parsed.gen, parsed.req, parsed.rev, parsed.obs, "generation-mismatch");
+                        }
                         return;
                     }
                     intentStore.setDesired(parsed.intentDesired, parsed.gen);
@@ -5469,10 +5843,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         // this slot while the covering write flies, and the
                         // completion converges latest without resuming old
                         // replies. Failure waits for the next accept.
-                        intentPendingApply = {
+                        const nextApply: IntentPendingApply = {
                             run: runApply, gen: parsed.gen, watermark: flight.watermark,
                             rev: parsed.rev, settingsRev: settingsAcceptedRev,
                         };
+                        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                            worldTraceProbes.get(state)?.noteIntentHeld(nextApply, intentPendingApply, parsed);
+                        }
+                        intentPendingApply = nextApply;
                         startIntentWrite();
                         return;
                     }
@@ -5481,16 +5859,24 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         // still flying while durable already equals latest:
                         // hold accept order behind it without a new bus
                         // write; the completion runs the newest held reply.
-                        intentPendingApply = {
+                        const nextApply: IntentPendingApply = {
                             run: runApply, gen: parsed.gen, watermark: flight.watermark,
                             rev: parsed.rev, settingsRev: settingsAcceptedRev,
                         };
+                        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                            worldTraceProbes.get(state)?.noteIntentHeld(nextApply, intentPendingApply, parsed);
+                        }
+                        intentPendingApply = nextApply;
                         return;
                     }
-                    intentPendingApply = {
+                    const nextApply: IntentPendingApply = {
                         run: runApply, gen: parsed.gen, watermark: flight.watermark,
                         rev: parsed.rev, settingsRev: settingsAcceptedRev,
                     };
+                    if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                        worldTraceProbes.get(state)?.noteIntentHeld(nextApply, intentPendingApply, parsed);
+                    }
+                    intentPendingApply = nextApply;
                     {
                         const next = intentPendingApply;
                         intentPendingApply = null;
@@ -5991,11 +6377,18 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         wakeFollowup();
                         return;
                     }
+                    if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                        worldTraceProbes.get(state)?.noteSettlementReceipt(parsed);
+                    }
                     // Previous accepted snapshot is the accepted-reply cache
                     // in adapter state; the core owns admitted-lifetime
                     // tracking across generation rebinds.
                     const verdict = state.acceptReply(parsed, flight.source, flight.watermark);
-                    if (!verdict.applied) {                        log(`omnitiler:world:stale reason=${token(verdict.reason)} recovery=catchup`);
+                    if (!verdict.applied) {
+                        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                            worldTraceProbes.get(state)?.noteReplySkipped("accept", parsed.gen, parsed.req, parsed.rev, parsed.obs, verdict.reason);
+                        }
+                        log(`omnitiler:world:stale reason=${token(verdict.reason)} recovery=catchup`);
                         // Ack-only discharge first: a bound old reply can
                         // still carry the exact settlement for the pending
                         // terminal even when the snapshot is stale. Only a
@@ -6034,6 +6427,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         // terminal result), but this observation is
                         // superseded, so no setters run on it. Follow-up
                         // observes the newer watermark (dirty is set).
+                        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                            worldTraceProbes.get(state)?.noteReplySkipped("flight", parsed.gen, parsed.req, parsed.rev, parsed.obs, "superseded-during-flight");
+                        }
                         log("omnitiler:world:stale reason=superseded-during-flight recovery=catchup");
                         // Retained desire durability: an accepted but
                         // superseded reply still replaces the latest desired
@@ -6044,9 +6440,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         if (parsed.gen === state.boundGen) {
                             intentStore.setDesired(parsed.intentDesired, parsed.gen);
                             if (intentStore.needsWrite()) {
+                                if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                                    worldTraceProbes.get(state)?.noteIntentCleared(intentPendingApply, "intent-hold", "dropped-by-superseded-reply");
+                                }
                                 intentPendingApply = null;
                                 startIntentWrite();
                             } else if (intentWriteBusy) {
+                                if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                                    worldTraceProbes.get(state)?.noteIntentCleared(intentPendingApply, "intent-hold", "dropped-by-superseded-reply");
+                                }
                                 intentPendingApply = null;
                             }
                         }
@@ -6088,6 +6490,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             // and result updates already no-op inside the
                             // take lane; the stream continues from the
                             // current generation.
+                            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                                worldTraceProbes.get(state)?.noteReplySkipped("take", parsed.gen, parsed.req, parsed.rev, parsed.obs, "generation-mismatch");
+                            }
                             log("omnitiler:world:take-stale recovery=catchup");
                             if (state.dirty || pendingQueue.length > 0) {
                                 scheduleDispatch();

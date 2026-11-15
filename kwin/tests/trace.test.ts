@@ -122,6 +122,23 @@ describe("world entry probe compile-time stripping", () => {
             "focusPress",
             "focusApply",
             "worldTraceProbes",
+            "noteSettlementReceipt",
+            "noteSettlementApplied",
+            "noteGestureSettlementDecision",
+            "noteGestureAckArmed",
+            "noteGestureAckSend",
+            "noteGestureAckResponse",
+            "noteGestureReset",
+            "noteReplySkipped",
+            "noteIntentHeld",
+            "noteIntentCleared",
+            "noteIntentGateSkipped",
+            "traceLastRetiredGesture",
+            "traceAckByPending",
+            "traceAckCorrelations",
+            "traceIntentMeta",
+            "traceEmitSettlementSnapshot",
+            "traceLogSafe",
         ]) {
             assert.ok(!bundle.includes(marker), `${label} bundle must not carry probe identifier ${marker}`);
         }

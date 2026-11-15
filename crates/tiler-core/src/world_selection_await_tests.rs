@@ -8530,7 +8530,7 @@ fn q2_switch_output_retention_and_departure_with_trace_and_reuse() {
         dep_trace
             .iter()
             .filter(|l| {
-                *l == "omnitiler:core:trace ev=switch-settled-dropped gen=gen-1 obs=10 out=out-b op=op-5 outcome=complete focus=proven fallback=false failed="
+                *l == "omnitiler:core:trace ev=switch-settled-dropped gen=gen-1 req=req-10 rev=10 obs=10 out=out-b op=op-5 outcome=complete focus=proven fallback=false failed="
             })
             .count(),
         1,

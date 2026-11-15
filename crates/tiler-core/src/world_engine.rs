@@ -353,9 +353,24 @@ pub(crate) fn emit_resize_refusal(line: String) {
     let _ = writeln!(std::io::stderr(), "{line}");
 }
 
+const TRACE_FAILED_CAP: usize = 8;
+
+fn format_bounded_failed(failed: &[WindowId]) -> (String, usize) {
+    let shown = failed
+        .iter()
+        .take(TRACE_FAILED_CAP)
+        .map(|win| diag_id(&win.0))
+        .collect::<Vec<_>>()
+        .join(",");
+    let omitted = failed.len().saturating_sub(TRACE_FAILED_CAP);
+    (shown, omitted)
+}
+
 #[cfg(test)]
 std::thread_local! {
     static TEST_FOCUS_TRACE_SINK: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+    static TEST_SETTLEMENT_TRACE_SINK: std::cell::RefCell<Option<Vec<String>>> =
         const { std::cell::RefCell::new(None) };
     static TEST_FOCUS_TRACE_OVERRIDE: std::cell::RefCell<Option<bool>> =
         const { std::cell::RefCell::new(None) };
@@ -369,7 +384,9 @@ pub(crate) fn core_trace_enabled() -> bool {
         return enabled;
     }
     #[cfg(test)]
-    if TEST_FOCUS_TRACE_SINK.with(|sink| sink.borrow().is_some()) {
+    if TEST_FOCUS_TRACE_SINK.with(|sink| sink.borrow().is_some())
+        || TEST_SETTLEMENT_TRACE_SINK.with(|sink| sink.borrow().is_some())
+    {
         return true;
     }
     static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -400,6 +417,33 @@ pub(crate) fn emit_focus_trace(line: String) {
     emit_resize_refusal(line);
 }
 
+/// Best-effort trace-only published-settlement diagnostic write (or isolated
+/// thread-local capture in unit tests).
+pub(crate) fn emit_settlement_trace(line: String) {
+    #[cfg(test)]
+    {
+        if TEST_FOCUS_TRACE_OVERRIDE.with(|flag| *flag.borrow() == Some(false)) {
+            return;
+        }
+        let captured = TEST_SETTLEMENT_TRACE_SINK.with(|sink| {
+            let mut borrow = sink.borrow_mut();
+            if let Some(lines) = borrow.as_mut() {
+                lines.push(line.clone());
+                true
+            } else {
+                false
+            }
+        });
+        if captured {
+            return;
+        }
+        if TEST_FOCUS_TRACE_SINK.with(|sink| sink.borrow().is_some()) {
+            return;
+        }
+    }
+    emit_resize_refusal(line);
+}
+
 #[cfg(test)]
 pub(crate) fn with_focus_trace_capture<F: FnOnce()>(f: F) -> Vec<String> {
     struct Reset;
@@ -416,6 +460,24 @@ pub(crate) fn with_focus_trace_capture<F: FnOnce()>(f: F) -> Vec<String> {
     let _reset = Reset;
     f();
     TEST_FOCUS_TRACE_SINK.with(|sink| sink.borrow_mut().take().unwrap_or_default())
+}
+
+#[cfg(test)]
+pub(crate) fn with_settlement_trace_capture<F: FnOnce()>(f: F) -> Vec<String> {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_SETTLEMENT_TRACE_SINK.with(|sink| {
+                *sink.borrow_mut() = None;
+            });
+        }
+    }
+    TEST_SETTLEMENT_TRACE_SINK.with(|sink| {
+        *sink.borrow_mut() = Some(Vec::new());
+    });
+    let _reset = Reset;
+    f();
+    TEST_SETTLEMENT_TRACE_SINK.with(|sink| sink.borrow_mut().take().unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -1462,12 +1524,23 @@ pub struct WorldEngine {
         (WindowId, crate::world_report::OperationKind),
         crate::world_report::OperationEvent,
     >,
+    /// Trace-only transient buffer of dropped operation outcomes pruned during
+    /// the current staged run; populated only when `core_trace_enabled()`,
+    /// emitted and cleared solely at actual final publication/adoption.
+    pub(crate) staged_dropped_operations: BTreeMap<
+        (WindowId, crate::world_report::OperationKind),
+        crate::world_report::OperationEvent,
+    >,
     /// Retained latest-wins selection outcomes keyed by `OutputId`.
     /// Retained across reports through held outputs and incomplete
     /// inventories; pruned on proven output departure (complete-inventory
     /// absence from live and held screens). Fresh handshake/new generation
     /// clears all owners.
     pub(crate) switch_settled: BTreeMap<OutputId, crate::world_report::SwitchEvent>,
+    /// Trace-only transient buffer of dropped switch outcomes pruned during
+    /// the current staged run; populated only when `core_trace_enabled()`,
+    /// emitted and cleared solely at actual final publication/adoption.
+    pub(crate) staged_dropped_switches: BTreeMap<OutputId, crate::world_report::SwitchEvent>,
     /// Fresh-admission focus intents already emitted, by window id (D4):
     /// at-most-once per lifetime, pruned on close so a reused id focuses
     /// again as a fresh newcomer. Survives incarnation resets within the
@@ -1929,7 +2002,9 @@ impl WorldEngine {
             pending_forget: Vec::new(),
             command_result: None,
             operation_settled: BTreeMap::new(),
+            staged_dropped_operations: BTreeMap::new(),
             switch_settled: BTreeMap::new(),
+            staged_dropped_switches: BTreeMap::new(),
             placement_bootstrapped: false,
             admission_focus_spent: BTreeSet::new(),
             automatic_focus_tokens: BTreeMap::new(),
@@ -3537,30 +3612,24 @@ impl WorldEngine {
     /// Prune retained `operation_settled` and `switch_settled` outcomes when
     /// their owner departs (Q2 A): runs before `publish_v4` projects the
     /// reply so departed/closed owners' final outcomes are never published on
-    /// the wire. Emits a trace-level diagnostic carrying the final dropped
-    /// outcome when `OMNITILER_TRACE=1` (`core_trace_enabled()`). Held,
-    /// minimized, and incomplete omissions retain their owners; `gesture_terminal`
-    /// is generation-scoped and is never pruned here.
+    /// the wire. Buffers final dropped outcomes only when `OMNITILER_TRACE=1`
+    /// (`core_trace_enabled()`) so they emit solely after outbound gates
+    /// succeed at actual publication/adoption. Held, minimized, and incomplete
+    /// omissions retain their owners; `gesture_terminal` is generation-scoped
+    /// and is never pruned here.
     pub(crate) fn prune_settled_outcomes(&mut self) {
         let trace = core_trace_enabled();
         if !self.staged.observation.closed.is_empty() && !self.operation_settled.is_empty() {
             let closed: BTreeSet<WindowId> =
                 self.staged.observation.closed.iter().cloned().collect();
-            let generation = &self.core_generation_str;
-            let obs = self.staged.observation.observation_seq;
-            self.operation_settled.retain(|(win, _), event| {
-                if closed.contains(win) {
-                    if trace {
-                        emit_focus_trace(format!(
-                            "omnitiler:core:trace ev=operation-settled-dropped gen={} obs={} win={} kind={} op={} outcome={} cause={}",
-                            diag_id(generation),
-                            obs,
-                            diag_id(&event.window.0),
-                            event.kind.as_str(),
-                            diag_id(&event.operation_id),
-                            event.outcome.as_str(),
-                            event.cause.as_deref().map_or("-", diag_id),
-                        ));
+            let dropped_ops = &mut self.staged_dropped_operations;
+            self.operation_settled.retain(|key, event| {
+                if closed.contains(&key.0) {
+                    if trace
+                        && (dropped_ops.len() < crate::world_report::MAX_REPLY_OPERATIONS
+                            || dropped_ops.contains_key(key))
+                    {
+                        dropped_ops.insert(key.clone(), event.clone());
                     }
                     false
                 } else {
@@ -3593,24 +3662,19 @@ impl WorldEngine {
                 .filter(|win| self.engine_knows_window_any(win))
                 .cloned()
                 .collect();
-            let generation = &self.core_generation_str;
-            let obs = self.staged.observation.observation_seq;
-            self.operation_settled.retain(|(win, _), event| {
+            let dropped_ops = &mut self.staged_dropped_operations;
+            self.operation_settled.retain(|key, event| {
+                let win = &key.0;
                 let keep = live.contains(win)
                     || held.contains(win)
                     || excluded.contains(win)
                     || known.contains(win);
-                if !keep && trace {
-                    emit_focus_trace(format!(
-                        "omnitiler:core:trace ev=operation-settled-dropped gen={} obs={} win={} kind={} op={} outcome={} cause={}",
-                        diag_id(generation),
-                        obs,
-                        diag_id(&event.window.0),
-                        event.kind.as_str(),
-                        diag_id(&event.operation_id),
-                        event.outcome.as_str(),
-                        event.cause.as_deref().map_or("-", diag_id),
-                    ));
+                if !keep
+                    && trace
+                    && (dropped_ops.len() < crate::world_report::MAX_REPLY_OPERATIONS
+                        || dropped_ops.contains_key(key))
+                {
+                    dropped_ops.insert(key.clone(), event.clone());
                 }
                 keep
             });
@@ -3628,25 +3692,269 @@ impl WorldEngine {
                         .map(|held| held.output.clone()),
                 )
                 .collect();
-            let generation = &self.core_generation_str;
-            let obs = self.staged.observation.observation_seq;
+            let dropped_switches = &mut self.staged_dropped_switches;
             self.switch_settled.retain(|output, event| {
                 let keep = live_outputs.contains(output);
-                if !keep && trace {
-                    emit_focus_trace(format!(
-                        "omnitiler:core:trace ev=switch-settled-dropped gen={} obs={} out={} op={} outcome={} focus={} fallback={} failed={}",
-                        diag_id(generation),
-                        obs,
-                        diag_id(&event.output.0),
-                        diag_id(&event.operation_id),
-                        event.outcome.as_str(),
-                        event.focus.as_str(),
-                        event.fallback,
-                        event.failed.iter().map(|win| diag_id(&win.0)).collect::<Vec<_>>().join(","),
-                    ));
+                if !keep
+                    && trace
+                    && (dropped_switches.len() < crate::world_report::MAX_REPLY_SWITCH_EVENTS
+                        || dropped_switches.contains_key(output))
+                {
+                    dropped_switches.insert(output.clone(), event.clone());
                 }
                 keep
             });
+        }
+    }
+
+    /// Emit and clear trace-only Q2 dropped outcome diagnostics at actual
+    /// final publication/adoption, correlated to the final published reply's
+    /// `(gen, req, rev, obs)` (`OMNITILER_TRACE=1`, zero cost when disabled).
+    pub(crate) fn emit_staged_dropped_settlement_trace(
+        &mut self,
+        reply: &crate::world_report::WorldReplyV4,
+    ) {
+        if !core_trace_enabled() {
+            self.staged_dropped_operations.clear();
+            self.staged_dropped_switches.clear();
+            return;
+        }
+        let gen_str = diag_id(&reply.core_generation);
+        let req_str = diag_id(&reply.request_id);
+        let rev = reply.state_revision;
+        let obs = reply.based_on_observation_seq;
+        for event in self.staged_dropped_operations.values() {
+            emit_focus_trace(format!(
+                "omnitiler:core:trace ev=operation-settled-dropped gen={} req={} rev={} obs={} win={} kind={} op={} outcome={} cause={}",
+                gen_str,
+                req_str,
+                rev,
+                obs,
+                diag_id(&event.window.0),
+                event.kind.as_str(),
+                diag_id(&event.operation_id),
+                event.outcome.as_str(),
+                event.cause.as_deref().map_or("-", diag_id),
+            ));
+        }
+        for event in self.staged_dropped_switches.values() {
+            let (failed_shown, omitted) = format_bounded_failed(&event.failed);
+            if omitted > 0 {
+                emit_focus_trace(format!(
+                    "omnitiler:core:trace ev=switch-settled-dropped gen={} req={} rev={} obs={} out={} op={} outcome={} focus={} fallback={} failed={} failedOmitted={}",
+                    gen_str,
+                    req_str,
+                    rev,
+                    obs,
+                    diag_id(&event.output.0),
+                    diag_id(&event.operation_id),
+                    event.outcome.as_str(),
+                    event.focus.as_str(),
+                    event.fallback,
+                    failed_shown,
+                    omitted,
+                ));
+            } else {
+                emit_focus_trace(format!(
+                    "omnitiler:core:trace ev=switch-settled-dropped gen={} req={} rev={} obs={} out={} op={} outcome={} focus={} fallback={} failed={}",
+                    gen_str,
+                    req_str,
+                    rev,
+                    obs,
+                    diag_id(&event.output.0),
+                    diag_id(&event.operation_id),
+                    event.outcome.as_str(),
+                    event.focus.as_str(),
+                    event.fallback,
+                    failed_shown,
+                ));
+            }
+        }
+        self.staged_dropped_operations.clear();
+        self.staged_dropped_switches.clear();
+    }
+
+    fn pending_operation_id(
+        &self,
+        window: &WindowId,
+        kind: crate::world_report::OperationKind,
+    ) -> Option<&str> {
+        match kind {
+            crate::world_report::OperationKind::Clear => self
+                .retained_clears
+                .iter()
+                .find(|retained| &retained.window == window)
+                .map(|retained| retained.operation_id.as_str())
+                .or_else(|| {
+                    self.retained_born
+                        .iter()
+                        .find(|retained| &retained.window == window)
+                        .map(|retained| retained.operation_id.as_str())
+                }),
+            crate::world_report::OperationKind::Float => self
+                .retained_floats
+                .iter()
+                .find(|retained| &retained.window == window)
+                .map(|retained| retained.operation_id.as_str())
+                .or_else(|| {
+                    self.retained_clears
+                        .iter()
+                        .find(|retained| &retained.window == window && retained.float_route)
+                        .map(|retained| retained.operation_id.as_str())
+                }),
+        }
+    }
+
+    /// Emit trace-only per-published-reply retained settlement summary and
+    /// carried outcome rows (`OMNITILER_TRACE=1`, zero cost when disabled).
+    pub(crate) fn emit_published_settlement_trace(
+        &self,
+        prev_reply: Option<&crate::world_report::WorldReplyV4>,
+        reply: &crate::world_report::WorldReplyV4,
+        is_duplicate: bool,
+    ) {
+        if !core_trace_enabled() {
+            return;
+        }
+        let gen_str = diag_id(&reply.core_generation);
+        let req_str = diag_id(&reply.request_id);
+        let rev = reply.state_revision;
+        let obs = reply.based_on_observation_seq;
+        let gesture_state = if reply.gesture_settled.is_some() {
+            "present"
+        } else {
+            "none"
+        };
+        emit_settlement_trace(format!(
+            "omnitiler:core:trace ev=settlement-published gen={} req={} rev={} obs={} ready={} dup={} ops={} switches={} gesture={}",
+            gen_str,
+            req_str,
+            rev,
+            obs,
+            reply.ready,
+            is_duplicate,
+            reply.operation_settled.len(),
+            reply.switch_settled.len(),
+            gesture_state,
+        ));
+        if let Some(gesture) = &reply.gesture_settled {
+            let state = if !is_duplicate
+                && prev_reply.and_then(|prev| prev.gesture_settled.as_ref()) != Some(gesture)
+            {
+                "new"
+            } else {
+                "retained"
+            };
+            let pending = self
+                .gesture
+                .as_ref()
+                .map(|g| g.id.to_string())
+                .unwrap_or_else(|| "-".to_owned());
+            emit_settlement_trace(format!(
+                "omnitiler:core:trace ev=settlement-gesture gen={} req={} rev={} obs={} id={} owner={} kind=gesture outcome={} state={} pending={}",
+                gen_str,
+                req_str,
+                rev,
+                obs,
+                gesture.id,
+                gen_str,
+                if gesture.committed {
+                    "committed"
+                } else {
+                    "uncommitted"
+                },
+                state,
+                pending,
+            ));
+        }
+        for event in &reply.operation_settled {
+            let win_str = diag_id(&event.window.0);
+            let kind_str = event.kind.as_str();
+            let state = if !is_duplicate
+                && prev_reply.and_then(|prev| {
+                    prev.operation_settled
+                        .iter()
+                        .find(|prior| prior.window == event.window && prior.kind == event.kind)
+                }) != Some(event)
+            {
+                "new"
+            } else {
+                "retained"
+            };
+            let pending = self
+                .pending_operation_id(&event.window, event.kind)
+                .map_or("-", diag_id);
+            emit_settlement_trace(format!(
+                "omnitiler:core:trace ev=settlement-operation gen={} req={} rev={} obs={} key={}:{} owner={} kind={} op={} outcome={} cause={} state={} pending={}",
+                gen_str,
+                req_str,
+                rev,
+                obs,
+                win_str,
+                kind_str,
+                win_str,
+                kind_str,
+                diag_id(&event.operation_id),
+                event.outcome.as_str(),
+                event.cause.as_deref().map_or("-", diag_id),
+                state,
+                pending,
+            ));
+        }
+        for event in &reply.switch_settled {
+            let out_str = diag_id(&event.output.0);
+            let state = if !is_duplicate
+                && prev_reply.and_then(|prev| {
+                    prev.switch_settled
+                        .iter()
+                        .find(|prior| prior.output == event.output)
+                }) != Some(event)
+            {
+                "new"
+            } else {
+                "retained"
+            };
+            let pending = self
+                .retained_selection
+                .get(&event.output)
+                .map_or("-", |retained| diag_id(&retained.parent_op));
+            let (failed_shown, omitted) = format_bounded_failed(&event.failed);
+            if omitted > 0 {
+                emit_settlement_trace(format!(
+                    "omnitiler:core:trace ev=settlement-switch gen={} req={} rev={} obs={} key={} owner={} kind=switch op={} outcome={} focus={} fallback={} state={} pending={} failed={} failedOmitted={}",
+                    gen_str,
+                    req_str,
+                    rev,
+                    obs,
+                    out_str,
+                    out_str,
+                    diag_id(&event.operation_id),
+                    event.outcome.as_str(),
+                    event.focus.as_str(),
+                    event.fallback,
+                    state,
+                    pending,
+                    failed_shown,
+                    omitted,
+                ));
+            } else {
+                emit_settlement_trace(format!(
+                    "omnitiler:core:trace ev=settlement-switch gen={} req={} rev={} obs={} key={} owner={} kind=switch op={} outcome={} focus={} fallback={} state={} pending={} failed={}",
+                    gen_str,
+                    req_str,
+                    rev,
+                    obs,
+                    out_str,
+                    out_str,
+                    diag_id(&event.operation_id),
+                    event.outcome.as_str(),
+                    event.focus.as_str(),
+                    event.fallback,
+                    state,
+                    pending,
+                    failed_shown,
+                ));
+            }
         }
     }
 }

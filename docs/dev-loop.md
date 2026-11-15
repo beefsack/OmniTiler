@@ -386,6 +386,45 @@ existing owner/generation provenance plus the compiled-in source revision;
 
 - `omnitiler:world:ready <state> source=<source-rev>`
 
+### Retained settlement and reply-skip diagnostics (trace only)
+
+- Enable via `just dev trace`: exports `OMNITILER_TRACE=1` for Core and builds KWin with `KWIN_TRACE_ENABLED` (`__OMNITILER_TRACE__="1"`). Ordinary and installed builds strip KWin trace code (`--minify-syntax`) and gate Core trace before formatting/allocation when disabled. Logging is fail-open; no payload/wire changes, setters, retries, behavior changes, or content/titles are added or logged.
+- Shared correlation prefix `<corr>` is `gen=<gen> req=<req> rev=<rev> obs=<obs>`. Always include full `<corr>` when joining Q2 drops to the same published projection.
+
+Core (`OMNITILER_TRACE=1`, `crates/tiler-core/src/world_engine.rs`, `crates/tiler-core/src/world_admit_v4.rs`):
+
+- `omnitiler:core:trace ev=operation-settled-dropped <corr> win=<win> kind=<clear|float> op=<op> outcome=<outcome> cause=<cause|->`
+- `omnitiler:core:trace ev=switch-settled-dropped <corr> out=<out> op=<op> outcome=<outcome> focus=<focus> fallback=<true|false> failed=<ids> [failedOmitted=<N>]`
+- `omnitiler:core:trace ev=settlement-published <corr> ready=<true|false> dup=<true|false> ops=<N> switches=<N> gesture=<present|none>`
+- `omnitiler:core:trace ev=settlement-gesture <corr> id=<id> owner=<gen> kind=gesture outcome=<committed|uncommitted> state=<new|retained> pending=<id|->`
+- `omnitiler:core:trace ev=settlement-operation <corr> key=<win>:<kind> owner=<win> kind=<clear|float> op=<op> outcome=<outcome> cause=<cause|-> state=<new|retained> pending=<op|->`
+- `omnitiler:core:trace ev=settlement-switch <corr> key=<out> owner=<out> kind=switch op=<op> outcome=<outcome> focus=<focus> fallback=<true|false> state=<new|retained> pending=<op|-> failed=<ids> [failedOmitted=<N>]`
+- Semantics and bounds:
+  - Q2 drops (`*-settled-dropped`) are buffered only when trace is enabled and emitted/cleared after all outbound gates at actual publication (`world_admit_v4.rs`). Rejected candidates emit neither Q2 drops nor publication summaries; duplicate redelivery (`dup=true`) emits no Q2 removal.
+  - `state=new|retained` compares against the previous successful cached projection, not prior trace observations; `dup=true` forces `state=retained`.
+  - `ops=0 switches=0 gesture=none` proves an empty carried projection.
+  - `pending=<id|op|->` is the current actual pending key/operation; a preceding completion is not successor completion.
+  - `failed=<ids>` lists up to the first 8 comma-joined window IDs with optional `failedOmitted=<N>`; empty is `failed=` (empty string).
+
+KDE (`__OMNITILER_TRACE__="1"`, `kwin/src/world-entry.ts`):
+
+- `omnitiler:world:trace ev=settlement-receipt <corr> ops=<N> switches=<N> gesture=<present|none>`
+- `omnitiler:world:trace ev=settlement-applied <corr> ops=<N> switches=<N> gesture=<present|none>`
+- `omnitiler:world:trace ev=settlement-gesture phase=<receipt|apply> <corr> id=<id> committed=<true|false> assocInstance=<inst|-> assocSerial=<serial|-> assocCoreId=<id|->`
+- `omnitiler:world:trace ev=settlement-operation phase=<receipt|apply> <corr> win=<win> kind=<kind> op=<op> outcome=<outcome> cause=<cause|->`
+- `omnitiler:world:trace ev=settlement-switch phase=<receipt|apply> <corr> out=<out> op=<op> outcome=<outcome> focus=<focus> fallback=<true|false> failed=<ids|-> [failedOmitted=<N>]`
+  - `settlement-receipt` records a parsed accepted core wire shape before local freshness acceptance (may be followed by `reply-skipped`); `settlement-applied` records that the apply path ran, not atomic native completion or write authority.
+  - One outcome row per line; the full projection is bounded by existing 1024 operation / 1024 switch caps + 1 gesture, and `failed` is capped at 8 comma-joined IDs (empty `failed=-`) with optional `failedOmitted=<N>`.
+- `omnitiler:world:trace ev=gesture-settlement-decision path=<discharge|in-apply> <corr> decision=<decision> reason=<reason> settledId=<id|-> assocInstance=<inst|-> assocSerial=<serial|-> assocCoreId=<id|-> pendingInstance=<inst|-> pendingSerial=<serial|-> pendingWin=<win|-> flightGesture=<instance:serial:win|null>`
+  - `decision` / `reason`: `fenced` (`gen`, `adapter`, `req`, `source`, `nativeInvalid`, `missing-association`, `coreId`, `native-identity`, `ack-busy`); `no-settled` (`no-settled`); `no-pending-head` (`no-pending-head`); `ack-armed` (`matched`); `ack-already-underway` (`already-underway`); `inert-already-retired` (`already-retired`, emitted only after confirmed known same `gen` + association + `id` retirement).
+  - `flightGesture=null` means no gesture on this capture flight; `assoc*` refers to `gestureSettledAssoc` (retained terminal association), is independent of current-ingress `gestureAssoc` (it can remain present when current broker ingress is omitted), and must not be used to infer omitted ingress.
+- `omnitiler:world:trace ev=gesture-ack-response <corr> instance=<inst|-> serial=<serial|-> coreId=<id|-> status=<status> reason=<reason> nextPhase=<phase|-> nextInstance=<inst|-> nextSerial=<serial|->`
+  - `status=retired` (`idle`, `next-terminal`, or next phase) occurs only on a valid, available, non-superseded same-instance response with `idle` or strictly higher native serial. `status=unproven` uses `malformed`, `unavailable`, `superseded`, `rotated-instance`, `same-head`, `older-head`; `status=fenced` uses `stale-nonce`, `stale-gen`.
+  - `ack-armed` is not proof of native retirement; a no-op native ack returns the current snapshot.
+  - Original nonce provenance is preserved with bounded 8-entry correlation records; unknown, evicted, or reset correlation renders `-`, and late callbacks must not relabel newer acks. The last-retired slot clears on generation/handshake reset (no historical event log).
+- `omnitiler:world:trace ev=reply-skipped stage=<accept|flight|take|post-accept|intent-hold|intent-persist|intent-gate> <corr> reason=<reason>`
+  - Carries per-reply identity omitted by ordinary `stale` lines across acceptance (`generation-mismatch`, `adapter-mismatch`, `stale-req`, `not-ready`, `malformed-counter`, `stale-rev`), in-flight supersession (`superseded-during-flight`), async generation change (`generation-mismatch`), held-reply replacement/clear (`replaced-by-newer-reply`, `stopped`, `dropped-by-superseded-reply`), persist failure (`intent-write-failed`), and intent-gate skips (`stopped`, `generation-mismatch`, `settings-gen-mismatch`, `settings-pending`, `settings-rev-mismatch`, `superseded-rev`, `superseded-watermark`).
+
 ### KDE open-animation timing probe (trace only)
 
 - Enable through `just dev trace` (the launcher selects `npm run build:trace

@@ -355,6 +355,7 @@ impl WorldEngine {
                             Vec::new(),
                         );
                     };
+                    self.emit_published_settlement_trace(None, &cached, true);
                     return (V4RunOutcome::Duplicate(cached), Vec::new());
                 }
             }
@@ -555,6 +556,7 @@ impl WorldEngine {
             if let Some(refused) = Self::refuse_outbound_v4(&reply) {
                 return (refused, Vec::new());
             }
+            staged.emit_published_settlement_trace(self.last_reply_v4.as_ref(), &reply, false);
             *self = staged;
             return (V4RunOutcome::Accepted(reply), Vec::new());
         }
@@ -650,7 +652,7 @@ impl WorldEngine {
     /// watermarks, cache) exactly unchanged.
     pub(crate) fn finalize_v4_candidate(
         &mut self,
-        staged: WorldEngine,
+        mut staged: WorldEngine,
         report: &WorldReportV4,
         digest: u64,
         reply: WorldReplyV4,
@@ -684,6 +686,8 @@ impl WorldEngine {
                 message: MSG_REPLY_SIZE,
             };
         }
+        staged.emit_staged_dropped_settlement_trace(&reply);
+        staged.emit_published_settlement_trace(self.last_reply_v4.as_ref(), &reply, false);
         let consumed_reply = reply.command_consumed;
         *self = staged;
         // Typed replay cache: mirrors the legacy finish tail, including

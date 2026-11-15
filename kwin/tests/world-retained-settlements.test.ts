@@ -8,6 +8,7 @@ import { describe, it } from "node:test";
 
 import { parseConnectionError } from "../src/world-connection";
 import { startWorldAdapterEntry } from "../src/world-entry";
+import { parseNativeGesture } from "../src/world-gesture";
 import { isCoreWorldReply, isWorldRejection, parseWorldReply } from "../src/world-report";
 import { compareU64 } from "../src/world-seq";
 import { WorldBridge } from "./world-producer-harness";
@@ -105,6 +106,7 @@ function idleGestureJson(revision = "99"): string {
 
 function setupEntryHarness(opts: {
     wins?: Array<{ id: string; rect: { x: number; y: number; width: number; height: number } }>;
+    onLog?: (line: string) => void;
 } = {}) {
     const timers: Array<{ delay: number; cb: () => void; cancelled: boolean }> = [];
     const logs: string[] = [];
@@ -214,6 +216,7 @@ function setupEntryHarness(opts: {
         },
         log: (line) => {
             logs.push(line);
+            opts.onLog?.(line);
         },
     });
     assert.ok(handle !== null);
@@ -445,6 +448,48 @@ describe("KDE retained settlement discharge & retry isolation", () => {
                 gestureSettledAssoc: { instance: "gesture-1", serial: "7", coreId: "3" },
             })));
             assert.equal(h.ackCalls().length, 1, "redelivery after retirement is inert");
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=settlement-receipt gen=gen-1 req=${init.body.source} rev=1 obs=1 ops=0 switches=0 gesture=none`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=settlement-applied gen=gen-1 req=${init.body.source} rev=1 obs=1 ops=0 switches=0 gesture=none`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-settlement-decision path=discharge gen=gen-1 req=${issuing.body.source} rev=2 obs=2 decision=no-settled reason=no-settled settledId=- assocInstance=- assocSerial=- assocCoreId=- pendingInstance=gesture-1 pendingSerial=7 pendingWin=win-a flightGesture=gesture-1:7:win-a`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=settlement-receipt gen=gen-1 req=${retry.body.source} rev=1 obs=3 ops=2 switches=1 gesture=present`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=settlement-gesture phase=receipt gen=gen-1 req=${retry.body.source} rev=1 obs=3 id=3 committed=true assocInstance=gesture-1 assocSerial=7 assocCoreId=3`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=settlement-operation phase=receipt gen=gen-1 req=${retry.body.source} rev=1 obs=3 win=win-a kind=clear op=op-1 outcome=continued-tiled cause=-`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=settlement-operation phase=receipt gen=gen-1 req=${retry.body.source} rev=1 obs=3 win=win-a kind=float op=op-1 outcome=float-frame-proven cause=-`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=settlement-switch phase=receipt gen=gen-1 req=${retry.body.source} rev=1 obs=3 out=out-a op=op-2 outcome=complete focus=proven fallback=false failed=-`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-settlement-decision path=discharge gen=gen-1 req=${retry.body.source} rev=1 obs=3 decision=ack-armed reason=matched settledId=3 assocInstance=gesture-1 assocSerial=7 assocCoreId=3 pendingInstance=gesture-1 pendingSerial=7 pendingWin=win-a flightGesture=gesture-1:7:win-a`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=reply-skipped stage=accept gen=gen-1 req=${retry.body.source} rev=1 obs=3 reason=stale-rev`,
+            ));
+            assert.ok(!h.logs.includes(
+                `omnitiler:world:trace ev=settlement-applied gen=gen-1 req=${retry.body.source} rev=1 obs=3 ops=2 switches=1 gesture=present`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-ack-response gen=gen-1 req=${retry.body.source} rev=1 obs=3 instance=gesture-1 serial=7 coreId=3 status=retired reason=idle nextPhase=idle nextInstance=gesture-1 nextSerial=0`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-settlement-decision path=discharge gen=gen-1 req=${after.body.source} rev=4 obs=4 decision=inert-already-retired reason=already-retired settledId=3 assocInstance=gesture-1 assocSerial=7 assocCoreId=3 pendingInstance=- pendingSerial=- pendingWin=- flightGesture=null`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=settlement-applied gen=gen-1 req=${after.body.source} rev=4 obs=4 ops=0 switches=0 gesture=present`,
+            ));
         } finally {
             h.handle.stop();
         }
@@ -1285,6 +1330,33 @@ describe("KDE retained settlement native identity & freshness fences", () => {
             assert.equal(dropPayload["win"], "win-a");
             assert.equal(dropPayload["settled"], "1");
             assert.equal(dropPayload["committed"], true);
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-settlement-decision path=discharge gen=gen-0 req=${cap1.body.source} rev=2 obs=2 decision=fenced reason=gen settledId=1 assocInstance=gesture-1 assocSerial=5 assocCoreId=1 pendingInstance=gesture-1 pendingSerial=5 pendingWin=win-a flightGesture=gesture-1:5:win-a`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=reply-skipped stage=accept gen=gen-0 req=${cap1.body.source} rev=2 obs=2 reason=generation-mismatch`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-settlement-decision path=discharge gen=gen-1 req=${cap2.body.source} rev=3 obs=3 decision=fenced reason=adapter settledId=1 assocInstance=gesture-1 assocSerial=5 assocCoreId=1 pendingInstance=gesture-1 pendingSerial=5 pendingWin=win-a flightGesture=gesture-1:5:win-a`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=reply-skipped stage=accept gen=gen-1 req=${cap2.body.source} rev=3 obs=3 reason=adapter-mismatch`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-settlement-decision path=discharge gen=gen-1 req=${cap3.body.source} rev=4 obs=4 decision=fenced reason=native-identity settledId=1 assocInstance=gesture-other assocSerial=5 assocCoreId=1 pendingInstance=gesture-1 pendingSerial=5 pendingWin=win-a flightGesture=gesture-1:5:win-a`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-settlement-decision path=discharge gen=gen-1 req=stale-src rev=5 obs=5 decision=fenced reason=req settledId=1 assocInstance=gesture-1 assocSerial=5 assocCoreId=1 pendingInstance=gesture-1 pendingSerial=5 pendingWin=win-a flightGesture=gesture-1:5:win-a`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=reply-skipped stage=accept gen=gen-1 req=stale-src rev=5 obs=5 reason=stale-req`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-settlement-decision path=discharge gen=gen-1 req=${cap5.body.source} rev=6 obs=6 decision=ack-armed reason=matched settledId=1 assocInstance=gesture-1 assocSerial=5 assocCoreId=1 pendingInstance=gesture-1 pendingSerial=5 pendingWin=win-a flightGesture=gesture-1:5:win-a`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-settlement-decision path=in-apply gen=gen-1 req=${cap5.body.source} rev=6 obs=6 decision=ack-already-underway reason=already-underway settledId=1 assocInstance=gesture-1 assocSerial=5 assocCoreId=1 pendingInstance=gesture-1 pendingSerial=5 pendingWin=win-a flightGesture=gesture-1:5:win-a`,
+            ));
         } finally {
             h.handle.stop();
         }
@@ -1514,6 +1586,15 @@ describe("KDE retained settlement native identity & freshness fences", () => {
             assert.deepEqual(JSON.parse(h.ackCalls()[0]!.payload), { instance: "gesture-1", serial: "9" });
             assert.equal(h.geometryWrites.length, 0, "superseded-during-flight runs zero geometry writes");
             assert.equal(h.logs.filter((l) => l.startsWith("omnitiler:world:drop-settled ")).length, 0, "superseded-during-flight skips runApply and drop-settled");
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=reply-skipped stage=flight gen=gen-1 req=${cap1.body.source} rev=2 obs=2 reason=superseded-during-flight`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-settlement-decision path=discharge gen=gen-1 req=${cap1.body.source} rev=2 obs=2 decision=ack-armed reason=matched settledId=9 assocInstance=gesture-1 assocSerial=9 assocCoreId=9 pendingInstance=gesture-1 pendingSerial=9 pendingWin=win-a flightGesture=gesture-1:9:win-a`,
+            ));
+            assert.ok(!h.logs.includes(
+                `omnitiler:world:trace ev=settlement-applied gen=gen-1 req=${cap1.body.source} rev=2 obs=2 ops=0 switches=0 gesture=present`,
+            ));
         } finally {
             h.handle.stop();
         }
@@ -1549,6 +1630,12 @@ describe("KDE retained settlement native identity & freshness fences", () => {
             })));
             assert.equal(h.ackCalls().length, 0, "mismatched response nativeInvalid must not ack");
             assert.equal(h.logs.filter((l) => l.startsWith("omnitiler:world:drop-settled ")).length, 0, "mismatched response nativeInvalid must not log drop-settled");
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-settlement-decision path=discharge gen=gen-1 req=${cap1.body.source} rev=2 obs=2 decision=fenced reason=nativeInvalid settledId=10 assocInstance=gesture-1 assocSerial=10 assocCoreId=10 pendingInstance=gesture-1 pendingSerial=10 pendingWin=win-a flightGesture=gesture-1:10:win-a`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-settlement-decision path=in-apply gen=gen-1 req=${cap1.body.source} rev=2 obs=2 decision=fenced reason=nativeInvalid settledId=10 assocInstance=gesture-1 assocSerial=10 assocCoreId=10 pendingInstance=gesture-1 pendingSerial=10 pendingWin=win-a flightGesture=gesture-1:10:win-a`,
+            ));
 
             // Non-vacuity: subsequent fresh capture with matching nativeInvalid acks once.
             h.fireWindowActivated();
@@ -1562,6 +1649,350 @@ describe("KDE retained settlement native identity & freshness fences", () => {
             })));
             assert.equal(h.ackCalls().length, 1, "correct-bound fresh reply acks once");
             assert.deepEqual(JSON.parse(h.ackCalls()[0]!.payload), { instance: "gesture-1", serial: "10" });
+        } finally {
+            h.handle.stop();
+        }
+    });
+});
+
+describe("KDE retained settlement trace diagnostics", () => {
+    it("bounds switchSettled.failed at 8 with explicit failedOmitted on receipt and apply", () => {
+        const h = setupEntryHarness();
+        try {
+            h.connectScripted("test-adapter", "gen-1");
+            const init = h.popDescribe();
+            const failed = ["w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8", "w9", "w10"];
+            init.call.callback(JSON.stringify(makeBaseReply({
+                adapter: init.body.adapter, req: init.body.source, obs: "1", rev: "1",
+                source: init.body.source, nativeInvalid: init.body.nativeInvalid,
+                switchSettled: [
+                    { out: "out-a", op: "op-9", outcome: "completed-with-failures", failed, focus: "unproven", fallback: true },
+                ],
+            })));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=settlement-switch phase=receipt gen=gen-1 req=${init.body.source} rev=1 obs=1 out=out-a op=op-9 outcome=completed-with-failures focus=unproven fallback=true failed=w1,w2,w3,w4,w5,w6,w7,w8 failedOmitted=2`,
+            ));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=settlement-switch phase=apply gen=gen-1 req=${init.body.source} rev=1 obs=1 out=out-a op=op-9 outcome=completed-with-failures focus=unproven fallback=true failed=w1,w2,w3,w4,w5,w6,w7,w8 failedOmitted=2`,
+            ));
+        } finally {
+            h.handle.stop();
+        }
+    });
+
+    it("pins missing-association, coreId fence, unproven AckGesture responses (same-head, rotated-instance, malformed, unavailable, superseded), and stale-nonce", () => {
+        const h = setupEntryHarness();
+        try {
+            h.connectScripted("test-adapter", "gen-1");
+            const init = h.popDescribe();
+            init.call.callback(JSON.stringify(makeBaseReply({
+                adapter: init.body.adapter, req: init.body.source, obs: "1", rev: "1",
+                source: init.body.source, nativeInvalid: init.body.nativeInvalid,
+            })));
+
+            h.popWaitGesture().callback(gestureJson({ instance: "gesture-1", serial: "11", phase: "released", win: "win-a" }));
+            h.runTimers();
+
+            // missing-association
+            const cap1 = h.popDescribe();
+            cap1.call.callback(JSON.stringify(makeBaseReply({
+                adapter: cap1.body.adapter, gen: "gen-1", req: cap1.body.source, obs: "2", rev: "2",
+                source: cap1.body.source, nativeInvalid: cap1.body.nativeInvalid,
+                gestureSettled: { id: "11", committed: true },
+                gestureSettledAssoc: null,
+            })));
+            assert.equal(h.ackCalls().length, 0);
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-settlement-decision path=discharge gen=gen-1 req=${cap1.body.source} rev=2 obs=2 decision=fenced reason=missing-association settledId=11 assocInstance=- assocSerial=- assocCoreId=- pendingInstance=gesture-1 pendingSerial=11 pendingWin=win-a flightGesture=gesture-1:11:win-a`,
+            ));
+
+            // coreId mismatch
+            h.fireWindowActivated();
+            h.runTimers();
+            const cap2 = h.popDescribe();
+            cap2.call.callback(JSON.stringify(makeBaseReply({
+                adapter: cap2.body.adapter, gen: "gen-1", req: cap2.body.source, obs: "3", rev: "3",
+                source: cap2.body.source, nativeInvalid: cap2.body.nativeInvalid,
+                gestureSettled: { id: "11", committed: true },
+                gestureSettledAssoc: { instance: "gesture-1", serial: "11", coreId: "99" },
+            })));
+            assert.equal(h.ackCalls().length, 0);
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-settlement-decision path=discharge gen=gen-1 req=${cap2.body.source} rev=3 obs=3 decision=fenced reason=coreId settledId=11 assocInstance=gesture-1 assocSerial=11 assocCoreId=99 pendingInstance=gesture-1 pendingSerial=11 pendingWin=win-a flightGesture=gesture-1:11:win-a`,
+            ));
+
+            // Valid match arms ack
+            h.fireWindowActivated();
+            h.runTimers();
+            const cap3 = h.popDescribe();
+            cap3.call.callback(JSON.stringify(makeBaseReply({
+                adapter: cap3.body.adapter, gen: "gen-1", req: cap3.body.source, obs: "4", rev: "4",
+                source: cap3.body.source, nativeInvalid: cap3.body.nativeInvalid,
+                gestureSettled: { id: "11", committed: true },
+                gestureSettledAssoc: { instance: "gesture-1", serial: "11", coreId: "11" },
+            })));
+            assert.equal(h.ackCalls().length, 1);
+
+            // Same-head AckGesture response -> unproven, does NOT mark inert-already-retired
+            h.ackCalls()[0]!.callback(gestureJson({
+                instance: "gesture-1", serial: "11", revision: "5", phase: "released", win: "win-a", changed: 0,
+            }));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-ack-response gen=gen-1 req=${cap3.body.source} rev=4 obs=4 instance=gesture-1 serial=11 coreId=11 status=unproven reason=same-head nextPhase=released nextInstance=gesture-1 nextSerial=11`,
+            ));
+
+            // Late duplicate callback on same AckGesture -> fenced stale-nonce
+            h.ackCalls()[0]!.callback(idleGestureJson("6"));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-ack-response gen=gen-1 req=${cap3.body.source} rev=4 obs=4 instance=gesture-1 serial=11 coreId=11 status=fenced reason=stale-nonce nextPhase=- nextInstance=- nextSerial=-`,
+            ));
+
+            // Next settlement after same-head unproven ack: re-arms against newly set pending head or sees no-pending-head (never inert-already-retired)
+            h.runTimers();
+            const cap4 = h.popDescribe();
+            cap4.call.callback(JSON.stringify(makeBaseReply({
+                adapter: cap4.body.adapter, gen: "gen-1", req: cap4.body.source, obs: "5", rev: "5",
+                source: cap4.body.source, nativeInvalid: cap4.body.nativeInvalid,
+                gestureSettled: { id: "11", committed: true },
+                gestureSettledAssoc: { instance: "gesture-1", serial: "11", coreId: "11" },
+            })));
+            assert.equal(h.ackCalls().length, 2);
+            // Rotated-instance AckGesture response -> unproven
+            const rotatedPayload = gestureJson({
+                instance: "gesture-2", serial: "0", revision: "7", phase: "idle", win: "", kind: "",
+                startRect: null, startCursor: null, cursor: null, modalMove: 0, changed: 0,
+            });
+            assert.ok(parseNativeGesture(rotatedPayload)?.available === true, "precondition: rotated-instance payload must parse");
+            h.ackCalls()[1]!.callback(rotatedPayload);
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-ack-response gen=gen-1 req=${cap4.body.source} rev=5 obs=5 instance=gesture-1 serial=11 coreId=11 status=unproven reason=rotated-instance nextPhase=idle nextInstance=gesture-2 nextSerial=0`,
+            ));
+        } finally {
+            h.handle.stop();
+        }
+    });
+
+    it("pins malformed, unavailable, and superseded AckGesture responses as unproven", () => {
+        const malformedCase = {
+            name: "malformed",
+            payload: "not-json",
+            precondition: () => assert.equal(parseNativeGesture("not-json"), null),
+            expectedSuffix: "status=unproven reason=malformed nextPhase=- nextInstance=- nextSerial=-",
+        };
+        const unavailablePayload = gestureJson({
+            instance: "gesture-2", serial: "0", revision: "8", phase: "idle", win: "", kind: "",
+            startRect: null, startCursor: null, cursor: null, modalMove: 0,
+            changed: 0, superseded: 0, available: 0,
+        });
+        const unavailableCase = {
+            name: "unavailable",
+            payload: unavailablePayload,
+            precondition: () => assert.equal(parseNativeGesture(unavailablePayload)?.available, false),
+            expectedSuffix: "status=unproven reason=unavailable nextPhase=idle nextInstance=gesture-2 nextSerial=0",
+        };
+        const supersededPayload = gestureJson({
+            instance: "gesture-2", serial: "0", revision: "9", phase: "idle", win: "", kind: "",
+            startRect: null, startCursor: null, cursor: null, modalMove: 0,
+            changed: 0, superseded: 1, available: 1,
+        });
+        const supersededCase = {
+            name: "superseded",
+            payload: supersededPayload,
+            precondition: () => {
+                const parsed = parseNativeGesture(supersededPayload);
+                assert.ok(parsed !== null && parsed.available && parsed.superseded);
+            },
+            expectedSuffix: "status=unproven reason=superseded nextPhase=idle nextInstance=gesture-2 nextSerial=0",
+        };
+        for (const tc of [malformedCase, unavailableCase, supersededCase]) {
+            const h = setupEntryHarness();
+            try {
+                h.connectScripted("test-adapter", "gen-1");
+                const init = h.popDescribe();
+                init.call.callback(JSON.stringify(makeBaseReply({
+                    adapter: init.body.adapter, req: init.body.source, obs: "1", rev: "1",
+                    source: init.body.source, nativeInvalid: init.body.nativeInvalid,
+                })));
+
+                h.popWaitGesture().callback(gestureJson({ instance: "gesture-2", serial: "12", phase: "released", win: "win-a" }));
+                h.runTimers();
+                const cap = h.popDescribe();
+                cap.call.callback(JSON.stringify(makeBaseReply({
+                    adapter: cap.body.adapter, gen: "gen-1", req: cap.body.source, obs: "2", rev: "2",
+                    source: cap.body.source, nativeInvalid: cap.body.nativeInvalid,
+                    gestureSettled: { id: "12", committed: true },
+                    gestureSettledAssoc: { instance: "gesture-2", serial: "12", coreId: "12" },
+                })));
+                assert.equal(h.ackCalls().length, 1, `${tc.name}: ack armed`);
+                tc.precondition();
+                h.ackCalls()[0]!.callback(tc.payload);
+                assert.ok(h.logs.includes(
+                    `omnitiler:world:trace ev=gesture-ack-response gen=gen-1 req=${cap.body.source} rev=2 obs=2 instance=gesture-2 serial=12 coreId=12 ${tc.expectedSuffix}`,
+                ), `${tc.name}: expected trace line`);
+            } finally {
+                h.handle.stop();
+            }
+        }
+    });
+
+    it("pins nonterminal same-serial and older-serial AckGesture responses as unproven, and next-terminal as retired", () => {
+        const h = setupEntryHarness();
+        try {
+            h.connectScripted("test-adapter", "gen-1");
+            const init = h.popDescribe();
+            init.call.callback(JSON.stringify(makeBaseReply({
+                adapter: init.body.adapter, req: init.body.source, obs: "1", rev: "1",
+                source: init.body.source, nativeInvalid: init.body.nativeInvalid,
+            })));
+
+            // Same-serial nonterminal (phase=started, serial=11) -> unproven same-head
+            h.popWaitGesture().callback(gestureJson({ instance: "gesture-1", serial: "11", phase: "released", win: "win-a" }));
+            h.runTimers();
+            const cap1 = h.popDescribe();
+            cap1.call.callback(JSON.stringify(makeBaseReply({
+                adapter: cap1.body.adapter, gen: "gen-1", req: cap1.body.source, obs: "2", rev: "2",
+                source: cap1.body.source, nativeInvalid: cap1.body.nativeInvalid,
+                gestureSettled: { id: "11", committed: true },
+                gestureSettledAssoc: { instance: "gesture-1", serial: "11", coreId: "11" },
+            })));
+            assert.equal(h.ackCalls().length, 1);
+            const sameSerialStarted = gestureJson({
+                instance: "gesture-1", serial: "11", revision: "5", phase: "started", win: "win-a", kind: "move", changed: 0,
+            });
+            assert.equal(parseNativeGesture(sameSerialStarted)?.phase, "started", "precondition: same-serial nonterminal parses");
+            h.ackCalls()[0]!.callback(sameSerialStarted);
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-ack-response gen=gen-1 req=${cap1.body.source} rev=2 obs=2 instance=gesture-1 serial=11 coreId=11 status=unproven reason=same-head nextPhase=started nextInstance=gesture-1 nextSerial=11`,
+            ));
+
+            // Older-serial non-idle (phase=started, serial=10 < 11) -> unproven older-head
+            h.popWaitGesture().callback(gestureJson({ instance: "gesture-1", serial: "11", phase: "released", win: "win-a" }));
+            h.runTimers();
+            const cap2 = h.popDescribe();
+            cap2.call.callback(JSON.stringify(makeBaseReply({
+                adapter: cap2.body.adapter, gen: "gen-1", req: cap2.body.source, obs: "3", rev: "3",
+                source: cap2.body.source, nativeInvalid: cap2.body.nativeInvalid,
+                gestureSettled: { id: "11", committed: true },
+                gestureSettledAssoc: { instance: "gesture-1", serial: "11", coreId: "11" },
+            })));
+            assert.equal(h.ackCalls().length, 2);
+            const olderSerialStarted = gestureJson({
+                instance: "gesture-1", serial: "10", revision: "6", phase: "started", win: "win-a", kind: "move", changed: 0,
+            });
+            assert.equal(parseNativeGesture(olderSerialStarted)?.serial, "10", "precondition: older-serial nonterminal parses");
+            h.ackCalls()[1]!.callback(olderSerialStarted);
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-ack-response gen=gen-1 req=${cap2.body.source} rev=3 obs=3 instance=gesture-1 serial=11 coreId=11 status=unproven reason=older-head nextPhase=started nextInstance=gesture-1 nextSerial=10`,
+            ));
+
+            // Next-terminal (phase=released, serial=12 > 11) -> retired next-terminal
+            h.popWaitGesture().callback(gestureJson({ instance: "gesture-1", serial: "11", phase: "released", win: "win-a" }));
+            h.runTimers();
+            const cap3 = h.popDescribe();
+            cap3.call.callback(JSON.stringify(makeBaseReply({
+                adapter: cap3.body.adapter, gen: "gen-1", req: cap3.body.source, obs: "4", rev: "4",
+                source: cap3.body.source, nativeInvalid: cap3.body.nativeInvalid,
+                gestureSettled: { id: "11", committed: true },
+                gestureSettledAssoc: { instance: "gesture-1", serial: "11", coreId: "11" },
+            })));
+            assert.equal(h.ackCalls().length, 3);
+            const nextTerminal = gestureJson({
+                instance: "gesture-1", serial: "12", revision: "7", phase: "released", win: "win-a", kind: "move", changed: 0,
+            });
+            assert.equal(parseNativeGesture(nextTerminal)?.serial, "12", "precondition: next-terminal parses");
+            h.ackCalls()[2]!.callback(nextTerminal);
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-ack-response gen=gen-1 req=${cap3.body.source} rev=4 obs=4 instance=gesture-1 serial=11 coreId=11 status=retired reason=next-terminal nextPhase=released nextInstance=gesture-1 nextSerial=12`,
+            ));
+        } finally {
+            h.handle.stop();
+        }
+    });
+
+    it("late G1 AckGesture callback while G2 ack is underway emits G1 tuple with stale-nonce and never mixes G2", () => {
+        const h = setupEntryHarness();
+        try {
+            h.connectScripted("test-adapter", "gen-1");
+            const init = h.popDescribe();
+            init.call.callback(JSON.stringify(makeBaseReply({
+                adapter: init.body.adapter, req: init.body.source, obs: "1", rev: "1",
+                source: init.body.source, nativeInvalid: init.body.nativeInvalid,
+            })));
+
+            // G1 settles and arms ack[0]
+            h.popWaitGesture().callback(gestureJson({ instance: "gesture-1", serial: "1", phase: "released", win: "win-a" }));
+            h.runTimers();
+            const cap1 = h.popDescribe();
+            cap1.call.callback(JSON.stringify(makeBaseReply({
+                adapter: cap1.body.adapter, gen: "gen-1", req: cap1.body.source, obs: "2", rev: "2",
+                source: cap1.body.source, nativeInvalid: cap1.body.nativeInvalid,
+                gestureSettled: { id: "1", committed: true },
+                gestureSettledAssoc: { instance: "gesture-1", serial: "1", coreId: "1" },
+            })));
+            assert.equal(h.ackCalls().length, 1);
+
+            // G1 ack retires exposing G2 (serial=2)
+            h.ackCalls()[0]!.callback(gestureJson({
+                instance: "gesture-1", serial: "2", revision: "5", phase: "released", win: "win-a", changed: 0,
+            }));
+            h.runTimers();
+            const cap2 = h.popDescribe();
+            cap2.call.callback(JSON.stringify(makeBaseReply({
+                adapter: cap2.body.adapter, gen: "gen-1", req: cap2.body.source, obs: "3", rev: "3",
+                source: cap2.body.source, nativeInvalid: cap2.body.nativeInvalid,
+                gestureSettled: { id: "2", committed: true },
+                gestureSettledAssoc: { instance: "gesture-1", serial: "2", coreId: "2" },
+            })));
+            assert.equal(h.ackCalls().length, 2, "G2 ack is underway");
+
+            // Late G1 callback arrives while G2 ack is pending
+            const logCountBefore = h.logs.length;
+            h.ackCalls()[0]!.callback(idleGestureJson("6"));
+            assert.equal(h.ackCalls().length, 2, "late G1 callback triggers zero extra ack");
+            const lateLogs = h.logs.slice(logCountBefore);
+            assert.ok(lateLogs.includes(
+                `omnitiler:world:trace ev=gesture-ack-response gen=gen-1 req=${cap1.body.source} rev=2 obs=2 instance=gesture-1 serial=1 coreId=1 status=fenced reason=stale-nonce nextPhase=- nextInstance=- nextSerial=-`,
+            ));
+            assert.ok(!lateLogs.some((l) => l.includes("serial=2") || l.includes("coreId=2") || l.includes(`req=${cap2.body.source}`)), "must never mix G2 tuple/coreId");
+
+            // G2 ack completes normally
+            h.ackCalls()[1]!.callback(idleGestureJson("7"));
+            assert.ok(h.logs.includes(
+                `omnitiler:world:trace ev=gesture-ack-response gen=gen-1 req=${cap2.body.source} rev=3 obs=3 instance=gesture-1 serial=2 coreId=2 status=retired reason=idle nextPhase=idle nextInstance=gesture-1 nextSerial=0`,
+            ));
+        } finally {
+            h.handle.stop();
+        }
+    });
+
+    it("trace logger failures are fail-open and preserve native ack and apply behavior", () => {
+        const h = setupEntryHarness({
+            onLog: (line) => {
+                if (line.startsWith("omnitiler:world:trace")) {
+                    throw new Error("trace logger boom");
+                }
+            },
+        });
+        try {
+            h.connectScripted("test-adapter", "gen-1");
+            const init = h.popDescribe();
+            init.call.callback(JSON.stringify(makeBaseReply({
+                adapter: init.body.adapter, req: init.body.source, obs: "1", rev: "1",
+                source: init.body.source, nativeInvalid: init.body.nativeInvalid,
+            })));
+
+            h.popWaitGesture().callback(gestureJson({ instance: "gesture-1", serial: "20", phase: "released", win: "win-a" }));
+            h.runTimers();
+            const cap1 = h.popDescribe();
+            cap1.call.callback(JSON.stringify(makeBaseReply({
+                adapter: cap1.body.adapter, gen: "gen-1", req: cap1.body.source, obs: "2", rev: "2",
+                source: cap1.body.source, nativeInvalid: cap1.body.nativeInvalid,
+                gestureSettled: { id: "20", committed: true },
+                gestureSettledAssoc: { instance: "gesture-1", serial: "20", coreId: "20" },
+            })));
+            assert.equal(h.ackCalls().length, 1, "throwing trace logger must not block native ack");
+            assert.equal(h.geometryWrites.length, 0, "no extra setters");
+            h.ackCalls()[0]!.callback(idleGestureJson("10"));
         } finally {
             h.handle.stop();
         }

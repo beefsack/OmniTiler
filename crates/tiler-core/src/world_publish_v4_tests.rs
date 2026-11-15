@@ -1550,18 +1550,35 @@ fn retained_operation_phase_slots_and_q1_q2_pruning_with_trace() {
     let r2 = engine.publish_v4(envelope(8), None, Vec::new(), None, &BTreeSet::new());
     assert_eq!(r2.operation_settled.len(), 2);
 
-    // Q2 A: explicit close drops owner BEFORE publish_v4 projects and emits trace.
+    // Q2 A: explicit close drops owner BEFORE publish_v4 projects and buffers
+    // dropped outcomes without premature adopted emission; emission happens at
+    // final-publication boundary.
     engine
         .staged
         .observation
         .closed
         .push(WindowId("win-a".to_owned()));
-    let lines = crate::world_engine::with_focus_trace_capture(|| {
+    let mut r3_opt = None;
+    let premature = crate::world_engine::with_focus_trace_capture(|| {
         let r3 = engine.publish_v4(envelope(9), None, Vec::new(), None, &BTreeSet::new());
         assert!(r3.operation_settled.is_empty());
+        r3_opt = Some(r3);
     });
+    assert!(
+        premature.is_empty(),
+        "direct publish_v4 must buffer, not emit premature drops: {premature:?}"
+    );
+    assert_eq!(engine.staged_dropped_operations.len(), 2);
+    let r3 = r3_opt.expect("r3");
+    let lines = crate::world_engine::with_focus_trace_capture(|| {
+        engine.emit_staged_dropped_settlement_trace(&r3);
+    });
+    assert!(engine.staged_dropped_operations.is_empty());
     assert_eq!(lines.len(), 2);
     assert!(lines[0].contains("ev=operation-settled-dropped"));
+    assert!(lines[0].contains("req=req-9"));
+    assert!(lines[0].contains("rev=9"));
+    assert!(lines[0].contains("obs=9"));
     assert!(lines[0].contains("win=win-a"));
     assert!(lines[0].contains("outcome=continued-float"));
     assert!(lines[0].contains("cause=clear-proof"));
@@ -1595,18 +1612,34 @@ fn retained_switch_outcome_retains_and_prunes_on_output_departure() {
     assert_eq!(r1.switch_settled.len(), 1);
     assert_eq!(r1.switch_settled[0].output, OutputId("out-b".to_owned()));
 
-    // Remove out-b from staged screens under complete inventory -> pruned + traced.
+    // Remove out-b from staged screens under complete inventory -> pruned + buffered,
+    // then emitted at final publication.
     engine.staged.observation.inventory_complete = true;
     engine
         .staged
         .screens
         .retain(|screen| screen.output != OutputId("out-b".to_owned()));
-    let lines = crate::world_engine::with_focus_trace_capture(|| {
+    let mut r2_opt = None;
+    let premature = crate::world_engine::with_focus_trace_capture(|| {
         let r2 = engine.publish_v4(envelope(8), None, Vec::new(), None, &BTreeSet::new());
         assert!(r2.switch_settled.is_empty());
+        r2_opt = Some(r2);
     });
+    assert!(
+        premature.is_empty(),
+        "direct publish_v4 must buffer, not emit premature drops: {premature:?}"
+    );
+    assert_eq!(engine.staged_dropped_switches.len(), 1);
+    let r2 = r2_opt.expect("r2");
+    let lines = crate::world_engine::with_focus_trace_capture(|| {
+        engine.emit_staged_dropped_settlement_trace(&r2);
+    });
+    assert!(engine.staged_dropped_switches.is_empty());
     assert_eq!(lines.len(), 1);
     assert!(lines[0].contains("ev=switch-settled-dropped"));
+    assert!(lines[0].contains("req=req-8"));
+    assert!(lines[0].contains("rev=8"));
+    assert!(lines[0].contains("obs=8"));
     assert!(lines[0].contains("out=out-b"));
     assert!(lines[0].contains("outcome=completed-with-failures"));
     assert!(lines[0].contains("fallback=false"));
@@ -2344,4 +2377,976 @@ fn toggle_maximize_and_toggle_sticky_at_1024_cap_reject_or_reconcile_consumed() 
             "consumed inline command at 1024 cap must reconcile, got {outcome:?}"
         );
     }
+}
+
+#[test]
+fn published_settlement_trace_operation_q1_q2_duplicate_late_toggle_and_reset() {
+    use crate::boundary::CoreCommand;
+    use crate::world_report::{FrameAttempt, FrameSetter};
+    use crate::world_run_v4::V4RunOutcome;
+
+    let mut engine = engine_with(Vec::new());
+    let screens = vec![screen("out-a", 0)];
+    let mut win_a = fact("win-a", "out-a", 0);
+    win_a.maximized = Some(false);
+    let mut win_b = fact("win-b", "out-a", 400);
+    win_b.maximized = Some(false);
+
+    // 1. Initial empty summary.
+    let init_lines = crate::world_engine::with_settlement_trace_capture(|| {
+        let r1 = accepted_v4(
+            &mut engine,
+            &report_v4(
+                1,
+                screens.clone(),
+                vec![win_a.clone(), win_b.clone()],
+                "win-a",
+                ingress_v4("win-a"),
+            ),
+        );
+        assert!(r1.operation_settled.is_empty());
+    });
+    assert_eq!(
+        init_lines,
+        vec![
+            "omnitiler:core:trace ev=settlement-published gen=gen-1 req=req-1 rev=1 obs=1 ready=true dup=false ops=0 switches=0 gesture=none"
+        ]
+    );
+
+    // 2. Float win-a (op-2) and settle via FrameAttempt at seq 3 -> state=new.
+    let mut r2 = report_v4(
+        2,
+        screens.clone(),
+        vec![win_a.clone(), win_b.clone()],
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r2.command_seq = Some(2);
+    r2.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+        window: "win-a".to_owned(),
+        float_rect: None,
+    }));
+    let reply2 = accepted_v4(&mut engine, &r2);
+    let float_target = reply2
+        .windows
+        .iter()
+        .find(|w| w.lifetime.0 == "win-a")
+        .and_then(|w| w.effective_frame)
+        .expect("float target");
+
+    let mut r3 = report_v4(
+        3,
+        screens.clone(),
+        vec![win_a.clone(), win_b.clone()],
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r3.windows[0].rect = Some(float_target);
+    r3.frames = vec![FrameAttempt {
+        operation_id: Some("op-2".to_owned()),
+        window: WindowId("win-a".to_owned()),
+        target: float_target,
+        setter: FrameSetter::Accepted,
+        readback: Some(float_target),
+        dpi_before: None,
+        dpi_after: None,
+        attempt_ms: 7,
+        prewrite: None,
+    }];
+    let settled_lines = crate::world_engine::with_settlement_trace_capture(|| {
+        let reply3 = accepted_v4(&mut engine, &r3);
+        assert_eq!(reply3.operation_settled.len(), 1);
+    });
+    assert_eq!(
+        settled_lines,
+        vec![
+            "omnitiler:core:trace ev=settlement-published gen=gen-1 req=req-3 rev=3 obs=3 ready=true dup=false ops=1 switches=0 gesture=none",
+            "omnitiler:core:trace ev=settlement-operation gen=gen-1 req=req-3 rev=3 obs=3 key=win-a:float owner=win-a kind=float op=op-2 outcome=float-frame-proven cause=- state=new pending=-",
+        ]
+    );
+
+    // 3. Cached duplicate of r3 -> dup=true and state=retained (never new).
+    let dup_lines = crate::world_engine::with_settlement_trace_capture(|| {
+        let (outcome, _) = engine.handle_report(&r3, &[]);
+        assert!(matches!(outcome, V4RunOutcome::Duplicate(_)));
+    });
+    assert_eq!(
+        dup_lines,
+        vec![
+            "omnitiler:core:trace ev=settlement-published gen=gen-1 req=req-3 rev=3 obs=3 ready=true dup=true ops=1 switches=0 gesture=none",
+            "omnitiler:core:trace ev=settlement-operation gen=gen-1 req=req-3 rev=3 obs=3 key=win-a:float owner=win-a kind=float op=op-2 outcome=float-frame-proven cause=- state=retained pending=-",
+        ]
+    );
+
+    // 4. Q1: tile win-a (op-4), then float win-a again (op-5) -> retained op-2 + pending=op-5.
+    let mut win_a_floated = win_a.clone();
+    win_a_floated.rect = Some(float_target);
+    let mut r4 = report_v4(
+        4,
+        screens.clone(),
+        vec![win_a_floated.clone(), win_b.clone()],
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r4.command_seq = Some(4);
+    r4.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+        window: "win-a".to_owned(),
+        float_rect: None,
+    }));
+    let _ = accepted_v4(&mut engine, &r4);
+
+    let mut r5 = report_v4(
+        5,
+        screens.clone(),
+        vec![win_a.clone(), win_b.clone()],
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r5.command_seq = Some(5);
+    r5.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+        window: "win-a".to_owned(),
+        float_rect: None,
+    }));
+    let pending_lines = crate::world_engine::with_settlement_trace_capture(|| {
+        let reply5 = accepted_v4(&mut engine, &r5);
+        assert_eq!(reply5.operation_settled.len(), 1);
+    });
+    assert_eq!(
+        pending_lines,
+        vec![
+            "omnitiler:core:trace ev=settlement-published gen=gen-1 req=req-5 rev=5 obs=5 ready=true dup=false ops=1 switches=0 gesture=none",
+            "omnitiler:core:trace ev=settlement-operation gen=gen-1 req=req-5 rev=5 obs=5 key=win-a:float owner=win-a kind=float op=op-2 outcome=float-frame-proven cause=- state=retained pending=op-5",
+        ]
+    );
+
+    // 5. Replacement settles op-5 -> state=new pending=-.
+    let mut r6 = report_v4(
+        6,
+        screens.clone(),
+        vec![win_a_floated.clone(), win_b.clone()],
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r6.frames = vec![FrameAttempt {
+        operation_id: Some("op-5".to_owned()),
+        window: WindowId("win-a".to_owned()),
+        target: float_target,
+        setter: FrameSetter::Accepted,
+        readback: Some(float_target),
+        dpi_before: None,
+        dpi_after: None,
+        attempt_ms: 7,
+        prewrite: None,
+    }];
+    let replaced_lines = crate::world_engine::with_settlement_trace_capture(|| {
+        let reply6 = accepted_v4(&mut engine, &r6);
+        assert_eq!(reply6.operation_settled[0].operation_id, "op-5");
+    });
+    assert_eq!(
+        replaced_lines,
+        vec![
+            "omnitiler:core:trace ev=settlement-published gen=gen-1 req=req-6 rev=6 obs=6 ready=true dup=false ops=1 switches=0 gesture=none",
+            "omnitiler:core:trace ev=settlement-operation gen=gen-1 req=req-6 rev=6 obs=6 key=win-a:float owner=win-a kind=float op=op-5 outcome=float-frame-proven cause=- state=new pending=-",
+        ]
+    );
+
+    // 6. Late trace toggle: settle win-b (op-7) with trace disabled -> zero lines,
+    //    then publish seq 9 with trace enabled -> win-b is state=retained (not new).
+    let disabled_lines = crate::world_engine::with_settlement_trace_capture(|| {
+        crate::world_engine::with_focus_trace_disabled(|| {
+            let mut r7 = report_v4(
+                7,
+                screens.clone(),
+                vec![win_a_floated.clone(), win_b.clone()],
+                "win-b",
+                ingress_v4("win-b"),
+            );
+            r7.command_seq = Some(7);
+            r7.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                window: "win-b".to_owned(),
+                float_rect: None,
+            }));
+            let reply7 = accepted_v4(&mut engine, &r7);
+            let target_b = reply7
+                .windows
+                .iter()
+                .find(|w| w.lifetime.0 == "win-b")
+                .and_then(|w| w.effective_frame)
+                .expect("win-b float target");
+
+            let mut r8 = report_v4(
+                8,
+                screens.clone(),
+                vec![win_a_floated.clone(), win_b.clone()],
+                "win-b",
+                ingress_v4("win-b"),
+            );
+            r8.windows[1].rect = Some(target_b);
+            r8.frames = vec![FrameAttempt {
+                operation_id: Some("op-7".to_owned()),
+                window: WindowId("win-b".to_owned()),
+                target: target_b,
+                setter: FrameSetter::Accepted,
+                readback: Some(target_b),
+                dpi_before: None,
+                dpi_after: None,
+                attempt_ms: 7,
+                prewrite: None,
+            }];
+            let _ = accepted_v4(&mut engine, &r8);
+        });
+    });
+    assert!(disabled_lines.is_empty());
+
+    // 7. Q2 disappearance: close win-a -> win-a dropped, win-b retained.
+    let mut r9 = report_v4(
+        9,
+        screens.clone(),
+        vec![win_b.clone()],
+        "win-b",
+        ingress_v4("win-b"),
+    );
+    r9.closed = vec![WindowId("win-a".to_owned())];
+    let q2_lines = crate::world_engine::with_settlement_trace_capture(|| {
+        let reply9 = accepted_v4(&mut engine, &r9);
+        assert_eq!(reply9.operation_settled.len(), 1);
+        assert_eq!(reply9.operation_settled[0].window.0, "win-b");
+    });
+    assert_eq!(
+        q2_lines,
+        vec![
+            "omnitiler:core:trace ev=settlement-published gen=gen-1 req=req-9 rev=9 obs=9 ready=true dup=false ops=1 switches=0 gesture=none",
+            "omnitiler:core:trace ev=settlement-operation gen=gen-1 req=req-9 rev=9 obs=9 key=win-b:float owner=win-b kind=float op=op-7 outcome=float-frame-proven cause=- state=retained pending=-",
+        ]
+    );
+
+    // 8. Generation reset & bootstrap ready=false: fresh unbound-settings engine
+    //    emits empty ready=false summary under gen-2.
+    let mut boot_engine = WorldEngine::new_test_bound("gen-2", "adapter-1").expect("gen-2");
+    // Clear initial settings by constructing via new_with_generation? Wait:
+    // new_test_bound sets ready=false until initial settings are accepted!
+    let boot_lines = crate::world_engine::with_settlement_trace_capture(|| {
+        let mut r_boot = report_v4(
+            1,
+            screens.clone(),
+            vec![win_b.clone()],
+            "win-b",
+            ingress_v4("win-b"),
+        );
+        r_boot.core_generation = "gen-2".to_owned();
+        r_boot.inventory_complete = false;
+        let reply_boot = accepted_v4(&mut boot_engine, &r_boot);
+        assert!(!reply_boot.ready);
+        assert!(reply_boot.operation_settled.is_empty());
+    });
+    assert_eq!(
+        boot_lines,
+        vec![
+            "omnitiler:core:trace ev=settlement-published gen=gen-2 req=req-1 rev=0 obs=1 ready=false dup=false ops=0 switches=0 gesture=none"
+        ]
+    );
+
+    // 9. Genuine clear-phase trace assertions.
+    let mut clear_engine = engine_with(Vec::new());
+    let clear_screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    let mut win_max = fact("win-max", "out-a", 0);
+    win_max.maximized = Some(true);
+    let win_other = fact("win-other", "out-b", 900);
+    let _ = accepted_v4(
+        &mut clear_engine,
+        &report_v4(
+            1,
+            clear_screens.clone(),
+            vec![win_max.clone(), win_other.clone()],
+            "win-max",
+            ingress_v4("win-max"),
+        ),
+    );
+    let mut r_move = report_v4(
+        2,
+        clear_screens.clone(),
+        vec![win_max.clone(), win_other.clone()],
+        "win-max",
+        ingress_v4("win-max"),
+    );
+    r_move.command_seq = Some(2);
+    r_move.command = Some(WorldCommand::MoveDirectional {
+        window: WindowId("win-max".to_owned()),
+        direction: "right".to_owned(),
+        same_axis: crate::directional::SameAxisMove::default(),
+    });
+    let _ = accepted_v4(&mut clear_engine, &r_move);
+
+    let mut r_clear_proof = report_v4(
+        3,
+        clear_screens,
+        vec![
+            WindowFact {
+                maximized: Some(false),
+                ..win_max
+            },
+            win_other,
+        ],
+        "win-max",
+        ingress_v4("win-max"),
+    );
+    r_clear_proof.clear_attempts = vec![crate::world_report::ClearAttempt {
+        operation_id: "op-2".to_owned(),
+        window: WindowId("win-max".to_owned()),
+        setter: crate::world_report::FrameSetter::Accepted,
+        pre_maximized: Some(true),
+        post_maximized: Some(false),
+        attempt_ms: 7,
+    }];
+    let clear_lines = crate::world_engine::with_settlement_trace_capture(|| {
+        let reply_clear = accepted_v4(&mut clear_engine, &r_clear_proof);
+        assert_eq!(reply_clear.operation_settled.len(), 1);
+        assert_eq!(reply_clear.operation_settled[0].kind, OperationKind::Clear);
+    });
+    assert_eq!(
+        clear_lines,
+        vec![
+            "omnitiler:core:trace ev=settlement-published gen=gen-1 req=req-3 rev=3 obs=3 ready=true dup=false ops=1 switches=0 gesture=none",
+            "omnitiler:core:trace ev=settlement-operation gen=gen-1 req=req-3 rev=3 obs=3 key=win-max:clear owner=win-max kind=clear op=op-2 outcome=continued-tiled cause=- state=new pending=-",
+        ]
+    );
+}
+
+#[test]
+fn published_settlement_trace_switch_q1_lifecycle_genuine() {
+    use crate::world_report::{
+        ArrivalBracket, ArrivalLocation, FocusFeedback, LastWrite, LastWritePath,
+        LastWriteProperty, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
+    };
+
+    let mut engine = engine_with(Vec::new());
+    let screens = vec![screen("out-a", 0)];
+    let mut w1 = fact("win-a", "out-a", 0);
+    w1.suppression_available = Some(true);
+    w1.visibility.suppression_owned = Some(false);
+    let mut w2 = fact("win-b", "out-a", 400);
+    w2.suppression_available = Some(true);
+    w2.visibility.suppression_owned = Some(false);
+
+    // 1. Seed two windows on home workspace, then send win-b to away (follow=false)
+    //    with win-b focused so the transfer is admitted and away exists.
+    let boot = accepted_v4(
+        &mut engine,
+        &report_v4(
+            1,
+            screens.clone(),
+            vec![w1.clone(), w2.clone()],
+            "win-a",
+            ingress_v4("win-a"),
+        ),
+    );
+    let mut ring = boot
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone());
+    let home = ring.next().expect("home workspace");
+    let away = ring.next().expect("away workspace");
+    let mut r_send = report_v4(
+        2,
+        screens.clone(),
+        vec![w1.clone(), w2.clone()],
+        "win-b",
+        ingress_v4("win-b"),
+    );
+    r_send.command_seq = Some(2);
+    r_send.command = Some(WorldCommand::Send {
+        window: WindowId("win-b".to_owned()),
+        target_output: OutputId("out-a".to_owned()),
+        target_workspace: away.clone(),
+        follow: false,
+    });
+    let _ = accepted_v4(&mut engine, &r_send);
+
+    // 2. Select away on out-a (op-3), then settle with genuine LastWrite + FocusFeedback -> state=new.
+    let mut r3 = report_v4(
+        3,
+        screens.clone(),
+        vec![w1.clone(), w2.clone()],
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r3.command_seq = Some(3);
+    r3.command = Some(WorldCommand::SelectWorkspace {
+        output: OutputId("out-a".to_owned()),
+        workspace: away,
+    });
+    let grant3 = accepted_v4(&mut engine, &r3);
+    let rev3 = grant3.state_revision;
+    let eff3 = grant3.focus_request.clone().expect("focus request 3");
+    let frame_b = grant3
+        .windows
+        .iter()
+        .find(|w| w.lifetime.0 == "win-b")
+        .and_then(|w| w.effective_frame);
+
+    let lw = |target: bool, rev: u64, obs: u64| LastWrite {
+        property: LastWriteProperty::Visibility,
+        target,
+        revision: rev,
+        path: LastWritePath::Staged,
+        setter: VisibilitySetter::Accepted,
+        reason: VisibilityReason::Empty,
+        pre: None,
+        post: Some(VisibilitySample {
+            obs,
+            lifetime_matched: Some(true),
+            visibility: VisibilityFact {
+                visible: Some(target),
+                suppression_owned: Some(false),
+            },
+            minimized: Some(false),
+            host_hidden: Some(false),
+        }),
+    };
+    let mut r4 = report_v4(
+        4,
+        screens.clone(),
+        vec![
+            WindowFact {
+                last_write: Some(lw(false, rev3, 4)),
+                ..w1.clone()
+            },
+            WindowFact {
+                last_write: Some(lw(true, rev3, 4)),
+                ..w2.clone()
+            },
+        ],
+        "win-b",
+        ingress_v4("win-b"),
+    );
+    r4.focus_feedback = vec![FocusFeedback {
+        id: eff3.id,
+        target: WindowId("win-b".to_owned()),
+        revision: eff3.issued_revision,
+        setter: VisibilitySetter::Accepted,
+        reason: VisibilityReason::Empty,
+        pre: Some(WindowId("win-a".to_owned())),
+        post: Some(WindowId("win-b".to_owned())),
+        foreground_proven: true,
+        arrival: vec![ArrivalBracket {
+            window: WindowId("win-b".to_owned()),
+            obs: 4,
+            before: VisibilitySample {
+                obs: 4,
+                lifetime_matched: Some(true),
+                visibility: VisibilityFact {
+                    visible: Some(true),
+                    suppression_owned: Some(false),
+                },
+                minimized: Some(false),
+                host_hidden: Some(false),
+            },
+            location: ArrivalLocation::Output {
+                out: Some(OutputId("out-a".to_owned())),
+            },
+            frame: frame_b,
+            after: VisibilitySample {
+                obs: 4,
+                lifetime_matched: Some(true),
+                visibility: VisibilityFact {
+                    visible: Some(true),
+                    suppression_owned: Some(false),
+                },
+                minimized: Some(false),
+                host_hidden: Some(false),
+            },
+        }],
+        attempt_ms: 5,
+    }];
+    let settled_lines = crate::world_engine::with_settlement_trace_capture(|| {
+        let reply4 = accepted_v4(&mut engine, &r4);
+        assert_eq!(reply4.switch_settled.len(), 1);
+    });
+    assert_eq!(
+        settled_lines,
+        vec![
+            "omnitiler:core:trace ev=settlement-published gen=gen-1 req=req-4 rev=4 obs=4 ready=true dup=false ops=0 switches=1 gesture=none",
+            "omnitiler:core:trace ev=settlement-switch gen=gen-1 req=req-4 rev=4 obs=4 key=out-a owner=out-a kind=switch op=op-3 outcome=complete focus=proven fallback=false state=new pending=- failed=",
+        ]
+    );
+
+    // 3. Q1: admit successor SelectWorkspace back to home (op-5) -> op-3 retained + pending=op-5.
+    let mut r5 = report_v4(
+        5,
+        screens.clone(),
+        vec![w1.clone(), w2.clone()],
+        "win-b",
+        ingress_v4("win-b"),
+    );
+    r5.command_seq = Some(5);
+    r5.command = Some(WorldCommand::SelectWorkspace {
+        output: OutputId("out-a".to_owned()),
+        workspace: home,
+    });
+    let mut grant5_opt = None;
+    let pending_lines = crate::world_engine::with_settlement_trace_capture(|| {
+        grant5_opt = Some(accepted_v4(&mut engine, &r5));
+    });
+    assert_eq!(
+        pending_lines,
+        vec![
+            "omnitiler:core:trace ev=settlement-published gen=gen-1 req=req-5 rev=5 obs=5 ready=true dup=false ops=0 switches=1 gesture=none",
+            "omnitiler:core:trace ev=settlement-switch gen=gen-1 req=req-5 rev=5 obs=5 key=out-a owner=out-a kind=switch op=op-3 outcome=complete focus=proven fallback=false state=retained pending=op-5 failed=",
+        ]
+    );
+
+    // 4. Settle successor op-5 -> replaced with op=op-5 state=new pending=-.
+    let grant5 = grant5_opt.expect("grant5");
+    let rev5 = grant5.state_revision;
+    let eff5 = grant5.focus_request.clone().expect("focus request 5");
+    let frame_a = grant5
+        .windows
+        .iter()
+        .find(|w| w.lifetime.0 == "win-a")
+        .and_then(|w| w.effective_frame);
+    let mut r6 = report_v4(
+        6,
+        screens,
+        vec![
+            WindowFact {
+                last_write: Some(lw(true, rev5, 6)),
+                ..w1
+            },
+            WindowFact {
+                last_write: Some(lw(false, rev5, 6)),
+                ..w2
+            },
+        ],
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r6.focus_feedback = vec![FocusFeedback {
+        id: eff5.id,
+        target: WindowId("win-a".to_owned()),
+        revision: eff5.issued_revision,
+        setter: VisibilitySetter::Accepted,
+        reason: VisibilityReason::Empty,
+        pre: Some(WindowId("win-b".to_owned())),
+        post: Some(WindowId("win-a".to_owned())),
+        foreground_proven: true,
+        arrival: vec![ArrivalBracket {
+            window: WindowId("win-a".to_owned()),
+            obs: 6,
+            before: VisibilitySample {
+                obs: 6,
+                lifetime_matched: Some(true),
+                visibility: VisibilityFact {
+                    visible: Some(true),
+                    suppression_owned: Some(false),
+                },
+                minimized: Some(false),
+                host_hidden: Some(false),
+            },
+            location: ArrivalLocation::Output {
+                out: Some(OutputId("out-a".to_owned())),
+            },
+            frame: frame_a,
+            after: VisibilitySample {
+                obs: 6,
+                lifetime_matched: Some(true),
+                visibility: VisibilityFact {
+                    visible: Some(true),
+                    suppression_owned: Some(false),
+                },
+                minimized: Some(false),
+                host_hidden: Some(false),
+            },
+        }],
+        attempt_ms: 5,
+    }];
+    let replaced_lines = crate::world_engine::with_settlement_trace_capture(|| {
+        let reply6 = accepted_v4(&mut engine, &r6);
+        assert_eq!(reply6.switch_settled[0].operation_id, "op-5");
+    });
+    assert_eq!(
+        replaced_lines,
+        vec![
+            "omnitiler:core:trace ev=settlement-published gen=gen-1 req=req-6 rev=6 obs=6 ready=true dup=false ops=0 switches=1 gesture=none",
+            "omnitiler:core:trace ev=settlement-switch gen=gen-1 req=req-6 rev=6 obs=6 key=out-a owner=out-a kind=switch op=op-5 outcome=complete focus=proven fallback=false state=new pending=- failed=",
+        ]
+    );
+}
+
+#[test]
+fn published_settlement_trace_bounded_failed_rendering_synthetic() {
+    // Synthetic rendering test only: verifies TRACE_FAILED_CAP (8) + failedOmitted=<n>
+    // on both settlement-switch and switch-settled-dropped without fake lifecycle claims.
+    let mut engine = engine_with(Vec::new());
+    let screens = screens_pair();
+    let windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)];
+    let _ = accepted_v4(
+        &mut engine,
+        &report_v4(
+            1,
+            screens.clone(),
+            windows.clone(),
+            "win-a",
+            ingress_v4("win-a"),
+        ),
+    );
+
+    let failed: Vec<WindowId> = (0..10).map(|i| WindowId(format!("w-{i:02}"))).collect();
+    engine.switch_settled.insert(
+        OutputId("out-b".to_owned()),
+        SwitchEvent {
+            output: OutputId("out-b".to_owned()),
+            operation_id: "op-s1".to_owned(),
+            outcome: SwitchOutcome::CompletedWithFailures,
+            failed,
+            focus: SwitchFocus::Unproven,
+            fallback: false,
+        },
+    );
+
+    let r2 = report_v4(2, screens, windows.clone(), "win-a", ingress_v4("win-a"));
+    let lines_r2 = crate::world_engine::with_settlement_trace_capture(|| {
+        let reply2 = accepted_v4(&mut engine, &r2);
+        assert_eq!(reply2.switch_settled.len(), 1);
+    });
+    assert_eq!(
+        lines_r2,
+        vec![
+            "omnitiler:core:trace ev=settlement-published gen=gen-1 req=req-2 rev=2 obs=2 ready=true dup=false ops=0 switches=1 gesture=none",
+            "omnitiler:core:trace ev=settlement-switch gen=gen-1 req=req-2 rev=2 obs=2 key=out-b owner=out-b kind=switch op=op-s1 outcome=completed-with-failures focus=unproven fallback=false state=new pending=- failed=w-00,w-01,w-02,w-03,w-04,w-05,w-06,w-07 failedOmitted=2",
+        ]
+    );
+
+    let r3 = report_v4(
+        3,
+        vec![screen("out-a", 0)],
+        vec![windows[0].clone()],
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    let drop_lines = crate::world_engine::with_focus_trace_capture(|| {
+        let reply3 = accepted_v4(&mut engine, &r3);
+        assert!(reply3.switch_settled.is_empty());
+    });
+    assert_eq!(
+        drop_lines,
+        vec![
+            "omnitiler:core:trace ev=switch-settled-dropped gen=gen-1 req=req-3 rev=3 obs=3 out=out-b op=op-s1 outcome=completed-with-failures focus=unproven fallback=false failed=w-00,w-01,w-02,w-03,w-04,w-05,w-06,w-07 failedOmitted=2",
+        ]
+    );
+}
+
+#[test]
+fn published_settlement_trace_gesture_lifecycle_and_rejected_candidate() {
+    use crate::gesture::{GestureIngress, GestureKind, GesturePhase};
+    use crate::world_run_v4::V4RunOutcome;
+
+    let mut engine = engine_with(Vec::new());
+    let screens = vec![screen("out-a", 0)];
+    let windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)];
+
+    // Seed initial state.
+    let _ = accepted_v4(
+        &mut engine,
+        &report_v4(
+            1,
+            screens.clone(),
+            windows.clone(),
+            "win-a",
+            ingress_v4("win-a"),
+        ),
+    );
+
+    // Start + release gesture id=10 -> state=new pending=-.
+    let mut r2 = report_v4(
+        2,
+        screens.clone(),
+        windows.clone(),
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r2.gesture_barrier = true;
+    r2.gesture = Some(GestureIngress {
+        window: WindowId("win-a".to_owned()),
+        id: 10,
+        kind: GestureKind::Move,
+        phase: GesturePhase::Started,
+        start_frame: rect(0, 0, 40, 90),
+        cursor: Some((20, 20)),
+        start_cursor: Some((20, 20)),
+        esc: false,
+        modal_move: false,
+    });
+    let _ = accepted_v4(&mut engine, &r2);
+
+    let mut r3 = report_v4(
+        3,
+        screens.clone(),
+        windows.clone(),
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r3.gesture = Some(GestureIngress {
+        window: WindowId("win-a".to_owned()),
+        id: 10,
+        kind: GestureKind::Move,
+        phase: GesturePhase::Released,
+        start_frame: rect(0, 0, 40, 90),
+        cursor: Some((450, 20)),
+        start_cursor: Some((20, 20)),
+        esc: false,
+        modal_move: false,
+    });
+    let g1_lines = crate::world_engine::with_settlement_trace_capture(|| {
+        let reply3 = accepted_v4(&mut engine, &r3);
+        assert_eq!(
+            reply3.gesture_settled,
+            Some(GestureSettled {
+                id: 10,
+                committed: false,
+            })
+        );
+    });
+    assert_eq!(
+        g1_lines,
+        vec![
+            "omnitiler:core:trace ev=settlement-published gen=gen-1 req=req-3 rev=3 obs=3 ready=true dup=false ops=0 switches=0 gesture=present",
+            "omnitiler:core:trace ev=settlement-gesture gen=gen-1 req=req-3 rev=3 obs=3 id=10 owner=gen-1 kind=gesture outcome=uncommitted state=new pending=-",
+        ]
+    );
+
+    // Start successor gesture id=11 -> id=10 is state=retained pending=11.
+    let mut r4 = report_v4(
+        4,
+        screens.clone(),
+        windows.clone(),
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r4.gesture_barrier = true;
+    r4.gesture = Some(GestureIngress {
+        window: WindowId("win-a".to_owned()),
+        id: 11,
+        kind: GestureKind::Move,
+        phase: GesturePhase::Started,
+        start_frame: rect(0, 0, 40, 90),
+        cursor: Some((20, 20)),
+        start_cursor: Some((20, 20)),
+        esc: false,
+        modal_move: false,
+    });
+    let g2_pending_lines = crate::world_engine::with_settlement_trace_capture(|| {
+        let _ = accepted_v4(&mut engine, &r4);
+    });
+    assert_eq!(
+        g2_pending_lines,
+        vec![
+            "omnitiler:core:trace ev=settlement-published gen=gen-1 req=req-4 rev=4 obs=4 ready=true dup=false ops=0 switches=0 gesture=present",
+            "omnitiler:core:trace ev=settlement-gesture gen=gen-1 req=req-4 rev=4 obs=4 id=10 owner=gen-1 kind=gesture outcome=uncommitted state=retained pending=11",
+        ]
+    );
+
+    // Release successor gesture id=11 -> replaces id=10 with id=11 state=new pending=-.
+    let mut r4b = report_v4(
+        5,
+        screens.clone(),
+        windows.clone(),
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r4b.gesture = Some(GestureIngress {
+        window: WindowId("win-a".to_owned()),
+        id: 11,
+        kind: GestureKind::Move,
+        phase: GesturePhase::Released,
+        start_frame: rect(0, 0, 40, 90),
+        cursor: Some((450, 20)),
+        start_cursor: Some((20, 20)),
+        esc: false,
+        modal_move: false,
+    });
+    let g2_settled_lines = crate::world_engine::with_settlement_trace_capture(|| {
+        let reply4b = accepted_v4(&mut engine, &r4b);
+        assert_eq!(
+            reply4b.gesture_settled,
+            Some(GestureSettled {
+                id: 11,
+                committed: false,
+            })
+        );
+    });
+    assert_eq!(
+        g2_settled_lines,
+        vec![
+            "omnitiler:core:trace ev=settlement-published gen=gen-1 req=req-5 rev=5 obs=5 ready=true dup=false ops=0 switches=0 gesture=present",
+            "omnitiler:core:trace ev=settlement-gesture gen=gen-1 req=req-5 rev=5 obs=5 id=11 owner=gen-1 kind=gesture outcome=uncommitted state=new pending=-",
+        ]
+    );
+
+    // Rejected candidate in finalize_v4_candidate emits zero settlement lines.
+    let mut forged = engine.last_reply_v4.clone().expect("last reply");
+    forged.intent_desired = vec![crate::world_report::IntentDesire {
+        win: WindowId("bad id".to_owned()),
+        data: None,
+    }];
+    let staged = engine.clone();
+    let r5 = report_v4(6, screens, windows, "win-a", ingress_v4("win-a"));
+    let rejected_lines = crate::world_engine::with_settlement_trace_capture(|| {
+        let outcome = engine.finalize_v4_candidate(staged, &r5, 0, forged);
+        assert!(matches!(outcome, V4RunOutcome::Rejected { .. }));
+    });
+    assert!(rejected_lines.is_empty());
+}
+
+#[test]
+fn q2_dropped_trace_rejects_outbound_gate_preserves_same_obs_and_dedups() {
+    use crate::boundary::CoreCommand;
+    use crate::world_report::{FrameAttempt, FrameSetter};
+    use crate::world_run_v4::V4RunOutcome;
+
+    let mut engine = engine_with(Vec::new());
+    let screens = vec![screen("out-a", 0)];
+    let mut win_a = fact("win-a", "out-a", 0);
+    win_a.maximized = Some(false);
+    let mut win_b = fact("win-b", "out-a", 400);
+    win_b.maximized = Some(false);
+
+    // 1. Seed and settle win-a float (op-2) at obs=3, rev=3.
+    let _ = accepted_v4(
+        &mut engine,
+        &report_v4(
+            1,
+            screens.clone(),
+            vec![win_a.clone(), win_b.clone()],
+            "win-a",
+            ingress_v4("win-a"),
+        ),
+    );
+    let mut r2 = report_v4(
+        2,
+        screens.clone(),
+        vec![win_a.clone(), win_b.clone()],
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r2.command_seq = Some(2);
+    r2.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+        window: "win-a".to_owned(),
+        float_rect: None,
+    }));
+    let reply2 = accepted_v4(&mut engine, &r2);
+    let float_target = reply2
+        .windows
+        .iter()
+        .find(|w| w.lifetime.0 == "win-a")
+        .and_then(|w| w.effective_frame)
+        .expect("float target");
+
+    let mut r3 = report_v4(
+        3,
+        screens.clone(),
+        vec![win_a.clone(), win_b.clone()],
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r3.windows[0].rect = Some(float_target);
+    r3.frames = vec![FrameAttempt {
+        operation_id: Some("op-2".to_owned()),
+        window: WindowId("win-a".to_owned()),
+        target: float_target,
+        setter: FrameSetter::Accepted,
+        readback: Some(float_target),
+        dpi_before: None,
+        dpi_after: None,
+        attempt_ms: 7,
+        prewrite: None,
+    }];
+    let _ = accepted_v4(&mut engine, &r3);
+    assert_eq!(engine.operation_settled.len(), 1);
+
+    // 2. Staged candidate prunes win-a via close, then fails outbound gate ->
+    //    NO drop trace emitted, self.operation_settled and drop buffers unchanged.
+    let mut staged = engine.clone();
+    staged.staged.observation.observation_seq = 4;
+    staged
+        .staged
+        .observation
+        .closed
+        .push(WindowId("win-a".to_owned()));
+    let mut r4_rej = report_v4(
+        4,
+        screens.clone(),
+        vec![win_b.clone()],
+        "win-b",
+        ingress_v4("win-b"),
+    );
+    r4_rej.closed = vec![WindowId("win-a".to_owned())];
+    let rej_drops = crate::world_engine::with_focus_trace_capture(|| {
+        let mut forged = staged.publish_v4(envelope(4), None, Vec::new(), None, &BTreeSet::new());
+        assert!(forged.operation_settled.is_empty());
+        assert_eq!(staged.staged_dropped_operations.len(), 1);
+        forged.intent_desired = vec![crate::world_report::IntentDesire {
+            win: WindowId("bad id".to_owned()),
+            data: None,
+        }];
+        let outcome = engine.finalize_v4_candidate(staged, &r4_rej, 0, forged);
+        assert!(matches!(outcome, V4RunOutcome::Rejected { .. }));
+    });
+    assert!(
+        rej_drops.is_empty(),
+        "rejected candidate must emit no drop trace: {rej_drops:?}"
+    );
+    assert_eq!(engine.operation_settled.len(), 1);
+    assert!(engine.staged_dropped_operations.is_empty());
+
+    // 3. Different req with SAME obs=4 accepted retaining win-a -> no misattributed drop.
+    let mut r4_keep = report_v4(
+        4,
+        screens.clone(),
+        vec![win_a.clone(), win_b.clone()],
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r4_keep.request_id = "req-4-keep".to_owned();
+    let keep_drops = crate::world_engine::with_focus_trace_capture(|| {
+        let reply_keep = accepted_v4(&mut engine, &r4_keep);
+        assert_eq!(reply_keep.operation_settled.len(), 1);
+    });
+    assert!(
+        keep_drops
+            .iter()
+            .all(|l| !l.contains("ev=operation-settled-dropped")),
+        "retained owner at same obs must emit no drop: {keep_drops:?}"
+    );
+
+    // 4. Genuine later accepted departure (obs=5, req=req-5-drop) emits one
+    //    identity-bound drop; subsequent Duplicate emits no removal.
+    let mut r5_drop = report_v4(5, screens, vec![win_b], "win-b", ingress_v4("win-b"));
+    r5_drop.request_id = "req-5-drop".to_owned();
+    r5_drop.closed = vec![WindowId("win-a".to_owned())];
+    let dep_drops: Vec<String> = crate::world_engine::with_focus_trace_capture(|| {
+        let reply_drop = accepted_v4(&mut engine, &r5_drop);
+        assert!(reply_drop.operation_settled.is_empty());
+    })
+    .into_iter()
+    .filter(|l| {
+        l.contains("ev=operation-settled-dropped") || l.contains("ev=switch-settled-dropped")
+    })
+    .collect();
+    assert_eq!(
+        dep_drops,
+        vec![
+            "omnitiler:core:trace ev=operation-settled-dropped gen=gen-1 req=req-5-drop rev=5 obs=5 win=win-a kind=float op=op-2 outcome=float-frame-proven cause=-"
+        ]
+    );
+    assert!(engine.staged_dropped_operations.is_empty());
+
+    let dup_drops = crate::world_engine::with_focus_trace_capture(|| {
+        let (outcome, _) = engine.handle_report(&r5_drop, &[]);
+        assert!(matches!(outcome, V4RunOutcome::Duplicate(_)));
+    });
+    assert!(
+        dup_drops.is_empty(),
+        "cached Duplicate must emit no Q2 removal: {dup_drops:?}"
+    );
 }

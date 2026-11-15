@@ -516,6 +516,10 @@ describe("world entry retained intent desire", () => {
         }));
         assert.equal(flow.appliedCount(), appliedBefore);
         assert.ok(flow.logs.some((l) => l.includes("intent-write-failed")), flow.logs.join("\n"));
+        const req = envelope["source"] as string;
+        assert.ok(flow.logs.includes(
+            `omnitiler:world:trace ev=reply-skipped stage=intent-persist gen=gen-1 req=${req} rev=1 obs=1 reason=intent-write-failed`,
+        ), flow.logs.join("\n"));
         // No dependent follow-up dispatch runs from the failed accept.
         assert.equal(flow.calls.filter((c) => c.method === "DescribeWorld").length, 1);
         flow.handle.stop();
@@ -581,6 +585,10 @@ describe("world entry retained intent desire", () => {
         flow.lastCall("WriteFloatIntent").callback(JSON.stringify({ v: 2, correlation_id: firstCorr, outcome: "stored", stored: 1 }));
         assert.equal(flow.appliedCount(), appliedBefore);
         assert.equal(JSON.stringify(flow.geometryOf("win-a")), geometryBefore);
+        const firstReq = envelope["source"] as string;
+        assert.ok(flow.logs.includes(
+            `omnitiler:world:trace ev=reply-skipped stage=intent-hold gen=gen-1 req=${firstReq} rev=1 obs=1 reason=replaced-by-newer-reply`,
+        ), flow.logs.join("\n"));
         // The converged covering write still applies on its own stored success.
         assert.equal(flow.writeCount(), 2);
         answerWrite(flow, storedWriteReply(flow, 1));
@@ -795,6 +803,10 @@ describe("world entry retained intent desire", () => {
         answerWrite(flow, storedWriteReply(flow, 1));
         assert.equal(flow.appliedCount(), appliedBefore);
         assert.equal(JSON.stringify(flow.geometryOf("win-a")), geometryBefore);
+        const envelopeReq = envelope["source"] as string;
+        assert.ok(flow.logs.includes(
+            `omnitiler:world:trace ev=reply-skipped stage=intent-gate gen=gen-1 req=${envelopeReq} rev=1 obs=1 reason=settings-rev-mismatch`,
+        ), flow.logs.join("\n"));
         flow.handle.stop();
     });
 

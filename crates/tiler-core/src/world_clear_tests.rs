@@ -3629,7 +3629,7 @@ fn q2_operation_settled_retains_holds_minimize_incomplete_and_prunes_departure_w
         dep_trace
             .iter()
             .filter(|l| {
-                *l == "omnitiler:core:trace ev=operation-settled-dropped gen=gen-1 obs=11 win=win-max kind=clear op=op-13 outcome=continued-float cause=-"
+                *l == "omnitiler:core:trace ev=operation-settled-dropped gen=gen-1 req=req-11 rev=11 obs=11 win=win-max kind=clear op=op-13 outcome=continued-float cause=-"
             })
             .count(),
         1,
@@ -3639,7 +3639,7 @@ fn q2_operation_settled_retains_holds_minimize_incomplete_and_prunes_departure_w
         dep_trace
             .iter()
             .filter(|l| {
-                *l == "omnitiler:core:trace ev=operation-settled-dropped gen=gen-1 obs=11 win=win-max kind=float op=op-13 outcome=float-frame-proven cause=-"
+                *l == "omnitiler:core:trace ev=operation-settled-dropped gen=gen-1 req=req-11 rev=11 obs=11 win=win-max kind=float op=op-13 outcome=float-frame-proven cause=-"
             })
             .count(),
         1,

@@ -113,6 +113,12 @@ impl WorldEngine {
             self.state_revision + 1,
             "admitted issuing revision must be exactly the next live revision"
         );
+        if !self.staged_dropped_operations.is_empty() {
+            self.staged_dropped_operations.clear();
+        }
+        if !self.staged_dropped_switches.is_empty() {
+            self.staged_dropped_switches.clear();
+        }
         // Freeze implicit send sources from pre-observation retained
         // homing, before staging can admit newcomers or settle rehoming.
         // The frozen explicit output is the only source the command below
