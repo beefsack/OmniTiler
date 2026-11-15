@@ -1,6 +1,6 @@
 # Retained cursor warp request
 
-- Status: draft awaiting user choice. Draft design only; contract amendment/implementation await approval. No acknowledged-events lane or timer/expiry.
+- Status: deferred to the Windows v4 port (User 2026-11-15); Q1 and Q2 stay open until then. Draft design only. No acknowledged-events lane or timer/expiry.
 - Preserved product scope: `cursorWarp` defaults `false`, i3/sway preset enables cross-output warp, Hyprland preset leaves warp off pending per-verb evidence ([spec](../spec/functional-spec.md) lines 410-416, [outcomes](../spec/reference-outcomes.md#cursor-first-output-targeting-discriminators)).
 
 ## Today (source at `b2e55839`)
