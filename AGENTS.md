@@ -16,8 +16,12 @@
 ## Live KWin/Plasma Testing
 
 - Before any live KWin/Plasma testing, read and follow
-  [docs/live-kwin-testing.md](docs/live-kwin-testing.md). It does not grant
-  mutation authorization.
+  [docs/live-kwin-testing.md](docs/live-kwin-testing.md). Its
+  [Testing Posture](docs/live-kwin-testing.md#testing-posture-user-2026-11-15)
+  is the default and binds every brief: real desktop session, standing
+  fixture-scoped authorization, minimal gates, optimise for efficiency and
+  effectiveness. Do not add nested KWin, audit or accounting gates it does not
+  require.
 - Agent live legs use the live fixture scoped fixture-only; see the
   [fixture reference](crates/tiler-live-fixture/README.md) and the
   [KDE fixture-first rules](docs/live-kwin-testing.md#fixture-first-live-tests).
@@ -51,7 +55,7 @@
 
 ## Repository Records
 
-- Never record session controls in repository files or commit messages: commit/push permissions, autonomous or supervised modes, agent/model roles and routing, concurrency and approval gates, user availability, or machine-specific resource limits. Record only the work, its evidence, and product decisions.
+- Never record session controls in repository files or commit messages: commit/push permissions, autonomous or supervised modes, agent/model roles and routing, concurrency and approval gates, user availability, or machine-specific resource limits. Record only the work, its evidence, and product decisions. Exception: the standing live-testing posture in [docs/live-kwin-testing.md](docs/live-kwin-testing.md#testing-posture-user-2026-11-15).
 - Put reusable findings in point-of-use documentation or relevant code
   comments; do not create generic learnings files.
 

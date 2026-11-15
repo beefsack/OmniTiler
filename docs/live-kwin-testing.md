@@ -1,8 +1,30 @@
 # Live KWin/Plasma Testing Guide
 
-Read this guide before planning or running live KWin/Plasma work. It is the
-authoritative safety and operational contract for this repository; it does not
-grant authorization beyond [Current Decisions](./decisions/kde.md#live-test-evidence-boundary).
+Read this guide before planning or running live KWin/Plasma work.
+
+## Testing Posture (User 2026-11-15)
+
+This section is the default and wins over anything below or in the
+[fixture README](../crates/tiler-live-fixture/README.md); the rest describes
+how, not extra gates.
+
+- Test in the real desktop session. Optimise for outcomes: efficient,
+  effective, pragmatic. Add a gate only if it prevents real harm to user data
+  or the session; a check that only adds procedure is dropped.
+- Standing authorization: fixture-scoped live testing in the real session is
+  authorized. User windows may be tiled or moved; no restoration is required.
+- Hard limits: never close or kill user windows; no display configuration
+  changes; no writes to the user's stored tiler settings.
+- Physical input through `ydotool`/`ydotoold` is allowed; stop a daemon the
+  run started.
+- Nested KWin only for loading ABI-bound native effects and deliberate
+  forced-crash probes. A crash found in the real session is fixed and
+  retested in the real session.
+- No separate verdict-audit agent, no exhaustive process inventory, no
+  readiness re-checks between legs. Verdicts cite raw log lines.
+- Teardown: copy dev logs, `just dev-off`, stop what the run started.
+
+## Platform
 
 - User 2026-10-29: keep testing on latest-stable KDE Plasma to catch upgrade breakage.
 
@@ -19,14 +41,12 @@ grant authorization beyond [Current Decisions](./decisions/kde.md#live-test-evid
   membership as observed, never fabricated, and leave unsupported outcomes TBD.
   There is no routine baseline capture/compare, exact-restoration proof,
   protected-window inventory, or stop-on-baseline surprise.
-- Live work needs user authorization, which may be standing for the session.
-  This guide grants none. Never record session grants, input grants, or other
-  session controls in repository records.
+- Authorization is the standing posture above.
 - Stop on a KWin crash or crash-class surprise, a filter failure causing
   repeated non-fixture actuation, or a real product/contract decision. The
   evaluated readiness gate below is retained as cheap evidence.
-- Loading an ABI-bound native effect, and any crash-class or forced-crash
-  probe, uses nested KWin, not the real session. The Custom Tile Safety
+- Loading an ABI-bound native effect, and deliberate forced-crash probes, use
+  nested KWin, not the real session. The Custom Tile Safety
   Findings bans below remain in force in the real session.
 - Hygiene: no `sudo`, no Home Manager or system paths, no broad cleanup, no
   unrelated configuration, never no-arg `queryWindowInfo`. Teardown is
@@ -299,6 +319,6 @@ startup:
   identify heuristically, modify, or delete it. No stale POC2/POC3 harness
   or checkpoint retry is authorized; recovery requires explicit user
   authorization and exact identity or hash verification.
-- Grants and prohibitions stay authoritative in
-  [Current Decisions](./decisions/kde.md#live-test-evidence-boundary); this guide holds
-  procedures, preflight, and residue handling only.
+- The standing authorization and posture are in
+  [Testing Posture](#testing-posture-user-2026-11-15); the evidence boundary is
+  in [Current Decisions](./decisions/kde.md#live-test-evidence-boundary).
