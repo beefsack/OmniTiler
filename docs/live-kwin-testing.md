@@ -24,301 +24,66 @@ how, not extra gates.
   readiness re-checks between legs. Verdicts cite raw log lines.
 - Teardown: copy dev logs, `just dev-off`, stop what the run started.
 
-## Platform
+## Fixture-First Live Tests
 
-- User 2026-10-29: keep testing on latest-stable KDE Plasma to catch upgrade breakage.
+First live run (from the repo root inside the devenv shell):
 
-## Safety Boundary
+1. Start the fixture in a terminal: `cargo run --locked -p tiler-live-fixture -- serve`
+2. Start the tiler scoped to fixture windows: `just dev-on --scope-class OmniTilerTestWindow`
+3. Drive windows with `tiler-live-fixture send` (or `scripts/kde-scenarios.mjs`).
+4. Teardown: copy dev logs, run `just dev-off`, and stop anything the run started (fixture server, any `ydotool` daemon).
 
-- Durable default (user 2026-11-08, practicality; supersedes the per-run
-  occupancy requirement when appending beyond the whole desktop roster): append
-  the test workspace beyond the whole existing roster. It is >n by construction,
-  where n is the max occupied workspace ordinal; no per-run occupancy inventory
-  is needed for this route. Otherwise inventory occupancy fresh, including sticky
-  windows on every desktop, and use workspaces >n. Use `tiler-live-fixture` with
-  the exact platform filter so only fixture windows are managed. Sticky foreign
-  windows may appear on the appended workspace but remain unmanaged; record
-  membership as observed, never fabricated, and leave unsupported outcomes TBD.
-  There is no routine baseline capture/compare, exact-restoration proof,
-  protected-window inventory, or stop-on-baseline surprise.
-- Authorization is the standing posture above.
-- Stop on a KWin crash or crash-class surprise, a filter failure causing
-  repeated non-fixture actuation, or a real product/contract decision. The
-  evaluated readiness gate below is retained as cheap evidence.
-- Loading an ABI-bound native effect, and deliberate forced-crash probes, use
-  nested KWin, not the real session. The Custom Tile Safety
-  Findings bans below remain in force in the real session.
-- Hygiene: no `sudo`, no Home Manager or system paths, no broad cleanup, no
-  unrelated configuration, never no-arg `queryWindowInfo`. Teardown is
-  `just dev-off` plus exact project-owned items.
+- Append the test workspace beyond the whole existing roster (`>n` by construction, where `n` is the highest occupied workspace ordinal; no routine occupancy inventory needed). Otherwise inventory occupancy fresh (including sticky windows) and use workspaces `>n`.
+- Foreign windows stay unmanaged by the `--scope-class` filter; sticky foreign windows on an appended workspace remain unmanaged. Foreign apps are only for app-specific investigations after trying the fixture, with approved scope naming them.
+- Full fixture protocol, flags, and `observed`/`unsupported` semantics: [fixture README](../crates/tiler-live-fixture/README.md).
 
-## Nested KWin Isolation
+## Safety And Hygiene
 
-Applies only to crash-class legs (forced-crash/recovery probes, ABI-bound
-native effect loading). Routine legs run in the real session under the durable
-default above.
-
-- A nested `kwin_wayland` run must use fresh private `XDG_CONFIG_HOME`,
-  `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR`, and
-  `KDEHOME`, all scoped to its run directory. The private runtime directory
-  must be user-owned mode `0700`.
-- Use a private `dbus-run-session`, the proven `--socket nested-kwin-spike
-  --width 640 --height 480 --no-global-shortcuts --no-kactivities
-  --no-lockscreen` launcher shape, and never `--windowed`.
-- A private runtime directory requires the parent Wayland display as an absolute
-  path passed through `--wayland-display`. Never use the host runtime directory
-  or remove host sockets.
-- Before and after a bounded nested run, record the host `~/.config/kwinrc`
-  SHA-256 and nanosecond mtime as a read-only diagnostic. Drift is a warning,
-  never a veto and never restored or mutated: exact manifest-bound cleanup
-  proceeds only after independent checkpoint isolation proof (exact private
-  `HOME`/`XDG_*`/`KDEHOME`/bus/socket plus canonical wrapper identity,
-  PID/start-tick, and workdir, with no host config path retained in the
-  checkpoint environ/cmdline/known FDs/maps). If wrapper privileges prevent
-  checkpoint reads, identify its underlying executable and choose that direct
-  launch route before starting. Checkpoint-only: the proof
-  validates retained state at that instant and does not prove against host
-  config opened then closed (or mapped then unmapped) before the checkpoint.
-  Confirm that the nested run created and used its own private `kwinrc`.
+- Platform target: latest-stable KDE Plasma.
+- Stop conditions: stop on a KWin crash or crash-class surprise, a filter failure causing repeated non-fixture actuation, or a real product/contract decision. A crash found in the real session is fixed and retested in the real session (do not reroute to nested KWin).
+- Harm prevention: no `sudo`, no Home Manager or system paths, no broad or unowned cleanup, no unrelated configuration, and never no-arg `org.kde.KWin.queryWindowInfo` (starts an interactive picker; Escape dismisses it).
+- Residue: preserve unidentified pre-existing runtime residue (such as `omnitiler-advisory-*`) untouched; do not heuristically modify or delete unowned residue.
+- Evidence boundary: [Current Decisions](./decisions/kde.md#live-test-evidence-boundary).
 
 ## KWin Script Lifecycle
 
-- KWin executes the generated non-module ES2017 IIFE only. Do not ship ESM,
-  Node imports, source maps, optional catch bindings, or manually edited output.
-- `/Scripting` returns a signed `i` script ID from `loadScript(s)` or
-  `loadScript(ss)`. `-1` is the failure sentinel; retain and strictly parse the
-  raw result, accept only a non-negative 32-bit ID, introspect that exact script
-  object, and run only it. `0` is a valid first ID and maps to
-  `/Scripting/Script0` only when returned. Never guess `Script0`, call global
-  `Scripting.start`, or use a KPackage as a test path.
-- The current public host `/Scripting` API has no loaded-script enumeration,
-  Script-object plugin/source identity, duplicate count, running-state property,
-  or handler-absence proof. Do not unload a pre-existing production script for a
-  host pilot unless an authoritative exact in-memory source/object restore route
-  exists. A boolean `isScriptLoaded` reply and checkout hash do not provide one.
-- `scripts/start-test.sh` is the manual lifecycle interface. `start` builds,
-  loads, runs, and records the plugin load and receipt-bound `Script<ID>`
-  introspection under the captured KWin identity; it performs no journal
-  readiness wait. Those checks cannot detect the numeric-path collision below.
-  `status`,
-  `desktops`, `reconcile-shortcuts` (without `--apply`),
-  `snapshot-shortcuts`, and `snapshot-kglobalaccel` are read-only; `stop`
-  unloads only the exact project script. `reconcile-shortcuts --apply` is a
-  shortcut mutation and always needs explicit authorization.
-- `just dev` is not a status command: it builds and starts the live stack,
-  unscoped by default. Use read-only `just dev-status` for dev-stack status;
-  a timeout does not prove that startup or mutation did not occur.
-- A load/introspection/run receipt plus `isScriptLoaded=true` does not bind
-  the named plugin to the object at the returned numeric path. KWin allocates
-  IDs from its current script count without renumbering surviving objects;
-  unloading an older script while a later helper survives can reuse that
-  helper's path. The duplicate object registration is unchecked, and `run`
-  can target the already-running helper and silently do nothing. A fresh
-  D-Bus `run` delays its reply until evaluation, but an already-running or
-  starting target returns immediately; evaluation errors can also return
-  normally. See [KWin lifecycle source at the pinned revision](https://invent.kde.org/plasma/kwin/-/blob/1f543de908/src/scripting/scripting.cpp).
-- Retain each helper's plugin, returned ID and source receipt. Tear down
-  helpers in reverse load order and verify both the named plugin is unloaded
-  and its exact script object is gone before removing an older controller
-  or loading its replacement. Never carry a later helper across controller
-  unload/reload, guess an ID, or clean an unidentified occupant. Stop on any
-  accounting mismatch. Require the evaluated-readiness gate below regardless
-  of successful lifecycle receipts.
-- The obsolete `live-test.sh` carrier wrapper has been removed: its setup
-  called the absent `start-test.sh provenance` subcommand, so it never
-  established the carrier lifecycle or controller readiness. Use the manual
-  lifecycle interface with helper accounting and the readiness gate below, or
-  the fixture-driven scenario runner `scripts/kde-scenarios.mjs`; historical
-  wrapper readiness flags are not acceptance evidence.
-- The inert provenance carrier (`kwin/src/provenance-entry.ts`) has been
-  removed: no lifecycle script, build target or test loaded it. A helper or
-  other lifecycle load receipt is binding evidence only and never
-  controller-readiness evidence; every controller claim additionally requires
-  the gate below.
+- KWin executes the generated non-module ES2017 IIFE only (no ESM, Node imports, source maps, optional catch bindings, or manual edits).
+- `/Scripting` returns a signed `i` script ID from `loadScript(s)` / `loadScript(ss)`. `-1` is the failure sentinel; `0` maps to `/Scripting/Script0` only when returned. Accept only a non-negative 32-bit ID, introspect that exact object, and run only it. Never guess `Script0`, call global `Scripting.start`, or use a KPackage as a test path.
+- Numeric-path reuse hazard: KWin allocates IDs from its current script count without renumbering surviving objects ([KWin scripting source](https://invent.kde.org/plasma/kwin/-/blob/1f543de908/src/scripting/scripting.cpp)). Unloading an older script while a later helper survives can reuse that helper's path so `run` targets the already-running helper and silently does nothing. Unload helpers before reloading a controller, and never guess an ID or clean an unidentified occupant.
+- Let `just dev-on` / `just dev-off` manage packaged-script handoff (`dev-on` disables the packaged script and `dev-off` re-enables it after exact controller teardown); do not manually unload unrelated scripts.
+- Manual lifecycle interface (`scripts/start-test.sh`): `start` builds, loads, and runs the script without a journal readiness wait; `stop` unloads only the exact project script.
+- Inspection subcommands (`status`, `desktops`, `reconcile-shortcuts`, `snapshot-shortcuts`, `snapshot-kglobalaccel`) are read-only; `reconcile-shortcuts --apply` writes stored shortcuts and is unnecessary for normal fixture runs.
+- `just dev` / `just dev-on` builds and starts the live stack (unscoped by default); `just dev-status` is read-only; `just dev-off` tears down. A command timeout does not prove startup or mutation did not occur.
 
-## Evaluated Readiness Gate (Controller)
+## Diagnostics And Journal
 
-After every controller `start` (manual `start-test.sh`, `just dev-on`,
-recovery), and before any journey, restart, or persistence claim, prove
-evaluation under the recorded KWin PID using a journal cursor captured before
-startup:
-
-- `omnitiler:world:ready`, `omnitiler:world:discovered`, and a matched
-  accepted `dispatch`/`applied` pair appear after the cursor. Absence
-  within the bounded window means the instance is inert: stop, retain the
-  gating evidence, and diagnose before any retry. Never re-run, restart
-  around it, or claim a pass from a silent instance.
-- A successful run receipt with no journal output is the inert-instance
-  signature from the retained silent-restart leg (loaded, introspected, and
-  run with an unchanged bundle, yet no seed, no world call, no journal
-  output).
-
-## Diagnostics And Ownership
-
-- KWin runs as `plasma-kwin_wayland.service`; use `journalctl --user` and filter
-  by the recorded KWin D-Bus-owner PID. Resolve `org.kde.KWin` with
-  `GetNameOwner`, then `GetConnectionUnixProcessID` for that unique owner;
-  the service's `MainPID` can identify a launcher rather than KWin.
-  `journalctl --system` is not a valid KWin capture.
-  Check evaluation errors on the unfiltered current-PID stream: keep the
-  separate `QT_CATEGORY=kwin_scripting` error check without the `omnitiler:`
-  filter, since a filtered capture cannot see script-engine failures. Neither
-  check substitutes for direct authoritative state evidence.
-- Production diagnostics use the `omnitiler:` prefix.
-- A journal cursor is opaque: strip the `-- cursor: ` display prefix before
-  passing it to `--after-cursor`. Capture the pre-start cursor from the unfiltered
-  user journal, then filter the subsequent read by the verified KWin owner PID.
-  An empty PID-filtered journal can return an older cursor, not a fresh boundary.
-  Prove a new capture contract with a true positive marker before relying on it.
-- KGlobalAccel collection must enumerate all components and exact action tuples.
-  Persisted records after unload do not prove a callback. Never unregister or
-  restore anything except exact verified project-owned action records.
-- The obsolete custom-tile acceptance harness has been removed: its persisted
-  `[Tiling]` preflight conflicted with the accepted baseline. Historical
-  readiness flags establish neither current journey readiness nor acceptance.
+- KWin runs as `plasma-kwin_wayland.service`; read `journalctl --user` filtered by the KWin D-Bus-owner PID (`GetNameOwner` on `org.kde.KWin`, then `GetConnectionUnixProcessID`). `MainPID` can be a launcher, and `journalctl --system` is invalid for KWin.
+- Production logs use the `omnitiler:` prefix. Check `QT_CATEGORY=kwin_scripting` without the `omnitiler:` filter to catch script-engine evaluation errors.
+- For a startup log capture, take a pre-start cursor from the unfiltered user journal (an empty PID-filtered journal can return an older cursor) and strip the `-- cursor: ` prefix before passing it to `--after-cursor`.
+- Cheap readiness evidence (not a gate): `omnitiler:world:ready`, `omnitiler:world:discovered`, and a matched `dispatch`/`applied` pair after the cursor. A successful `run` receipt with no journal output can indicate an inert instance.
+- KGlobalAccel: service `org.kde.kglobalaccel`, root interface `org.kde.KGlobalAccel` at `/kglobalaccel`, and component interface `org.kde.kglobalaccel.Component` at enumerated object paths; persisted action records alone do not prove a callback, and never unregister or restore anything except exact verified project-owned action records.
 
 ## Custom Tile Safety Findings
 
-- Never run `remove()` then `split()` in one structural run. A removal can
-  invalidate the prior tree and crash KWin.
-- Never use a fixed timer as a `deleteLater` barrier. Re-resolve every tile
-  handle, including the root, after removal; use homogeneous structural batches
-  and a freshly decoded root after each structural call.
-- Never probe persistent user scope. A scripted collapse can also crash KWin;
-  treat it as crash-class, not cleanup-class behavior.
-- `createDesktop` can persist a default tiling group after its two-second save
-  timer. Cleanup must target only exact verified owned keys, never unrelated
-  stale groups.
+- Never run `remove()` then `split()` in one structural run; removal can invalidate the prior tree and crash KWin.
+- Never use a fixed timer as a `deleteLater` barrier. Re-resolve every tile handle (including root) after removal; use homogeneous structural batches and a freshly decoded root after each structural call.
+- Avoid probing persistent user scope; a scripted collapse can crash KWin.
+- `createDesktop` can persist a default tiling group after its two-second save timer. Default tiling groups and normal desktop retirement/appending are normal lifecycle churn, not restoration failures; cleanup must target only exact verified owned keys.
 
 ## Live Evidence
 
-- A transport reply, process exit status, missing error, or visual appearance
-  alone is not feature evidence. Record the relevant authoritative native
-  state before and after a mutation and preserve raw machine responses that
-  gate it.
-- Never call no-argument `org.kde.KWin.queryWindowInfo`: it starts an interactive
-  window picker and can leave a crosshair after the caller times out; Escape
-  dismisses it. Prior occurrences in the archived
-  [POC3](changes/archive/poc3-disposable-rust-actuation.md) and
-  [direct-geometry migration](changes/archive/rust-engine-direct-geometry-migration.md)
-  records are not passive inventory precedents. For fixture-only tests, use
-  `list` to discover caller IDs and `get` for observed state, retaining unknown
-  and unsupported values; these do not establish foreign-window state.
-- Use verified Wayland-native normal resizable test clients. Validate focus,
-  active window, desktop/output scope, and tile association before insertion.
-  For agent-driven runs, stay fixture-scoped (`just dev --scope-class
-  OmniTilerTestWindow [--scope-class ...]` or the `dev-on` equivalent) so
-  only listed-`resourceClass` fixture windows are managed; foreign windows
-  stay untouched by construction.
-- `invokeShortcut` bypasses the xkb layer and cannot prove physical shortcut
-  delivery. Manual journeys require physical input and matching state evidence.
-- The trailing-empty workspace proof is a separate executable procedure at
-  [live oscillation verification](live-oscillation-verification.md).
-- User decision 2026-11-08 (practicality): appending the test workspace beyond
-  the whole existing roster needs no per-run occupancy inventory; it is >n by
-  construction. Otherwise inventory occupied workspaces through n fresh, never
-  hardcode n, and test on workspaces >n. Observe sticky membership honestly and
-  leave foreign windows unmanaged through the exact fixture filter. No routine
-  full baseline capture/compare, protected-window inventory, or exact-restoration
-  proof.
-- The evaluated readiness gate above is the routine cheap evidence. No prior
-  leg's capture establishes later state.
-- The test-only checker at `kwin/tests/baseline-check/` remains available and
-  unchanged as an optional tool (2026-10-28): 28/28 hermetic tests and a fresh
-  capture/capture/compare dry run pass, with zero inventory mismatches, exact
-  helper absence and unchanged loaded/active effects and scripting introspection.
-  The rejected `live-audit/` draft has been removed. The shortcut destination is
-  service `org.kde.kglobalaccel`, distinct from the root interface
-  `org.kde.KGlobalAccel` at `/kglobalaccel`; component replies use
-  `org.kde.kglobalaccel.Component` at the enumerated object paths. It uses one
-  nonce-named read-only script, runs only the collision-checked returned
-  object, unloads by name once and verifies name/object absence against
-  the original KWin owner. Any unexpected reply stops the capture without retry.
-  Checker use is optional, never a per-leg gate.
-- Checker interface (from the repository root, with fresh output directories
-  outside the checkout):
-  `devenv shell --impure -- node kwin/tests/baseline-check/baseline.mjs capture BASE_DIR`,
-  then `capture FRESH_DIR`, then
-  `devenv shell --impure -- node kwin/tests/baseline-check/baseline.mjs compare BASE_DIR FRESH_DIR`.
-  Capture requires the full KGlobalAccel roster and all component bodies,
-  loaded/active effects, configuration/store bytes and modes, and complete
-  window/workspace inventories. It writes `manifest.json` only after validation
-  and verified teardown. Failure retains `failure.json` and `commands.jsonl`,
-  never a complete manifest. Compare validates both captures, reports per-item
-  differences, exits nonzero on mismatch and never repairs state. There is no
-  standalone `validate` CLI command: `compare` validates both captures, and
-  `validateDir` is an exported function for offline artifact inspection.
-- Fixture/native joins are required evidence: each exact fixture sentinel and
-  PID joined one-to-one to a native KWin UUID/frame. Missing, duplicate or
-  ambiguous joins fail closed. No full-native-roster UUID uniqueness check is
-  required. The attribution tool at `kwin/tests/fixture-attribution/` is
-  optional, never a routine mandatory gate; it is baseline-dependent and reuses
-  baseline validation and introspection parsing, following the checker's
-  nonce-named, collision-checked, single-unload helper lifecycle. Independent read-only review accepts the offline tool; direct
-  hermetic checks pass **11/11**:
-  `node --test kwin/tests/fixture-attribution/tests/run-tests.mjs`.
-  A live dry run passed both exact joins, helper teardown and full baseline
-  restoration comparison. Both fixtures landed on one output, so the requested
-  one-per-output dry-run coverage remains incomplete; no reposition or retry
-  followed. This is a staging gap, not an observed attribution/API failure.
-  Existing runtime packaging and product-loading exclusions remain unchanged.
-- Attribution interface:
-  `devenv shell --impure -- node kwin/tests/fixture-attribution/attribution.mjs --announcement ANN_FILE --baseline BASE_DIR --out ATTR_DIR --nonce NONCE`.
-  `ANN_FILE` is the fixture's exact announcement; `BASE_DIR` must validate as
-  complete; `ATTR_DIR` must be fresh and outside the checkout. Use a fresh
-  32-hex helper nonce, distinct from the fixture's announced nonce. Success
-  retains helper source, raw commands and `attribution.json`, writing
-  `attribution.complete` last; failure retains receipts without that marker.
-  By user decision (2026-10-28), attribution and the upcoming Stage 8
-  focus/send/both-output/close leg do not use a compositor visibility probe.
-  No effect is installed, linked or loaded, and no compositor environment is
-  read. The existing `kwin/tests/visibility-probe/` remains unchanged for later
-  hide/reveal work; accepted hide/reveal compositor evidence is not withdrawn.
-- Evidence for protocol claims is the scenario runner's own correlated logs
-  (`scripts/kde-scenarios.mjs`: its recorded calls, events and checks, with
-  request/response correlation) plus native readback of the owned state. No raw
-  bus-level request/reply capture is required; do not run `dbus-monitor`, which
-  over-captures foreign traffic. At the first crash-class surprise or repeated
-  non-fixture actuation from a filter failure, stop the leg and retain its
-  gating evidence. Baseline drift alone never stops a leg.
-- `ReadWorldPresentation` strips operation lanes and native write tokens; it
-  cannot prove no pending operations. Use full correlated `Describe` replies
-  for that checkpoint, with independent native state joins.
-- Wayland fixture `visible:null` is unknown, and KWin `hidden=false` alone does
-  not prove a window is shown on the current desktop/activity. Membership
-  exclusion is not independent compositor hide/reveal evidence; retain that
-  outcome as TBD without a shown observer.
-- Prefer test workspaces appended beyond the whole existing roster, or
-  workspaces >n after fresh occupancy inventory. Use disposable kwrite, kcalc or
-  kolourpaint clients; use a genuine fixed-size Qt client when fixed-size
-  behavior is required.
-  Fixture choice grants no additional mutation authorization.
-- Preserve normal desktop retirement/appending as documented lifecycle churn,
-  not a restoration target; see the live-boundary decision.
+- Transport replies, exit status, or visual appearance alone do not prove feature behavior. Native claims require joined fixture identity (each sentinel and PID matched one-to-one to a native KWin UUID/frame) plus relevant native before/after state; missing, duplicate, or ambiguous joins leave that claim unverified.
+- Use `tiler-live-fixture` (`list`/`get` for observed state, retaining `unknown`/`unsupported`), or disposable Qt clients (`kwrite`, `kcalc`, `kolourpaint`, or a genuine fixed-size Qt client) when needed.
+- Protocol claims use `scripts/kde-scenarios.mjs` correlated logs plus native readback of owned state. Do not run `dbus-monitor` (over-captures foreign traffic).
+- `ReadWorldPresentation` strips operation lanes and native write tokens; use full correlated `Describe` replies to check pending operations.
+- Wayland fixture `visible:null` is unknown, and KWin `hidden=false` alone does not prove a window is shown on the current desktop/activity. Membership exclusion is not hide/reveal evidence; leave unsupported outcomes TBD.
+- `invokeShortcut` bypasses the xkb layer and cannot prove physical shortcut delivery; use physical input (for example via `ydotool`) with matching state evidence.
+- Related procedures and optional tools (not routine gates): [live oscillation verification](live-oscillation-verification.md), `kwin/tests/baseline-check/`, `kwin/tests/fixture-attribution/`, and `kwin/tests/visibility-probe/`.
 
-## Fixture-First Live Tests
+## Nested KWin Isolation
 
-- Agent live legs test fixture windows only, scoped fixture-only, on workspaces
-  appended beyond the whole existing roster or >n after fresh occupancy
-  inventory. Start the fixture (`tiler-live-fixture serve`), then scope the tiler to its identity
-  before any mutation: `just dev-on --scope-class OmniTilerTestWindow`
-  (teardown with `just dev-off`); agent-driven runs stay scoped so only
-  listed-`resourceClass` fixture windows are managed. Full protocol, flags,
-  fields and limits are in the [fixture README](../crates/tiler-live-fixture/README.md).
-- Foreign (non-fixture) applications are only for application-specific
-  investigations after first trying the fixture, with the approved scope
-  naming them explicitly. Rationale: fixture windows are predictable,
-  controllable and observable (caller ids, observed predicates, per-field
-  outcomes), and fixture-only scope protects the operator desktop by
-  construction: unrelated windows stay untouched even on a mistaken command.
+Applies only to loading ABI-bound native effects and deliberate forced-crash probes.
 
-## Preserved Residue
-
-- The unidentified prior `omnitiler-advisory-*` runtime-directory
-  residue is preserved untouched. Do not search for, enumerate, inspect,
-  identify heuristically, modify, or delete it. No stale POC2/POC3 harness
-  or checkpoint retry is authorized; recovery requires explicit user
-  authorization and exact identity or hash verification.
-- The standing authorization and posture are in
-  [Testing Posture](#testing-posture-user-2026-11-15); the evidence boundary is
-  in [Current Decisions](./decisions/kde.md#live-test-evidence-boundary).
+- Use fresh private `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR` (user-owned mode `0700`), and `KDEHOME`, all scoped to the run directory.
+- Launch via private `dbus-run-session` with `--socket nested-kwin-spike --width 640 --height 480 --no-global-shortcuts --no-kactivities --no-lockscreen`, and never `--windowed`.
+- Pass the parent Wayland display as an absolute path via `--wayland-display`. Never use the host runtime directory or remove host sockets.
