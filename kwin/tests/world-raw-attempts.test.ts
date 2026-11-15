@@ -17,8 +17,9 @@ import { startWorldAdapterEntry } from "../src/world-entry";
 import { WorldAdapterState } from "../src/world-state";
 import { applyWorldReply } from "../src/world-apply";
 import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
-import type { WorldReplyScope } from "../src/world-report";
+import type { WorldReply, WorldReplyScope } from "../src/world-report";
 import type { WorldObservation } from "../src/world-observe";
+import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 interface FakeDesktop {
     id: string;
@@ -1381,5 +1382,234 @@ describe("world clear attempt correspondence", () => {
         });
         assert.equal(second.calls(), 1, "a fresh generation may dispatch the retained desire again");
         assert.equal(out.clears, 1);
+    });
+
+    describe("retained operation/switch outcomes have no adapter authority", () => {
+        const mustWorldReply = (raw: Record<string, unknown>): WorldReply => {
+            const parsed = parseWorldReply(JSON.stringify({
+                v: 4,
+                ...raw,
+                presentation: DISABLED_PRESENTATION,
+            }));
+            assert.ok(parsed !== null && isCoreWorldReply(parsed), "expected valid bound WorldReply");
+            return parsed;
+        };
+
+        it("fresh accepted operationSettled and switchSettled grant no extra clear writes and preserve spend fences", () => {
+            const state = boundClear();
+            const { env, calls } = clearEnv(state, { maximized: true, clear: "refuse" });
+            let switchCalls = 0;
+            const countedEnv = {
+                ...env,
+                switchView: (): boolean => {
+                    switchCalls += 1;
+                    return false;
+                },
+            };
+            const f1 = state.beginCapture("src-1", null);
+            assert.ok(f1 !== null);
+            const reply1 = mustWorldReply({
+                ...(countedEnv.reply as unknown as Record<string, unknown>),
+                req: "src-1",
+                source: "src-1",
+                obs: "1",
+                rev: "1",
+                clock: "9",
+            });
+            assert.deepEqual(state.acceptReply(reply1, "src-1", f1.watermark), { applied: true, reason: "accepted" });
+            const first = applyWorldReply({ ...countedEnv, reply: reply1, dispatchWatermark: f1.watermark });
+            assert.equal(calls(), 1, "baseline clear setter ran once");
+            assert.equal(switchCalls, 0, "no switchView call before fresh accepted outcome application");
+            assert.equal(first.clears, 0, "refused clear leaves window maximized (still needing setter)");
+            assert.ok(state.clearSpent.has("op-clear-1"), "clear token spent before fresh reply");
+            assert.ok(state.isDispatched("op-clear-1"), "dispatch fence recorded before fresh reply");
+            assert.equal(state.clearAttemptsForReport().length, 1, "nonempty clear attempt recorded");
+
+            // Fresh bound ready reply carrying scripted valid operationSettled
+            // (clear + float) and switchSettled payloads with the same desire
+            // and native maximized=true state still needing a setter.
+            const f2 = state.beginCapture("src-2", null);
+            assert.ok(f2 !== null);
+            assert.equal(f2.delivered.clears.length, 1);
+            const reply2 = mustWorldReply({
+                ...(countedEnv.reply as unknown as Record<string, unknown>),
+                req: "src-2",
+                source: "src-2",
+                obs: "2",
+                rev: "2",
+                clock: "10",
+                operationSettled: [
+                    { win: "win-c", kind: "clear", op: "op-clear-1", outcome: "refused-proven", cause: "refused-with-unmaximized" },
+                    { win: "win-c", kind: "float", op: "op-float-1", outcome: "float-frame-proven", cause: "" },
+                ],
+                switchSettled: [
+                    { out: "out-1", op: "op-switch-1", outcome: "complete", failed: [], focus: "proven", fallback: false },
+                ],
+            });
+            assert.deepEqual(state.acceptReply(reply2, "src-2", f2.watermark), { applied: true, reason: "accepted" });
+            const second = applyWorldReply({ ...countedEnv, reply: reply2, dispatchWatermark: f2.watermark });
+            assert.equal(calls(), 1, "fresh accepted outcomes grant zero extra clear calls");
+            assert.equal(switchCalls, 0, "fresh accepted outcomes grant zero switchView calls");
+            assert.equal(second.clears, 0);
+            assert.ok(state.clearSpent.has("op-clear-1"), "clear spend fence persists");
+            assert.ok(state.isDispatched("op-clear-1"), "dispatch fence persists");
+            assert.deepEqual(state.clearAttemptsForReport(), [], "exact delivered equality retires old unchanged clear receipt");
+        });
+
+        it("fresh accepted outcomes grant no extra float writes and never replace or retire newer same-key frame receipts", () => {
+            const state = new WorldAdapterState("adapter-a", "owner-a");
+            state.boundGen = "gen-1";
+            state.recordClock("9");
+            const ref = {};
+            let geoCalls = 0;
+            let switchCalls = 0;
+            const makeFloatReply = (over: Record<string, unknown>, winOver: Record<string, unknown> = {}): WorldReply => mustWorldReply({
+                ...(setterReply(
+                    [{
+                        win: "win-a", out: "out-1", ws: "w1", alloc: null, frame: [10, 20, 300, 200],
+                        frame_auth: "untouched", frame_hold: "", member_auth: "untouched", member_hold: "",
+                        frame_op: "op-float-1", clear_op: "", floating: true, float_origin: "",
+                        cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
+                        ...winOver,
+                    }],
+                    [],
+                    [],
+                ) as unknown as Record<string, unknown>),
+                ...over,
+            });
+            const floatEnv = (reply: WorldReply, watermark: string) => ({
+                state,
+                observation: setterObservation([{ win: "win-a", ref, out: "out-1", ws: "d1" }]),
+                reply,
+                dispatchWatermark: watermark,
+                takeResult: null,
+                log: (): void => undefined,
+                isStillListed: (): boolean => true,
+                readLiveRect: (): { x: number; y: number; w: number; h: number } => ({ x: 0, y: 0, w: 100, h: 100 }),
+                readLiveMembership: (): { out: string; ws: string } => ({ out: "out-1", ws: "d1" }),
+                readLiveSafety: setterSafety,
+                setGeometry: (): boolean => {
+                    geoCalls += 1;
+                    return false;
+                },
+                setMembership: (): boolean => { throw new Error("no desktop setter expected"); },
+                sendToOutput: (): boolean => { throw new Error("no output setter expected"); },
+                resolveOutput: (out: string): object => ({ name: out }),
+                resolveDesktop: (ws: string): object => ({ id: ws }),
+                switchView: (): boolean => {
+                    switchCalls += 1;
+                    return false;
+                },
+                createDesktop: (): void => undefined,
+                removeDesktop: (): boolean => false,
+                focusWindow: (): boolean => false,
+                desktopOccupants: () => ({ total: 0, readable: true }),
+                desktopVisible: (): boolean => false,
+                readLiveView: (): string | null => null,
+                desktopById: (id: string): object => ({ id }),
+                minDesktops: 1,
+            });
+
+            // Deferred-apply ordering on the public state/apply seam:
+            // 1) Accept src-1 (obs=1, rev=1) desiring op-float-1, deferring its apply
+            //    until after src-2 capture so src-2 snapshots [] while op-float-1
+            //    becomes live mid-flight.
+            const f1 = state.beginCapture("src-1", null);
+            assert.ok(f1 !== null);
+            const reply1 = makeFloatReply({ req: "src-1", source: "src-1", obs: "1", rev: "1", clock: "9" });
+            assert.deepEqual(state.acceptReply(reply1, "src-1", f1.watermark), { applied: true, reason: "accepted" });
+
+            // 2) Begin src-2 capture (empty delivered snapshot), then run deferred reply1
+            //    apply to produce raw receipt op-float-1 while src-2 is in flight.
+            const f2 = state.beginCapture("src-2", null);
+            assert.ok(f2 !== null);
+            assert.equal(f2.delivered.frames.length, 0);
+            applyWorldReply(floatEnv(reply1, f1.watermark));
+            assert.equal(geoCalls, 1, "baseline float setGeometry ran once");
+            assert.equal(switchCalls, 0, "no switchView call on baseline float apply");
+            assert.ok(state.isDispatched("op-float-1"), "float dispatch fence recorded before fresh reply");
+            assert.equal(state.framesForReport().length, 1);
+            assert.equal(state.framesForReport()[0]?.op, "op-float-1");
+
+            // 3) Accept genuinely fresh src-2 (obs=2, rev=2) desiring op-float-2,
+            //    deferring its apply; empty f2 delivered snapshot leaves op-float-1 intact.
+            const reply2 = makeFloatReply(
+                { req: "src-2", source: "src-2", obs: "2", rev: "2", clock: "10" },
+                { frame_op: "op-float-2", frame: [20, 30, 400, 300] },
+            );
+            assert.deepEqual(state.acceptReply(reply2, "src-2", f2.watermark), { applied: true, reason: "accepted" });
+            assert.equal(state.framesForReport()[0]?.op, "op-float-1");
+
+            // 4) Begin src-3 capture (snapshots op-float-1), then run deferred accepted
+            //    reply2 apply to generate newer same-key op-float-2 receipt while src-3
+            //    is in flight.
+            const f3 = state.beginCapture("src-3", null);
+            assert.ok(f3 !== null);
+            assert.equal(f3.delivered.frames[0]?.op, "op-float-1");
+            applyWorldReply(floatEnv(reply2, f2.watermark));
+            assert.equal(geoCalls, 2, "accepted reply2 op-float-2 ran setGeometry once");
+            assert.equal(switchCalls, 0, "no switchView call before fresh accepted outcome application");
+            assert.equal(state.framesForReport()[0]?.op, "op-float-2");
+            assert.notEqual(f3.delivered.frames[0]?.op, state.framesForReport()[0]?.op, "delivered snapshot op-float-1 and newer stored op-float-2 differ");
+
+            // 5) Accept fresh src-3 (obs=3, rev=3) carrying scripted valid clear/float/switch
+            //    settlements and the same spent op-float-1 desire: grants zero extra writes,
+            //    preserves op-float-1 dispatch fence, and leaves newer op-float-2 intact.
+            const reply3 = makeFloatReply({
+                req: "src-3",
+                source: "src-3",
+                obs: "3",
+                rev: "3",
+                clock: "11",
+                operationSettled: [
+                    { win: "win-a", kind: "clear", op: "op-clear-1", outcome: "continued-tiled", cause: "" },
+                    { win: "win-a", kind: "float", op: "op-float-1", outcome: "float-refused-proven", cause: "fixed" },
+                ],
+                switchSettled: [
+                    { out: "out-1", op: "op-switch-1", outcome: "completed-with-failures", failed: ["win-a"], focus: "unproven", fallback: true },
+                ],
+            });
+            assert.deepEqual(state.acceptReply(reply3, "src-3", f3.watermark), { applied: true, reason: "accepted" });
+            applyWorldReply(floatEnv(reply3, f3.watermark));
+            assert.equal(geoCalls, 2, "fresh accepted outcomes grant zero extra float writes despite unmoved rect");
+            assert.equal(switchCalls, 0, "fresh accepted outcomes grant zero switchView calls");
+            assert.ok(state.isDispatched("op-float-1"), "float dispatch fence persists");
+            assert.equal(state.framesForReport().length, 1, "newer same-key frame receipt survives older acceptance");
+            assert.equal(state.framesForReport()[0]?.op, "op-float-2");
+            assert.deepEqual(state.framesForReport()[0]?.target, [20, 30, 400, 300]);
+
+            // Settlement rows in an unbound/mismatched reply never substitute for attempt receipt.
+            const mismatchReply = makeFloatReply({
+                req: "src-wrong",
+                source: "src-wrong",
+                obs: "4",
+                rev: "4",
+                clock: "12",
+                operationSettled: [
+                    { win: "win-a", kind: "float", op: "op-float-2", outcome: "float-frame-proven", cause: "" },
+                ],
+                switchSettled: [
+                    { out: "out-1", op: "op-switch-2", outcome: "complete", failed: [], focus: "proven", fallback: false },
+                ],
+            });
+            assert.equal(state.acceptReply(mismatchReply, "src-4", state.currentInvalid).applied, false);
+            assert.equal(state.framesForReport().length, 1, "settlement rows alone do not retire attempt receipt");
+
+            // Exact delivered equality on a subsequent bound accept retires op-float-2.
+            const f4 = state.beginCapture("src-4", null);
+            assert.ok(f4 !== null);
+            const reply4 = makeFloatReply({
+                req: "src-4",
+                source: "src-4",
+                obs: "5",
+                rev: "5",
+                clock: "13",
+                operationSettled: [
+                    { win: "win-a", kind: "float", op: "op-float-2", outcome: "float-frame-proven", cause: "" },
+                ],
+            });
+            assert.deepEqual(state.acceptReply(reply4, "src-4", f4.watermark), { applied: true, reason: "accepted" });
+            assert.deepEqual(state.framesForReport(), [], "exact delivered equality retires unchanged frame receipt on bound accept");
+        });
     });
 });

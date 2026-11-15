@@ -4359,14 +4359,31 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         state.invalidate();
         scheduleDispatch();
     };
-    // Exact-identity match between the core-retained gesture terminal plus
-    // broker-pinned terminal association and the CURRENT pending native FIFO
-    // head (never flight.gesture or current capture ingress gestureAssoc).
+    // Exact-identity + response-binding match between the core-retained
+    // gesture terminal plus broker-pinned terminal association and the
+    // CURRENT pending native FIFO head (never flight.gesture or current
+    // capture ingress gestureAssoc). Enforces current generation, producer
+    // adapter, response source/req, and response nativeInvalid against the
+    // flight's original envelope bindings.
     const matchingPendingGestureTerminal = (
-        settled: WorldReply["gestureSettled"],
-        settledAssoc: WorldReply["gestureSettledAssoc"],
+        parsed: WorldReply,
+        flight: CaptureFlight,
     ): { instance: string; serial: string; win: string; coreId: string } | null => {
+        if (state.boundGen === null || parsed.gen !== state.boundGen) {
+            return null;
+        }
+        if (parsed.adapter !== state.adapter) {
+            return null;
+        }
+        if (parsed.req !== flight.source || parsed.source !== flight.source) {
+            return null;
+        }
+        if (parsed.nativeInvalid !== flight.watermark) {
+            return null;
+        }
         const pending = gestureTerminalPending;
+        const settled = parsed.gestureSettled;
+        const settledAssoc = parsed.gestureSettledAssoc;
         if (
             pending === null ||
             settled === null || settled === undefined ||
@@ -4390,16 +4407,16 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
 
     // Exact-identity ack after the core incorporated the terminal: matches
     // the retained gesture terminal and its broker-pinned association against
-    // the current pending native FIFO head. Duplicate redelivery and late
-    // callbacks remain inert/exact-identity.
+    // the current pending native FIFO head and flight bindings. Duplicate
+    // redelivery and late callbacks remain inert/exact-identity.
     const ackGestureTerminal = (
-        settled: WorldReply["gestureSettled"],
-        settledAssoc: WorldReply["gestureSettledAssoc"],
+        parsed: WorldReply,
+        flight: CaptureFlight,
     ): void => {
         if (stopped) {
             return;
         }
-        const matched = matchingPendingGestureTerminal(settled, settledAssoc);
+        const matched = matchingPendingGestureTerminal(parsed, flight);
         if (matched === null || gestureAckPending !== null) {
             return;
         }
@@ -4455,19 +4472,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (stopped) {
             return false;
         }
-        if (state.boundGen === null || parsed.gen !== state.boundGen) {
-            return false;
-        }
-        if (parsed.adapter !== state.adapter) {
-            return false;
-        }
-        if (parsed.req !== flight.source || parsed.source !== flight.source) {
-            return false;
-        }
-        if (parsed.nativeInvalid !== flight.watermark) {
-            return false;
-        }
-        const matched = matchingPendingGestureTerminal(parsed.gestureSettled, parsed.gestureSettledAssoc);
+        const matched = matchingPendingGestureTerminal(parsed, flight);
         if (matched === null) {
             return false;
         }
@@ -4475,7 +4480,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (ack !== null) {
             return ack.instance === matched.instance && ack.serial === matched.serial;
         }
-        ackGestureTerminal(parsed.gestureSettled, parsed.gestureSettledAssoc);
+        ackGestureTerminal(parsed, flight);
         const armed = gestureAckPending;
         return armed !== null && armed.instance === matched.instance && armed.serial === matched.serial;
     };
@@ -4680,7 +4685,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // `drop-observed` on the next two accepted captures (diagnostic
     // coverage of the two report boundaries, not a settling guarantee).
     // Native-window keyed; core numeric ids never match native windows.
-    const logDropDiagnostics = (parsed: WorldReply, fresh: WorldObservation): void => {
+    const logDropDiagnostics = (parsed: WorldReply, fresh: WorldObservation, flight: CaptureFlight): void => {
         const findWin = (win: string): { rect: { x: number; y: number; w: number; h: number }; out: string; ws: string } | null => {
             for (const domain of fresh.domains) {
                 for (const w of domain.windows) {
@@ -4706,7 +4711,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             const transfer = parsed.transfers.find((t) => t.kind === "window" && t.win === pending.win) ?? null;
             log(`omnitiler:world:drop-observed ${JSON.stringify({ serial: pending.serial, instance: pending.instance, win: pending.win, rev: parsed.rev, obs: parsed.obs, desired: row?.alloc ?? null, desiredFrame: row?.frame ?? null, frame_auth: row?.frame_auth ?? null, frame_hold: row?.frame_hold ?? null, member_auth: row?.member_auth ?? null, member_hold: row?.member_hold ?? null, transfer, frame: seen === null ? null : seen.rect, at: seen === null ? null : { out: seen.out, ws: seen.ws } })}`);
         }
-        const matched = matchingPendingGestureTerminal(parsed.gestureSettled, parsed.gestureSettledAssoc);
+        const matched = matchingPendingGestureTerminal(parsed, flight);
         if (matched === null || matched.win === "") {
             return;
         }
@@ -4946,7 +4951,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // pending-FIFO-head check using the retained terminal
                     // and its broker-pinned association.
                     try {
-                        ackGestureTerminal(parsed.gestureSettled, parsed.gestureSettledAssoc);
+                        ackGestureTerminal(parsed, flight);
                     } catch (error) {
                         void error;
                     }
@@ -5149,7 +5154,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     // Terminal drop diagnostic: pre-apply, so the observed
                     // frame and source homing are pre-actuation evidence.
-                    logDropDiagnostics(parsed, fresh);
+                    logDropDiagnostics(parsed, fresh, flight);
                     // Born admission and the one-shot clear are core-owned
                     // (N6): the reply's `clear_operation` desire rides the
                     // normal apply lane below with fresh pre/post proof.
