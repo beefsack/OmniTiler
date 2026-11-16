@@ -42,8 +42,8 @@
   `world_observe_capture_tests.rs`; subject-home send source and relative ring
   in `world_tiling_views.rs` / `world_commands.rs`.
 - The active KDE v4 report encoder omits legacy observer targeting declarations;
-  core defaults remain active. Normal settings and native catalog mappings do
-  not yet expose the three approved fields.
+  settings use the separate revisioned connection lane. Normal runtime settings
+  now carry the three approved fields; native catalog mappings remain pending.
 - Existing hover-motion subscription is settings-acceptance gated; this work
   adopts its normal settings surface, not another motion mechanism.
 
@@ -63,4 +63,27 @@
   3 ignored; KWin typecheck and 1,361 tests; launcher 703 and native-effect
   launcher 204 checks. Frozen fixtures and core/protocol source were unchanged.
 - This establishes command ingress only, not native no-focus navigation or PX
-  acceptance. Normal settings, native controls and fixture-only PX remain.
+  acceptance.
+
+### Normal runtime settings
+
+- Normal configuration now carries `switchTarget`, `freshPlacement` and
+  `focusFollowsCursor` through the existing revisioned settings lane. Defaults
+  are cursor output, cursor-output/last-focused admission and disabled hover.
+  All catalog targeting alternatives are supported; invalid or throwing readers
+  fall back to those defaults. Cursor warp remains unsupported.
+- Regressions cover defaults, alternatives, fallback, changed-content revision
+  and acknowledgement, unchanged-content suppression, and normal configuration's
+  accepted-hover subscription, disable and stop. Existing generation-rotation
+  coverage remains. Isolated settings still avoid normal configuration reads.
+- The first full KWin run found three current-producer byte comparisons still
+  expecting omitted settings. Regeneration updated five active artifacts:
+  the KDE settings request plus both Stage 5 discovery requests and replies.
+  Only the three existing values and their missing-key diagnostics changed;
+  protocol shape and frozen historical families were unchanged.
+- Focused verification passed 46 settings/motion/connection tests and 40 active
+  fixture tests. Final review found no serious issues. Full verification passed:
+  Rust format, three-package all-target build and strict clippy; Rust tests
+  3,460 passed, 3 ignored; KWin typecheck and 1,367 tests; launcher 703 and
+  native-effect launcher 204 checks.
+- Native controls and fixture-only PX acceptance remain.

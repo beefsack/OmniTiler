@@ -195,6 +195,47 @@ export function normalizeFixedSizePredicate(value: unknown): FixedSizePredicate 
     return FIXED_SIZE_PREDICATE_DEFAULT;
 }
 
+// Cursor-first targeting (`settings_catalog` `output.switch-target` /
+// `output.fresh-placement`, tokens from `cursor_targeting`): `cursor-output`
+// default and `focused-output` alternative for switches; the three
+// `FreshPlacement` tokens for admissions. Closed token sets only.
+export const SWITCH_TARGET_DEFAULT = "cursor-output" as const;
+export const SWITCH_TARGET_FOCUSED = "focused-output" as const;
+
+export type SwitchTarget = typeof SWITCH_TARGET_DEFAULT | typeof SWITCH_TARGET_FOCUSED;
+
+export function normalizeSwitchTarget(value: unknown): SwitchTarget {
+    if (value === SWITCH_TARGET_DEFAULT || value === SWITCH_TARGET_FOCUSED) {
+        return value;
+    }
+    return SWITCH_TARGET_DEFAULT;
+}
+
+export const FRESH_PLACEMENT_DEFAULT = "cursor-output-last-focused" as const;
+export const FRESH_PLACEMENT_CURSOR_CLOSEST = "cursor-output-cursor-closest" as const;
+export const FRESH_PLACEMENT_FOCUSED = "focused-output-last-focused" as const;
+
+export type FreshPlacement = typeof FRESH_PLACEMENT_DEFAULT | typeof FRESH_PLACEMENT_CURSOR_CLOSEST | typeof FRESH_PLACEMENT_FOCUSED;
+
+export function normalizeFreshPlacement(value: unknown): FreshPlacement {
+    if (
+        value === FRESH_PLACEMENT_DEFAULT ||
+        value === FRESH_PLACEMENT_CURSOR_CLOSEST ||
+        value === FRESH_PLACEMENT_FOCUSED
+    ) {
+        return value;
+    }
+    return FRESH_PLACEMENT_DEFAULT;
+}
+
+// Focus-follows-cursor (`settings_catalog` `output.focus-follows-cursor`):
+// boolean only; any non-boolean falls back to `false`.
+export const FOCUS_FOLLOWS_CURSOR_DEFAULT = false;
+
+export function normalizeFocusFollowsCursor(value: unknown): boolean {
+    return value === true;
+}
+
 function readGlobalConfigValue(key: string, fallback: unknown): unknown {
     try {
         if (typeof readConfig === "function") {
@@ -280,6 +321,57 @@ export function readFixedSizePredicateValue(readPredicateFn?: () => unknown): Fi
     }
 }
 
+export function readSwitchTargetValue(readSwitchTargetFn?: () => unknown): SwitchTarget {
+    try {
+        if (readSwitchTargetFn !== undefined) {
+            try {
+                return normalizeSwitchTarget(readSwitchTargetFn());
+            } catch (error) {
+                void error;
+                return SWITCH_TARGET_DEFAULT;
+            }
+        }
+        return normalizeSwitchTarget(readGlobalConfigValue("switchTarget", SWITCH_TARGET_DEFAULT));
+    } catch (error) {
+        void error;
+        return SWITCH_TARGET_DEFAULT;
+    }
+}
+
+export function readFreshPlacementValue(readFreshPlacementFn?: () => unknown): FreshPlacement {
+    try {
+        if (readFreshPlacementFn !== undefined) {
+            try {
+                return normalizeFreshPlacement(readFreshPlacementFn());
+            } catch (error) {
+                void error;
+                return FRESH_PLACEMENT_DEFAULT;
+            }
+        }
+        return normalizeFreshPlacement(readGlobalConfigValue("freshPlacement", FRESH_PLACEMENT_DEFAULT));
+    } catch (error) {
+        void error;
+        return FRESH_PLACEMENT_DEFAULT;
+    }
+}
+
+export function readFocusFollowsCursorValue(readFocusFollowsCursorFn?: () => unknown): boolean {
+    try {
+        if (readFocusFollowsCursorFn !== undefined) {
+            try {
+                return normalizeFocusFollowsCursor(readFocusFollowsCursorFn());
+            } catch (error) {
+                void error;
+                return FOCUS_FOLLOWS_CURSOR_DEFAULT;
+            }
+        }
+        return normalizeFocusFollowsCursor(readGlobalConfigValue("focusFollowsCursor", FOCUS_FOLLOWS_CURSOR_DEFAULT));
+    } catch (error) {
+        void error;
+        return FOCUS_FOLLOWS_CURSOR_DEFAULT;
+    }
+}
+
 export interface WorldSettingsLiveOverrides {
     readonly readWorkspaceModeFn?: () => unknown;
     readonly readProfileFn?: () => unknown;
@@ -290,6 +382,9 @@ export interface WorldSettingsLiveOverrides {
     readonly readMigrationSourceRefillFn?: () => unknown;
     readonly readBornMaximizedFn?: () => unknown;
     readonly readFixedPredicateFn?: () => unknown;
+    readonly readSwitchTargetFn?: () => unknown;
+    readonly readFreshPlacementFn?: () => unknown;
+    readonly readFocusFollowsCursorFn?: () => unknown;
 }
 
 export interface WorldSettingsLive {
@@ -320,8 +415,9 @@ export interface WorldSettingsLive {
     checkStartupDrift: () => string[];
     // Raw v4 settings snapshot for the connection lane (K1a): the exact
     // adapter-sourced key/value pairs in canonical settings order. Keys
-    // the adapter never sources (output targeting, cursor, border/underlay
-    // presentation) are omitted: the core backfills defaults at startup.
+    // the adapter never sources (cursor warp, border/underlay presentation)
+    // are omitted: `cursorWarp` stays unsupported (never sent), and the core
+    // backfills the remaining defaults at startup.
     // `mode` carries the startup-consumed value (restart-only, never
     // live); every other key re-resolves live per snapshot.
     snapshotConnectionValues: () => Array<[string, unknown]>;
@@ -519,6 +615,30 @@ export function createWorldSettingsLive(
     // reported through checkStartupDrift and never adopted here.
     const readPredicateLive = (): FixedSizePredicate =>
         readFixedSizePredicateValue(overrides.readFixedPredicateFn);
+    const readSwitchTargetLive = (): SwitchTarget => {
+        try {
+            return readSwitchTargetValue(overrides.readSwitchTargetFn);
+        } catch (error) {
+            void error;
+            return SWITCH_TARGET_DEFAULT;
+        }
+    };
+    const readFreshPlacementLive = (): FreshPlacement => {
+        try {
+            return readFreshPlacementValue(overrides.readFreshPlacementFn);
+        } catch (error) {
+            void error;
+            return FRESH_PLACEMENT_DEFAULT;
+        }
+    };
+    const readFocusFollowsCursorLive = (): boolean => {
+        try {
+            return readFocusFollowsCursorValue(overrides.readFocusFollowsCursorFn);
+        } catch (error) {
+            void error;
+            return FOCUS_FOLLOWS_CURSOR_DEFAULT;
+        }
+    };
     const snapshotConnectionValues = (): Array<[string, unknown]> => [
         ["gap", readGapLive()],
         ["outer", readOuterGapLive()],
@@ -528,6 +648,9 @@ export function createWorldSettingsLive(
         ["bornMaximized", readBornMaximizedLive()],
         ["predicate", readPredicateLive()],
         ["refill", readRefillLive()],
+        ["switchTarget", readSwitchTargetLive()],
+        ["freshPlacement", readFreshPlacementLive()],
+        ["focusFollowsCursor", readFocusFollowsCursorLive()],
     ];
     return {
         startupProfile,

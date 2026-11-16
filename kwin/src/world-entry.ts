@@ -308,6 +308,9 @@ export interface WorldEntryOverrides {
     // Options reload applies to subsequent migrations with no restart.
     // Changing it never moves an already-migrated workspace.
     readonly readMigrationSourceRefillFn?: () => unknown;
+    readonly readSwitchTargetFn?: () => unknown;
+    readonly readFreshPlacementFn?: () => unknown;
+    readonly readFocusFollowsCursorFn?: () => unknown;
     // Native-only seams (never workspace policy): the fixed-size
     // predicate reader and the fixed-origin decorator.
     // Native effect presentation-facts seam (read-only, no policy): the

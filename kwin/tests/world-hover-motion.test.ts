@@ -186,6 +186,82 @@ describe("world entry enabled hover motion capture", () => {
         }
     });
 
+    it("normal accepted snapshot subscribes on true and detaches on false or stop", async () => {
+        const previousReadConfig = (globalThis as Record<string, unknown>)["readConfig"];
+        let hover = true;
+        (globalThis as Record<string, unknown>)["readConfig"] = (key: string, fallback: unknown) =>
+            key === "focusFollowsCursor" ? hover : fallback;
+        const configChanged = makeFakeSignal();
+        try {
+            const h = await makeHarness("win-b", ["win-a", "win-b"], {
+                scopeClass: "OmniTilerTestWindow",
+                options: { configChanged: configChanged.signal },
+            });
+            try {
+                const gen = await discover(h);
+                await h.settle();
+                assert.equal(h.signals["cursorPosChanged"]?.handlers.length, 1, "normal enabled snapshot subscribes");
+
+                async function acceptSettingsReload(wantRev: string): Promise<void> {
+                    const candidates = h.calls.filter(
+                        (call) => call.method === "DiscoverWorld" && (JSON.parse(call.payload) as Record<string, unknown>)["type"] === "settings",
+                    );
+                    const latest = candidates[candidates.length - 1] as { payload: string; callback: (reply: unknown) => void };
+                    const latestBody = JSON.parse(latest.payload) as Record<string, unknown>;
+                    assert.equal(latestBody["gen"], gen, "configChanged reload binds current generation");
+                    assert.equal(latestBody["rev"], wantRev, "configChanged reload bumps revision");
+                    const latestReply = await h.bridge.send("DiscoverWorld", latest.payload);
+                    const latestParsed = JSON.parse(latestReply) as Record<string, unknown>;
+                    assert.equal(latestParsed["status"], "accepted", "configChanged reload settings accepted");
+                    latest.callback(latestReply);
+                    h.runTimers(WORLD_DEBOUNCE_MS);
+                    await h.settle();
+                }
+
+                hover = false;
+                for (const handler of [...configChanged.handlers]) {
+                    handler();
+                }
+                await acceptSettingsReload("2");
+                assert.equal(h.signals["cursorPosChanged"]?.handlers.length, 0, "normal disable detaches");
+                const describesBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
+                h.fire("cursorPosChanged");
+                h.runTimers(WORLD_DEBOUNCE_MS);
+                assert.equal(
+                    h.calls.filter((c) => c.method === "DescribeWorld").length,
+                    describesBefore,
+                    "disabled normal snapshot accepts no motion captures",
+                );
+
+                hover = true;
+                for (const handler of [...configChanged.handlers]) {
+                    handler();
+                }
+                await acceptSettingsReload("3");
+                assert.equal(h.signals["cursorPosChanged"]?.handlers.length, 1, "normal re-enable resubscribes");
+
+                h.handle.stop();
+                assert.equal(h.signals["cursorPosChanged"]?.handlers.length, 0, "normal stop detaches");
+                const callsAfterStop = h.calls.length;
+                h.fire("cursorPosChanged");
+                h.runTimers(WORLD_DEBOUNCE_MS);
+                assert.equal(
+                    h.calls.slice(callsAfterStop).filter((c) => c.method === "DescribeWorld").length,
+                    0,
+                    "normal stop accepts no motion captures",
+                );
+            } finally {
+                await h.stop();
+            }
+        } finally {
+            if (previousReadConfig === undefined) {
+                delete (globalThis as Record<string, unknown>)["readConfig"];
+            } else {
+                (globalThis as Record<string, unknown>)["readConfig"] = previousReadConfig;
+            }
+        }
+    });
+
     it("fails open without captures when cursorPosChanged is absent or throws", () => {
         for (const mode of ["absent", "getter-throws", "connect-throws"] as const) {
             const calls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }> = [];

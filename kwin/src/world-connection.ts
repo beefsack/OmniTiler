@@ -450,10 +450,8 @@ export function parseHandshakeReply(text: string): HandshakeReply | null {
 }
 
 // Canonical settings key order (mirrors the Rust SETTINGS_ORDER); unknown
-// keys ride after, sorted. Known keys the adapter never sources (output
-// targeting, cursor, border/underlay presentation) are omitted: the core
-// backfills defaults at startup, and adding native config surface for
-// them is later-lane work, not connection foundation.
+// keys ride after, sorted. Unsupported cursor warp and unsourced border/
+// underlay presentation keys are omitted; the core backfills their defaults.
 export const SETTINGS_KEY_ORDER: ReadonlyArray<string> = [
     "gap",
     "outer",

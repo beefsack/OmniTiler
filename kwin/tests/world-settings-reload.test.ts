@@ -22,6 +22,7 @@ import {
     normalizeShortcutProfile,
     readShortcutProfileValue,
 } from "../src/shortcut-profile";
+import { createWorldSettingsLive } from "../src/world-settings-live";
 
 interface FakeDesktop {
     id: string;
@@ -106,6 +107,9 @@ interface Settings {
     innerGap: number;
     outerGap: number;
     sameAxis: unknown;
+    switchTarget: unknown;
+    freshPlacement: unknown;
+    focusFollowsCursor: unknown;
 }
 
 interface Harness {
@@ -122,7 +126,14 @@ interface Harness {
 }
 
 function makeHarness(): Harness {
-    const settings: Settings = { innerGap: 8, outerGap: 8, sameAxis: "group-with-neighbor" };
+    const settings: Settings = {
+        innerGap: 8,
+        outerGap: 8,
+        sameAxis: "group-with-neighbor",
+        switchTarget: "cursor-output",
+        freshPlacement: "cursor-output-last-focused",
+        focusFollowsCursor: false,
+    };
     const ws1 = desk("ws1");
     const ws2 = desk("ws2");
     const world = {
@@ -190,6 +201,9 @@ function makeHarness(): Harness {
         readInnerGapFn: () => settings.innerGap,
         readOuterGapFn: () => settings.outerGap,
         readSameAxisMoveFn: () => settings.sameAxis,
+        readSwitchTargetFn: () => settings.switchTarget,
+        readFreshPlacementFn: () => settings.freshPlacement,
+        readFocusFollowsCursorFn: () => settings.focusFollowsCursor,
     });
     assert.ok(handle !== null);
     const runTimers = (): void => {
@@ -325,6 +339,64 @@ function settle(h: Harness, rev: string): void {
 }
 
 describe("world settings reload", () => {
+    it("includes cursor-first defaults in the normal snapshot", () => {
+        const settings = createWorldSettingsLive();
+        const byKey = new Map(settings.snapshotConnectionValues());
+        assert.equal(byKey.get("switchTarget"), "cursor-output");
+        assert.equal(byKey.get("freshPlacement"), "cursor-output-last-focused");
+        assert.equal(byKey.get("focusFollowsCursor"), false);
+    });
+
+    it("carries every supported switch-target and fresh-placement alternative", () => {
+        for (const switchTarget of ["cursor-output", "focused-output"] as const) {
+            const live = createWorldSettingsLive({ readSwitchTargetFn: () => switchTarget });
+            assert.equal(new Map(live.snapshotConnectionValues()).get("switchTarget"), switchTarget);
+        }
+        for (const freshPlacement of [
+            "cursor-output-last-focused",
+            "cursor-output-cursor-closest",
+            "focused-output-last-focused",
+        ] as const) {
+            const live = createWorldSettingsLive({ readFreshPlacementFn: () => freshPlacement });
+            assert.equal(new Map(live.snapshotConnectionValues()).get("freshPlacement"), freshPlacement);
+        }
+        const hover = createWorldSettingsLive({ readFocusFollowsCursorFn: () => true });
+        assert.equal(new Map(hover.snapshotConnectionValues()).get("focusFollowsCursor"), true);
+    });
+
+    it("normalizes invalid targeting values and non-boolean hover to defaults", () => {
+        for (const bad of ["", "cursor", "focused", "cursor_output", "CURSOR-OUTPUT", 0, null, undefined]) {
+            const live = createWorldSettingsLive({ readSwitchTargetFn: () => bad });
+            assert.equal(new Map(live.snapshotConnectionValues()).get("switchTarget"), "cursor-output");
+        }
+        for (const bad of ["", "cursor", "mru", "hyprland", "cosmic", "i3-sway", false, null]) {
+            const live = createWorldSettingsLive({ readFreshPlacementFn: () => bad });
+            assert.equal(new Map(live.snapshotConnectionValues()).get("freshPlacement"), "cursor-output-last-focused");
+        }
+        for (const bad of ["true", "false", 1, 0, null, undefined, {}]) {
+            const live = createWorldSettingsLive({ readFocusFollowsCursorFn: () => bad });
+            assert.equal(new Map(live.snapshotConnectionValues()).get("focusFollowsCursor"), false);
+        }
+    });
+
+    it("falls back to defaults when a targeting reader throws", () => {
+        const live = createWorldSettingsLive({
+            readSwitchTargetFn: () => {
+                throw new Error("boom-switch");
+            },
+            readFreshPlacementFn: () => {
+                throw new Error("boom-placement");
+            },
+            readFocusFollowsCursorFn: () => {
+                throw new Error("boom-hover");
+            },
+        });
+        const byKey = new Map(live.snapshotConnectionValues());
+        assert.equal(byKey.get("switchTarget"), "cursor-output");
+        assert.equal(byKey.get("freshPlacement"), "cursor-output-last-focused");
+        assert.equal(byKey.get("focusFollowsCursor"), false);
+    });
+
     it("re-resolves gaps per dispatch so a reload applies via the settings lane", () => {
         const h = makeHarness();
         discover(h);
@@ -376,6 +448,51 @@ describe("world settings reload", () => {
             }
         }).length;
         assert.equal(sendsAfter, sendsBefore, "equal snapshot resends no settings");
+        h.handle.stop();
+    });
+
+    it("carries cursor-first fields through a revisioned configChanged reload and ack", () => {
+        const h = makeHarness();
+        discover(h);
+        assert.equal(settingsValues(h)["switchTarget"], "cursor-output");
+        assert.equal(settingsValues(h)["freshPlacement"], "cursor-output-last-focused");
+        assert.equal(settingsValues(h)["focusFollowsCursor"], false);
+        const revBefore = settingsRev(h);
+        h.settings.switchTarget = "focused-output";
+        h.settings.freshPlacement = "focused-output-last-focused";
+        h.settings.focusFollowsCursor = true;
+        for (const handler of [...h.configChanged.handlers]) {
+            handler();
+        }
+        assert.equal(settingsValues(h)["switchTarget"], "focused-output");
+        assert.equal(settingsValues(h)["freshPlacement"], "focused-output-last-focused");
+        assert.equal(settingsValues(h)["focusFollowsCursor"], true);
+        assert.notEqual(settingsRev(h), revBefore, "changed cursor-first content bumps revision");
+        answerSettings(h);
+        const sendsBefore = h.calls.filter((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+            } catch {
+                return false;
+            }
+        }).length;
+        for (const handler of [...h.configChanged.handlers]) {
+            handler();
+        }
+        const sendsAfter = h.calls.filter((c) => {
+            if (c.method !== "DiscoverWorld") {
+                return false;
+            }
+            try {
+                return (JSON.parse(c.payload) as Record<string, unknown>)["type"] === "settings";
+            } catch {
+                return false;
+            }
+        }).length;
+        assert.equal(sendsAfter, sendsBefore, "acked-equal cursor-first snapshot resends no settings");
         h.handle.stop();
     });
 

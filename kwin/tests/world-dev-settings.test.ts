@@ -273,7 +273,7 @@ describe("isolated dev settings source", () => {
         }
     });
 
-    it("ordinary path without isolated settings omits focusFollowsCursor and uses readConfig", () => {
+    it("ordinary path without isolated settings uses readConfig for normal cursor-first fields", () => {
         const origReadConfig = (globalThis as { readConfig?: unknown }).readConfig;
         const readKeys: string[] = [];
         (globalThis as { readConfig?: unknown }).readConfig = (key: string, fallback: unknown) => {
@@ -283,8 +283,12 @@ describe("isolated dev settings source", () => {
         try {
             const live = createWorldSettingsLive();
             const pairs = live.snapshotConnectionValues();
-            assert.ok(!pairs.some(([k]) => k === "focusFollowsCursor"));
-            assert.ok(readKeys.length > 0);
+            assert.deepEqual(new Map(pairs).get("focusFollowsCursor"), false);
+            assert.deepEqual(new Map(pairs).get("switchTarget"), "cursor-output");
+            assert.deepEqual(new Map(pairs).get("freshPlacement"), "cursor-output-last-focused");
+            assert.ok(readKeys.includes("focusFollowsCursor"));
+            assert.ok(readKeys.includes("switchTarget"));
+            assert.ok(readKeys.includes("freshPlacement"));
         } finally {
             if (origReadConfig === undefined) {
                 delete (globalThis as { readConfig?: unknown }).readConfig;
