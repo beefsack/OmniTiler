@@ -632,6 +632,10 @@ remains undecided; these single-output probes do not answer it.
 | Focus B with A/B shown; close B | Close removes B from focus stacks; repair can select remaining mapped A (`NF-C-close`) | Close chooses a surviving group/spatial candidate under the ordinary defaults (`NF-H-close`) | Activates the next focused survivor (`NF-I-close`) | Destruction chooses a surviving inactive view, otherwise a workspace node (`NF-S-close`) |
 | Focus B with A/B shown; minimize B; separately minimize the sole remaining window | Direct counterpart: middle minimize refocuses an unminimized survivor; sole minimize permits no focus. Reuse [R-MNZ-01](reference-outcomes/minimize.md#r-mnz-01-native-minimize-of-a-middle-tile) and `S(S-cos-minimize)` | No direct minimize counterpart established; special-workspace transfer is not a minimize vote. Reuse `S(S-hyp-mininv)` | Iconic requests are rejected/reverted; scratchpad transfer is not native minimize (`NF-I-minimize`) | Direct minimize counterpart TBD here. Scratchpad hide is a separate transfer: focuses inactive survivor or workspace; show focuses the shown container (`NF-S-scratchpad`) |
 
+| KDE foreground discriminator | Selected outcome | Unverified outcome |
+| --- | --- | --- |
+| Minimize sole A on L; KWin activates its desktop-type window; focus away from any neighbor, then toward occupied adjacent R. Repeat with a panel or foreign app foreground instead | User 2026-11-17: desktop-type foreground permits empty directional-focus subject only; no-neighbor no-op, adjacent-output selection uses existing policy. Other foreign foregrounds refuse. Native foreground is never cleared or falsified | Exact native routing and focus settlement remain TBD until fixture evidence; reference-WM desktop-surface counterparts TBD |
+
 Local-source citation keys (paths and line ranges at the stated pins; source
 branches are evidence, not a claim that every proposed sequence was run):
 

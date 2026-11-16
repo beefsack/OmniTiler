@@ -157,18 +157,46 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
             // Command-only: every subject (tiled, floating, sticky) routes
             // the direction-only Planner command; the core owns the
             // float-focus lattice, crossing (left/right) and local fallback.
-            // Only genuine native absence authorizes the empty subject;
-            // scope-filtered foreign focus still refuses.
+            // Raw desktop foreground (desktopWindow===true) always encodes
+            // the empty subject, even when the scope-filtered id is
+            // non-null. Genuine native absence also authorizes the empty
+            // subject. Any other foreground with a null filtered id
+            // refuses; a non-null filtered id on a normal foreground
+            // retains its managed subject.
             const w = focusedWin();
             if (!isDirection(d)) {
                 shortcutFailed(`focus-${d}`);
                 return;
             }
-            if (w === null && activeWindowRef() !== null) {
-                shortcutFailed(`focus-${d}`);
+            const ref = activeWindowRef();
+            let isDesktopForeground = false;
+            if (ref !== null) {
+                try {
+                    isDesktopForeground = env.readProp(ref, "desktopWindow") === true;
+                } catch (error) {
+                    void error;
+                    isDesktopForeground = false;
+                }
+            }
+            if (isDesktopForeground) {
+                const cmd = cmdFocusDirectional("", d);
+                if (cmd === null || !submitCommand(cmd, `focus-${d}`)) {
+                    shortcutFailed(`focus-${d}`);
+                }
                 return;
             }
-            const cmd = cmdFocusDirectional(w ?? "", d);
+            if (w === null) {
+                if (ref !== null) {
+                    shortcutFailed(`focus-${d}`);
+                    return;
+                }
+                const cmd = cmdFocusDirectional("", d);
+                if (cmd === null || !submitCommand(cmd, `focus-${d}`)) {
+                    shortcutFailed(`focus-${d}`);
+                }
+                return;
+            }
+            const cmd = cmdFocusDirectional(w, d);
             if (cmd === null || !submitCommand(cmd, `focus-${d}`)) {
                 shortcutFailed(`focus-${d}`);
             }

@@ -37,6 +37,27 @@ First live run (from the repo root inside the devenv shell):
 - Foreign windows stay unmanaged by the `--scope-class` filter; sticky foreign windows on an appended workspace remain unmanaged. Foreign apps are only for app-specific investigations after trying the fixture, with approved scope naming them.
 - Full fixture protocol, flags, and `observed`/`unsupported` semantics: [fixture README](../crates/tiler-live-fixture/README.md).
 
+## Live Tooling (User 2026-11-17)
+
+- Keep reusable KWin script lifecycle, fixture launch/state, input and teardown
+  operations in a small importable repository helper library with single-purpose
+  commands. Quick checks are short scripts importing it; use
+  `scripts/kde-scenarios.mjs` for multi-step legs.
+- External one-off scripts remain allowed for isolated, quick or exploratory
+  checks, but import repository helpers rather than copying them. Teardown,
+  key release and lock receipts are written and tested once.
+- When a one-off is reused or outgrows a quick check, promote its reusable parts
+  into the helpers; keep one-off procedure logic outside the repository.
+- Extract only what current live legs need, with tests, from the existing runner
+  and prior helper scripts. Build incrementally, not through an upfront port.
+- Evidence guidance, applied case by case: keep disposable working bundles and
+  logs in the change's gitignored `docs/changes/<change>/results/`, not temporary
+  system directories. Never commit those working bundles.
+- Persist only decisive, small, non-sensitive evidence likely to be revisited:
+  a few redacted lines in the change note or a small adjacent file, naming the
+  producing command/script and commit. Leave ephemeral troubleshooting local;
+  summarize it briefly when useful. Weigh value against overhead.
+
 ## Safety And Hygiene
 
 - Platform target: latest-stable KDE Plasma.

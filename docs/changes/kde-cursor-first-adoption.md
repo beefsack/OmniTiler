@@ -24,6 +24,23 @@
    Unreachable routing is BLOCKED; unknown visibility is not hide proof.
    Human feel, real applications and display changes remain outside this evidence.
 
+### PX follow-up
+
+- Discriminate failed pointer injection from cursor sampling by comparing
+  independent KWin cursor positions before/after relative motion with adapter
+  samples. Stationary KWin positions leave physical hover blocked; divergent
+  samples require a bounded adapter correction before hover retesting.
+- For empty directional focus only, KWin's desktop-type foreground counts as
+  no focused client. Other foreign foregrounds still refuse; native foreground
+  reporting remains truthful and no native clear-focus is introduced.
+- Cover that ingress distinction with regressions, independent review and the
+  existing offline gates, then repeat no-neighbor and adjacent-output legs.
+  No protocol change, stored user settings or frozen fixture edits.
+- Before those live legs, extract the required script/fixture/input/teardown
+  operations into tested importable repository helpers under the
+  [live tooling rules](../live-kwin-testing.md#live-tooling-user-2026-11-17).
+  The short external procedures import them; copied lifecycle code is not used.
+
 ## Verification
 
 - Verification coverage: command-ingress regressions, Rust format/build/strict
@@ -65,6 +82,24 @@
   launcher 204 checks. Frozen fixtures and core/protocol source were unchanged.
 - This establishes command ingress only, not native no-focus navigation or PX
   acceptance.
+
+### Desktop-foreground directional focus follow-up
+
+- The approved KDE desktop-type exception now submits the existing empty
+  directional-focus subject through both registered shortcuts and direct
+  requests, including unscoped operation where the desktop has a native ID.
+  Other foreign foregrounds still refuse. Native foreground reporting,
+  scope filtering for other commands and core/protocol shapes are unchanged.
+- The first candidate covered only scope-filtered desktop IDs; correction
+  checks the raw desktop kind before choosing either empty or managed subject.
+  Regressions cover scoped/unscoped desktops, strict non-true markers,
+  foreign dock/normal/fullscreen refusal and exact managed implicit subjects.
+- Independent source review found no blocking issues. Focused tests passed
+  112/112 and test typechecking passed. Full offline gates passed: Rust format,
+  three-package all-target build and strict clippy; Rust tests 3,460 passed,
+  3 ignored; KWin typecheck and 1,376 tests; launcher 703 and native-effect
+  204 checks. Frozen fixtures were unchanged. Fixture-only no-focus navigation
+  remains unverified pending the tested live-helper extraction.
 
 ### Normal runtime settings
 

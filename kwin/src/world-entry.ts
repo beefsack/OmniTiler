@@ -8217,21 +8217,39 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
             // Command-only: floating/sticky subjects route the same
             // direction-only command; the core owns the float lattice.
-            // Genuine nofocus (no live active window at all) files the
-            // explicit empty marker (never the implicit marker, never a
-            // refusal). A foreign live focus under a scope class still
-            // refuses: it reads as no active window so no command path can
-            // target it, and a nofocus marker would misrepresent it.
-            const w = activeWindowId();
-            if (w === null) {
-                let rawActive: unknown = null;
+            // Raw desktop foreground (desktopWindow===true) always encodes
+            // the empty subject, even when the scope-filtered id is
+            // non-null. Genuine nofocus (no live active window at all)
+            // also files the explicit empty marker. Any other foreground
+            // with a null filtered id refuses; a non-null filtered id on
+            // a normal foreground retains its managed subject.
+            let rawActive: unknown = null;
+            try {
+                rawActive = readProp(surface, "activeWindow");
+            } catch (error) {
+                void error;
+                rawActive = null;
+            }
+            const hasRawForeground = typeof rawActive === "object" && rawActive !== null;
+            let isDesktopForeground = false;
+            if (hasRawForeground) {
                 try {
-                    rawActive = readProp(surface, "activeWindow");
+                    isDesktopForeground = readProp(rawActive as object, "desktopWindow") === true;
                 } catch (error) {
                     void error;
-                    rawActive = null;
+                    isDesktopForeground = false;
                 }
-                if (typeof rawActive === "object" && rawActive !== null) {
+            }
+            if (isDesktopForeground) {
+                const cmd = cmdFocusDirectional("", direction);
+                if (cmd === null || !submitCommand(cmd, "focus")) {
+                    shortcutFailed("focus");
+                }
+                return;
+            }
+            const w = activeWindowId();
+            if (w === null) {
+                if (hasRawForeground) {
                     shortcutFailed("focus");
                     return;
                 }

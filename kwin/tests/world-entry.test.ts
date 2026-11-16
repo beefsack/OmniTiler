@@ -162,7 +162,7 @@ function fakeSignal(): FakeSignal {
     };
 }
 
-function makeHarness(mode: unknown = "per-output-local", gesture = false, defaultTiled: unknown = true, refillFn?: () => unknown, optionsValue?: unknown, perOutputSeam = true, entryFn: typeof startWorldAdapterEntry = startWorldAdapterEntry, throwOnProbeLog = false, floatIntentSeam = false, queueHold?: { value: boolean }, holdReads?: { value: boolean }): Harness {
+function makeHarness(mode: unknown = "per-output-local", gesture = false, defaultTiled: unknown = true, refillFn?: () => unknown, optionsValue?: unknown, perOutputSeam = true, entryFn: typeof startWorldAdapterEntry = startWorldAdapterEntry, throwOnProbeLog = false, floatIntentSeam = false, queueHold?: { value: boolean }, holdReads?: { value: boolean }, scopeClass?: string | readonly string[]): Harness {
     const world = makeWorld();
     const calls: CapturedCall[] = [];
     const timers: Array<{ delay: number; cb: () => void }> = [];
@@ -454,6 +454,7 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
         ...(refillFn !== undefined ? { readMigrationSourceRefillFn: refillFn } : {}),
         ...(optionsValue !== undefined ? { options: optionsValue } : {}),
         ...(floatIntentSeam ? { floatIntent: true } : {}),
+        ...(scopeClass !== undefined ? { scopeClass } : {}),
     });
     assert.ok(handle !== null);
     const runTimers = (maxDelay = 120): void => {
@@ -5263,6 +5264,163 @@ describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
             );
         } finally {
             h.world.activeWindow = h.world.wins[0] as FakeWindow;
+            h.handle?.stop();
+        }
+    });
+
+    it("treats desktop foreground as empty directional focus subject via direct requestFocus", () => {
+        // Unscoped harness: desktop id is valid so activeWindowId is
+        // non-null; desktop foreground still encodes "".
+        const h = makeHarness();
+        discover(h);
+        const desktopRef = {
+            internalId: "desktop-1",
+            desktopWindow: true,
+            normalWindow: false,
+            managed: false,
+            deleted: false,
+            transient: false,
+            transientFor: null,
+            dialog: false,
+            modal: false,
+            wantsInput: false,
+            frameGeometry: { x: 0, y: 0, width: 0, height: 0 },
+            clientGeometry: null,
+            output: { name: "out" },
+            desktops: [],
+            minimized: false,
+            hidden: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            keepAbove: false,
+            keepBelow: false,
+            minSize: null,
+            maxSize: null,
+            fullScreen: false,
+            maximizeMode: 0,
+            onAllDesktops: false,
+            setMaximize: (): void => {},
+        } as unknown as FakeWindow;
+        h.world.activeWindow = desktopRef;
+        try {
+            h.handle?.requestFocus("left");
+            const queued = queueCalls(h);
+            assert.equal(queued.length, 1, "desktop foreground files empty subject");
+            assert.deepEqual(
+                ((queued[0] as Record<string, unknown>)["command"] as Record<string, unknown>)["win"],
+                "",
+                "desktop foreground encodes explicit empty, never its UUID",
+            );
+            assert.equal(h.world.activeWindow as unknown, desktopRef as unknown, "foreground is not cleared or rewritten");
+        } finally {
+            h.world.activeWindow = h.world.wins[0] as FakeWindow;
+            h.handle?.stop();
+        }
+    });
+
+    it("treats scoped desktop foreground as empty directional focus subject via direct requestFocus", () => {
+        const h = makeHarness("per-output-local", false, true, undefined, undefined, true, startWorldAdapterEntry, false, false, undefined, undefined, "Scoped");
+        discover(h);
+        const desktopRef = {
+            internalId: "desktop-1",
+            resourceClass: "OtherScoped",
+            desktopWindow: true,
+            normalWindow: false,
+            frameGeometry: { x: 0, y: 0, width: 0, height: 0 },
+            clientGeometry: null,
+            output: { name: "out" },
+            desktops: [],
+            minimized: false, hidden: false, fullscreen: false, maximized: false, sticky: false, keepAbove: false, keepBelow: false, minSize: null, maxSize: null, fullScreen: false, maximizeMode: 0, onAllDesktops: false,
+            setMaximize: (): void => {},
+        } as unknown as FakeWindow;
+        h.world.activeWindow = desktopRef;
+        try {
+            h.handle?.requestFocus("left");
+            const queued = queueCalls(h);
+            assert.equal(queued.length, 1, "scoped desktop foreground files empty subject");
+            assert.deepEqual(
+                ((queued[0] as Record<string, unknown>)["command"] as Record<string, unknown>)["win"],
+                "",
+                "scoped desktop foreground encodes explicit empty",
+            );
+            assert.equal(h.world.activeWindow as unknown, desktopRef as unknown, "foreground is not cleared or rewritten");
+        } finally {
+            h.world.activeWindow = h.world.wins[0] as FakeWindow;
+            h.handle?.stop();
+        }
+    });
+
+    // Scoped refusal: foreign normal/dock/fullscreen under a scope filter
+    // (activeWindowId null) still refuse; desktop is the only exception.
+    it("still refuses scoped foreign focus via direct requestFocus", () => {
+        const h = makeHarness("per-output-local", false, true, undefined, undefined, true, startWorldAdapterEntry, false, false, undefined, undefined, "Scoped");
+        discover(h);
+        const foreign = {
+            internalId: "foreign-1",
+            resourceClass: "OtherScoped",
+            desktopWindow: false,
+            normalWindow: true,
+            frameGeometry: { x: 0, y: 0, width: 10, height: 10 },
+            clientGeometry: { x: 0, y: 0, width: 10, height: 10 },
+            output: { name: "out" },
+            desktops: [{ id: "ws1", name: "ws1" }],
+            minimized: false, hidden: false, fullscreen: false, maximized: false, sticky: false, keepAbove: false, keepBelow: false, minSize: null, maxSize: null, fullScreen: false, maximizeMode: 0, onAllDesktops: false,
+            setMaximize: (): void => {},
+        } as unknown as FakeWindow;
+        h.world.activeWindow = foreign;
+        try {
+            const callsBefore = h.calls.length;
+            h.handle?.requestFocus("left");
+            assert.equal(queueCalls(h).length, 0, "scoped foreign focus refuses");
+            assert.equal(h.calls.length, callsBefore, "no dispatch on refusal");
+            assert.equal(h.world.activeWindow as unknown, foreign as unknown, "foreground is not cleared or rewritten");
+        } finally {
+            h.handle?.stop();
+        }
+    });
+
+    it("still refuses directional focus for non-true desktop markers and foreign dock/normal/fullscreen via direct requestFocus", () => {
+        // Scoped so every foreign ref is filtered to activeWindowId null,
+        // exercising the desktop-flag gate rather than in-scope filing.
+        const cases: ReadonlyArray<object> = [
+            { internalId: "dock-1", resourceClass: "OtherScoped", desktopWindow: false, normalWindow: false, dock: true },
+            { internalId: "normal-1", resourceClass: "OtherScoped", normalWindow: true },
+            { internalId: "full-1", resourceClass: "OtherScoped", desktopWindow: false, normalWindow: false, fullScreen: true },
+            { internalId: "weird-1", resourceClass: "OtherScoped", desktopWindow: "true" },
+            { internalId: "weird-2", resourceClass: "OtherScoped", desktopWindow: 1 },
+            { internalId: "weird-3", resourceClass: "OtherScoped", desktopWindow: undefined },
+            { internalId: "weird-4", resourceClass: "OtherScoped", desktopWindow: null },
+        ];
+        for (const ref of cases) {
+            const h = makeHarness("per-output-local", false, true, undefined, undefined, true, startWorldAdapterEntry, false, false, undefined, undefined, "Scoped");
+            discover(h);
+            h.world.activeWindow = ref as FakeWindow;
+            try {
+                const callsBefore = h.calls.length;
+                h.handle?.requestFocus("left");
+                assert.equal(queueCalls(h).length, 0, "foreign/non-desktop focus refuses");
+                assert.equal(h.calls.length, callsBefore, "no dispatch on refusal");
+                assert.equal(h.world.activeWindow as unknown, ref as unknown, "foreground is not cleared or rewritten");
+            } finally {
+                h.handle?.stop();
+            }
+        }
+    });
+
+    it("keeps in-scope implicit subject via direct requestFocus", () => {
+        const h = makeHarness();
+        discover(h);
+        // Default activeWindow win-a is in-scope; direct requestFocus routes its id.
+        try {
+            h.handle?.requestFocus("left");
+            const queued = queueCalls(h);
+            assert.equal(queued.length, 1, "in-scope focus files");
+            const cmd = ((queued[0] as Record<string, unknown>)["command"] as Record<string, unknown>);
+            assert.equal(cmd["op"], "focus-directional");
+            assert.equal(cmd["direction"], "left");
+            assert.deepEqual(cmd["win"], { currentFocus: true }, "ordinary press is implicit current-focus subject");
+        } finally {
             h.handle?.stop();
         }
     });

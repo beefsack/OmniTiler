@@ -52,6 +52,8 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 - 2026-11-13: User decision: adopt start-up native-maximized windows as retained overlays; apply the born-maximized policy only to post-start-up first appearances ([window state](decisions/window-state.md#born-maximized-policy-and-tile-overlays)).
 - 2026-11-13: User decision: perpendicular directional focus uses accepted-focus recency, single-output focus edges stay without wrapping, in-group moves swap retaining mover focus, and exhausted single-output move edges are no-ops ([focus](decisions/focus.md#perpendicular-directional-focus); [focus edge](decisions/focus.md#single-output-focus-edge); [moves](decisions/layout-and-admission.md#in-group-move-and-single-output-edge)).
 
+- 2026-11-17: User decision: KDE desktop-type foreground permits the empty directional-focus subject only; other foreign foregrounds still refuse, with truthful reporting and no native focus clearing ([no-focus command](decisions/commands.md#directional-focus-without-a-focused-window)).
+
 ## Tentative decisions
 
 - macOS event-first AX recovery with deduplicated 1 s reread remains provisional/tunable, not renderer/paint proof; configuration and scoped defaults are active ([macOS](decisions/macos.md#fixture-and-scoped-input-defaults)).
