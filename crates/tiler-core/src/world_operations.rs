@@ -2122,11 +2122,12 @@ impl WorldEngine {
         }
     }
 
-    /// Pointer-target staged domain for a drag preview/drop: the readable
-    /// non-held staged domain whose work area contains the pointer. The
-    /// mover still homes the source, so homing the window would resolve
-    /// the source, never the destination. `None` refuses without mutation
-    /// (pointer outside every readable scope: resolve-outside).
+    /// Pointer-target staged domain for a drag preview/drop: the active
+    /// (visible), readable, non-held staged domain whose work area contains
+    /// the pointer. The mover still homes the source, so homing the window
+    /// would resolve the source, never the destination. `None` refuses
+    /// without mutation (pointer outside every visible readable scope:
+    /// resolve-outside, or active scope held/unreadable).
     pub(crate) fn drag_pointer_domain_staged(
         &self,
         x: i32,
@@ -2136,7 +2137,12 @@ impl WorldEngine {
         self.staged
             .domains
             .iter()
-            .filter(|d| d.readable && !held_scopes.contains(&d.key))
+            .filter(|d| {
+                d.readable
+                    && !held_scopes.contains(&d.key)
+                    && self.effective_view(&d.key.output).as_deref()
+                        == Some(d.key.workspace.0.as_str())
+            })
             .find(|d| {
                 let bounds = d.bounds;
                 let (x, y) = (i64::from(x), i64::from(y));

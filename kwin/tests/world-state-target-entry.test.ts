@@ -802,4 +802,33 @@ describe("world state-target entry (production wiring)", () => {
         assert.ok(recs2.includes("win-a"), "held fresh over-retains the ended slot");
         h2.handle?.stop();
     });
+
+    it("async preimage-stored above execution schedules followup DescribeWorld without external native events", () => {
+        const h = makeHarness();
+        discover(h);
+        const live = h.world.wins.find((w) => w.internalId === "win-a") as FakeWindow;
+        assert.equal(live.keepAbove, false);
+        h.handle?.requestWorkspaceRelative(1);
+        h.runTimers();
+        const req = requestOf(h);
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+            windows: [winRow("win-a", { state: [st("above", true, "controlled", "", null)] })],
+        }));
+        assert.equal(pendingWrites(h), 1);
+        assert.equal(live.keepAbove, false);
+        const describesBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
+        answerOldestWrite(h, "stored");
+        assert.equal(live.keepAbove, true);
+        h.runTimers();
+        const describesAfter = h.calls.filter((c) => c.method === "DescribeWorld").length;
+        assert.ok(describesAfter > describesBefore, "async preimage-stored setter schedules followup DescribeWorld without external native events");
+        const attempts = stateAttemptsOf(h);
+        const row = attempts.find((a) => a["win"] === "win-a" && a["property"] === "above");
+        assert.ok(row !== undefined, "exact raw above attempt rides followup capture");
+        assert.equal(row["target"], true);
+        assert.equal(row["setter"], "accepted");
+        assert.equal(row["pre"], false);
+        assert.equal(row["post"], true);
+        h.handle?.stop();
+    });
 });

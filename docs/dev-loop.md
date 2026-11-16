@@ -179,6 +179,63 @@ rejected outright (the live scope is not provable); changing scope requires
   reports `dev mode: UP`, `DOWN`, `SPLIT`, or `UNKNOWN`; `UP` requires both a
   verified worktree Planner and loaded controller.
 
+### Isolated fixture intent storage
+
+- For storage/restart tests, create a private directory and use
+  `just dev trace --scope-class OmniTilerTestWindow --intent-root "$INTENT_ROOT"`.
+  Detached equivalent:
+  `OMNITILER_TRACE=1 just dev-on --scope-class OmniTilerTestWindow --intent-root "$INTENT_ROOT"`.
+- `--intent-root` requires trace mode and that exact single fixture scope.
+  The directory must already exist, be absolute, owned by the current user,
+  have no group/other permissions, and contain no symlink or dot components.
+  The original runtime directory itself is rejected. Invalid arguments fail
+  before bring-up mutations; an already-running Planner is not reconfigured.
+- Only the Planner child receives the isolated `XDG_RUNTIME_DIR`, together
+  with the original session bus address. Both intent and native-preimage stores
+  use that root. Controller, fixture, tray and lifecycle state keep the original
+  runtime directory. This does not isolate stored tiler settings.
+- Reuse the same root across `dev-off`/`dev-on` for a restart proof. `reload`
+  preserves the recorded root and bus address, rejecting partial, symlinked or
+  invalid isolation metadata before stopping the Planner. If both metadata
+  files are absent, reload takes the ordinary non-isolated route.
+- Failure injection must target only the guarded isolated store, never normal
+  user storage. Its `omnitiler/float-intent.json` final file requires mode 0600:
+  changing that isolated file to 0400 makes writes unavailable; restore 0600,
+  then trigger a later accepted reply to exercise recovery. Preserve store
+  bytes/hash/nanosecond mtime and runtime logs before teardown.
+
+### Isolated fixture settings
+
+- Intent isolation alone does not isolate KWin's `readConfig` settings. For
+  enabled-hover tests, supply a separate private settings directory:
+  `just dev trace --scope-class OmniTilerTestWindow --settings-root "$SETTINGS_ROOT" --intent-root "$INTENT_ROOT"`.
+  Detached equivalent:
+  `OMNITILER_TRACE=1 just dev-on --scope-class OmniTilerTestWindow --settings-root "$SETTINGS_ROOT" --intent-root "$INTENT_ROOT"`.
+- `--settings-root` requires trace mode and exactly that single fixture scope.
+  Use an existing owned mode-0700 absolute directory, without symlink or dot
+  components, distinct from the actual runtime and configuration roots. Its
+  `settings.json` must be an owned private regular non-symlink file, at most
+  4096 bytes, containing exactly one JSON object. Minimal enabled-hover input:
+  `{"focusFollowsCursor":true}` in a mode-0600 file.
+- Unknown keys, invalid types/ranges/tokens and multiple JSON documents are
+  rejected before bring-up effects. Allowed keys are `gap`/`outer` (integers
+  0..64), `defaultTiled`/`focusFollowsCursor` (booleans), and the existing
+  `mode`, `sameAxis`, `bornMaximized`, `predicate` and `refill` enum tokens.
+  `scripts/start-test.sh validate-settings-root "$SETTINGS_ROOT"` performs
+  the same read-only validation used by both launch routes.
+- The validated snapshot is baked into the trace bundle; missing keys use
+  defaults, with no user `readConfig` calls, including the observer predicate.
+  Ordinary/installed builds strip this override. This is not a public setting
+  or a change to the default-off hover policy.
+- Planner `reload` re-handshakes the same baked snapshot. File edits require
+  `dev-off` then a new launch; an UP/SPLIT stack cannot be reconfigured through
+  this option. Preserve settings bytes/hash/permissions and launch evidence.
+- Enabled hover connects KWin's `cursorPosChanged` to the existing coalesced
+  observation path only after correlated settings acceptance. Disabled hover,
+  generation reset and stop detach it; there is no polling or focus retry.
+
+### World route
+
 Single engine: the worktree KWin bundle (`kwin/src/entry.ts` via
 `startWorldAdapterEntry`, owner `kwin-world-adapter`) is the only
 observer/actuator. Authenticated `DiscoverWorld` binds its activation to the
@@ -396,14 +453,24 @@ Core (`OMNITILER_TRACE=1`, `crates/tiler-core/src/world_engine.rs`, `crates/tile
 - `omnitiler:core:trace ev=operation-settled-dropped <corr> win=<win> kind=<clear|float> op=<op> outcome=<outcome> cause=<cause|->`
 - `omnitiler:core:trace ev=switch-settled-dropped <corr> out=<out> op=<op> outcome=<outcome> focus=<focus> fallback=<true|false> failed=<ids> [failedOmitted=<N>]`
 - `omnitiler:core:trace ev=settlement-published <corr> ready=<true|false> dup=<true|false> ops=<N> switches=<N> gesture=<present|none>`
+- `omnitiler:core:trace ev=settlement-pending <corr> ready=<true|false> dup=<true|false> pendingFloats=<N> pendingClears=<N> pendingBornClears=<N> pendingTransfers=<N> pendingCreations=<N> retainedStates=<N>`
+- `omnitiler:core:trace ev=retained-state <corr> win=<win> prop=<property> targetRev=<rev> targetVal=<bool> spent=<bool> pending=<bool> disposition=<disposition> latched=<N> pubAuth=<authority|-> pubHold=<reason|->`
 - `omnitiler:core:trace ev=settlement-gesture <corr> id=<id> owner=<gen> kind=gesture outcome=<committed|uncommitted> state=<new|retained> pending=<id|->`
 - `omnitiler:core:trace ev=settlement-operation <corr> key=<win>:<kind> owner=<win> kind=<clear|float> op=<op> outcome=<outcome> cause=<cause|-> state=<new|retained> pending=<op|->`
 - `omnitiler:core:trace ev=settlement-switch <corr> key=<out> owner=<out> kind=switch op=<op> outcome=<outcome> focus=<focus> fallback=<true|false> state=<new|retained> pending=<op|-> failed=<ids> [failedOmitted=<N>]`
+- `omnitiler:core:trace ev=drag-preview <corr> ready=<true|false> dup=<true|false> preview=<present|none> id=<id|-> domainOut=<out|-> suspendedOut=<out|-> reason=<reason>`
+- Broker (`OMNITILER_TRACE=1`, `crates/omnitiler/src/world_broker.rs`):
+  - `omnitiler:broker:trace ev=drag-preview-projection <corr> corePreview=<present|none> id=<id|-> domainOut=<out|-> suspendedOutput=<out|-> assoc=<proven|none|-> decision=<absent|suspended|malformed|projected-proven|projected-unproven>`
 - Semantics and bounds:
   - Q2 drops (`*-settled-dropped`) are buffered only when trace is enabled and emitted/cleared after all outbound gates at actual publication (`world_admit_v4.rs`). Rejected candidates emit neither Q2 drops nor publication summaries; duplicate redelivery (`dup=true`) emits no Q2 removal.
   - `state=new|retained` compares against the previous successful cached projection, not prior trace observations; `dup=true` forces `state=retained`.
   - `ops=0 switches=0 gesture=none` proves an empty carried projection.
   - `pending=<id|op|->` is the current actual pending key/operation; a preceding completion is not successor completion.
+  - `settlement-pending` counts actual operation maps at publication.
+    `retainedStates` counts bindings, not outstanding work. In `retained-state`,
+    `pending=true` means a consumed attempt remains recorded, including after
+    terminal `disposition=applied`; it is not alone an unsettled operation.
+    A spent above target may normally project `hold/unreadable`.
   - `failed=<ids>` lists up to the first 8 comma-joined window IDs with optional `failedOmitted=<N>`; empty is `failed=` (empty string).
 
 KDE (`__OMNITILER_TRACE__="1"`, `kwin/src/world-entry.ts`):
@@ -425,6 +492,70 @@ KDE (`__OMNITILER_TRACE__="1"`, `kwin/src/world-entry.ts`):
 - `omnitiler:world:trace ev=reply-skipped stage=<accept|flight|take|post-accept|intent-hold|intent-persist|intent-gate> <corr> reason=<reason>`
   - Carries per-reply identity omitted by ordinary `stale` lines across acceptance (`generation-mismatch`, `adapter-mismatch`, `stale-req`, `not-ready`, `malformed-counter`, `stale-rev`), in-flight supersession (`superseded-during-flight`), async generation change (`generation-mismatch`), held-reply replacement/clear (`replaced-by-newer-reply`, `stopped`, `dropped-by-superseded-reply`), persist failure (`intent-write-failed`), and intent-gate skips (`stopped`, `generation-mismatch`, `settings-gen-mismatch`, `settings-pending`, `settings-rev-mismatch`, `superseded-rev`, `superseded-watermark`).
 - Avoid `WeakMap` in KWin trace paths; use bounded explicit correlation storage or lifecycle-managed caches.
+
+### Correlated fixture Describe diagnostics (trace only)
+
+- With trace and scope exactly `OmniTilerTestWindow`, parsed reply receipt emits
+  `ev=describe-receipt <corr>` counts, `ev=describe-window <corr>` floating,
+  home, frame/allocation, authority and operation/state-target rows, and
+  `ev=describe-op lane=<transfer|creation|focus|drag-preview> <corr>`.
+- Counts cover the full projection. Window rows are bounded to 16, prioritizing
+  projected work, with explicit `windowsOmitted`; transfer/creation rows are
+  bounded to 8 each. Opaque intent is counted, never logged. These are structured
+  projections, not full reply JSON or native readback.
+- `projectedTargets` counts retained wire slots, including focus/preview/state,
+  not actual pending operations. `switchPending=absent gesturePending=absent`
+  means these pending lanes are absent from the wire, not internally empty.
+  Join the Core counts/dispositions above and independent native readbacks.
+- Receipt precedes omission/freshness decisions; receipt alone is not applied
+  state or durable storage.
+
+### Fixture-only whole-reply omission (trace only)
+
+- Same trace/exact-fixture gate as the preview controls below; no default key
+  binding or stored setting. Arm without triggering a capture:
+
+  ```sh
+  qdbus6 org.kde.kglobalaccel /component/kwin org.kde.kglobalaccel.Component.invokeShortcut omnitiler-dev-skip-next-world-reply
+  ```
+
+- The next fresh non-superseded accepted reply consumes it, even if desired
+  intent is empty. It skips both intent reconciliation/storage and native apply,
+  unlike the preview-only skip. Local reply acceptance, terminal discharge and
+  requester-result collection still run. Generation reset/stop disarms it.
+- Witness `ev=reply-skipped stage=dev-skip reason=dev-skip-world-reply` and
+  `ev=dev-skip-world-reply state=consumed <corr> intentRows=<N>`. Arm just before
+  a real fixture intent mutation; prove nonempty issuance, unchanged storage
+  and native state, then a commandless retained publication's write-before-apply.
+
+### Fixture-only preview lifecycle controls (trace only)
+
+- Available only in trace builds with scope exactly `OmniTilerTestWindow`;
+  empty, foreign or mixed scopes disable them. Ordinary/installed builds strip
+  the controls. They add no default key bindings or stored tiler settings.
+- Arm one capture's `nativeGesture` omission or one fresh non-null preview
+  actuator-reply skip using the unbound actions below. Arming does not itself
+  trigger a capture: follow it with a real fixture event or native move sample.
+  No-snapshot captures/null-preview replies do not consume the respective
+  control. Consumption, generation reset and stop disarm it.
+
+  ```sh
+  qdbus6 org.kde.kglobalaccel /component/kwin org.kde.kglobalaccel.Component.invokeShortcut omnitiler-dev-omit-next-gesture-ingress
+  qdbus6 org.kde.kglobalaccel /component/kwin org.kde.kglobalaccel.Component.invokeShortcut omnitiler-dev-skip-next-preview-reply
+  ```
+
+- Witness omission with `ev=dev-omit-gesture-ingress state=consumed` and the
+  corresponding core `reason=omitted-preserved`. Witness the actual skipped
+  reply with `ev=reply-skipped stage=dev-skip` plus
+  `ev=dev-skip-preview-reply state=consumed` (gen/req/rev/obs, preview id/rect).
+  Skip means no actuator apply, not no preview: the existing preview-only read,
+  terminal discharge and requester-result collection paths remain active.
+- For deterministic native moves, a disposable KWin helper can activate an
+  exact PID/sentinel/UUID-joined fixture and call `workspace.slotWindowMove()`.
+  This holds genuine keyboard-move mode without a held modifier/button;
+  physical pointer motion produces samples. Release modifiers before plain
+  Escape cancellation. This is native move lifecycle evidence, not physical
+  shortcut-delivery evidence. Follow the [live guide](live-kwin-testing.md).
 
 ### KDE open-animation timing probe (trace only)
 

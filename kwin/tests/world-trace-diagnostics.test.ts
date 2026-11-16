@@ -524,6 +524,12 @@ describe("world trace diagnostics (rapid float and sticky)", () => {
         });
         answerOldestWrite(h);
         h.runTimers();
+        // Followup DescribeWorld flushes the recorded on-attempts.
+        const follow1 = JSON.parse(h.lastCall("DescribeWorld").payload) as Record<string, unknown>;
+        answerDescribe(h, follow1, "2", {
+            windows: [winRow(WIN_A, {})],
+        });
+        h.runTimers();
         const cmds = traceLines(h, "cmd").filter((l) => l.includes("op=toggle-sticky"));
         assert.equal(cmds.length, 1, `sticky-on leaves one ev=cmd: ${cmds.join("\n")}`);
         assert.ok(cmds[0]!.includes(`press=${WIN_A}`), `sticky retains its press basis: ${cmds[0]}`);
@@ -533,19 +539,16 @@ describe("world trace diagnostics (rapid float and sticky)", () => {
         assert.ok(subjects.length >= 1, `sticky apply leaves a subject line: ${subjects.join("\n")}`);
         assert.ok(subjects.some((l) => l.includes("basis=press") && l.includes("sticky=1/controlled") && l.includes("above=1/controlled")),
             `press-basis line carries both state targets: ${subjects.join("\n")}`);
-        // Native executor attempts record on the persist ack after the
-        // applied diagnostic, so they flush on the next send: start the
-        // release press (which sends) before asserting the on-attempts.
-        h.handle.requestSticky();
-        h.runTimers();
         const attempts = traceLines(h, "state-attempt").filter((l) => l.includes(`win=${WIN_A}`));
         assert.ok(attempts.some((l) => l.includes("property=sticky") && l.includes("target=1") && l.includes("setter=accepted")),
             `sticky attempt is recorded: ${attempts.join("\n")}`);
         assert.ok(attempts.some((l) => l.includes("property=above") && l.includes("target=1") && l.includes("setter=accepted")),
             `above attempt is recorded: ${attempts.join("\n")}`);
         // Sticky release from the same tile baseline.
+        h.handle.requestSticky();
+        h.runTimers();
         const req2 = JSON.parse(h.lastCall("DescribeWorld").payload) as Record<string, unknown>;
-        answerDescribe(h, req2, "2", {
+        answerDescribe(h, req2, "3", {
             windows: [winRow(WIN_A, { state: [st("sticky", false, "controlled", "", "2"), st("above", false, "controlled", "", "2")] })],
         });
         answerOldestWrite(h);
@@ -579,11 +582,19 @@ describe("world trace diagnostics (rapid float and sticky)", () => {
         });
         answerOldestWrite(h);
         h.runTimers();
+        const follow2 = JSON.parse(h.lastCall("DescribeWorld").payload) as Record<string, unknown>;
+        answerDescribe(h, follow2, "3", {
+            windows: [
+                winRow(WIN_A, { floating: true, frame_auth: "untouched", frame_hold: "", frame: [...FLOAT_A], alloc: [...FLOAT_A] }),
+                winRow(WIN_B, { floating: false, frame_auth: "untouched", frame_hold: "", frame: [...TILE_B], alloc: [...TILE_B] }),
+            ],
+        });
+        h.runTimers();
         // Sticky off back to prior float.
         h.handle.requestSticky();
         h.runTimers();
         const req3 = JSON.parse(h.lastCall("DescribeWorld").payload) as Record<string, unknown>;
-        answerDescribe(h, req3, "3", {
+        answerDescribe(h, req3, "4", {
             windows: [
                 winRow(WIN_A, { floating: true, frame_auth: "untouched", frame_hold: "", frame: [...FLOAT_A], alloc: [...FLOAT_A], state: [st("sticky", false, "controlled", "", "3"), st("above", false, "controlled", "", "3")] }),
                 winRow(WIN_B, { floating: false, frame_auth: "untouched", frame_hold: "", frame: [...TILE_B], alloc: [...TILE_B] }),
@@ -591,9 +602,17 @@ describe("world trace diagnostics (rapid float and sticky)", () => {
         });
         answerOldestWrite(h);
         h.runTimers();
+        const follow3 = JSON.parse(h.lastCall("DescribeWorld").payload) as Record<string, unknown>;
+        answerDescribe(h, follow3, "5", {
+            windows: [
+                winRow(WIN_A, { floating: true, frame_auth: "untouched", frame_hold: "", frame: [...FLOAT_A], alloc: [...FLOAT_A] }),
+                winRow(WIN_B, { floating: false, frame_auth: "untouched", frame_hold: "", frame: [...TILE_B], alloc: [...TILE_B] }),
+            ],
+        });
+        h.runTimers();
         // Unfloat back to tile.
         const req4 = pressFloat(h);
-        answerDescribe(h, req4, "4", {
+        answerDescribe(h, req4, "6", {
             windows: [
                 winRow(WIN_A, { floating: false, frame_auth: "untouched", frame_hold: "", frame: [...TILE_A], alloc: [...TILE_A] }),
                 winRow(WIN_B, { floating: false, frame_auth: "untouched", frame_hold: "", frame: [...TILE_B], alloc: [...TILE_B] }),
@@ -659,9 +678,7 @@ describe("world trace diagnostics (rapid float and sticky)", () => {
         h.runTimers();
         answerOldestWrite(h);
         h.runTimers();
-        // Second press (sticky-off) sends S2: the S1 on-attempts flush here.
-        h.handle.requestSticky();
-        h.runTimers();
+        // Followup S2 flushes the S1 on-attempts under its delivering source.
         const req2 = JSON.parse(h.lastCall("DescribeWorld").payload) as Record<string, unknown>;
         const src2 = req2["source"] as string;
         assert.ok(typeof src2 === "string" && src2.length > 0 && src2 !== src1, "S2 is a new source");
@@ -676,24 +693,26 @@ describe("world trace diagnostics (rapid float and sticky)", () => {
         const onAbove = onAttempts.filter((l) => l.includes("property=above") && l.includes("target=1"));
         assert.equal(onSticky.length, 1, `sticky-on emits once: ${onAttempts.join("\n")}`);
         assert.equal(onAbove.length, 1, `above-on emits once: ${onAttempts.join("\n")}`);
-        // Answer S2 with the cleared state, ack its persist, then a third
-        // press sends S3 and flushes the off-attempts exactly once.
-        answerDescribe(h, req2, "2", {
+        // Answer S2, then sticky-off sends S3 and followup S4 flushes the off-attempts once.
+        answerDescribe(h, req2, "2", { windows: [winRow(WIN_A, {})] });
+        h.runTimers();
+        h.handle.requestSticky();
+        h.runTimers();
+        const req3 = JSON.parse(h.lastCall("DescribeWorld").payload) as Record<string, unknown>;
+        answerDescribe(h, req3, "3", {
             windows: [winRow(WIN_A, { state: [st("sticky", false, "controlled", "", "2"), st("above", false, "controlled", "", "2")] })],
         });
         h.runTimers();
         answerOldestWrite(h);
         h.runTimers();
-        h.handle.requestSticky();
-        h.runTimers();
-        const req3 = JSON.parse(h.lastCall("DescribeWorld").payload) as Record<string, unknown>;
-        const src3 = req3["source"] as string;
-        assert.ok(typeof src3 === "string" && src3.length > 0 && src3 !== src2, "S3 is a new source");
+        const req4 = JSON.parse(h.lastCall("DescribeWorld").payload) as Record<string, unknown>;
+        const src4 = req4["source"] as string;
+        assert.ok(typeof src4 === "string" && src4.length > 0 && src4 !== src2, "S4 is a new source");
         const all = traceLines(h, "state-attempt").filter((l) => l.includes(`win=${WIN_A}`));
         const offAttempts = all.filter((l) => l.includes("target=0"));
-        assert.ok(offAttempts.length >= 2, `off-attempts flushed at S3 send: ${offAttempts.join("\n")}`);
+        assert.ok(offAttempts.length >= 2, `off-attempts flushed at S4 send: ${offAttempts.join("\n")}`);
         for (const line of offAttempts) {
-            assert.ok(line.includes(`flushSrc=${src3}`), `off-attempt names the delivering S3 source: ${line}`);
+            assert.ok(line.includes(`flushSrc=${src4}`), `off-attempt names the delivering S4 source: ${line}`);
             assert.ok(!line.includes("applySrc="), `late ack is never labeled a proven apply: ${line}`);
         }
         const offSticky = all.filter((l) => l.includes("property=sticky") && l.includes("target=0"));

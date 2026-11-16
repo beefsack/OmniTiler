@@ -238,6 +238,98 @@ pub enum BrokerError {
     Rotate,
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static TEST_BROKER_TRACE_SINK: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Cached process-level `OMNITILER_TRACE=1` gate for broker trace-only
+/// diagnostics (zero formatting/allocation/output when disabled).
+pub(crate) fn broker_trace_enabled() -> bool {
+    #[cfg(test)]
+    if TEST_BROKER_TRACE_SINK.with(|sink| sink.borrow().is_some()) {
+        return true;
+    }
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("OMNITILER_TRACE").is_some_and(|v| v == "1"))
+}
+
+/// Best-effort trace-only broker diagnostic write (or isolated thread-local
+/// capture in unit tests).
+fn emit_broker_trace(line: String) {
+    #[cfg(test)]
+    {
+        let captured = TEST_BROKER_TRACE_SINK.with(|sink| {
+            let mut borrow = sink.borrow_mut();
+            if let Some(lines) = borrow.as_mut() {
+                lines.push(line.clone());
+                true
+            } else {
+                false
+            }
+        });
+        if captured {
+            return;
+        }
+    }
+    use std::io::Write as _;
+    let _ = writeln!(std::io::stderr(), "{line}");
+}
+
+#[cfg(test)]
+pub(crate) fn with_broker_trace_capture<F: FnOnce()>(f: F) -> Vec<String> {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_BROKER_TRACE_SINK.with(|sink| {
+                *sink.borrow_mut() = None;
+            });
+        }
+    }
+    TEST_BROKER_TRACE_SINK.with(|sink| {
+        *sink.borrow_mut() = Some(Vec::new());
+    });
+    let _reset = Reset;
+    f();
+    TEST_BROKER_TRACE_SINK.with(|sink| sink.borrow_mut().take().unwrap_or_default())
+}
+
+struct BrokerPreviewTraceMeta {
+    gen_id: String,
+    req_id: String,
+    rev: u64,
+    obs: u64,
+    preview_id: Option<u64>,
+    domain_out: Option<String>,
+    suspended_output: Option<String>,
+}
+
+impl BrokerPreviewTraceMeta {
+    fn from_reply(reply: &tiler_core::world_report::WorldReplyV4) -> Option<Self> {
+        if !broker_trace_enabled() {
+            return None;
+        }
+        Some(Self {
+            gen_id: crate::float_intent_store::sanitize_correlation(&reply.core_generation)
+                .to_owned(),
+            req_id: crate::float_intent_store::sanitize_correlation(&reply.request_id).to_owned(),
+            rev: reply.state_revision,
+            obs: reply.based_on_observation_seq,
+            preview_id: reply.drag_preview.as_ref().map(|preview| preview.id),
+            domain_out: reply
+                .drag_preview
+                .as_ref()
+                .map(|preview| preview.domain.output.0.clone()),
+            suspended_output: reply
+                .presentation
+                .suspended_output
+                .as_ref()
+                .map(|output| output.0.clone()),
+        })
+    }
+}
+
 /// Cap for remembered per-source bound capture outcomes (accepted replies
 /// and in-band rejections alike). Oldest-first eviction: evicted sources
 /// lose replay and refuse as stale through the sequence floor.
@@ -842,8 +934,9 @@ impl WorldBroker {
         // (it can open, settle, or close an active gesture), so pins must
         // reconcile there just like `Accepted`, while still reparking any
         // drained batch. `Duplicate` is a cached replay with no transition.
-        let (outcome, reply_drag_preview_id, reply_gesture_settled) = match outcome {
+        let (outcome, reply_drag_preview_id, reply_gesture_settled, trace_meta) = match outcome {
             WorldOutcome::Accepted(reply) => {
+                let trace_meta = BrokerPreviewTraceMeta::from_reply(&reply);
                 let encoded = encode_world_reply(&reply)?;
                 let preview_id = reply.drag_preview.as_ref().map(|preview| preview.id);
                 self.settle_batch(&drained, &settlements)?;
@@ -856,9 +949,11 @@ impl WorldBroker {
                     FreshOutcome::Reply(encoded),
                     preview_id,
                     reply.gesture_settled,
+                    trace_meta,
                 )
             }
             WorldOutcome::CommandConsumed(reply) => {
+                let trace_meta = BrokerPreviewTraceMeta::from_reply(&reply);
                 let encoded = encode_world_reply(&reply)?;
                 let preview_id = reply.drag_preview.as_ref().map(|preview| preview.id);
                 self.repark_batch(drained);
@@ -871,9 +966,11 @@ impl WorldBroker {
                     FreshOutcome::Reply(encoded),
                     preview_id,
                     reply.gesture_settled,
+                    trace_meta,
                 )
             }
             WorldOutcome::Duplicate(reply) => {
+                let trace_meta = BrokerPreviewTraceMeta::from_reply(&reply);
                 let encoded = encode_world_reply(&reply)?;
                 let preview_id = reply.drag_preview.as_ref().map(|preview| preview.id);
                 self.repark_batch(drained);
@@ -881,11 +978,12 @@ impl WorldBroker {
                     FreshOutcome::Reply(encoded),
                     preview_id,
                     reply.gesture_settled,
+                    trace_meta,
                 )
             }
             WorldOutcome::Rejected { kind, message } => {
                 self.repark_batch(drained);
-                (FreshOutcome::Rejected { kind, message }, None, None)
+                (FreshOutcome::Rejected { kind, message }, None, None, None)
             }
         };
         match outcome {
@@ -932,11 +1030,13 @@ impl WorldBroker {
                 // suspended output never rides the projection, so the
                 // cache cannot retain an older preview across the
                 // suspension. Cross-output previews stay intact.
-                let preview_geometry = if preview_suspended_by_presentation(&encoded) {
+                let suspended = preview_suspended_by_presentation(&encoded);
+                let preview_geometry = if suspended {
                     None
                 } else {
                     drag_preview_of(&encoded)
                 };
+                let has_preview_geometry = preview_geometry.is_some();
                 let preview_assoc = self.gesture_map.active_assoc_for(reply_drag_preview_id);
                 let preview = match (&preview_geometry, preview_assoc) {
                     (Some(_), Some(assoc)) => CarriedPreview::proven(preview_geometry, assoc),
@@ -948,6 +1048,58 @@ impl WorldBroker {
                     bind_response(&with_assoc, &parsed.source, parsed.native_invalid, clock);
                 if bound.len() > WORLD_MAX_REPLY_BYTES {
                     return Err(BrokerError::Oversized);
+                }
+                if let Some(meta) = trace_meta {
+                    let decision = if suspended {
+                        "suspended"
+                    } else if meta.preview_id.is_none() {
+                        "absent"
+                    } else if !has_preview_geometry {
+                        "malformed"
+                    } else if preview_assoc.is_some() {
+                        "projected-proven"
+                    } else {
+                        "projected-unproven"
+                    };
+                    let core_preview = if meta.preview_id.is_some() {
+                        "present"
+                    } else {
+                        "none"
+                    };
+                    let id_str = meta
+                        .preview_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "-".to_owned());
+                    let domain_out = meta
+                        .domain_out
+                        .as_deref()
+                        .map(crate::float_intent_store::sanitize_correlation)
+                        .unwrap_or("-");
+                    let suspended_out = meta
+                        .suspended_output
+                        .as_deref()
+                        .map(crate::float_intent_store::sanitize_correlation)
+                        .unwrap_or("-");
+                    let assoc_state = if !has_preview_geometry {
+                        "-"
+                    } else if preview_assoc.is_some() {
+                        "proven"
+                    } else {
+                        "none"
+                    };
+                    emit_broker_trace(format!(
+                        "omnitiler:broker:trace ev=drag-preview-projection gen={} req={} rev={} obs={} corePreview={} id={} domainOut={} suspendedOutput={} assoc={} decision={}",
+                        meta.gen_id,
+                        meta.req_id,
+                        meta.rev,
+                        meta.obs,
+                        core_preview,
+                        id_str,
+                        domain_out,
+                        suspended_out,
+                        assoc_state,
+                        decision,
+                    ));
                 }
                 self.presentation = Some(project_reply(&encoded, preview.as_ref()));
                 self.presentation_covered = covered;
@@ -3410,5 +3562,228 @@ mod tests {
         assert!(idle_reply["gestureAssoc"].is_null());
         assert_eq!(idle_reply["gestureSettled"]["id"], serde_json::json!("1"));
         assert_eq!(idle_reply["gestureSettledAssoc"], assoc1);
+    }
+
+    #[test]
+    fn drag_preview_projection_trace_emits_correlated_decisions() {
+        let mut broker = WorldBroker::new();
+        let adapter = "adapter-trace";
+        let hs = format!(
+            "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"hs-trace\",\
+              \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\
+              \"processId\":\"pid-own-1\"}},\
+              \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
+              \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
+              \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+        );
+        let _ = broker.discover_connection(&hs).expect("handshake");
+        let generation = broker.generation().to_owned();
+        let _ = broker
+            .discover_connection(&settings_message(adapter, &generation, "set-trace"))
+            .expect("settings");
+
+        let mk_win = |id: &str, x: i32| {
+            format!(
+                "{{\"win\":\"{id}\",\"out\":\"DP-1\",\"rect\":[{x},0,400,600],\
+                \"fullscreen\":false,\"maximized\":false,\"sticky\":false,\"minimized\":false,\
+                \"hints\":{{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null}},\
+                \"hostHidden\":false,\"privileged\":false,\"managed\":true,\"acceptsInput\":true,\
+                \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\
+                \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\"owner\":null,\
+                \"parent\":null,\"role\":null,\"appId\":null,\"executable\":null,\
+                \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
+                \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
+                \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
+                \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\"lastWrite\":null}}"
+            )
+        };
+        let wins = format!("[{},{}]", mk_win("win-a", 0), mk_win("win-b", 400));
+
+        // 1. Seed capture with no dragPreview -> decision=absent.
+        let seed_env = format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+            \"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\
+            \"report\":{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+            \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
+            \"windows\":{wins},\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
+            \"presentation\":{{\"foreground\":\"win-a\",\"minimized\":false,\"maximized\":false,\
+            \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
+            \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\",\"win-b\"],\
+            \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,400,600]}},{{\"win\":\"win-b\",\"live\":[400,0,400,600]}}],\
+            \"witness\":null,\"foregroundOut\":\"DP-1\"}},\
+            \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}}}"
+        );
+        let absent = with_broker_trace_capture(|| {
+            let _ = broker.dispatch_capture(&seed_env).expect("seed");
+        });
+        assert_eq!(
+            absent,
+            vec![format!(
+                "omnitiler:broker:trace ev=drag-preview-projection gen={generation} req=src-1 rev=1 obs=1 corePreview=none id=- domainOut=- suspendedOutput=- assoc=- decision=absent"
+            )]
+        );
+
+        // 2. Open + update gesture over win-b with nativeGesture -> decision=projected-proven.
+        let start_env = format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+            \"source\":\"src-2\",\"sourceSeq\":\"2\",\"nativeInvalid\":\"2\",\
+            \"report\":{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+            \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
+            \"windows\":{wins},\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
+            \"complete\":true,\"gesture\":true,\"cursor\":[10,10],\"actionForeground\":null,\
+            \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
+            \"presentation\":{{\"foreground\":\"win-a\",\"minimized\":false,\"maximized\":false,\
+            \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
+            \"chordHeld\":false,\"moveWindow\":\"win-a\",\"pagerOrder\":[\"win-a\",\"win-b\"],\
+            \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,400,600]}},{{\"win\":\"win-b\",\"live\":[400,0,400,600]}}],\
+            \"witness\":null,\"foregroundOut\":\"DP-1\"}},\
+            \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"gestureIngress\":null,\
+            \"nativeGesture\":{{\"v\":1,\"instance\":\"g-1\",\"serial\":\"1\",\"revision\":\"1\",\
+            \"phase\":\"started\",\"win\":\"win-a\",\"kind\":\"move\",\"startRect\":[0,0,400,600],\
+            \"startCursor\":[10,10],\"cursor\":[10,10],\"modalMove\":1,\"changed\":1,\
+            \"superseded\":0,\"available\":1}},\"cursorWindow\":null,\"nativeInvalidWitness\":null}}}}"
+        );
+        let _ = broker.dispatch_capture(&start_env).expect("start");
+
+        let update_env = format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+            \"source\":\"src-3\",\"sourceSeq\":\"3\",\"nativeInvalid\":\"3\",\
+            \"report\":{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+            \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
+            \"windows\":{wins},\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
+            \"complete\":true,\"gesture\":true,\"cursor\":[600,300],\"actionForeground\":null,\
+            \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
+            \"presentation\":{{\"foreground\":\"win-a\",\"minimized\":false,\"maximized\":false,\
+            \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
+            \"chordHeld\":false,\"moveWindow\":\"win-a\",\"pagerOrder\":[\"win-a\",\"win-b\"],\
+            \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,400,600]}},{{\"win\":\"win-b\",\"live\":[400,0,400,600]}}],\
+            \"witness\":null,\"foregroundOut\":\"DP-1\"}},\
+            \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"gestureIngress\":null,\
+            \"nativeGesture\":{{\"v\":1,\"instance\":\"g-1\",\"serial\":\"2\",\"revision\":\"2\",\
+            \"phase\":\"updated\",\"win\":\"win-a\",\"kind\":\"move\",\"startRect\":[0,0,400,600],\
+            \"startCursor\":[10,10],\"cursor\":[600,300],\"modalMove\":1,\"changed\":1,\
+            \"superseded\":0,\"available\":1}},\"cursorWindow\":null,\"nativeInvalidWitness\":null}}}}"
+        );
+        let proven = with_broker_trace_capture(|| {
+            let _ = broker.dispatch_capture(&update_env).expect("update");
+        });
+        assert_eq!(
+            proven,
+            vec![format!(
+                "omnitiler:broker:trace ev=drag-preview-projection gen={generation} req=src-3 rev=3 obs=3 corePreview=present id=2 domainOut=DP-1 suspendedOutput=- assoc=proven decision=projected-proven"
+            )]
+        );
+
+        // 3. Present dragPreview without active_assoc -> decision=projected-unproven.
+        let mut unproven_inner: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str::<serde_json::Value>(&update_env)
+                .expect("obj")
+                .as_object()
+                .expect("map")
+                .get("report")
+                .expect("report")
+                .as_object()
+                .expect("report map")
+                .clone();
+        unproven_inner.remove("nativeGesture");
+        unproven_inner.remove("cursorWindow");
+        unproven_inner.remove("nativeInvalidWitness");
+        let obs4 = broker.take_observation_seq().expect("obs4").to_string();
+        let req4 = broker.take_request_seq().expect("req4").to_string();
+        unproven_inner.insert("adapter".to_owned(), json_string(adapter));
+        unproven_inner.insert("gen".to_owned(), json_string(&generation));
+        unproven_inner.insert("obs".to_owned(), json_string(&obs4));
+        unproven_inner.insert("reqSeq".to_owned(), json_string(&req4));
+        unproven_inner.insert("req".to_owned(), json_string("req-unproven"));
+        unproven_inner.insert("cmdSeq".to_owned(), serde_json::Value::Null);
+        unproven_inner.insert("command".to_owned(), serde_json::Value::Null);
+        unproven_inner.insert("monotonicMs".to_owned(), json_string("4"));
+        unproven_inner.insert("cursor".to_owned(), serde_json::json!([620, 300]));
+        unproven_inner.insert("gestureIngress".to_owned(), serde_json::Value::Null);
+        let report4 =
+            decode_request(&serde_json::Value::Object(unproven_inner).to_string()).expect("r4");
+        let (outcome4, _) = broker.engine.handle_report(&report4, &[]);
+        let WorldOutcome::Accepted(base_reply) = outcome4 else {
+            panic!("expected accepted reply");
+        };
+        let parsed_unproven = ParsedCapture {
+            adapter: adapter.to_owned(),
+            generation: generation.clone(),
+            source: "src-4".to_owned(),
+            source_seq: 4,
+            native_invalid: 4,
+            inner: serde_json::Map::new(),
+        };
+        let empty_map = crate::kde_gesture::KdeGestureMap::default();
+        let unproven = with_broker_trace_capture(|| {
+            let _ = broker
+                .finish_capture_outcome(
+                    &parsed_unproven,
+                    "{\"synthetic\":true}",
+                    4,
+                    None,
+                    empty_map,
+                    None,
+                    VecDeque::new(),
+                    WorldOutcome::Accepted(base_reply.clone()),
+                    Vec::new(),
+                )
+                .expect("unproven");
+        });
+        assert_eq!(
+            unproven,
+            vec![format!(
+                "omnitiler:broker:trace ev=drag-preview-projection gen={generation} req=req-unproven rev=4 obs=4 corePreview=present id=2 domainOut=DP-1 suspendedOutput=- assoc=none decision=projected-unproven"
+            )]
+        );
+
+        // 4. Present dragPreview with matching suspendedOutput -> decision=suspended.
+        let mut suspended_reply = base_reply;
+        suspended_reply.request_id = "req-suspended".to_owned();
+        suspended_reply.state_revision = 5;
+        suspended_reply.based_on_observation_seq = 5;
+        suspended_reply.presentation.suspended_output = suspended_reply
+            .drag_preview
+            .as_ref()
+            .map(|p| p.domain.output.clone());
+        let parsed_suspended = ParsedCapture {
+            adapter: adapter.to_owned(),
+            generation: generation.clone(),
+            source: "src-5".to_owned(),
+            source_seq: 5,
+            native_invalid: 5,
+            inner: serde_json::Map::new(),
+        };
+        let empty_map_2 = crate::kde_gesture::KdeGestureMap::default();
+        let suspended = with_broker_trace_capture(|| {
+            let _ = broker
+                .finish_capture_outcome(
+                    &parsed_suspended,
+                    "{\"synthetic\":true}",
+                    5,
+                    None,
+                    empty_map_2,
+                    None,
+                    VecDeque::new(),
+                    WorldOutcome::Accepted(suspended_reply),
+                    Vec::new(),
+                )
+                .expect("suspended");
+        });
+        assert_eq!(
+            suspended,
+            vec![format!(
+                "omnitiler:broker:trace ev=drag-preview-projection gen={generation} req=req-suspended rev=5 obs=5 corePreview=present id=2 domainOut=DP-1 suspendedOutput=DP-1 assoc=- decision=suspended"
+            )]
+        );
     }
 }

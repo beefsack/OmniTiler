@@ -279,7 +279,7 @@ export function truthfulClientFor(f: { x: number; y: number; width: number; heig
     return { x, y, width: w, height: h };
 }
 
-export async function makeHarness(focusId: string, ids: string[], opts?: { withEffectFacts?: boolean; withNativePreimage?: boolean; withIntentStore?: boolean; withNativeCreation?: boolean; desktops?: string[]; fractionalScale?: number; outputs?: FakeOutputSpec[]; homes?: Record<string, string>; currents?: Record<string, string> }): Promise<Harness> {
+export async function makeHarness(focusId: string, ids: string[], opts?: { withEffectFacts?: boolean; withNativePreimage?: boolean; withIntentStore?: boolean; withNativeCreation?: boolean; desktops?: string[]; fractionalScale?: number; outputs?: FakeOutputSpec[]; homes?: Record<string, string>; currents?: Record<string, string>; scopeClass?: string; devSettingsJson?: string; options?: unknown }): Promise<Harness> {
     // Multi-desktop selection support (tier 2A): the default stays exactly
     // one native desktop (`ws1`, the pre-existing shape); passing
     // `desktops` seeds that many natives in order, all but the first empty.
@@ -386,7 +386,7 @@ export async function makeHarness(focusId: string, ids: string[], opts?: { withE
             minSize: { width: 100, height: 100 },
             maxSize: { width: 2147483647, height: 2147483647 },
             pid: 1234,
-            resourceClass: "Example",
+            resourceClass: opts?.scopeClass ?? "Example",
             caption: `Window ${id}`,
             windowRole: "normal",
             desktopFileName: "example.app",
@@ -410,6 +410,7 @@ export async function makeHarness(focusId: string, ids: string[], opts?: { withE
         "screensChanged",
         "currentDesktopChanged",
         "activeScreenChanged",
+        "cursorPosChanged",
     ] as const;
     const signals: Record<string, FakeSignal> = {};
     for (const name of sigNames) {
@@ -694,6 +695,7 @@ export async function makeHarness(focusId: string, ids: string[], opts?: { withE
         screensChanged: (signals["screensChanged"] as FakeSignal).signal,
         currentDesktopChanged: (signals["currentDesktopChanged"] as FakeSignal).signal,
         activeScreenChanged: (signals["activeScreenChanged"] as FakeSignal).signal,
+        cursorPosChanged: (signals["cursorPosChanged"] as FakeSignal).signal,
         get activeWindow(): FakeWindow | null {
             return harness.activeRef;
         },
@@ -985,6 +987,9 @@ export async function makeHarness(focusId: string, ids: string[], opts?: { withE
         registerShortcutFn: () => true,
         readWorkspaceModeFn: () => "per-output-local",
         readDefaultTiledFn: () => true,
+        ...(opts?.scopeClass !== undefined ? { readScopeClassFn: () => opts.scopeClass } : {}),
+        ...(opts?.devSettingsJson !== undefined ? { devSettingsJson: opts.devSettingsJson } : {}),
+        ...(opts?.options !== undefined ? { options: opts.options } : {}),
         highlightCallDbus: (_service: string, _path: string, _iface: string, method: string, ...args: ReadonlyArray<unknown>): void => {
             const [payload] = args;
             harness.renders.push({ method, payload: typeof payload === "string" ? payload : "" });

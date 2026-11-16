@@ -356,6 +356,7 @@ impl WorldEngine {
                         );
                     };
                     self.emit_published_settlement_trace(None, &cached, true);
+                    self.emit_published_drag_preview_trace(&cached, true);
                     return (V4RunOutcome::Duplicate(cached), Vec::new());
                 }
             }
@@ -557,6 +558,7 @@ impl WorldEngine {
                 return (refused, Vec::new());
             }
             staged.emit_published_settlement_trace(self.last_reply_v4.as_ref(), &reply, false);
+            staged.emit_published_drag_preview_trace(&reply, false);
             *self = staged;
             return (V4RunOutcome::Accepted(reply), Vec::new());
         }
@@ -688,6 +690,7 @@ impl WorldEngine {
         }
         staged.emit_staged_dropped_settlement_trace(&reply);
         staged.emit_published_settlement_trace(self.last_reply_v4.as_ref(), &reply, false);
+        staged.emit_published_drag_preview_trace(&reply, false);
         let consumed_reply = reply.command_consumed;
         *self = staged;
         // Typed replay cache: mirrors the legacy finish tail, including

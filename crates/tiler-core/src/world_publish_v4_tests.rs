@@ -3192,6 +3192,91 @@ fn published_settlement_trace_gesture_lifecycle_and_rejected_candidate() {
 }
 
 #[test]
+fn retained_state_and_pending_op_trace_exposes_unspent_ownership_and_pending_totals() {
+    use crate::boundary::CoreCommand;
+
+    let caps = crate::connection::HostCapabilities {
+        fullscreen: true,
+        maximize: true,
+        native_sticky: true,
+        above: true,
+        ..Default::default()
+    };
+    let mut engine = WorldEngine::new_test_bound_with_capabilities("gen-1", "adapter-1", caps)
+        .expect("generation");
+    let screens = vec![screen("out-a", 0)];
+    let mut win_a = crate::world_v4_support_tests::float_fact("win-a", "out-a", 0, 100);
+    win_a.above = Some(false);
+    win_a.below = Some(false);
+
+    // 1. Initial floating admission retains `above` binding (spent=false, pending=false).
+    let lines1 = crate::world_engine::with_retained_state_trace_capture(|| {
+        let _ = accepted_v4(
+            &mut engine,
+            &report_v4(
+                1,
+                screens.clone(),
+                vec![win_a.clone()],
+                "win-a",
+                ingress_v4("win-a"),
+            ),
+        );
+    });
+    assert!(
+        lines1.iter().any(|l| l.starts_with(
+            "omnitiler:core:trace ev=settlement-pending gen=gen-1 req=req-1 rev=1 obs=1 ready=true dup=false pendingFloats=0 pendingClears=0 pendingBornClears=0 pendingTransfers=0 pendingCreations=0 retainedStates=1"
+        )),
+        "expected settlement-pending summary, got {lines1:?}"
+    );
+    assert!(
+        lines1.iter().any(|l| l.starts_with(
+            "omnitiler:core:trace ev=retained-state gen=gen-1 req=req-1 rev=1 obs=1 win=win-a prop=above targetRev=1 targetVal=true spent=false pending=false disposition=unattempted latched=0"
+        )),
+        "expected unspent pending=false retained-state row, got {lines1:?}"
+    );
+
+    // 2. Raw above=true without correlated attempt keeps spent=false, pending=false (not settled).
+    let mut preowned = win_a.clone();
+    preowned.above = Some(true);
+    let lines2 = crate::world_engine::with_retained_state_trace_capture(|| {
+        let _ = accepted_v4(
+            &mut engine,
+            &report_v4(
+                2,
+                screens.clone(),
+                vec![preowned],
+                "win-a",
+                ingress_v4("win-a"),
+            ),
+        );
+    });
+    assert!(
+        lines2.iter().any(|l| l.contains("ev=retained-state") && l.contains("win=win-a prop=above targetRev=1 targetVal=true spent=false pending=false disposition=unattempted latched=0")),
+        "raw above=true alone must still trace spent=false pending=false, got {lines2:?}"
+    );
+
+    // 3. Pending ToggleFloat with no terminal settlement still exposes pendingFloats=1.
+    let mut win_b = fact("win-b", "out-a", 400);
+    win_b.maximized = Some(false);
+    let mut r3 = report_v4(3, screens, vec![win_a, win_b], "win-b", ingress_v4("win-b"));
+    r3.command_seq = Some(3);
+    r3.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+        window: "win-b".to_owned(),
+        float_rect: None,
+    }));
+    let lines3 = crate::world_engine::with_retained_state_trace_capture(|| {
+        let reply3 = accepted_v4(&mut engine, &r3);
+        assert!(reply3.operation_settled.is_empty());
+    });
+    assert!(
+        lines3
+            .iter()
+            .any(|l| l.contains("ev=settlement-pending") && l.contains("pendingFloats=1")),
+        "expected pendingFloats=1 with no terminal settlement, got {lines3:?}"
+    );
+}
+
+#[test]
 fn q2_dropped_trace_rejects_outbound_gate_preserves_same_obs_and_dedups() {
     use crate::boundary::CoreCommand;
     use crate::world_report::{FrameAttempt, FrameSetter};
@@ -3342,4 +3427,272 @@ fn q2_dropped_trace_rejects_outbound_gate_preserves_same_obs_and_dedups() {
         dup_drops.is_empty(),
         "cached Duplicate must emit no Q2 removal: {dup_drops:?}"
     );
+}
+
+#[test]
+fn drag_preview_trace_emits_correlated_branch_reasons_and_is_gated() {
+    use crate::gesture::{GestureIngress, GestureKind, GesturePhase};
+    use crate::world_report::{FrameAttempt, FrameSetter};
+    use crate::world_run_v4::V4RunOutcome;
+
+    let mut engine = engine_with(Vec::new());
+    let screens = vec![screen("out-a", 0)];
+    let mut win_a = fact("win-a", "out-a", 0);
+    win_a.rect = Some(rect(0, 0, 400, 560));
+    let mut win_b = fact("win-b", "out-a", 400);
+    win_b.rect = Some(rect(400, 0, 400, 560));
+    let windows = vec![win_a.clone(), win_b.clone()];
+
+    // 1. Bootstrap (incomplete inventory before ready) -> reason=bootstrap.
+    let mut boot = report_v4(1, screens.clone(), Vec::new(), "", ingress_v4(""));
+    boot.inventory_complete = false;
+    boot.screens[0].complete = false;
+    let boot_lines = crate::world_engine::with_drag_preview_trace_capture(|| {
+        let (outcome, _) = engine.handle_report(&boot, &[]);
+        assert!(matches!(outcome, V4RunOutcome::Accepted(ref r) if !r.ready));
+    });
+    assert_eq!(
+        boot_lines,
+        vec![
+            "omnitiler:core:trace ev=drag-preview gen=gen-1 req=req-1 rev=0 obs=1 ready=false dup=false preview=none id=- domainOut=- suspendedOut=- reason=bootstrap"
+        ]
+    );
+
+    // 2. Ready without gesture -> reason=no-session.
+    let r2 = report_v4(
+        2,
+        screens.clone(),
+        windows.clone(),
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    let mut reply2_opt = None;
+    let init_lines = crate::world_engine::with_drag_preview_trace_capture(|| {
+        let reply = accepted_v4(&mut engine, &r2);
+        assert!(reply.drag_preview.is_none());
+        reply2_opt = Some(reply);
+    });
+    assert_eq!(
+        init_lines,
+        vec![
+            "omnitiler:core:trace ev=drag-preview gen=gen-1 req=req-2 rev=1 obs=2 ready=true dup=false preview=none id=- domainOut=- suspendedOut=- reason=no-session"
+        ]
+    );
+    let reply2 = reply2_opt.expect("reply2");
+    for w in &reply2.windows {
+        if let Some(target_rect) = w.effective_frame {
+            if w.lifetime.0 == "win-a" {
+                win_a.rect = Some(target_rect);
+            } else if w.lifetime.0 == "win-b" {
+                win_b.rect = Some(target_rect);
+            }
+        }
+    }
+    let windows = vec![win_a.clone(), win_b.clone()];
+    let mut r2_settle = report_v4(
+        3,
+        screens.clone(),
+        windows.clone(),
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r2_settle.frames = reply2
+        .windows
+        .iter()
+        .filter_map(|w| {
+            w.effective_frame.map(|target| FrameAttempt {
+                operation_id: None,
+                window: w.lifetime.clone(),
+                target,
+                setter: FrameSetter::Accepted,
+                readback: Some(target),
+                dpi_before: None,
+                dpi_after: None,
+                attempt_ms: 5,
+                prewrite: None,
+            })
+        })
+        .collect();
+    let _ = accepted_v4(&mut engine, &r2_settle);
+
+    let make_ingress = |id: u64, phase: GesturePhase, cursor: Option<(i32, i32)>| GestureIngress {
+        window: WindowId("win-a".to_owned()),
+        id,
+        kind: GestureKind::Move,
+        phase,
+        start_frame: rect(0, 0, 396, 600),
+        cursor,
+        start_cursor: Some((20, 20)),
+        esc: false,
+        modal_move: false,
+    };
+
+    // 3. Explicit Started -> reason=bind-only.
+    let mut r3 = report_v4(
+        4,
+        screens.clone(),
+        windows.clone(),
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r3.gesture_barrier = true;
+    r3.gesture = Some(make_ingress(7, GesturePhase::Started, Some((20, 20))));
+    let bind_lines = crate::world_engine::with_drag_preview_trace_capture(|| {
+        let reply = accepted_v4(&mut engine, &r3);
+        assert!(reply.drag_preview.is_none());
+    });
+    assert_eq!(
+        bind_lines,
+        vec![
+            "omnitiler:core:trace ev=drag-preview gen=gen-1 req=req-4 rev=3 obs=4 ready=true dup=false preview=none id=- domainOut=- suspendedOut=- reason=bind-only"
+        ]
+    );
+
+    // 4. Updated at start cursor -> reason=zero-move.
+    let mut r4 = report_v4(
+        5,
+        screens.clone(),
+        windows.clone(),
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r4.gesture_barrier = true;
+    r4.gesture = Some(make_ingress(7, GesturePhase::Updated, Some((20, 20))));
+    let zero_lines = crate::world_engine::with_drag_preview_trace_capture(|| {
+        let reply = accepted_v4(&mut engine, &r4);
+        assert!(reply.drag_preview.is_none());
+    });
+    assert_eq!(
+        zero_lines,
+        vec![
+            "omnitiler:core:trace ev=drag-preview gen=gen-1 req=req-5 rev=4 obs=5 ready=true dup=false preview=none id=- domainOut=- suspendedOut=- reason=zero-move"
+        ]
+    );
+
+    // 5. Updated over self centre -> reason=local-engine-refused.
+    let mut r5 = report_v4(
+        6,
+        screens.clone(),
+        windows.clone(),
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r5.gesture_barrier = true;
+    r5.gesture = Some(make_ingress(7, GesturePhase::Updated, Some((600, 300))));
+    let zero_or_refused_lines = crate::world_engine::with_drag_preview_trace_capture(|| {
+        let reply = accepted_v4(&mut engine, &r5);
+        assert!(reply.drag_preview.is_none());
+    });
+    assert_eq!(
+        zero_or_refused_lines,
+        vec![
+            "omnitiler:core:trace ev=drag-preview gen=gen-1 req=req-6 rev=5 obs=6 ready=true dup=false preview=none id=- domainOut=- suspendedOut=- reason=local-engine-refused"
+        ]
+    );
+
+    // 6. Updated over win-b edge -> reason=preview-local, preview=present id=7 domainOut=out-a.
+    let mut r6 = report_v4(
+        7,
+        screens.clone(),
+        windows.clone(),
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r6.gesture_barrier = true;
+    r6.cursor = Some((20, 300));
+    r6.gesture = Some(make_ingress(7, GesturePhase::Updated, Some((20, 300))));
+    let mut r6_preview = None;
+    let preview_lines = crate::world_engine::with_drag_preview_trace_capture(|| {
+        let reply = accepted_v4(&mut engine, &r6);
+        r6_preview = reply.drag_preview.as_ref().map(|p| p.id);
+    });
+    assert_eq!(
+        preview_lines,
+        vec![
+            "omnitiler:core:trace ev=drag-preview gen=gen-1 req=req-7 rev=6 obs=7 ready=true dup=false preview=present id=7 domainOut=out-a suspendedOut=- reason=preview-local"
+        ]
+    );
+    assert_eq!(r6_preview, Some(7));
+
+    // 7. Omitted ingress while neighbor valid -> reason=omitted-preserved.
+    let r7 = report_v4(
+        8,
+        screens.clone(),
+        windows.clone(),
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    let omitted_lines = crate::world_engine::with_drag_preview_trace_capture(|| {
+        let reply = accepted_v4(&mut engine, &r7);
+        assert_eq!(reply.drag_preview.as_ref().map(|p| p.id), Some(7));
+    });
+    assert_eq!(
+        omitted_lines,
+        vec![
+            "omnitiler:core:trace ev=drag-preview gen=gen-1 req=req-8 rev=7 obs=8 ready=true dup=false preview=present id=7 domainOut=out-a suspendedOut=- reason=omitted-preserved"
+        ]
+    );
+
+    // 8. Duplicate replay of r7 -> dup=true reason=duplicate.
+    let dup_lines = crate::world_engine::with_drag_preview_trace_capture(|| {
+        let (outcome, _) = engine.handle_report(&r7, &[]);
+        assert!(matches!(outcome, V4RunOutcome::Duplicate(_)));
+    });
+    assert_eq!(
+        dup_lines,
+        vec![
+            "omnitiler:core:trace ev=drag-preview gen=gen-1 req=req-8 rev=7 obs=8 ready=true dup=true preview=present id=7 domainOut=out-a suspendedOut=- reason=duplicate"
+        ]
+    );
+
+    // 9. Omitted ingress with neighbor minimized -> reason=prune-neighbor-invalid.
+    let mut win_b_min = win_b.clone();
+    win_b_min.minimized = Some(true);
+    let r8 = report_v4(
+        9,
+        screens.clone(),
+        vec![win_a.clone(), win_b_min],
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    let prune_lines = crate::world_engine::with_drag_preview_trace_capture(|| {
+        let reply = accepted_v4(&mut engine, &r8);
+        assert!(reply.drag_preview.is_none());
+    });
+    assert_eq!(
+        prune_lines,
+        vec![
+            "omnitiler:core:trace ev=drag-preview gen=gen-1 req=req-9 rev=8 obs=9 ready=true dup=false preview=none id=- domainOut=- suspendedOut=- reason=prune-neighbor-invalid"
+        ]
+    );
+
+    // 10. Cancelled -> reason=cancelled.
+    let mut r9 = report_v4(
+        10,
+        screens.clone(),
+        windows.clone(),
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    r9.gesture = Some(make_ingress(7, GesturePhase::Cancelled, None));
+    let cancel_lines = crate::world_engine::with_drag_preview_trace_capture(|| {
+        let reply = accepted_v4(&mut engine, &r9);
+        assert!(reply.drag_preview.is_none());
+    });
+    assert_eq!(
+        cancel_lines,
+        vec![
+            "omnitiler:core:trace ev=drag-preview gen=gen-1 req=req-10 rev=9 obs=10 ready=true dup=false preview=none id=- domainOut=- suspendedOut=- reason=cancelled"
+        ]
+    );
+
+    // 11. Trace disabled -> zero emissions.
+    let r10 = report_v4(11, screens, windows, "win-a", ingress_v4("win-a"));
+    let disabled_lines = crate::world_engine::with_drag_preview_trace_capture(|| {
+        crate::world_engine::with_focus_trace_disabled(|| {
+            assert!(!crate::world_engine::core_trace_enabled());
+            let _ = accepted_v4(&mut engine, &r10);
+        });
+    });
+    assert!(disabled_lines.is_empty());
 }

@@ -1231,6 +1231,85 @@ below records which mechanisms were subsequently removed.
   above are verified; the two exited-wrapper entries were later found absent,
   completing teardown accounting.
 
+### KDE enabled-hover and physical-shortcut remainder (2026-11-16)
+
+- Outcome: partial native acceptance. Enabled hover re-entry, target-float and
+  focused-float hover suppression, and the physical shortcut checks below pass
+  their behavioral oracles. Focused-float newcomer admission and the unavailable
+  pending-target/newer-report command subject remain BLOCKED. The final guard
+  run also has incomplete lifecycle evidence; no overall completion is claimed.
+- Settings isolation is dev/test tooling, not a product setting: the guarded
+  trace/exact-fixture `--settings-root` snapshot supplies
+  `{"focusFollowsCursor":true}` without reading or writing stored user settings.
+  The separate `--intent-root` isolates Planner intent/preimage storage only.
+  See [the launch procedure](../dev-loop.md#isolated-fixture-settings).
+  Offline regressions cover scope/path/ownership/privacy, strict JSON validation,
+  ordinary-build stripping, zero config reads and re-handshake behavior.
+- Native motion initially left revision 8 unchanged after pointer input
+  (`focus-hover-blocked-evidence/kwin-journal.log:331-359`); no hover acceptance
+  was inferred. The product defect was missing `cursorPosChanged` wiring.
+  A failing-first production-broker regression preceded the minimal connection
+  to the existing coalesced capture path. Tests cover genuine hover dispatch,
+  coalescing, disabled/missing/throwing signals, static-cursor non-steal and
+  adapter stop/start. Same-instance generation rotation and late settings races
+  were source-reviewed, not separately established by those restart tests.
+- The isolated-settings support also needed two dev-tooling corrections:
+  foreground validation before any startup effects, and rejection of multiple
+  top-level JSON documents. Both were reproduced before repair. No Rust,
+  protocol, fixture-family, macOS or Windows behavior changed in this delta.
+- Final sequential offline gates after the source fixes all exit 0: Rust
+  format, three-package all-target build/strict clippy and the permitted test
+  suite (3,455 passed across 71 summaries); KWin typecheck and tests (1,351
+  passed across 199 suites); dev-loop launcher checks (703 passed) and native
+  effect launcher checks (204 passed). No source edits followed those gates.
+- Evidence filenames below refer to externally retained bundles, not repository
+  files. Each native window is joined by fixture sentinel, PID and KWin UUID.
+  Hover bundles use private mode-0700 settings/intent directories and mode-0600
+  settings JSON with hover true; the physical bundle uses isolated hover false.
+
+| Leg | Verdict | Raw evidence and boundary |
+| --- | --- | --- |
+| Enabled leave/re-entry | PASS | `hover-reentry-float-evidence/kwin-journal.log:772,828,884`: B -> A -> B mints distinct `focus-22/24/26`, each called once with `cause=focus-follows-cursor`; `planner-dev.log:207,224,241` settles the identical tuples by equality at revisions 23/25/27. `ac1-enter-b`, `ac1-leave-a`, `ac1-reenter-b` and `ac1-settled-b` native JSON retain the matching focus/frame joins. This is not a native unchanged-pending-id or static-keyboard-focus test. |
+| Target-float hover exclusion | PASS, behavior | `hover-reentry-float-evidence-2/input-transcript.log:14-17`, `leg2-pre.json` and `leg2-post.json`: actual `windowAt` hit changes tiled B -> floating A while foreground stays B. `trace-summary.log:72-79` and `planner-dev.log:194,206` accept revisions 17 -> 18, with A floating, B tiled and `focusReq=0`. Positive tiled-hover controls at revisions 6/13 distinguish suppression from missing motion capture. |
+| Focused-float hover suppression | PASS, behavior | Same bundle, `input-transcript.log:18-19`, `leg3-pre.json` and `leg3-post.json`: floating A remains foreground while actual `windowAt` hit changes A -> tiled B. `trace-summary.log:80-91`, `planner-dev.log:218,230,242`: accepted revisions 19/20 -> 21 retain A floating/B tiled and `focusReq=0`. The hit witness is native topmost readback, not geometry alone. |
+| Focused-float newcomer admission | BLOCKED | Earlier hover bundle `kwin-journal.log:1196-1209`, `planner-dev.log:355`: C map-activated before admission capture and settled `focus-37` by equality. The required floating-foreground precondition was lost. No guard defect is demonstrated; preserving it would require a separately justified native capability or behavior decision. No workaround/retry was substituted. |
+| Unavailable pending-target command subject after newer report | BLOCKED, not run | `WorldEngine::execution_subject` in `world_close_focus.rs:134-173` requires empty logical cursor, unavailable retained target and a strictly newer accepted revision, with no same-batch focus decision. A target still available but awaiting native focus is not this case. The offline held-only discriminator exists, but no genuine safe native inventory-hold producer was established; close/exclusion/lost-home retirement and omitted replies cannot substitute. No fabricated invalid fact/report or new behavior was added. |
+| Physical directional focus | PASS | `physical-kde-shortcuts-evidence/leg-1a-meta-left-input.txt:1` and `leg-1b-meta-right-input.txt:1` record real Meta+Left/Right. Corresponding journals `:4,17,21` join callbacks, revisions 12/14 and proven native focus B -> A -> B; native/fixture JSON joins agree. |
+| Physical implicit float and maximize | PASS | Physical Meta+G float/unfloat reaches revisions 16/18; Meta+M maximize/unmaximize reaches 20/22. Each `leg-2*`/`leg-3*` input, journal and native JSON joins the callback to changed/restored frames. `leg-3a-meta-m-max-fixture.json:1` additionally reports observed mode `maximized`; the helper does not independently read a native maximize boolean. |
+| Physical send-follow then implicit subject | PASS | `leg-4a-meta-shift-0-send-follow-input.txt:1`, journal `:5,22,58` and native JSON prove Meta+Shift+0 transfers B and follows its destination at revisions 24/25. With no intervening focus injection, physical Meta+G reaches revision 28 and floats B there (`leg-4b-meta-g-implicit-after-send-*`). No D-Bus invocation counts as physical proof. |
+
+- Collection qualifications: the first post-fix hover run needed pointer-scale
+  calibration and a later float-only-point correction. Accepted revisions
+  advanced; these are not constant-revision retries. Its geometry-only guard
+  observations at revisions 44/46 were not accepted as causal guard proof.
+  The final topmost-hit run initially overshot to a foreign hit, floated B
+  instead of A, then un-floated B and corrected the setup at revisions 8..13
+  (`input-transcript.log:4-12`, `trace-summary.log:31-58`). Only the separately
+  joined guard transitions above count; no pristine first-attempt claim.
+- Hover lifecycle: the first post-fix bundle saves DOWN, fixture shutdown,
+  explicit key-ups and unlocked readback. Four initial helper failures were
+  missing nonce substitution in the external test harness, not product code;
+  their saved false-unload returns did not prove absence. A later direct check
+  independently found all four named plugins absent, with no cleanup needed.
+  In the final guard bundle, `helper-lifecycle.log:1-17` proves named unload
+  and absence for all 17 helpers; `dev-status-down.log:1-9` proves DOWN, and
+  `fixture-shutdown.json:1`, key-ups and lock readbacks survive. Runtime
+  `omnitiler-dev.*.log` was not exported. Fixture process/socket and input-daemon
+  absence and copy-before-shutdown ordering are run-reported, not saved raw
+  receipts. This evidence-preservation gap remains unresolved.
+- Physical lifecycle: `permissions-provenance.txt:1-4`, `dev-on-launch.txt` and
+  `settings/settings.json` retain launch isolation. Read-only active binding
+  snapshots preceded physical input; no binding writes were made.
+  `teardown-absence-receipts.txt:2,9-10,53,73-77,98-100` retains log-copy order,
+  fixture process/socket absence, DOWN, daemon absence and unlocked state;
+  `helper-lifecycle.log:1-18` proves all 18 helpers unloaded and absent.
+  Explicit modifier key-ups and an exit trap are input evidence, not an
+  independent global modifier-state readback. No physical latency budget,
+  other-platform acceptance or additional retained-focus cause is claimed.
+- Remaining work: establish genuine focused-float newcomer and unavailable
+  pending-target preconditions without changing their oracle; retain full
+  lifecycle receipts for any later native work. The broader note stays active.
+
 ## Source anchors
 
 - E1: `docs/principles.md:135-171`.

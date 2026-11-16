@@ -39,7 +39,13 @@ dev-on *args:
     EXE_FILE="$STATE_DIR/planner-exe"
     START_FILE="$STATE_DIR/planner-start"
     RECEIPT_PTR="$STATE_DIR/controller-receipt-path"
+    INTENT_ROOT_FILE="$STATE_DIR/planner-intent-root"
+    DBUS_ADDR_FILE="$STATE_DIR/planner-dbus-address"
     SCOPE_CLASS=""
+    INTENT_ROOT=""
+    INTENT_ROOT_SET=0
+    SETTINGS_ROOT=""
+    SETTINGS_ROOT_SET=0
     DEVON_ARGS=("$@")
     DEVON_I=0
     while [[ "$DEVON_I" -lt "${#DEVON_ARGS[@]}" ]]; do
@@ -69,18 +75,94 @@ dev-on *args:
           done
           if [[ -z "$SCOPE_CLASS" ]]; then SCOPE_CLASS="$DEVON_VAL"; else SCOPE_CLASS="$SCOPE_CLASS,$DEVON_VAL"; fi
           ;;
+        --intent-root)
+          [[ "$INTENT_ROOT_SET" -eq 0 ]] || { echo "error: just dev-on: duplicate --intent-root" >&2; exit 1; }
+          DEVON_I=$((DEVON_I + 1))
+          [[ "$DEVON_I" -lt "${#DEVON_ARGS[@]}" ]] || { echo "error: just dev-on: --intent-root requires a value" >&2; exit 1; }
+          INTENT_ROOT="${DEVON_ARGS[$DEVON_I]}"
+          [[ -n "$INTENT_ROOT" ]] || { echo "error: just dev-on: --intent-root requires a non-empty value" >&2; exit 1; }
+          INTENT_ROOT_SET=1
+          ;;
+        --intent-root=*)
+          [[ "$INTENT_ROOT_SET" -eq 0 ]] || { echo "error: just dev-on: duplicate --intent-root" >&2; exit 1; }
+          INTENT_ROOT="${DEVON_A#--intent-root=}"
+          [[ -n "$INTENT_ROOT" ]] || { echo "error: just dev-on: --intent-root requires a non-empty value" >&2; exit 1; }
+          INTENT_ROOT_SET=1
+          ;;
+        --settings-root)
+          [[ "$SETTINGS_ROOT_SET" -eq 0 ]] || { echo "error: just dev-on: duplicate --settings-root" >&2; exit 1; }
+          DEVON_I=$((DEVON_I + 1))
+          [[ "$DEVON_I" -lt "${#DEVON_ARGS[@]}" ]] || { echo "error: just dev-on: --settings-root requires a value" >&2; exit 1; }
+          SETTINGS_ROOT="${DEVON_ARGS[$DEVON_I]}"
+          [[ -n "$SETTINGS_ROOT" ]] || { echo "error: just dev-on: --settings-root requires a non-empty value" >&2; exit 1; }
+          SETTINGS_ROOT_SET=1
+          ;;
+        --settings-root=*)
+          [[ "$SETTINGS_ROOT_SET" -eq 0 ]] || { echo "error: just dev-on: duplicate --settings-root" >&2; exit 1; }
+          SETTINGS_ROOT="${DEVON_A#--settings-root=}"
+          [[ -n "$SETTINGS_ROOT" ]] || { echo "error: just dev-on: --settings-root requires a non-empty value" >&2; exit 1; }
+          SETTINGS_ROOT_SET=1
+          ;;
         *)
-          echo "error: just dev-on: unknown argument '$DEVON_A' (expected '--scope-class NAME')" >&2
+          echo "error: just dev-on: unknown argument '$DEVON_A' (expected '--scope-class NAME', '--intent-root DIR', or '--settings-root DIR')" >&2
           exit 1
           ;;
       esac
       DEVON_I=$((DEVON_I + 1))
     done
+    validate_intent_root() {
+      local raw="${1:-}" cur="" part uid dir_uid dir_mode
+      local -a parts=()
+      [[ -n "$raw" ]] || return 1
+      [[ "$raw" != *$'\n'* && "$raw" != *$'\r'* ]] || return 1
+      [[ "$raw" == /* ]] || return 1
+      case "$raw" in *//*) return 1 ;; esac
+      [[ "$raw" == */ ]] && raw="${raw%/}"
+      [[ -n "$raw" ]] || return 1
+      IFS='/' read -r -a parts <<< "${raw#/}"
+      [[ "${#parts[@]}" -gt 0 ]] || return 1
+      for part in "${parts[@]}"; do
+        [[ -n "$part" && "$part" != "." && "$part" != ".." ]] || return 1
+        cur="$cur/$part"
+        [[ ! -L "$cur" ]] || return 1
+        [[ -d "$cur" ]] || return 1
+      done
+      uid="$(id -u)" || return 1
+      dir_uid="$(stat -c '%u' "$cur" 2>/dev/null)" || return 1
+      [[ "$dir_uid" == "$uid" ]] || return 1
+      dir_mode="$(stat -c '%a' "$cur" 2>/dev/null)" || return 1
+      [[ "$dir_mode" =~ ^[0-7]+$ ]] || return 1
+      (( (8#$dir_mode & 077) == 0 )) || return 1
+      local orig_canon=""
+      orig_canon="$(cd -P -- "$RUNTIME_DIR" 2>/dev/null && pwd -P || printf '%s' "${RUNTIME_DIR%/}")"
+      [[ -n "$orig_canon" && "$cur" != "$orig_canon" ]] || return 1
+      printf '%s\n' "$cur"
+    }
+    PLANNER_DBUS_ADDR=""
+    if [[ "$INTENT_ROOT_SET" -eq 1 ]]; then
+      [[ "${OMNITILER_TRACE:-}" == "1" ]] || { echo "error: just dev-on: --intent-root requires OMNITILER_TRACE=1" >&2; exit 1; }
+      [[ "$SCOPE_CLASS" == "OmniTilerTestWindow" ]] || { echo "error: just dev-on: --intent-root requires exact --scope-class OmniTilerTestWindow" >&2; exit 1; }
+      INTENT_ROOT="$(validate_intent_root "$INTENT_ROOT")" || { echo "error: just dev-on: invalid --intent-root (must be an existing absolute private owned real directory without symlinks or '.'/'..')" >&2; exit 1; }
+      PLANNER_DBUS_ADDR="${DBUS_SESSION_BUS_ADDRESS:-}"
+      if [[ -z "$PLANNER_DBUS_ADDR" && -S "$RUNTIME_DIR/bus" ]]; then
+        PLANNER_DBUS_ADDR="unix:path=$RUNTIME_DIR/bus"
+      fi
+      if [[ -z "$PLANNER_DBUS_ADDR" || "$PLANNER_DBUS_ADDR" == *$'\n'* || "$PLANNER_DBUS_ADDR" == *$'\r'* ]]; then
+        echo "error: just dev-on: --intent-root requires DBUS_SESSION_BUS_ADDRESS or $RUNTIME_DIR/bus socket to preserve original session bus" >&2
+        exit 1
+      fi
+    fi
+    if [[ "$SETTINGS_ROOT_SET" -eq 1 ]]; then
+      [[ "${OMNITILER_TRACE:-}" == "1" ]] || { echo "error: just dev-on: --settings-root requires OMNITILER_TRACE=1" >&2; exit 1; }
+      [[ "$SCOPE_CLASS" == "OmniTilerTestWindow" ]] || { echo "error: just dev-on: --settings-root requires exact --scope-class OmniTilerTestWindow" >&2; exit 1; }
+      SETTINGS_ROOT="$(bash "$REPO_ROOT/scripts/start-test.sh" validate-settings-root "$SETTINGS_ROOT")" || { echo "error: just dev-on: invalid --settings-root (must be an existing absolute private owned real directory without symlinks/dots, distinct from runtime/config, containing a private owned bounded single-object valid settings.json)" >&2; exit 1; }
+    fi
     # Single source for bring-up: the allowlist travels by explicit argv
     # to start-test.sh below, never by environment (an inherited scope env
     # would accumulate onto the flag and duplicate it).
     SCOPE_START_ARGS=()
     [[ -z "$SCOPE_CLASS" ]] || SCOPE_START_ARGS+=("--scope-class" "$SCOPE_CLASS")
+    [[ "$SETTINGS_ROOT_SET" -eq 0 ]] || SCOPE_START_ARGS+=("--settings-root" "$SETTINGS_ROOT")
     planner_start_identity() {
       local pid="$1" stat_line stat_pid rest
       local -a fields=()
@@ -177,7 +259,7 @@ dev-on *args:
           *) echo "error: rollback: refusing to remove unexpected receipt dir $ROLLBACK_RECEIPT_DIR" >&2 ;;
         esac
       fi
-      rm -f -- "$PID_FILE" "$EXE_FILE" "$START_FILE" "$RECEIPT_PTR" "$STATE_DIR/planner-log" "$STATE_DIR/dev-log" "$STATE_DIR/dev-stream" "$STATE_DIR/dev-planner-stream" "$STATE_DIR/dev-kwin-stream" 2>/dev/null || echo "error: rollback: could not remove dev state files in $STATE_DIR" >&2
+      rm -f -- "$PID_FILE" "$EXE_FILE" "$START_FILE" "$RECEIPT_PTR" "$INTENT_ROOT_FILE" "$DBUS_ADDR_FILE" "$STATE_DIR/planner-log" "$STATE_DIR/dev-log" "$STATE_DIR/dev-stream" "$STATE_DIR/dev-planner-stream" "$STATE_DIR/dev-kwin-stream" 2>/dev/null || echo "error: rollback: could not remove dev state files in $STATE_DIR" >&2
       rmdir -- "$STATE_DIR" 2>/dev/null || true
       return "$orig_rc"
     }
@@ -211,6 +293,14 @@ dev-on *args:
       esac
     fi
     if [[ "$PLAN_UP" -eq 1 && "$CTRL_UP" -eq 1 ]]; then
+      if [[ -n "$INTENT_ROOT" ]]; then
+        echo "error: dev-on: dev mode already up; refusing --intent-root '$INTENT_ROOT' (run 'just dev-off' first)" >&2
+        exit 1
+      fi
+      if [[ -n "$SETTINGS_ROOT" ]]; then
+        echo "error: dev-on: dev mode already up; refusing --settings-root '$SETTINGS_ROOT' (run 'just dev-off' first)" >&2
+        exit 1
+      fi
       if [[ -n "$SCOPE_CLASS" ]]; then
         echo "error: dev-on: dev mode already up with an unprovable live scope; refusing scoped request (scope '$SCOPE_CLASS'); run 'just dev-off' first, then re-run with the same --scope-class flags" >&2
         exit 1
@@ -230,6 +320,14 @@ dev-on *args:
       exit 1
     fi
     if [[ "$PLAN_UP" -eq 1 && "$CTRL_UP" -eq 0 ]]; then
+      if [[ -n "$INTENT_ROOT" ]]; then
+        echo "error: dev-on: verified planner pid $SPLIT_PLANNER_PID is already running in split state; refusing --intent-root '$INTENT_ROOT' (run 'just dev-off' first)" >&2
+        exit 1
+      fi
+      if [[ -n "$SETTINGS_ROOT" ]]; then
+        echo "error: dev-on: verified planner pid $SPLIT_PLANNER_PID is already running in split state; refusing --settings-root '$SETTINGS_ROOT' (run 'just dev-off' first)" >&2
+        exit 1
+      fi
       echo "dev-on: verified planner pid $SPLIT_PLANNER_PID owns $PLANNER_BUS but controller '$PLUGIN_ID' is not loaded; recovering exactly one controller without touching the Planner"
       [[ -x "$BIN" ]] || { echo "error: worktree Planner binary missing: $BIN; refusing recovery" >&2; exit 1; }
       if [[ -e "$REPO_ROOT/result" ]]; then
@@ -271,7 +369,7 @@ dev-on *args:
       # Explicit argv carries the allowlist; the inherited environment is
       # cleared so a contaminated OMNITILER_SCOPE_CLASS can neither
       # broaden explicit flags nor scope the unscoped default.
-      OMNITILER_SCOPE_CLASS= CONTROLLER_OWNERSHIP_FILE="$RECOVERY_RECEIPT" bash "$REPO_ROOT/scripts/start-test.sh" start "${SCOPE_START_ARGS[@]}" || {
+      OMNITILER_SCOPE_CLASS= OMNITILER_DEV_SETTINGS_LITERAL= CONTROLLER_OWNERSHIP_FILE="$RECOVERY_RECEIPT" bash "$REPO_ROOT/scripts/start-test.sh" start "${SCOPE_START_ARGS[@]}" || {
         echo "error: start-test.sh start failed during recovery (verified planner $SPLIT_PLANNER_PID left running); no Planner was terminated and packaged script was not re-enabled" >&2
         exit 1
       }
@@ -349,7 +447,11 @@ dev-on *args:
     # never authoritative: setsid may fork when it is a process-group leader,
     # so identity is derived from the D-Bus owner instead.
     PLANNER_LOG="$(mktemp /tmp/omnitiler-planner-dev.XXXXXX.log)" || { echo "error: could not create planner log" >&2; exit 1; }
-    setsid nohup "$BIN" planner-service >"$PLANNER_LOG" 2>&1 </dev/null &
+    if [[ -n "$INTENT_ROOT" ]]; then
+      env XDG_RUNTIME_DIR="$INTENT_ROOT" DBUS_SESSION_BUS_ADDRESS="$PLANNER_DBUS_ADDR" setsid nohup "$BIN" planner-service >"$PLANNER_LOG" 2>&1 </dev/null &
+    else
+      setsid nohup "$BIN" planner-service >"$PLANNER_LOG" 2>&1 </dev/null &
+    fi
     LAUNCH_PID=$!
     VERIFIED_PID=""
     VERIFIED_EXE=""
@@ -380,7 +482,7 @@ dev-on *args:
     # Explicit argv carries the allowlist; the inherited environment is
     # cleared so a contaminated OMNITILER_SCOPE_CLASS can neither
     # broaden explicit flags nor scope the unscoped default.
-    OMNITILER_SCOPE_CLASS= CONTROLLER_OWNERSHIP_FILE="$RECEIPT" bash "$REPO_ROOT/scripts/start-test.sh" start "${SCOPE_START_ARGS[@]}" || {
+    OMNITILER_SCOPE_CLASS= OMNITILER_DEV_SETTINGS_LITERAL= CONTROLLER_OWNERSHIP_FILE="$RECEIPT" bash "$REPO_ROOT/scripts/start-test.sh" start "${SCOPE_START_ARGS[@]}" || {
       echo "error: start-test.sh start failed (verified planner ${VERIFIED_PID:-unknown} will be terminated by rollback); see $PLANNER_LOG" >&2
       exit 1
     }
@@ -397,6 +499,12 @@ dev-on *args:
     printf '%s\n' "$VERIFIED_START" > "$START_FILE" || { echo "error: could not record planner start identity" >&2; exit 1; }
     printf '%s\n' "$RECEIPT" > "$STATE_DIR/controller-receipt-path" || { echo "error: could not record controller receipt path" >&2; exit 1; }
     printf '%s\n' "$PLANNER_LOG" > "$STATE_DIR/planner-log" || { echo "error: could not record planner log path" >&2; exit 1; }
+    if [[ -n "$INTENT_ROOT" ]]; then
+      printf '%s\n' "$INTENT_ROOT" > "$INTENT_ROOT_FILE" || { echo "error: could not record planner intent root" >&2; exit 1; }
+      printf '%s\n' "$PLANNER_DBUS_ADDR" > "$DBUS_ADDR_FILE" || { echo "error: could not record planner dbus address" >&2; exit 1; }
+    else
+      rm -f -- "$INTENT_ROOT_FILE" "$DBUS_ADDR_FILE"
+    fi
     ROLLBACK_ARMED=0
     trap - EXIT
     echo "dev-on: planner pid $VERIFIED_PID, script id $SCRIPT_ID"
@@ -415,6 +523,48 @@ reload:
     PID_FILE="$STATE_DIR/planner-pid"
     EXE_FILE="$STATE_DIR/planner-exe"
     START_FILE="$STATE_DIR/planner-start"
+    INTENT_ROOT_FILE="$STATE_DIR/planner-intent-root"
+    DBUS_ADDR_FILE="$STATE_DIR/planner-dbus-address"
+    validate_intent_root() {
+      local raw="${1:-}" cur="" part uid dir_uid dir_mode
+      local -a parts=()
+      [[ -n "$raw" ]] || return 1
+      [[ "$raw" != *$'\n'* && "$raw" != *$'\r'* ]] || return 1
+      [[ "$raw" == /* ]] || return 1
+      case "$raw" in *//*) return 1 ;; esac
+      [[ "$raw" == */ ]] && raw="${raw%/}"
+      [[ -n "$raw" ]] || return 1
+      IFS='/' read -r -a parts <<< "${raw#/}"
+      [[ "${#parts[@]}" -gt 0 ]] || return 1
+      for part in "${parts[@]}"; do
+        [[ -n "$part" && "$part" != "." && "$part" != ".." ]] || return 1
+        cur="$cur/$part"
+        [[ ! -L "$cur" ]] || return 1
+        [[ -d "$cur" ]] || return 1
+      done
+      uid="$(id -u)" || return 1
+      dir_uid="$(stat -c '%u' "$cur" 2>/dev/null)" || return 1
+      [[ "$dir_uid" == "$uid" ]] || return 1
+      dir_mode="$(stat -c '%a' "$cur" 2>/dev/null)" || return 1
+      [[ "$dir_mode" =~ ^[0-7]+$ ]] || return 1
+      (( (8#$dir_mode & 077) == 0 )) || return 1
+      local orig_canon=""
+      orig_canon="$(cd -P -- "$RUNTIME_DIR" 2>/dev/null && pwd -P || printf '%s' "${RUNTIME_DIR%/}")"
+      [[ -n "$orig_canon" && "$cur" != "$orig_canon" ]] || return 1
+      printf '%s\n' "$cur"
+    }
+    RELOAD_INTENT_ROOT=""
+    RELOAD_DBUS_ADDR=""
+    if [[ -e "$INTENT_ROOT_FILE" || -L "$INTENT_ROOT_FILE" || -e "$DBUS_ADDR_FILE" || -L "$DBUS_ADDR_FILE" ]]; then
+      [[ -f "$INTENT_ROOT_FILE" && ! -L "$INTENT_ROOT_FILE" && -f "$DBUS_ADDR_FILE" && ! -L "$DBUS_ADDR_FILE" ]] || { echo "error: reload: incomplete or symlinked isolated intent-root state in $STATE_DIR; refusing" >&2; exit 1; }
+      RELOAD_INTENT_ROOT="$(cat "$INTENT_ROOT_FILE")"
+      RELOAD_DBUS_ADDR="$(cat "$DBUS_ADDR_FILE")"
+      RELOAD_INTENT_ROOT="$(validate_intent_root "$RELOAD_INTENT_ROOT")" || { echo "error: reload: persisted planner-intent-root is invalid; refusing" >&2; exit 1; }
+      if [[ -z "$RELOAD_DBUS_ADDR" || "$RELOAD_DBUS_ADDR" == *$'\n'* || "$RELOAD_DBUS_ADDR" == *$'\r'* ]]; then
+        echo "error: reload: persisted planner-dbus-address is invalid; refusing" >&2
+        exit 1
+      fi
+    fi
     planner_start_identity() {
       local pid="$1" stat_line stat_pid rest
       local -a fields=()
@@ -497,7 +647,11 @@ reload:
       exit 1
     fi
     PLANNER_LOG="$(mktemp /tmp/omnitiler-planner-dev.XXXXXX.log)" || { echo "error: could not create planner log" >&2; exit 1; }
-    setsid nohup "$BIN" planner-service >"$PLANNER_LOG" 2>&1 </dev/null &
+    if [[ -n "$RELOAD_INTENT_ROOT" ]]; then
+      env XDG_RUNTIME_DIR="$RELOAD_INTENT_ROOT" DBUS_SESSION_BUS_ADDRESS="$RELOAD_DBUS_ADDR" setsid nohup "$BIN" planner-service >"$PLANNER_LOG" 2>&1 </dev/null &
+    else
+      setsid nohup "$BIN" planner-service >"$PLANNER_LOG" 2>&1 </dev/null &
+    fi
     LAUNCH_PID=$!
     NEW_PID=""
     NEW_EXE=""
@@ -712,7 +866,7 @@ dev-off:
       exit 1
     fi
     bash "$REPO_ROOT/scripts/dogfood-install.sh" enable || { echo "error: dogfood-install.sh enable failed" >&2; exit 1; }
-    rm -f -- "$PID_FILE" "$EXE_FILE" "$START_FILE" "$RECEIPT_PTR" "$STATE_DIR/planner-log" "$STATE_DIR/dev-log" "$STATE_DIR/dev-stream" "$STATE_DIR/dev-planner-stream" "$STATE_DIR/dev-kwin-stream"
+    rm -f -- "$PID_FILE" "$EXE_FILE" "$START_FILE" "$RECEIPT_PTR" "$STATE_DIR/planner-intent-root" "$STATE_DIR/planner-dbus-address" "$STATE_DIR/planner-log" "$STATE_DIR/dev-log" "$STATE_DIR/dev-stream" "$STATE_DIR/dev-planner-stream" "$STATE_DIR/dev-kwin-stream"
     rmdir -- "$STATE_DIR" 2>/dev/null || true
     if [[ -n "$RECEIPT" ]]; then
       PARENT_DIR="$(dirname -- "$RECEIPT")"
@@ -906,6 +1060,10 @@ dev *args:
     JUSTFILE="{{ justfile() }}"
     MODE=""
     SCOPE=""
+    INTENT_ROOT=""
+    INTENT_ROOT_SET=0
+    SETTINGS_ROOT=""
+    SETTINGS_ROOT_SET=0
     DEV_ARGS=("$@")
     DEV_I=0
     while [[ "$DEV_I" -lt "${#DEV_ARGS[@]}" ]]; do
@@ -935,23 +1093,61 @@ dev *args:
           done
           if [[ -z "$SCOPE" ]]; then SCOPE="$DEV_VAL"; else SCOPE="$SCOPE,$DEV_VAL"; fi
           ;;
+        --intent-root)
+          [[ "$INTENT_ROOT_SET" -eq 0 ]] || { echo "error: just dev: duplicate --intent-root" >&2; exit 1; }
+          DEV_I=$((DEV_I + 1))
+          [[ "$DEV_I" -lt "${#DEV_ARGS[@]}" ]] || { echo "error: just dev: --intent-root requires a value" >&2; exit 1; }
+          INTENT_ROOT="${DEV_ARGS[$DEV_I]}"
+          [[ -n "$INTENT_ROOT" ]] || { echo "error: just dev: --intent-root requires a non-empty value" >&2; exit 1; }
+          INTENT_ROOT_SET=1
+          ;;
+        --intent-root=*)
+          [[ "$INTENT_ROOT_SET" -eq 0 ]] || { echo "error: just dev: duplicate --intent-root" >&2; exit 1; }
+          INTENT_ROOT="${DEV_A#--intent-root=}"
+          [[ -n "$INTENT_ROOT" ]] || { echo "error: just dev: --intent-root requires a non-empty value" >&2; exit 1; }
+          INTENT_ROOT_SET=1
+          ;;
+        --settings-root)
+          [[ "$SETTINGS_ROOT_SET" -eq 0 ]] || { echo "error: just dev: duplicate --settings-root" >&2; exit 1; }
+          DEV_I=$((DEV_I + 1))
+          [[ "$DEV_I" -lt "${#DEV_ARGS[@]}" ]] || { echo "error: just dev: --settings-root requires a value" >&2; exit 1; }
+          SETTINGS_ROOT="${DEV_ARGS[$DEV_I]}"
+          [[ -n "$SETTINGS_ROOT" ]] || { echo "error: just dev: --settings-root requires a non-empty value" >&2; exit 1; }
+          SETTINGS_ROOT_SET=1
+          ;;
+        --settings-root=*)
+          [[ "$SETTINGS_ROOT_SET" -eq 0 ]] || { echo "error: just dev: duplicate --settings-root" >&2; exit 1; }
+          SETTINGS_ROOT="${DEV_A#--settings-root=}"
+          [[ -n "$SETTINGS_ROOT" ]] || { echo "error: just dev: --settings-root requires a non-empty value" >&2; exit 1; }
+          SETTINGS_ROOT_SET=1
+          ;;
         -*)
-          echo "error: just dev: unknown argument '$DEV_A' (expected 'verbose', 'trace', or '--scope-class NAME')" >&2
+          echo "error: just dev: unknown argument '$DEV_A' (expected 'verbose', 'trace', '--scope-class NAME', '--intent-root DIR', or '--settings-root DIR')" >&2
           exit 1
           ;;
         *)
           # Bare words stay positional modes for backward compatibility:
           # the mode check below reports unknown modes; a second bare
           # word is rejected here.
-          [[ -z "$MODE" ]] || { echo "error: just dev: unknown argument '$DEV_A' (expected 'verbose', 'trace', or '--scope-class NAME')" >&2; exit 1; }
+          [[ -z "$MODE" ]] || { echo "error: just dev: unknown argument '$DEV_A' (expected 'verbose', 'trace', '--scope-class NAME', '--intent-root DIR', or '--settings-root DIR')" >&2; exit 1; }
           MODE="$DEV_A"
           ;;
       esac
       DEV_I=$((DEV_I + 1))
     done
+    if [[ "$INTENT_ROOT_SET" -eq 1 ]]; then
+      [[ "$MODE" == "trace" ]] || { echo "error: just dev: --intent-root requires 'trace' mode" >&2; exit 1; }
+      [[ "$SCOPE" == "OmniTilerTestWindow" ]] || { echo "error: just dev: --intent-root requires exact --scope-class OmniTilerTestWindow" >&2; exit 1; }
+    fi
+    if [[ "$SETTINGS_ROOT_SET" -eq 1 ]]; then
+      [[ "$MODE" == "trace" ]] || { echo "error: just dev: --settings-root requires 'trace' mode" >&2; exit 1; }
+      [[ "$SCOPE" == "OmniTilerTestWindow" ]] || { echo "error: just dev: --settings-root requires exact --scope-class OmniTilerTestWindow" >&2; exit 1; }
+    fi
     DEV_FWD=()
     [[ -z "$MODE" ]] || DEV_FWD+=("$MODE")
     [[ -z "$SCOPE" ]] || DEV_FWD+=("--scope-class" "$SCOPE")
+    [[ "$INTENT_ROOT_SET" -eq 0 ]] || DEV_FWD+=("--intent-root" "$INTENT_ROOT")
+    [[ "$SETTINGS_ROOT_SET" -eq 0 ]] || DEV_FWD+=("--settings-root" "$SETTINGS_ROOT")
     DESKTOP="${XDG_CURRENT_DESKTOP:-}"
     echo "just dev: XDG_CURRENT_DESKTOP='$DESKTOP'"
     DESKTOP_LOWER="$(printf '%s' "$DESKTOP" | tr '[:upper:]' '[:lower:]')"
@@ -993,10 +1189,16 @@ dev-kde *args:
     #!/usr/bin/env bash
     set -euo pipefail
     JUSTFILE="{{ justfile() }}"
+    REPO_ROOT="{{ justfile_directory() }}"
+    BIN="$REPO_ROOT/target/debug/omnitiler"
     RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
     STATE_DIR="$RUNTIME_DIR/omnitiler-dev"
     DEV_MODE=""
     SCOPE_CLASS=""
+    INTENT_ROOT=""
+    INTENT_ROOT_SET=0
+    SETTINGS_ROOT=""
+    SETTINGS_ROOT_SET=0
     KDE_ARGS=("$@")
     KDE_I=0
     while [[ "$KDE_I" -lt "${#KDE_ARGS[@]}" ]]; do
@@ -1026,20 +1228,86 @@ dev-kde *args:
           done
           if [[ -z "$SCOPE_CLASS" ]]; then SCOPE_CLASS="$KDE_VAL"; else SCOPE_CLASS="$SCOPE_CLASS,$KDE_VAL"; fi
           ;;
+        --intent-root)
+          [[ "$INTENT_ROOT_SET" -eq 0 ]] || { echo "error: just dev: duplicate --intent-root" >&2; exit 1; }
+          KDE_I=$((KDE_I + 1))
+          [[ "$KDE_I" -lt "${#KDE_ARGS[@]}" ]] || { echo "error: just dev: --intent-root requires a value" >&2; exit 1; }
+          INTENT_ROOT="${KDE_ARGS[$KDE_I]}"
+          [[ -n "$INTENT_ROOT" ]] || { echo "error: just dev: --intent-root requires a non-empty value" >&2; exit 1; }
+          INTENT_ROOT_SET=1
+          ;;
+        --intent-root=*)
+          [[ "$INTENT_ROOT_SET" -eq 0 ]] || { echo "error: just dev: duplicate --intent-root" >&2; exit 1; }
+          INTENT_ROOT="${KDE_A#--intent-root=}"
+          [[ -n "$INTENT_ROOT" ]] || { echo "error: just dev: --intent-root requires a non-empty value" >&2; exit 1; }
+          INTENT_ROOT_SET=1
+          ;;
+        --settings-root)
+          [[ "$SETTINGS_ROOT_SET" -eq 0 ]] || { echo "error: just dev: duplicate --settings-root" >&2; exit 1; }
+          KDE_I=$((KDE_I + 1))
+          [[ "$KDE_I" -lt "${#KDE_ARGS[@]}" ]] || { echo "error: just dev: --settings-root requires a value" >&2; exit 1; }
+          SETTINGS_ROOT="${KDE_ARGS[$KDE_I]}"
+          [[ -n "$SETTINGS_ROOT" ]] || { echo "error: just dev: --settings-root requires a non-empty value" >&2; exit 1; }
+          SETTINGS_ROOT_SET=1
+          ;;
+        --settings-root=*)
+          [[ "$SETTINGS_ROOT_SET" -eq 0 ]] || { echo "error: just dev: duplicate --settings-root" >&2; exit 1; }
+          SETTINGS_ROOT="${KDE_A#--settings-root=}"
+          [[ -n "$SETTINGS_ROOT" ]] || { echo "error: just dev: --settings-root requires a non-empty value" >&2; exit 1; }
+          SETTINGS_ROOT_SET=1
+          ;;
         -*)
-          echo "error: just dev: unknown argument '$KDE_A' (expected 'verbose', 'trace', or '--scope-class NAME')" >&2
+          echo "error: just dev: unknown argument '$KDE_A' (expected 'verbose', 'trace', '--scope-class NAME', '--intent-root DIR', or '--settings-root DIR')" >&2
           exit 1
           ;;
         *)
           # Bare words stay positional modes for backward compatibility:
           # the mode check below reports unknown modes; a second bare
           # word is rejected here.
-          [[ -z "$DEV_MODE" ]] || { echo "error: just dev: unknown argument '$KDE_A' (expected 'verbose', 'trace', or '--scope-class NAME')" >&2; exit 1; }
+          [[ -z "$DEV_MODE" ]] || { echo "error: just dev: unknown argument '$KDE_A' (expected 'verbose', 'trace', '--scope-class NAME', '--intent-root DIR', or '--settings-root DIR')" >&2; exit 1; }
           DEV_MODE="$KDE_A"
           ;;
       esac
       KDE_I=$((KDE_I + 1))
     done
+    if [[ "$INTENT_ROOT_SET" -eq 1 ]]; then
+      [[ "$DEV_MODE" == "trace" ]] || { echo "error: just dev: --intent-root requires 'trace' mode" >&2; exit 1; }
+      [[ "$SCOPE_CLASS" == "OmniTilerTestWindow" ]] || { echo "error: just dev: --intent-root requires exact --scope-class OmniTilerTestWindow" >&2; exit 1; }
+      validate_kde_intent_root() {
+        local raw="${1:-}" cur="" part uid dir_uid dir_mode
+        local -a parts=()
+        [[ -n "$raw" ]] || return 1
+        [[ "$raw" != *$'\n'* && "$raw" != *$'\r'* ]] || return 1
+        [[ "$raw" == /* ]] || return 1
+        case "$raw" in *//*) return 1 ;; esac
+        [[ "$raw" == */ ]] && raw="${raw%/}"
+        [[ -n "$raw" ]] || return 1
+        IFS='/' read -r -a parts <<< "${raw#/}"
+        [[ "${#parts[@]}" -gt 0 ]] || return 1
+        for part in "${parts[@]}"; do
+          [[ -n "$part" && "$part" != "." && "$part" != ".." ]] || return 1
+          cur="$cur/$part"
+          [[ ! -L "$cur" ]] || return 1
+          [[ -d "$cur" ]] || return 1
+        done
+        uid="$(id -u)" || return 1
+        dir_uid="$(stat -c '%u' "$cur" 2>/dev/null)" || return 1
+        [[ "$dir_uid" == "$uid" ]] || return 1
+        dir_mode="$(stat -c '%a' "$cur" 2>/dev/null)" || return 1
+        [[ "$dir_mode" =~ ^[0-7]+$ ]] || return 1
+        (( (8#$dir_mode & 077) == 0 )) || return 1
+        local orig_canon=""
+        orig_canon="$(cd -P -- "$RUNTIME_DIR" 2>/dev/null && pwd -P || printf '%s' "${RUNTIME_DIR%/}")"
+        [[ -n "$orig_canon" && "$cur" != "$orig_canon" ]] || return 1
+        printf '%s\n' "$cur"
+      }
+      INTENT_ROOT="$(validate_kde_intent_root "$INTENT_ROOT")" || { echo "error: just dev: invalid --intent-root (must be an existing absolute private owned real directory without symlinks or '.'/'..')" >&2; exit 1; }
+    fi
+    if [[ "$SETTINGS_ROOT_SET" -eq 1 ]]; then
+      [[ "$DEV_MODE" == "trace" ]] || { echo "error: just dev: --settings-root requires 'trace' mode" >&2; exit 1; }
+      [[ "$SCOPE_CLASS" == "OmniTilerTestWindow" ]] || { echo "error: just dev: --settings-root requires exact --scope-class OmniTilerTestWindow" >&2; exit 1; }
+      SETTINGS_ROOT="$(bash "$REPO_ROOT/scripts/start-test.sh" validate-settings-root "$SETTINGS_ROOT")" || { echo "error: just dev: invalid --settings-root (must be an existing absolute private owned real directory without symlinks/dots, distinct from runtime/config, containing a private owned bounded single-object valid settings.json)" >&2; exit 1; }
+    fi
     if [[ "$DEV_MODE" == "trace" ]]; then
       export OMNITILER_TRACE=1
     elif [[ "$DEV_MODE" == "verbose" ]]; then
@@ -1067,8 +1335,6 @@ dev-kde *args:
     # Native preflight before any build or startup mutation. Preserves prior
     # effect state; unsupported/unavailable fails closed with setup +
     # logout/login guidance. Ordinary transport/parse failures fail closed.
-    REPO_ROOT="{{ justfile_directory() }}"
-    BIN="$REPO_ROOT/target/debug/omnitiler"
     NATIVE_HELPER="$REPO_ROOT/scripts/dev-native-effect.sh"
     BORDER_EFFECT="omnitiler-active-border"
     NATIVE_PREFLIGHT_OUT=""
@@ -1341,6 +1607,8 @@ dev-kde *args:
     JUST_DEV_ON_RC=0
     DEV_ON_SCOPE_ARGS=()
     [[ -z "$SCOPE_CLASS" ]] || DEV_ON_SCOPE_ARGS+=("--scope-class" "$SCOPE_CLASS")
+    [[ "$INTENT_ROOT_SET" -eq 0 ]] || DEV_ON_SCOPE_ARGS+=("--intent-root" "$INTENT_ROOT")
+    [[ "$SETTINGS_ROOT_SET" -eq 0 ]] || DEV_ON_SCOPE_ARGS+=("--settings-root" "$SETTINGS_ROOT")
     just --justfile "$JUSTFILE" dev-on "${DEV_ON_SCOPE_ARGS[@]}" || JUST_DEV_ON_RC=$?
     if [[ "$JUST_DEV_ON_RC" -ne 0 ]]; then
       echo "error: just dev: bring-up via dev-on failed (exit $JUST_DEV_ON_RC); unwinding owned native loads in reverse; no logs tailed; rollback handled by dev-on" >&2

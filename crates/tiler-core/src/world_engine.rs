@@ -372,6 +372,10 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
     static TEST_SETTLEMENT_TRACE_SINK: std::cell::RefCell<Option<Vec<String>>> =
         const { std::cell::RefCell::new(None) };
+    static TEST_DRAG_PREVIEW_TRACE_SINK: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+    static TEST_RETAINED_STATE_TRACE_SINK: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
     static TEST_FOCUS_TRACE_OVERRIDE: std::cell::RefCell<Option<bool>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -386,6 +390,8 @@ pub(crate) fn core_trace_enabled() -> bool {
     #[cfg(test)]
     if TEST_FOCUS_TRACE_SINK.with(|sink| sink.borrow().is_some())
         || TEST_SETTLEMENT_TRACE_SINK.with(|sink| sink.borrow().is_some())
+        || TEST_DRAG_PREVIEW_TRACE_SINK.with(|sink| sink.borrow().is_some())
+        || TEST_RETAINED_STATE_TRACE_SINK.with(|sink| sink.borrow().is_some())
     {
         return true;
     }
@@ -444,6 +450,65 @@ pub(crate) fn emit_settlement_trace(line: String) {
     emit_resize_refusal(line);
 }
 
+/// Best-effort trace-only published drag-preview diagnostic write (or isolated
+/// thread-local capture in unit tests).
+pub(crate) fn emit_drag_preview_trace(line: String) {
+    #[cfg(test)]
+    {
+        if TEST_FOCUS_TRACE_OVERRIDE.with(|flag| *flag.borrow() == Some(false)) {
+            return;
+        }
+        let captured = TEST_DRAG_PREVIEW_TRACE_SINK.with(|sink| {
+            let mut borrow = sink.borrow_mut();
+            if let Some(lines) = borrow.as_mut() {
+                lines.push(line.clone());
+                true
+            } else {
+                false
+            }
+        });
+        if captured {
+            return;
+        }
+        if TEST_FOCUS_TRACE_SINK.with(|sink| sink.borrow().is_some())
+            || TEST_SETTLEMENT_TRACE_SINK.with(|sink| sink.borrow().is_some())
+        {
+            return;
+        }
+    }
+    emit_resize_refusal(line);
+}
+
+/// Best-effort trace-only published retained-state and pending-op diagnostic
+/// write (or isolated thread-local capture in unit tests).
+pub(crate) fn emit_retained_state_trace(line: String) {
+    #[cfg(test)]
+    {
+        if TEST_FOCUS_TRACE_OVERRIDE.with(|flag| *flag.borrow() == Some(false)) {
+            return;
+        }
+        let captured = TEST_RETAINED_STATE_TRACE_SINK.with(|sink| {
+            let mut borrow = sink.borrow_mut();
+            if let Some(lines) = borrow.as_mut() {
+                lines.push(line.clone());
+                true
+            } else {
+                false
+            }
+        });
+        if captured {
+            return;
+        }
+        if TEST_FOCUS_TRACE_SINK.with(|sink| sink.borrow().is_some())
+            || TEST_SETTLEMENT_TRACE_SINK.with(|sink| sink.borrow().is_some())
+            || TEST_DRAG_PREVIEW_TRACE_SINK.with(|sink| sink.borrow().is_some())
+        {
+            return;
+        }
+    }
+    emit_resize_refusal(line);
+}
+
 #[cfg(test)]
 pub(crate) fn with_focus_trace_capture<F: FnOnce()>(f: F) -> Vec<String> {
     struct Reset;
@@ -478,6 +543,42 @@ pub(crate) fn with_settlement_trace_capture<F: FnOnce()>(f: F) -> Vec<String> {
     let _reset = Reset;
     f();
     TEST_SETTLEMENT_TRACE_SINK.with(|sink| sink.borrow_mut().take().unwrap_or_default())
+}
+
+#[cfg(test)]
+pub(crate) fn with_drag_preview_trace_capture<F: FnOnce()>(f: F) -> Vec<String> {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_DRAG_PREVIEW_TRACE_SINK.with(|sink| {
+                *sink.borrow_mut() = None;
+            });
+        }
+    }
+    TEST_DRAG_PREVIEW_TRACE_SINK.with(|sink| {
+        *sink.borrow_mut() = Some(Vec::new());
+    });
+    let _reset = Reset;
+    f();
+    TEST_DRAG_PREVIEW_TRACE_SINK.with(|sink| sink.borrow_mut().take().unwrap_or_default())
+}
+
+#[cfg(test)]
+pub(crate) fn with_retained_state_trace_capture<F: FnOnce()>(f: F) -> Vec<String> {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_RETAINED_STATE_TRACE_SINK.with(|sink| {
+                *sink.borrow_mut() = None;
+            });
+        }
+    }
+    TEST_RETAINED_STATE_TRACE_SINK.with(|sink| {
+        *sink.borrow_mut() = Some(Vec::new());
+    });
+    let _reset = Reset;
+    f();
+    TEST_RETAINED_STATE_TRACE_SINK.with(|sink| sink.borrow_mut().take().unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -1501,6 +1602,10 @@ pub struct WorldEngine {
     /// cleared on genuine current-session Held no-preview outcomes,
     /// release/cancel/Esc, owner staged close, or new generation.
     pub(crate) drag_preview: Option<crate::world_report::DragPreviewV4>,
+    /// Trace-only transient reason for the current staged run's `drag_preview`
+    /// decision; populated only when `core_trace_enabled()`, emitted solely at
+    /// actual final publication/adoption.
+    pub(crate) staged_drag_preview_reason: Option<&'static str>,
     /// Fresh-placement bootstrap phase: false until the first accepted
     /// complete inventory establishes the startup lifetime set (including
     /// an empty roster). Once true, genuinely new lifetimes observed
@@ -1992,6 +2097,7 @@ impl WorldEngine {
             consumed_gesture_seq: 0,
             gesture_terminal: None,
             drag_preview: None,
+            staged_drag_preview_reason: None,
             last_views: BTreeMap::new(),
             mapping: BTreeMap::new(),
             native_map: BTreeMap::new(),
@@ -3963,5 +4069,127 @@ impl WorldEngine {
                 ));
             }
         }
+        emit_retained_state_trace(format!(
+            "omnitiler:core:trace ev=settlement-pending gen={} req={} rev={} obs={} ready={} dup={} pendingFloats={} pendingClears={} pendingBornClears={} pendingTransfers={} pendingCreations={} retainedStates={}",
+            gen_str,
+            req_str,
+            rev,
+            obs,
+            reply.ready,
+            is_duplicate,
+            self.retained_floats.len(),
+            self.retained_clears.len(),
+            self.retained_born.len(),
+            self.retained.len(),
+            self.retained_creations.len(),
+            self.retained_states.len(),
+        ));
+        for binding in self
+            .retained_states
+            .values()
+            .take(crate::world_state::MAX_RETAINED_STATE_BINDINGS)
+        {
+            let win_str = diag_id(&binding.target.window.0);
+            let prop_str = binding.target.property.as_str();
+            let latched = binding
+                .above_meta
+                .as_ref()
+                .map_or("-", |meta| if meta.latched { "1" } else { "0" });
+            let published = reply
+                .windows
+                .iter()
+                .find(|w| w.lifetime == binding.target.window)
+                .and_then(|w| {
+                    w.state
+                        .iter()
+                        .find(|s| s.property == binding.target.property)
+                });
+            let (pub_auth, pub_hold) = match published {
+                Some(target) => (
+                    target.authority.as_str(),
+                    match target.authority {
+                        crate::world_report::ScopeAuthority::Hold(reason) => reason.as_str(),
+                        _ => "-",
+                    },
+                ),
+                None => ("absent", "-"),
+            };
+            emit_retained_state_trace(format!(
+                "omnitiler:core:trace ev=retained-state gen={} req={} rev={} obs={} win={} prop={} targetRev={} targetVal={} spent={} pending={} disposition={} latched={} pubAuth={} pubHold={}",
+                gen_str,
+                req_str,
+                rev,
+                obs,
+                win_str,
+                prop_str,
+                binding.target.revision,
+                binding.target.value,
+                binding.spent,
+                binding.pending.is_some(),
+                binding.disposition.as_str(),
+                latched,
+                pub_auth,
+                pub_hold,
+            ));
+        }
+    }
+
+    /// Record the current staged run's `drag_preview` branch reason when core
+    /// tracing is enabled (zero cost when disabled).
+    pub(crate) fn set_drag_preview_trace_reason(&mut self, reason: &'static str) {
+        if core_trace_enabled() {
+            self.staged_drag_preview_reason = Some(reason);
+        }
+    }
+
+    /// Emit trace-only per-published-reply `drag_preview` decision summary
+    /// (`OMNITILER_TRACE=1`, zero cost when disabled).
+    pub(crate) fn emit_published_drag_preview_trace(
+        &self,
+        reply: &crate::world_report::WorldReplyV4,
+        is_duplicate: bool,
+    ) {
+        if !core_trace_enabled() {
+            return;
+        }
+        let gen_str = diag_id(&reply.core_generation);
+        let req_str = diag_id(&reply.request_id);
+        let rev = reply.state_revision;
+        let obs = reply.based_on_observation_seq;
+        let (preview_state, id_str, domain_out) = match &reply.drag_preview {
+            Some(preview) => (
+                "present",
+                preview.id.to_string(),
+                diag_id(&preview.domain.output.0),
+            ),
+            None => ("none", "-".to_owned(), "-"),
+        };
+        let suspended_out = reply
+            .presentation
+            .suspended_output
+            .as_ref()
+            .map(|output| diag_id(&output.0))
+            .unwrap_or("-");
+        let reason = if is_duplicate {
+            "duplicate"
+        } else if !reply.ready {
+            "bootstrap"
+        } else {
+            self.staged_drag_preview_reason.unwrap_or("unknown")
+        };
+        emit_drag_preview_trace(format!(
+            "omnitiler:core:trace ev=drag-preview gen={} req={} rev={} obs={} ready={} dup={} preview={} id={} domainOut={} suspendedOut={} reason={}",
+            gen_str,
+            req_str,
+            rev,
+            obs,
+            reply.ready,
+            is_duplicate,
+            preview_state,
+            id_str,
+            domain_out,
+            suspended_out,
+            reason,
+        ));
     }
 }

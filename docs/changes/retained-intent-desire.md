@@ -1,6 +1,6 @@
 # Retained per-window intent desire
 
-- Status: approved by the user 2026-11-12; implemented and verified offline in core/protocol/KDE. Native acceptance and other-port adoption remain open.
+- Status: approved by the user 2026-11-12; implemented and verified offline in core/protocol/KDE. Bounded KDE native intent persistence acceptance passed 2026-11-16; other-port adoption remains open.
 - Scope: first [C3 conversion](core-v4-review.md#user-decisions-2026-11-12), core/protocol/KDE together; other ports later. No intent-policy change or acknowledged-events lane.
 - Model: unified retained `focusRequest`, approved in `18f904fe` ([decision](../decisions/contract.md#state-centric-contract)), without spend-once accounting: storage replacement is repeatable. Core/protocol implement that [contract](../porting/world-contract.md#one-retained-focus-request) shape; coordinated adapter adoption and verification remain incomplete.
 
@@ -182,6 +182,112 @@
   later direct process checks establish dev DOWN and no owned live processes.
   Native float/above-true restart restoration, full Describe settlement,
   storage-failure/reconnect and physical acceptance remain open.
+
+## Native KDE retained-intent acceptance (2026-11-16)
+
+- **PASS** for command-route same-lifetime float restart, wholly omitted
+  issuance, isolated store failure/later-accept recovery, and zero redundant
+  writes across unchanged publications. Each leg used a fresh private store,
+  exact fixture scope, appended workspace and sentinel/PID/native-UUID joins.
+  No user intent store or stored tiler settings were used. This is not physical
+  shortcut, compositor restart, same-generation reconnect or other-port evidence.
+- Development support: [isolated Planner storage](../dev-loop.md#isolated-fixture-intent-storage),
+  [whole-reply omission](../dev-loop.md#fixture-only-whole-reply-omission-trace-only)
+  and [correlated Describe diagnostics](../dev-loop.md#correlated-fixture-describe-diagnostics-trace-only).
+  Describe rows are bounded structured projections, not full raw JSON or
+  independent native facts. `projectedTargets` is not pending work.
+
+### Defect and settlement interpretation
+
+- The first bounded restart leg preserved stored bytes/hash/mtime and the
+  fixture lifetime, but exposed missing feedback dispatch after asynchronous
+  native-preimage persistence: the above setter recorded a `StateAttempt` and
+  marked dirty without scheduling another Describe.
+  `retained-intent-restart-20261116T031552Z/22-kwin-post.log:246-270` captures
+  this ordering. Its false above read preceded the final setter and does not
+  prove a failed state after that setter.
+- A production-wiring regression failed first
+  (`intent-fix-kwin-fail-first.log:1790-1791`), then passed with
+  `world-native-state.ts` requesting the entry's existing coalesced dispatch
+  after recording the attempt. No invalidation/watermark bump, retry policy,
+  wire change or native macOS/Windows behavior change was added.
+  `world-state-target-entry.test.ts` verifies raw pre=false/post=true accepted
+  above feedback without any external native event.
+- Corrected an initial interpretation: a retained binding's
+  `spent=true pending=true disposition=applied` is terminal, not unsettled.
+  `pending` retains the consumed attempt. A spent above binding's
+  `hold/unreadable` is normal. Actual pending-operation map counts and binding
+  disposition must be evaluated separately; retained target counts need not
+  reach zero.
+
+### Accepted raw evidence
+
+- Restart bundle `retained-intent-restart-20261116T033949Z`:
+  - `15-planner-pre.log:49-63`: issuing rev5/obs5 stores `intent-write-1`;
+    rev6/obs6 proves `float-frame-proven`, all five operation maps zero and
+    above terminal applied. `15-kwin-pre.log:256-289` correlates Describe,
+    stored intent and above attempt.
+  - `22-kwin-post.log:257-267`: new-generation asynchronous above setter feeds
+    automatic commandless Describe rev5/obs5; `22-planner-post.log:48-54`
+    confirms all operation maps zero and above terminal applied.
+    `19-native-post.json:1` and `20-fixture-get-post.json:1` join the exact
+    surviving lifetime with true keepAbove and the pre-restart frame/home.
+  - `14-store-sha256-pre.txt:2` / `21-store-sha256-post.txt:2` and
+    `14-store-stat-pre.txt:1` / `21-store-stat-post.txt:1`: identical 179B,
+    SHA-256 and nanosecond mtime. `22-planner-post.log:5` seeds1/returns1;
+    the entire restarted log contains zero intent `op=write` calls.
+- Omission bundle `omitted-retained-intent-20261116T034400Z`:
+  - `11-kwin-omitted.log:258-266`: accepted issuing rev5/obs5 has floating1,
+    `intentDesired=1`, frame op-1 and above1, then actual whole-reply skip with
+    `intentRows=1`. No omitted intent write/apply; native remains tiled/above
+    false, and `10-intent-root-omitted.txt` shows no stored files.
+  - `14-kwin-full.log:275-289`: later commandless rev6 retains op-1 and intent;
+    stored `intent-write-1` precedes apply. `14-planner-full.log:77-85` shows
+    exactly one intent write, then float-frame-proven, maps zero and above
+    applied. `13-native-recovered.json:1` confirms the same lifetime floats
+    with true keepAbove; persisted bytes contain its exact float=true target.
+- Failure/recovery bundle `intent-write-failure-recov-20261116T0350Z`:
+  - `10-chmod-0400-receipt.txt:1` records mode 0400 on the isolated seeded file;
+    `14-kwin-full.log:338-343` and `14-planner-full.log:84-92` show changed
+    float=false desire at rev8, `intent-write-2 outcome=unavailable
+    reason=store-unavailable`, and whole-reply hold before native apply.
+    Old bytes/hash/mtime and native float/above remain unchanged.
+  - Restore 0600 (`12-chmod-0600-receipt.txt:1`), then ordinary fixture admission:
+    commandless rev9 stores `intent-write-3` before apply
+    (`14-kwin-full.log:349-365`). `13-store-bytes-recovered.json:1` has
+    float=false; `13-native-recovered.json:1` is tiled/above false.
+    `14-planner-full.log:108-115` proves rev10 maps zero/above applied.
+- Equality bundle `unchanged-pub-zero-intent-20261116T0353Z`:
+  - After settled rev7, three unrelated fixture events (spawn, close, spawn)
+    produce six accepted commandless publications rev8..13 with the same
+    retained float target. `13-planner-interval.log:1-74` and
+    `13-kwin-interval.log:1-203` contain zero additional intent write calls;
+    full-log counts stay1 before/after. Preimage writes are separate.
+  - `09-store-stat-pre-ns.txt:2` / `12-pub3-store-stat.txt:1`,
+    `09-store-sha256-pre.txt` / `12-pub3-store-sha256.txt` and
+    `12-store-cmp.txt:1` prove unchanged 179B/hash/nanosecond mtime/bytes.
+    `13-planner-interval.log:61-68` shows terminal settlement; the final native
+    readback keeps the exact fixture lifetime floating/above true.
+
+### Verification and remaining boundary
+
+- Latest sequential gates passed: format, build/all-targets, strict clippy,
+  permitted Rust suite (3,455 passed), KWin typecheck and tests (1,340 passed,
+  zero failed/cancelled/skipped). Evidence: `intent-fix-gate1-fmt.log` through
+  `intent-fix-gate6-kwin-tests.log`. Shell isolated-launch tests passed 563/0
+  (`intent-lead-dev-loop.log`); native-effect shell checks passed 204/0
+  (`intent-lead-native-effect.log`). Independent source reviews found no
+  blocking support/fix findings. No fixture-family bytes changed.
+- Runtime logs were copied before each teardown. Each accepted bundle retains
+  dev-off/DOWN, fixture shutdown and owned-window absence receipts. No physical
+  keys were required. One malformed pre-effect omission command was corrected;
+  an observation-only size hint emitted no event, then fixture admission
+  advanced the revision. Neither is counted as a successful publication.
+- The KDE intent remainder is closed for the stated oracles; earlier incomplete
+  runs remain historical evidence. Shared changes here add trace-only Core
+  diagnostics; the feedback scheduler fix is KDE-only. macOS atomic storage,
+  import/reconciliation/recovery and native lifetime proof, and Windows v4
+  adoption remain open. Keep this cross-platform note active.
 
 ## Wire, fixtures and implementation verification
 

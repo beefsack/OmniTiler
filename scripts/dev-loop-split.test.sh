@@ -200,6 +200,11 @@ EOF
 set -euo pipefail
 printf 'setsid %s\n' "$*" >> "${FAKE_CALL_LOG:?}"
 printf 'setsid-env TRACE=%s\n' "${OMNITILER_TRACE:-0}" >> "${FAKE_CALL_LOG:?}"
+printf 'setsid-runtime XDG_RUNTIME_DIR=%s DBUS_SESSION_BUS_ADDRESS=%s\n' "${XDG_RUNTIME_DIR:-}" "${DBUS_SESSION_BUS_ADDRESS:-}" >> "${FAKE_CALL_LOG:?}"
+if [[ -f "${FAKE_STATE_DIR:?}/next-owner-pid" ]]; then
+  cp -- "${FAKE_STATE_DIR:?}/next-owner-pid" "${FAKE_STATE_DIR:?}/owner-pid"
+  rm -f -- "${FAKE_STATE_DIR:?}/next-owner-pid"
+fi
 exit 0
 EOF
   cat > "$FAKE_BIN/bin/systemctl" <<'EOF'
@@ -325,14 +330,18 @@ EOF
   export FAKE_DRV="$WORK/fake-store/abc123-kwin-6.7.5.drv"
   export FAKE_STORE_PATH="$WORK/fake-store/hash-kwin-6.7.5/bin/kwin_wayland"
   export FAKE_DEV_OUT="$WORK/fake-store/hash-kwin-dev-6.7.5"
-  cat > "$WORK/fake-start-test.sh" <<'EOF'
-#!/usr/bin/env bash
+  printf '#!/usr/bin/env bash\nREAL_START_TEST=%q\n' "$REPO_ROOT/scripts/start-test.sh" > "$WORK/fake-start-test.sh"
+  cat >> "$WORK/fake-start-test.sh" <<'EOF'
 set -euo pipefail
 state="${FAKE_STATE_DIR:?}"
 calllog="${FAKE_CALL_LOG:?}"
+if [[ "${1:-}" == "validate-settings-root" ]]; then
+  exec bash "$REAL_START_TEST" "$@"
+fi
 if [[ "${1:-}" == "start" ]]; then
   shift
   fake_scope="${OMNITILER_SCOPE_CLASS:-}"
+  fake_settings_root=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --scope-class)
@@ -343,10 +352,20 @@ if [[ "${1:-}" == "start" ]]; then
         if [[ -z "$fake_scope" ]]; then fake_scope="${1#--scope-class=}"; else fake_scope="$fake_scope,${1#--scope-class=}"; fi
         shift
         ;;
+      --settings-root)
+        fake_settings_root="$2"
+        shift 2
+        ;;
+      --settings-root=*)
+        fake_settings_root="${1#--settings-root=}"
+        shift
+        ;;
       *) shift ;;
     esac
   done
   printf 'start-test start TRACE=%s SCOPE=%s\n' "${OMNITILER_TRACE:-0}" "$fake_scope" >> "$calllog"
+  printf 'start-test-settings SETTINGS_ROOT=%s DEV_SETTINGS_LITERAL=%s\n' "$fake_settings_root" "${OMNITILER_DEV_SETTINGS_LITERAL:-}" >> "$calllog"
+  printf 'start-test-env XDG_RUNTIME_DIR=%s DBUS_SESSION_BUS_ADDRESS=%s\n' "${XDG_RUNTIME_DIR:-}" "${DBUS_SESSION_BUS_ADDRESS:-}" >> "$calllog"
   if [[ -f "$state/block-start" ]]; then
     for _ in $(seq 1 100); do sleep 0.2; done
   fi
@@ -462,7 +481,7 @@ reset_state() {
   printf '5151\n' > "$WORK/state/kwin-pid"
   rm -f "$WORK/state/planner-owned" "$WORK/state/owner-pid" "$WORK/state/loaded-malformed" "$WORK/state/loaded-call-fail" "$WORK/state/start-fails" "$WORK/state/stop-fails" "$WORK/state/cargo-fails" "$WORK/state/npm-fails" "$WORK/state/cmake-fails"
   rm -f "$WORK/state/kwin-unowned" "$WORK/state/effect-supported-fail" "$WORK/state/effect-supported-malformed" "$WORK/state/effect-loaded-fail" "$WORK/state/effect-loaded-malformed" "$WORK/state/effect-load-fail" "$WORK/state/effect-unload-fail"
-  rm -f "$WORK/state/tray-owned" "$WORK/state/tray-owner-pid" "$WORK/state/tray-never-owned"
+  rm -f "$WORK/state/tray-owned" "$WORK/state/tray-owner-pid" "$WORK/state/tray-never-owned" "$WORK/state/next-owner-pid"
   printf '// fake kwin bundle\n' > "$WORK/fake-kwin/contents/code/main.js"
   printf 'cmake_minimum_required(VERSION 3.19)\nproject(fake)\n' > "$WORK/fake-native-source/CMakeLists.txt"
   export FAKE_STATE_DIR="$WORK/state"
@@ -2112,6 +2131,383 @@ fi
 unset FAKE_TAIL_FOLLOW_BLOCK FAKE_UPSTREAM_FOLLOW_BLOCK
 kill "$DEV_TERM_PID" 2>/dev/null || true
 wait "$DEV_TERM_PID" 2>/dev/null || true
+
+# --intent-root: isolated Planner intent/preimage store root (trace + exact OmniTilerTestWindow only).
+ISO_ROOT_BASE="$WORK/intent-roots"
+mkdir -p "$ISO_ROOT_BASE"
+ISO_GOOD="$ISO_ROOT_BASE/private-good"
+mkdir -p "$ISO_GOOD"
+chmod 700 "$ISO_GOOD"
+ISO_FILE="$ISO_ROOT_BASE/regular-file"
+printf 'x\n' > "$ISO_FILE"
+ISO_SYM="$ISO_ROOT_BASE/sym-good"
+ln -sfn -- "$ISO_GOOD" "$ISO_SYM"
+ISO_SYM_PARENT="$ISO_ROOT_BASE/sym-parent"
+ln -sfn -- "$ISO_ROOT_BASE" "$ISO_SYM_PARENT"
+ISO_BAD_PERM="$ISO_ROOT_BASE/bad-perm"
+mkdir -p "$ISO_BAD_PERM"
+chmod 755 "$ISO_BAD_PERM"
+ISO_MISSING="$ISO_ROOT_BASE/does-not-exist"
+ORIG_DBUS_ADDR="unix:path=$WORK/orig-dbus.sock"
+
+# 1. Gating refusals: must refuse without trace or without exact OmniTilerTestWindow scope, before any mutation.
+reset_state
+unset OMNITILER_TRACE 2>/dev/null || true
+DBUS_SESSION_BUS_ADDRESS="$ORIG_DBUS_ADDR" run_just dev-on --scope-class OmniTilerTestWindow --intent-root "$ISO_GOOD"
+check_exit 1 "intent-root dev-on requires trace"
+assert_calls_missing "dogfood disable" "intent-root no-trace no dogfood"
+assert_calls_missing "setsid" "intent-root no-trace no setsid"
+
+reset_state
+OMNITILER_TRACE=1 DBUS_SESSION_BUS_ADDRESS="$ORIG_DBUS_ADDR" run_just dev-on --intent-root "$ISO_GOOD"
+check_exit 1 "intent-root dev-on requires scope-class"
+assert_calls_missing "dogfood disable" "intent-root no-scope no dogfood"
+
+reset_state
+OMNITILER_TRACE=1 DBUS_SESSION_BUS_ADDRESS="$ORIG_DBUS_ADDR" run_just dev-on --scope-class kwrite --intent-root "$ISO_GOOD"
+check_exit 1 "intent-root dev-on rejects non-fixture scope"
+assert_calls_missing "dogfood disable" "intent-root wrong-scope no dogfood"
+
+reset_state
+OMNITILER_TRACE=1 DBUS_SESSION_BUS_ADDRESS="$ORIG_DBUS_ADDR" run_just dev-on --scope-class OmniTilerTestWindow,kwrite --intent-root "$ISO_GOOD"
+check_exit 1 "intent-root dev-on rejects broader scope"
+assert_calls_missing "dogfood disable" "intent-root broad-scope no dogfood"
+
+reset_state
+DBUS_SESSION_BUS_ADDRESS="$ORIG_DBUS_ADDR" run_just dev --scope-class OmniTilerTestWindow --intent-root "$ISO_GOOD"
+check_exit 1 "intent-root dev default mode rejected"
+assert_calls_missing "dogfood disable" "intent-root dev default no dogfood"
+
+reset_state
+DBUS_SESSION_BUS_ADDRESS="$ORIG_DBUS_ADDR" run_just dev verbose --scope-class OmniTilerTestWindow --intent-root "$ISO_GOOD"
+check_exit 1 "intent-root dev verbose mode rejected"
+assert_calls_missing "dogfood disable" "intent-root dev verbose no dogfood"
+
+# 2. Invalid path refusals: empty, relative, dot/dotdot, missing, file, symlink, symlink-ancestor, bad perms, duplicate, missing dbus.
+for bad_case in \
+  "empty:" \
+  "relative:relative/path" \
+  "dot:$ISO_GOOD/." \
+  "dotdot:$ISO_GOOD/../private-good" \
+  "missing:$ISO_MISSING" \
+  "file:$ISO_FILE" \
+  "symlink:$ISO_SYM" \
+  "sym-parent:$ISO_SYM_PARENT/private-good" \
+  "bad-perm:$ISO_BAD_PERM"
+do
+  label="${bad_case%%:*}"
+  bad_path="${bad_case#*:}"
+  reset_state
+  OMNITILER_TRACE=1 DBUS_SESSION_BUS_ADDRESS="$ORIG_DBUS_ADDR" run_just dev-on --scope-class OmniTilerTestWindow --intent-root "$bad_path"
+  check_exit 1 "intent-root invalid-$label exit"
+  assert_calls_missing "dogfood disable" "intent-root invalid-$label no dogfood"
+  assert_calls_missing "setsid" "intent-root invalid-$label no setsid"
+done
+if [[ ! -e "$ISO_MISSING" ]]; then PASS=$((PASS + 1)); else echo "FAIL [intent-root missing path was created]" >&2; FAIL=$((FAIL + 1)); fi
+if [[ "$(stat -c '%a' "$ISO_BAD_PERM")" == "755" ]]; then PASS=$((PASS + 1)); else echo "FAIL [intent-root bad-perm was chmodded]" >&2; FAIL=$((FAIL + 1)); fi
+
+reset_state
+OMNITILER_TRACE=1 DBUS_SESSION_BUS_ADDRESS="$ORIG_DBUS_ADDR" run_just dev-on --scope-class OmniTilerTestWindow --intent-root "$ISO_GOOD" --intent-root "$ISO_GOOD"
+check_exit 1 "intent-root duplicate rejected"
+assert_calls_missing "dogfood disable" "intent-root duplicate no dogfood"
+
+reset_state
+unset DBUS_SESSION_BUS_ADDRESS 2>/dev/null || true
+OMNITILER_TRACE=1 run_just dev-on --scope-class OmniTilerTestWindow --intent-root "$ISO_GOOD"
+check_exit 1 "intent-root missing dbus rejected"
+assert_calls_missing "dogfood disable" "intent-root missing-dbus no dogfood"
+
+# Reject canonical original XDG_RUNTIME_DIR in dev-on, dev, and persisted reload state.
+reset_state
+chmod 700 "$WORK/runtime"
+OMNITILER_TRACE=1 DBUS_SESSION_BUS_ADDRESS="$ORIG_DBUS_ADDR" run_just dev-on --scope-class OmniTilerTestWindow --intent-root "$WORK/runtime"
+check_exit 1 "intent-root dev-on rejects original XDG_RUNTIME_DIR"
+assert_calls_missing "dogfood disable" "intent-root orig-runtime no dogfood"
+assert_calls_missing "setsid" "intent-root orig-runtime no setsid"
+
+reset_state
+chmod 700 "$WORK/runtime"
+DBUS_SESSION_BUS_ADDRESS="$ORIG_DBUS_ADDR" run_just dev trace --scope-class OmniTilerTestWindow --intent-root "$WORK/runtime"
+check_exit 1 "intent-root dev rejects original XDG_RUNTIME_DIR"
+assert_calls_missing "dogfood disable" "intent-root dev orig-runtime no dogfood"
+
+reset_state
+chmod 700 "$WORK/runtime"
+mkdir -p "$WORK/runtime/omnitiler-dev"
+sleep 300 &
+ORIG_RT_PID=$!
+make_planner_proc "$ORIG_RT_PID" 778099
+set_planner_owned "$ORIG_RT_PID"
+printf '%s\n' "$ORIG_RT_PID" > "$WORK/runtime/omnitiler-dev/planner-pid"
+printf '%s\n' "$OMNITILER_BIN" > "$WORK/runtime/omnitiler-dev/planner-exe"
+printf '778099\n' > "$WORK/runtime/omnitiler-dev/planner-start"
+printf '%s\n' "$WORK/runtime" > "$WORK/runtime/omnitiler-dev/planner-intent-root"
+printf '%s\n' "$ORIG_DBUS_ADDR" > "$WORK/runtime/omnitiler-dev/planner-dbus-address"
+run_just reload
+check_exit 1 "intent-root reload rejects persisted original XDG_RUNTIME_DIR"
+if kill -0 "$ORIG_RT_PID" 2>/dev/null; then PASS=$((PASS + 1)); else echo "FAIL [reload killed planner despite orig XDG_RUNTIME_DIR]" >&2; FAIL=$((FAIL + 1)); fi
+kill "$ORIG_RT_PID" 2>/dev/null || true
+wait "$ORIG_RT_PID" 2>/dev/null || true
+
+# 3. Conflicting UP and SPLIT reuse refuses safely.
+reset_state
+set_planner_owned 4242
+set_controller true
+OMNITILER_TRACE=1 DBUS_SESSION_BUS_ADDRESS="$ORIG_DBUS_ADDR" run_just dev-on --scope-class OmniTilerTestWindow --intent-root "$ISO_GOOD"
+check_exit 1 "intent-root UP refuses"
+assert_calls_missing "start-test start" "intent-root UP no start"
+assert_calls_missing "setsid" "intent-root UP no setsid"
+
+reset_state
+set_planner_owned 4242
+set_controller false
+OMNITILER_TRACE=1 DBUS_SESSION_BUS_ADDRESS="$ORIG_DBUS_ADDR" run_just dev-on --scope-class OmniTilerTestWindow --intent-root "$ISO_GOOD"
+check_exit 1 "intent-root SPLIT refuses"
+assert_calls_missing "start-test start" "intent-root SPLIT no start"
+assert_calls_missing "setsid" "intent-root SPLIT no setsid"
+
+# 4. Successful isolated dev-on, reload preservation, reload fail-closed on degraded dir, and dev-off cleanup.
+reset_state
+sleep 300 &
+ISO_OLD_PID=$!
+make_planner_proc "$ISO_OLD_PID" 778001
+printf '%s\n' "$ISO_OLD_PID" > "$WORK/state/owner-pid"
+OMNITILER_TRACE=1 DBUS_SESSION_BUS_ADDRESS="$ORIG_DBUS_ADDR" run_just dev-on --scope-class OmniTilerTestWindow --intent-root "$ISO_GOOD"
+check_exit 0 "intent-root dev-on exit"
+assert_calls_contain "setsid-runtime XDG_RUNTIME_DIR=$ISO_GOOD DBUS_SESSION_BUS_ADDRESS=$ORIG_DBUS_ADDR" "intent-root planner child isolated env"
+assert_calls_contain "start-test-env XDG_RUNTIME_DIR=$WORK/runtime DBUS_SESSION_BUS_ADDRESS=$ORIG_DBUS_ADDR" "intent-root controller keeps original runtime and bus"
+if [[ "$(cat "$WORK/runtime/omnitiler-dev/planner-intent-root" 2>/dev/null)" == "$ISO_GOOD" ]]; then PASS=$((PASS + 1)); else echo "FAIL [planner-intent-root not persisted]" >&2; FAIL=$((FAIL + 1)); fi
+if [[ "$(cat "$WORK/runtime/omnitiler-dev/planner-dbus-address" 2>/dev/null)" == "$ORIG_DBUS_ADDR" ]]; then PASS=$((PASS + 1)); else echo "FAIL [planner-dbus-address not persisted]" >&2; FAIL=$((FAIL + 1)); fi
+if [[ ! -e "$ISO_GOOD/omnitiler-dev" ]] && compgen -G "$WORK/runtime/omnitiler-controller.*/ownership" >/dev/null; then PASS=$((PASS + 1)); else echo "FAIL [receipt/state leaked into ISO_GOOD]" >&2; FAIL=$((FAIL + 1)); fi
+
+# Reload preserves isolated root & bus even when caller DBUS_SESSION_BUS_ADDRESS is unset/different.
+: > "$WORK/calls.log"
+set_planner_owned "$ISO_OLD_PID"
+sleep 300 &
+ISO_NEW_PID=$!
+make_planner_proc "$ISO_NEW_PID" 778002
+printf '%s\n' "$ISO_NEW_PID" > "$WORK/state/next-owner-pid"
+unset DBUS_SESSION_BUS_ADDRESS 2>/dev/null || true
+run_just reload
+check_exit 0 "intent-root reload exit"
+assert_calls_contain "setsid-runtime XDG_RUNTIME_DIR=$ISO_GOOD DBUS_SESSION_BUS_ADDRESS=$ORIG_DBUS_ADDR" "intent-root reload preserves isolated env"
+kill "$ISO_OLD_PID" 2>/dev/null || true
+wait "$ISO_OLD_PID" 2>/dev/null || true
+
+# Reload refuses before killing if isolated dir degraded to 0755.
+: > "$WORK/calls.log"
+chmod 755 "$ISO_GOOD"
+run_just reload
+check_exit 1 "intent-root reload refuses degraded dir"
+if kill -0 "$ISO_NEW_PID" 2>/dev/null; then PASS=$((PASS + 1)); else echo "FAIL [reload killed planner despite degraded intent-root]" >&2; FAIL=$((FAIL + 1)); fi
+chmod 700 "$ISO_GOOD"
+
+# dev-off cleans up persisted isolated state files.
+run_just dev-off
+check_exit 0 "intent-root dev-off exit"
+if [[ ! -e "$WORK/runtime/omnitiler-dev/planner-intent-root" && ! -e "$WORK/runtime/omnitiler-dev/planner-dbus-address" ]]; then PASS=$((PASS + 1)); else echo "FAIL [dev-off left isolated state files]" >&2; FAIL=$((FAIL + 1)); fi
+kill "$ISO_NEW_PID" 2>/dev/null || true
+wait "$ISO_NEW_PID" 2>/dev/null || true
+
+# 5. Ordinary dev-on + reload route unchanged (uses original XDG_RUNTIME_DIR, no isolated state files).
+reset_state
+sleep 300 &
+ORD_PID=$!
+make_planner_proc "$ORD_PID" 778003
+printf '%s\n' "$ORD_PID" > "$WORK/state/owner-pid"
+DBUS_SESSION_BUS_ADDRESS="$ORIG_DBUS_ADDR" run_just dev-on
+check_exit 0 "ordinary dev-on exit"
+assert_calls_contain "setsid-runtime XDG_RUNTIME_DIR=$WORK/runtime DBUS_SESSION_BUS_ADDRESS=$ORIG_DBUS_ADDR" "ordinary dev-on keeps original runtime"
+if [[ ! -e "$WORK/runtime/omnitiler-dev/planner-intent-root" && ! -e "$WORK/runtime/omnitiler-dev/planner-dbus-address" ]]; then PASS=$((PASS + 1)); else echo "FAIL [ordinary dev-on created isolated state]" >&2; FAIL=$((FAIL + 1)); fi
+kill "$ORD_PID" 2>/dev/null || true
+wait "$ORD_PID" 2>/dev/null || true
+
+# 6. just dev trace --scope-class OmniTilerTestWindow --intent-root forwards to dev-on and keeps tray unisolated.
+reset_state
+sleep 300 &
+DEV_ISO_PID=$!
+make_planner_proc "$DEV_ISO_PID" 778004
+printf '%s\n' "$DEV_ISO_PID" > "$WORK/state/owner-pid"
+set_tray_owned 434343
+DBUS_SESSION_BUS_ADDRESS="$ORIG_DBUS_ADDR" run_just dev trace --scope-class OmniTilerTestWindow --intent-root="$ISO_GOOD"
+check_exit 0 "intent-root dev trace exit"
+assert_calls_contain "setsid-runtime XDG_RUNTIME_DIR=$ISO_GOOD DBUS_SESSION_BUS_ADDRESS=$ORIG_DBUS_ADDR" "intent-root dev trace isolates planner"
+assert_calls_contain "start-test-env XDG_RUNTIME_DIR=$WORK/runtime DBUS_SESSION_BUS_ADDRESS=$ORIG_DBUS_ADDR" "intent-root dev trace keeps controller runtime"
+kill "$DEV_ISO_PID" 2>/dev/null || true
+wait "$DEV_ISO_PID" 2>/dev/null || true
+
+# --settings-root: isolated dev settings source (trace + exact OmniTilerTestWindow only).
+SET_BASE="$WORK/settings-roots"
+mkdir -p "$SET_BASE" && chmod 700 "$SET_BASE"
+SET_GOOD="$SET_BASE/good"
+mkdir -p "$SET_GOOD" && chmod 700 "$SET_GOOD"
+printf '{"focusFollowsCursor":true}\n' > "$SET_GOOD/settings.json" && chmod 600 "$SET_GOOD/settings.json"
+SET_LINK="$SET_BASE/link"
+ln -s "$SET_GOOD" "$SET_LINK"
+SET_MISSING="$SET_BASE/missing"
+SET_BAD_DIR_PERM="$SET_BASE/bad-dir-perm"
+mkdir -p "$SET_BAD_DIR_PERM" && chmod 755 "$SET_BAD_DIR_PERM"
+printf '{"focusFollowsCursor":true}\n' > "$SET_BAD_DIR_PERM/settings.json" && chmod 600 "$SET_BAD_DIR_PERM/settings.json"
+SET_BAD_FILE_PERM="$SET_BASE/bad-file-perm"
+mkdir -p "$SET_BAD_FILE_PERM" && chmod 700 "$SET_BAD_FILE_PERM"
+printf '{"focusFollowsCursor":true}\n' > "$SET_BAD_FILE_PERM/settings.json" && chmod 644 "$SET_BAD_FILE_PERM/settings.json"
+SET_SYMLINK_FILE="$SET_BASE/symlink-file"
+mkdir -p "$SET_SYMLINK_FILE" && chmod 700 "$SET_SYMLINK_FILE"
+ln -s "$SET_GOOD/settings.json" "$SET_SYMLINK_FILE/settings.json"
+SET_NO_FILE="$SET_BASE/no-file"
+mkdir -p "$SET_NO_FILE" && chmod 700 "$SET_NO_FILE"
+SET_BAD_JSON="$SET_BASE/bad-json"
+mkdir -p "$SET_BAD_JSON" && chmod 700 "$SET_BAD_JSON"
+printf '{not-json\n' > "$SET_BAD_JSON/settings.json" && chmod 600 "$SET_BAD_JSON/settings.json"
+SET_UNKNOWN_KEY="$SET_BASE/unknown-key"
+mkdir -p "$SET_UNKNOWN_KEY" && chmod 700 "$SET_UNKNOWN_KEY"
+printf '{"unknownKey":true}\n' > "$SET_UNKNOWN_KEY/settings.json" && chmod 600 "$SET_UNKNOWN_KEY/settings.json"
+SET_BAD_TYPE="$SET_BASE/bad-type"
+mkdir -p "$SET_BAD_TYPE" && chmod 700 "$SET_BAD_TYPE"
+printf '{"focusFollowsCursor":"yes"}\n' > "$SET_BAD_TYPE/settings.json" && chmod 600 "$SET_BAD_TYPE/settings.json"
+SET_BAD_RANGE="$SET_BASE/bad-range"
+mkdir -p "$SET_BAD_RANGE" && chmod 700 "$SET_BAD_RANGE"
+printf '{"gap":65}\n' > "$SET_BAD_RANGE/settings.json" && chmod 600 "$SET_BAD_RANGE/settings.json"
+SET_CFG="$WORK/config-home"
+mkdir -p "$SET_CFG" && chmod 700 "$SET_CFG"
+printf '{"focusFollowsCursor":true}\n' > "$SET_CFG/settings.json" && chmod 600 "$SET_CFG/settings.json"
+SET_MULTI_DOC="$SET_BASE/multi-doc"
+mkdir -p "$SET_MULTI_DOC" && chmod 700 "$SET_MULTI_DOC"
+printf '{}\n{"focusFollowsCursor":true}\n' > "$SET_MULTI_DOC/settings.json" && chmod 600 "$SET_MULTI_DOC/settings.json"
+
+# 1. Trace + exact OmniTilerTestWindow scope gating.
+reset_state
+run_just dev-on --scope-class OmniTilerTestWindow --settings-root "$SET_GOOD"
+check_exit 1 "settings-root dev-on requires trace"
+assert_calls_missing "dogfood disable" "settings-root no-trace no dogfood"
+
+reset_state
+OMNITILER_TRACE=1 run_just dev-on --settings-root "$SET_GOOD"
+check_exit 1 "settings-root dev-on requires scope-class"
+assert_calls_missing "dogfood disable" "settings-root no-scope no dogfood"
+
+reset_state
+OMNITILER_TRACE=1 run_just dev-on --scope-class kwrite --settings-root "$SET_GOOD"
+check_exit 1 "settings-root dev-on rejects foreign scope"
+assert_calls_missing "dogfood disable" "settings-root foreign-scope no dogfood"
+
+reset_state
+OMNITILER_TRACE=1 run_just dev-on --scope-class OmniTilerTestWindow,kwrite --settings-root "$SET_GOOD"
+check_exit 1 "settings-root dev-on rejects mixed scope"
+assert_calls_missing "dogfood disable" "settings-root mixed-scope no dogfood"
+
+reset_state
+run_just dev --scope-class OmniTilerTestWindow --settings-root "$SET_GOOD"
+check_exit 1 "settings-root dev default mode rejected"
+assert_calls_missing "dogfood disable" "settings-root dev default no dogfood"
+
+reset_state
+run_just dev verbose --scope-class OmniTilerTestWindow --settings-root "$SET_GOOD"
+check_exit 1 "settings-root dev verbose mode rejected"
+assert_calls_missing "dogfood disable" "settings-root dev verbose no dogfood"
+
+# 2. Root, symlink, perms, config/runtime, and JSON validation fail closed before any mutation.
+for bad_entry in \
+  "missing:$SET_MISSING" \
+  "relative:settings-roots/good" \
+  "dot:$SET_BASE/./good" \
+  "dotdot:$SET_BASE/../settings-roots/good" \
+  "symlink-dir:$SET_LINK" \
+  "bad-dir-perm:$SET_BAD_DIR_PERM" \
+  "bad-file-perm:$SET_BAD_FILE_PERM" \
+  "symlink-file:$SET_SYMLINK_FILE" \
+  "no-file:$SET_NO_FILE" \
+  "bad-json:$SET_BAD_JSON" \
+  "unknown-key:$SET_UNKNOWN_KEY" \
+  "bad-type:$SET_BAD_TYPE" \
+  "bad-range:$SET_BAD_RANGE" \
+  "multi-doc:$SET_MULTI_DOC" \
+  "orig-runtime:$WORK/runtime" \
+  "orig-config:$SET_CFG"; do
+  label="${bad_entry%%:*}"
+  bad_path="${bad_entry#*:}"
+  reset_state
+  XDG_CONFIG_HOME="$SET_CFG" OMNITILER_TRACE=1 run_just dev-on --scope-class OmniTilerTestWindow --settings-root "$bad_path"
+  check_exit 1 "settings-root invalid-$label exit"
+  assert_calls_missing "dogfood disable" "settings-root invalid-$label no dogfood"
+  assert_calls_missing "setsid" "settings-root invalid-$label no setsid"
+  reset_state
+  XDG_CONFIG_HOME="$SET_CFG" run_just dev trace --scope-class OmniTilerTestWindow --settings-root "$bad_path"
+  check_exit 1 "settings-root dev trace invalid-$label exit"
+  assert_calls_missing "loadEffect" "settings-root dev trace invalid-$label no native effect load"
+  assert_calls_missing "dogfood disable" "settings-root dev trace invalid-$label no dogfood"
+  assert_calls_missing "setsid" "settings-root dev trace invalid-$label no setsid"
+done
+
+# Duplicate --settings-root rejected.
+reset_state
+OMNITILER_TRACE=1 run_just dev-on --scope-class OmniTilerTestWindow --settings-root "$SET_GOOD" --settings-root "$SET_GOOD"
+check_exit 1 "settings-root duplicate rejected"
+assert_calls_missing "dogfood disable" "settings-root duplicate no dogfood"
+
+# 3. UP and SPLIT refuse --settings-root.
+reset_state
+set_planner_owned 4242
+set_controller true
+OMNITILER_TRACE=1 run_just dev-on --scope-class OmniTilerTestWindow --settings-root "$SET_GOOD"
+check_exit 1 "settings-root UP refuses"
+assert_calls_missing "start-test start" "settings-root UP no start"
+
+reset_state
+set_planner_owned 4242
+set_controller false
+OMNITILER_TRACE=1 run_just dev-on --scope-class OmniTilerTestWindow --settings-root "$SET_GOOD"
+check_exit 1 "settings-root SPLIT refuses"
+assert_calls_missing "start-test start" "settings-root SPLIT no start"
+
+# 4. Positive dev-on + reload + dev-off lifecycle, clearing inherited OMNITILER_DEV_SETTINGS_LITERAL.
+reset_state
+sleep 300 &
+SET_PID=$!
+make_planner_proc "$SET_PID" 778010
+printf '%s\n' "$SET_PID" > "$WORK/state/owner-pid"
+XDG_CONFIG_HOME="$SET_CFG" OMNITILER_DEV_SETTINGS_LITERAL='"stale"' OMNITILER_TRACE=1 run_just dev-on --scope-class OmniTilerTestWindow --settings-root "$SET_GOOD"
+check_exit 0 "settings-root dev-on exit"
+assert_calls_contain "start-test start TRACE=1 SCOPE=OmniTilerTestWindow" "settings-root forwarded scope"
+assert_calls_contain "start-test-settings SETTINGS_ROOT=$SET_GOOD DEV_SETTINGS_LITERAL=" "settings-root forwarded and stale env cleared"
+kill "$SET_PID" 2>/dev/null || true
+wait "$SET_PID" 2>/dev/null || true
+
+# 5. Positive just dev trace --scope-class OmniTilerTestWindow --settings-root=...
+reset_state
+sleep 300 &
+DEV_SET_PID=$!
+make_planner_proc "$DEV_SET_PID" 778011
+printf '%s\n' "$DEV_SET_PID" > "$WORK/state/owner-pid"
+set_tray_owned 434344
+XDG_CONFIG_HOME="$SET_CFG" run_just dev trace --scope-class OmniTilerTestWindow --settings-root="$SET_GOOD"
+check_exit 0 "settings-root dev trace exit"
+assert_calls_contain "start-test start TRACE=1 SCOPE=OmniTilerTestWindow" "settings-root dev trace scope"
+assert_calls_contain "start-test-settings SETTINGS_ROOT=$SET_GOOD DEV_SETTINGS_LITERAL=" "settings-root dev trace forwarded"
+kill "$DEV_SET_PID" 2>/dev/null || true
+wait "$DEV_SET_PID" 2>/dev/null || true
+
+# 6. Direct scripts/start-test.sh validation checks (fail closed before busctl/npm).
+if OMNITILER_TRACE=0 OMNITILER_SCOPE_CLASS=OmniTilerTestWindow bash "$REPO_ROOT/scripts/start-test.sh" start --scope-class OmniTilerTestWindow --settings-root "$SET_GOOD" >/dev/null 2>&1; then
+  echo "FAIL [start-test.sh allowed --settings-root without trace]" >&2; FAIL=$((FAIL + 1))
+else
+  PASS=$((PASS + 1))
+fi
+if OMNITILER_TRACE=1 bash "$REPO_ROOT/scripts/start-test.sh" start --scope-class kwrite --settings-root "$SET_GOOD" >/dev/null 2>&1; then
+  echo "FAIL [start-test.sh allowed --settings-root with foreign scope]" >&2; FAIL=$((FAIL + 1))
+else
+  PASS=$((PASS + 1))
+fi
+if OMNITILER_TRACE=1 bash "$REPO_ROOT/scripts/start-test.sh" start --scope-class OmniTilerTestWindow --settings-root "$SET_UNKNOWN_KEY" >/dev/null 2>&1; then
+  echo "FAIL [start-test.sh allowed --settings-root with unknown key]" >&2; FAIL=$((FAIL + 1))
+else
+  PASS=$((PASS + 1))
+fi
+if OMNITILER_TRACE=1 bash "$REPO_ROOT/scripts/start-test.sh" start --scope-class OmniTilerTestWindow --settings-root "$SET_MULTI_DOC" >/dev/null 2>&1; then
+  echo "FAIL [start-test.sh allowed --settings-root with multi-doc JSON stream]" >&2; FAIL=$((FAIL + 1))
+else
+  PASS=$((PASS + 1))
+fi
 
 echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

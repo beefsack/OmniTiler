@@ -143,14 +143,15 @@ usage: start-test.sh <command> [--help]
 Manual lifecycle interface for the omnitiler-kwin KWin script.
 
 Commands:
-  start [--scope-class NAME]...
+  start [--scope-class NAME]... [--settings-root DIR]
             build the kwin bundle, load and run omnitiler through
             KWin's /Scripting D-Bus interface, and confirm the exact
             loaded state bound to the captured KWin PID/start identity.
             Each --scope-class adds one comma-joined allowlist fragment;
             repeated flags accumulate. Only windows whose exact
             resourceClass (Wayland app_id) is listed are managed; empty
-            (default) manages the whole world
+            (default) manages the whole world. --settings-root requires
+            OMNITILER_TRACE=1 and exact --scope-class OmniTilerTestWindow
   status   report the exact plugin load state and persisted KGlobalAccel
             action records
   stop <script-id>
@@ -242,6 +243,85 @@ scope_append() {
   else
     OMNITILER_SCOPE_CLASS="${OMNITILER_SCOPE_CLASS:-},$fragment"
   fi
+}
+
+validate_settings_root_only() {
+  local raw="${1:-}" cur="" part uid dir_uid dir_mode file_uid file_mode file_size
+  local -a parts=()
+  [[ -n "$raw" ]] || return 1
+  [[ "$raw" != *$'\n'* && "$raw" != *$'\r'* ]] || return 1
+  [[ "$raw" == /* ]] || return 1
+  case "$raw" in *//*) return 1 ;; esac
+  [[ "$raw" == */ ]] && raw="${raw%/}"
+  [[ -n "$raw" ]] || return 1
+  IFS='/' read -r -a parts <<< "${raw#/}"
+  [[ "${#parts[@]}" -gt 0 ]] || return 1
+  for part in "${parts[@]}"; do
+    [[ -n "$part" && "$part" != "." && "$part" != ".." ]] || return 1
+    cur="$cur/$part"
+    [[ ! -L "$cur" ]] || return 1
+    [[ -d "$cur" ]] || return 1
+  done
+  uid="$(id -u)" || return 1
+  dir_uid="$(stat -c '%u' "$cur" 2>/dev/null)" || return 1
+  [[ "$dir_uid" == "$uid" ]] || return 1
+  dir_mode="$(stat -c '%a' "$cur" 2>/dev/null)" || return 1
+  [[ "$dir_mode" =~ ^[0-7]+$ ]] || return 1
+  (( (8#$dir_mode & 077) == 0 )) || return 1
+
+  local runtime_dir="${XDG_RUNTIME_DIR:-}"
+  if [[ -n "$runtime_dir" ]]; then
+    local runtime_canon=""
+    runtime_canon="$(cd -P -- "$runtime_dir" 2>/dev/null && pwd -P || printf '%s' "${runtime_dir%/}")"
+    [[ -n "$runtime_canon" && "$cur" != "$runtime_canon" ]] || return 1
+  fi
+  local config_dir="${XDG_CONFIG_HOME:-${HOME:-}/.config}"
+  if [[ -n "$config_dir" ]]; then
+    local config_canon=""
+    config_canon="$(cd -P -- "$config_dir" 2>/dev/null && pwd -P || printf '%s' "${config_dir%/}")"
+    [[ -n "$config_canon" && "$cur" != "$config_canon" ]] || return 1
+  fi
+
+  local settings_file="$cur/settings.json"
+  [[ -f "$settings_file" && ! -L "$settings_file" ]] || return 1
+  file_uid="$(stat -c '%u' "$settings_file" 2>/dev/null)" || return 1
+  [[ "$file_uid" == "$uid" ]] || return 1
+  file_mode="$(stat -c '%a' "$settings_file" 2>/dev/null)" || return 1
+  [[ "$file_mode" =~ ^[0-7]+$ ]] || return 1
+  (( (8#$file_mode & 077) == 0 )) || return 1
+  file_size="$(stat -c '%s' "$settings_file" 2>/dev/null)" || return 1
+  [[ "$file_size" =~ ^[0-9]+$ && "$file_size" -gt 0 && "$file_size" -le 4096 ]] || return 1
+
+  jq -s -e '
+    length == 1 and
+    (.[0] |
+      type == "object" and
+      (keys_unsorted | all(
+        . == "gap" or . == "outer" or . == "defaultTiled" or . == "mode" or
+        . == "sameAxis" or . == "bornMaximized" or . == "predicate" or
+        . == "refill" or . == "focusFollowsCursor"
+      )) and
+      (if has("gap") then (.gap | type == "number" and (. == floor) and . >= 0 and . <= 64) else true end) and
+      (if has("outer") then (.outer | type == "number" and (. == floor) and . >= 0 and . <= 64) else true end) and
+      (if has("defaultTiled") then (.defaultTiled | type == "boolean") else true end) and
+      (if has("focusFollowsCursor") then (.focusFollowsCursor | type == "boolean") else true end) and
+      (if has("mode") then (.mode == "per-output-local" or .mode == "global-unique" or .mode == "shared") else true end) and
+      (if has("sameAxis") then (.sameAxis == "group-with-neighbor" or .sameAxis == "swap-with-neighbor") else true end) and
+      (if has("bornMaximized") then (.bornMaximized == "tile-on-launch" or .bornMaximized == "keep-maximized-overlay") else true end) and
+      (if has("predicate") then (.predicate == "both-axes-fixed" or .predicate == "either-axis-fixed") else true end) and
+      (if has("refill") then (.refill == "last-remaining-workspace" or .refill == "most-recently-used-workspace") else true end)
+    )
+  ' "$settings_file" >/dev/null 2>&1 || return 1
+
+  printf '%s\n' "$cur"
+}
+
+validate_settings_root_and_build_literal() {
+  local cur="" literal=""
+  cur="$(validate_settings_root_only "${1:-}")" || return 1
+  literal="$(jq -s -c '.[0]' "$cur/settings.json" 2>/dev/null | jq -R . 2>/dev/null)" || return 1
+  [[ -n "$literal" && "$literal" != *$'\n'* && "$literal" != *$'\r'* ]] || return 1
+  printf '%s\n' "$literal"
 }
 
 read_plugin_id() {
@@ -1160,12 +1240,14 @@ case "${1:-}" in
     exit 0
     ;;
   start)
-    # Optional repeatable admission scope: start [--scope-class NAME]...
+    # Optional repeatable admission scope: start [--scope-class NAME]... [--settings-root DIR]
     # Each flag carries one comma-joined allowlist fragment; repeated flags
     # accumulate in order. Parsed and validated before any build or load;
     # malformed entries fail closed here. The validated allowlist rides
     # OMNITILER_SCOPE_CLASS into the bundle build below.
     shift
+    settings_root=""
+    settings_root_set=0
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --scope-class)
@@ -1177,8 +1259,23 @@ case "${1:-}" in
           scope_append "${1#--scope-class=}"
           shift
           ;;
+        --settings-root)
+          [[ "$settings_root_set" -eq 0 ]] || { echo "error: duplicate --settings-root" >&2; exit 1; }
+          [[ $# -ge 2 ]] || { echo "error: --settings-root requires a value" >&2; exit 1; }
+          [[ -n "$2" ]] || { echo "error: --settings-root requires a non-empty value" >&2; exit 1; }
+          settings_root="$2"
+          settings_root_set=1
+          shift 2
+          ;;
+        --settings-root=*)
+          [[ "$settings_root_set" -eq 0 ]] || { echo "error: duplicate --settings-root" >&2; exit 1; }
+          settings_root="${1#--settings-root=}"
+          [[ -n "$settings_root" ]] || { echo "error: --settings-root requires a non-empty value" >&2; exit 1; }
+          settings_root_set=1
+          shift
+          ;;
         *)
-          echo "error: unknown 'start' argument '$1' (expected --scope-class NAME)" >&2
+          echo "error: unknown 'start' argument '$1' (expected --scope-class NAME or --settings-root DIR)" >&2
           exit 1
           ;;
       esac
@@ -1187,6 +1284,17 @@ case "${1:-}" in
       scope_validate "${OMNITILER_SCOPE_CLASS:-}" "--scope-class" || exit 1
     fi
     export OMNITILER_SCOPE_CLASS="${OMNITILER_SCOPE_CLASS:-}"
+    if [[ "$settings_root_set" -eq 1 ]]; then
+      [[ "${OMNITILER_TRACE:-}" == "1" ]] || { echo "error: --settings-root requires OMNITILER_TRACE=1" >&2; exit 1; }
+      [[ "${OMNITILER_SCOPE_CLASS:-}" == "OmniTilerTestWindow" ]] || { echo "error: --settings-root requires exact --scope-class OmniTilerTestWindow" >&2; exit 1; }
+      OMNITILER_DEV_SETTINGS_LITERAL="$(validate_settings_root_and_build_literal "$settings_root")" || {
+        echo "error: invalid --settings-root '$settings_root' (must be an existing absolute private owned real directory without symlinks/dots, distinct from runtime/config, containing a private owned bounded valid settings.json)" >&2
+        exit 1
+      }
+      export OMNITILER_DEV_SETTINGS_LITERAL
+    else
+      export OMNITILER_DEV_SETTINGS_LITERAL=""
+    fi
     cmd_start
     ;;
   status)
@@ -1195,6 +1303,13 @@ case "${1:-}" in
       exit 1
     fi
     cmd_status
+    ;;
+  validate-settings-root)
+    if [[ $# -ne 2 ]]; then
+      echo "error: 'validate-settings-root' requires DIR" >&2
+      exit 1
+    fi
+    validate_settings_root_only "$2"
     ;;
   stop)
     cmd_stop "${@:2}"

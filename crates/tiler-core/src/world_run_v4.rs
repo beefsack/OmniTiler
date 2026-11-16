@@ -120,6 +120,7 @@ impl WorldEngine {
         if !self.staged_dropped_switches.is_empty() {
             self.staged_dropped_switches.clear();
         }
+        self.staged_drag_preview_reason = None;
         // Freeze implicit send sources from pre-observation retained
         // homing, before staging can admit newcomers or settle rehoming.
         // The frozen explicit output is the only source the command below

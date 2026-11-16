@@ -3723,6 +3723,411 @@ fn retained_drag_preview_clears_on_omitted_ingress_local_held_style_publication_
     );
 }
 
+fn host_native_fact(window: &str, output: &str, r: Rect, native_ws: &str) -> WindowFact {
+    let mut row = fact(window, output, r);
+    row.native_workspace = crate::world_report::NativeWorkspaceFact::Value(native_ws.to_owned());
+    row
+}
+
+fn host_native_obs(
+    output: &str,
+    order: &[&str],
+    current: &str,
+) -> crate::world_report::NativeObservation {
+    use crate::world_report::{NativeObservation, NativeOccupancy};
+    NativeObservation {
+        output: OutputId(output.to_owned()),
+        native_order: order.iter().map(|s| (*s).to_owned()).collect(),
+        current_native: Some(current.to_owned()),
+        occupancy: order
+            .iter()
+            .map(|n| NativeOccupancy {
+                native: (*n).to_owned(),
+                count: None,
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn same_output_drag_preview_on_non_first_active_workspace_succeeds() {
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let ra = rect(0, 0, 400, 600);
+    let rb = rect(400, 0, 400, 600);
+
+    let mut seed = report(
+        1,
+        1,
+        vec![
+            host_native_fact("win-a", "out-a", ra, "n1"),
+            host_native_fact("win-b", "out-a", rb, "n1"),
+        ],
+        "",
+        None,
+        vec![],
+        true,
+    );
+    seed.native = vec![
+        host_native_obs("out-a", &["n0", "n1"], "n1"),
+        host_native_obs("out-b", &["b0"], "b0"),
+    ];
+    let seeded = accepted(&mut engine, &seed);
+    let alloc_a = row_of(&seeded, "win-a").allocation.expect("win-a slot");
+    let alloc_b = row_of(&seeded, "win-b").allocation.expect("win-b slot");
+
+    let mut settle_report = report(
+        2,
+        2,
+        vec![
+            host_native_fact("win-a", "out-a", alloc_a, "n1"),
+            host_native_fact("win-b", "out-a", alloc_b, "n1"),
+        ],
+        "win-a",
+        None,
+        vec![],
+        true,
+    );
+    settle_report.native = vec![
+        host_native_obs("out-a", &["n0", "n1"], "n1"),
+        host_native_obs("out-b", &["b0"], "b0"),
+    ];
+    accepted(&mut engine, &settle_report);
+
+    let mut move_report = report(
+        3,
+        3,
+        vec![
+            host_native_fact("win-a", "out-a", alloc_a, "n1"),
+            host_native_fact("win-b", "out-a", alloc_b, "n1"),
+        ],
+        "win-a",
+        Some(ingress(
+            "win-a",
+            GestureKind::Move,
+            Some((alloc_b.x + alloc_b.w - 20, alloc_b.y + alloc_b.h / 2)),
+            GesturePhase::Updated,
+            alloc_a,
+        )),
+        vec![],
+        true,
+    );
+    move_report.native = vec![
+        host_native_obs("out-a", &["n0", "n1"], "n1"),
+        host_native_obs("out-b", &["b0"], "b0"),
+    ];
+    let mut previewed = None;
+    let traces = crate::world_engine::with_drag_preview_trace_capture(|| {
+        previewed = Some(accepted(&mut engine, &move_report));
+    });
+    let previewed = previewed.expect("reply");
+
+    let preview = previewed.drag_preview.as_ref().unwrap_or_else(|| {
+        panic!(
+            "same-output move on non-first active workspace must produce drag_preview; traces={traces:?}, view={:?}",
+            engine.effective_view(&OutputId("out-a".to_owned()))
+        )
+    });
+    assert_eq!(preview.domain.output.0, "out-a");
+    assert_eq!(
+        preview.domain.workspace.0,
+        engine
+            .effective_view(&OutputId("out-a".to_owned()))
+            .expect("active view")
+    );
+    assert!(preview.rect.w > 0 && preview.rect.h > 0);
+}
+
+#[test]
+fn cross_output_drag_preview_selects_non_first_active_workspace_on_destination() {
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let ra = rect(0, 0, 800, 600);
+    let rb = rect(800, 0, 800, 600);
+
+    let mut seed = report(
+        1,
+        1,
+        vec![
+            host_native_fact("win-a", "out-a", ra, "a0"),
+            host_native_fact("win-b", "out-b", rb, "b1"),
+        ],
+        "",
+        None,
+        vec![],
+        true,
+    );
+    seed.native = vec![
+        host_native_obs("out-a", &["a0"], "a0"),
+        host_native_obs("out-b", &["b0", "b1"], "b1"),
+    ];
+    accepted(&mut engine, &seed);
+
+    let mut move_report = report(
+        2,
+        2,
+        vec![
+            host_native_fact("win-a", "out-a", ra, "a0"),
+            host_native_fact("win-b", "out-b", rb, "b1"),
+        ],
+        "win-a",
+        Some(ingress(
+            "win-a",
+            GestureKind::Move,
+            Some((1500, 300)),
+            GesturePhase::Updated,
+            ra,
+        )),
+        vec![],
+        true,
+    );
+    move_report.native = vec![
+        host_native_obs("out-a", &["a0"], "a0"),
+        host_native_obs("out-b", &["b0", "b1"], "b1"),
+    ];
+    let previewed = accepted(&mut engine, &move_report);
+
+    let preview = previewed
+        .drag_preview
+        .as_ref()
+        .expect("cross-output move to non-first active workspace must produce drag_preview");
+    assert_eq!(preview.domain.output.0, "out-b");
+    assert_eq!(
+        preview.domain.workspace.0,
+        engine
+            .effective_view(&OutputId("out-b".to_owned()))
+            .expect("active view on out-b")
+    );
+    assert!(preview.rect.w > 0 && preview.rect.h > 0);
+}
+
+#[test]
+fn drag_preview_refuses_when_active_workspace_is_unreadable_without_falling_back_to_inactive() {
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let ra = rect(0, 0, 800, 600);
+    let rb = rect(800, 0, 800, 600);
+
+    let mut bad_fact = host_native_fact("win-bad", "out-b", rb, "b1");
+    bad_fact.rect = None;
+
+    let mut seed = report(
+        1,
+        1,
+        vec![
+            host_native_fact("win-a", "out-a", ra, "a0"),
+            host_native_fact("win-b0", "out-b", rb, "b0"),
+            host_native_fact("win-b", "out-b", rb, "b1"),
+            bad_fact.clone(),
+        ],
+        "",
+        None,
+        vec![],
+        true,
+    );
+    seed.native = vec![
+        host_native_obs("out-a", &["a0"], "a0"),
+        host_native_obs("out-b", &["b0", "b1"], "b1"),
+    ];
+    accepted(&mut engine, &seed);
+
+    let mut move_report = report(
+        2,
+        2,
+        vec![
+            host_native_fact("win-a", "out-a", ra, "a0"),
+            host_native_fact("win-b0", "out-b", rb, "b0"),
+            host_native_fact("win-b", "out-b", rb, "b1"),
+            bad_fact,
+        ],
+        "win-a",
+        Some(ingress(
+            "win-a",
+            GestureKind::Move,
+            Some((1500, 300)),
+            GesturePhase::Updated,
+            ra,
+        )),
+        vec![],
+        true,
+    );
+    move_report.native = vec![
+        host_native_obs("out-a", &["a0"], "a0"),
+        host_native_obs("out-b", &["b0", "b1"], "b1"),
+    ];
+    let previewed = accepted(&mut engine, &move_report);
+
+    assert!(
+        previewed.drag_preview.is_none(),
+        "unreadable active workspace on out-b must refuse without falling back to inactive b0"
+    );
+}
+
+#[test]
+fn drag_pointer_domain_staged_refuses_when_active_workspace_is_held_without_falling_back_to_inactive()
+ {
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let ra = rect(0, 0, 800, 600);
+    let rb = rect(800, 0, 800, 600);
+
+    let mut seed = report(
+        1,
+        1,
+        vec![
+            host_native_fact("win-a", "out-a", ra, "a0"),
+            host_native_fact("win-b0", "out-b", rb, "b0"),
+            host_native_fact("win-b", "out-b", rb, "b1"),
+        ],
+        "",
+        None,
+        vec![],
+        true,
+    );
+    seed.native = vec![
+        host_native_obs("out-a", &["a0"], "a0"),
+        host_native_obs("out-b", &["b0", "b1"], "b1"),
+    ];
+    accepted(&mut engine, &seed);
+
+    let active_ws = engine
+        .effective_view(&OutputId("out-b".to_owned()))
+        .expect("active view on out-b");
+    let active_key = crate::session::DomainKey {
+        output: OutputId("out-b".to_owned()),
+        workspace: crate::directional::WorkspaceId(active_ws),
+    };
+
+    let empty_held = std::collections::BTreeSet::new();
+    let (selected, _) = engine
+        .drag_pointer_domain_staged(1500, 300, &empty_held)
+        .expect("unheld active workspace on out-b must be selected");
+    assert_eq!(selected, active_key);
+
+    let mut held_scopes = std::collections::BTreeSet::new();
+    held_scopes.insert(active_key);
+    assert!(
+        engine
+            .drag_pointer_domain_staged(1500, 300, &held_scopes)
+            .is_none(),
+        "held active workspace on out-b must refuse without falling back to inactive b0"
+    );
+}
+
+#[test]
+fn omitted_ingress_clears_drag_preview_when_destination_effective_view_changes_while_retaining_same_view()
+ {
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let ra = rect(0, 0, 800, 600);
+    let rb = rect(800, 0, 800, 600);
+
+    let mut seed = report(
+        1,
+        1,
+        vec![
+            host_native_fact("win-a", "out-a", ra, "a0"),
+            host_native_fact("win-b0", "out-b", rb, "b0"),
+            host_native_fact("win-b", "out-b", rb, "b1"),
+        ],
+        "",
+        None,
+        vec![],
+        true,
+    );
+    seed.native = vec![
+        host_native_obs("out-a", &["a0"], "a0"),
+        host_native_obs("out-b", &["b0", "b1"], "b1"),
+    ];
+    accepted(&mut engine, &seed);
+
+    let mut move_report = report(
+        2,
+        2,
+        vec![
+            host_native_fact("win-a", "out-a", ra, "a0"),
+            host_native_fact("win-b0", "out-b", rb, "b0"),
+            host_native_fact("win-b", "out-b", rb, "b1"),
+        ],
+        "win-a",
+        Some(ingress(
+            "win-a",
+            GestureKind::Move,
+            Some((1500, 300)),
+            GesturePhase::Updated,
+            ra,
+        )),
+        vec![],
+        true,
+    );
+    move_report.native = vec![
+        host_native_obs("out-a", &["a0"], "a0"),
+        host_native_obs("out-b", &["b0", "b1"], "b1"),
+    ];
+    let previewed = accepted(&mut engine, &move_report);
+    let preview = previewed
+        .drag_preview
+        .clone()
+        .expect("cross-output move to active b1 must produce drag_preview");
+    assert_eq!(preview.domain.output.0, "out-b");
+    assert_eq!(
+        preview.domain.workspace.0,
+        engine
+            .effective_view(&OutputId("out-b".to_owned()))
+            .expect("active view on out-b")
+    );
+
+    // Omitted ingress on the same active destination view retains the preview.
+    let mut same_view_omitted = report(
+        3,
+        3,
+        vec![
+            host_native_fact("win-a", "out-a", ra, "a0"),
+            host_native_fact("win-b0", "out-b", rb, "b0"),
+            host_native_fact("win-b", "out-b", rb, "b1"),
+        ],
+        "win-a",
+        None,
+        vec![],
+        true,
+    );
+    same_view_omitted.native = vec![
+        host_native_obs("out-a", &["a0"], "a0"),
+        host_native_obs("out-b", &["b0", "b1"], "b1"),
+    ];
+    let same_view_reply = accepted(&mut engine, &same_view_omitted);
+    assert_eq!(
+        same_view_reply.drag_preview.as_ref(),
+        Some(&preview),
+        "omitted ingress with unchanged destination effective_view must retain drag_preview"
+    );
+
+    // Omitted ingress after destination effective_view switches to b0 must clear
+    // the preview even though old workspace b1 remains readable and unheld.
+    let mut switched_view_omitted = report(
+        4,
+        4,
+        vec![
+            host_native_fact("win-a", "out-a", ra, "a0"),
+            host_native_fact("win-b0", "out-b", rb, "b0"),
+            host_native_fact("win-b", "out-b", rb, "b1"),
+        ],
+        "win-a",
+        None,
+        vec![],
+        true,
+    );
+    switched_view_omitted.native = vec![
+        host_native_obs("out-a", &["a0"], "a0"),
+        host_native_obs("out-b", &["b0", "b1"], "b0"),
+    ];
+    let mut switched_reply = None;
+    let traces = crate::world_engine::with_drag_preview_trace_capture(|| {
+        switched_reply = Some(accepted(&mut engine, &switched_view_omitted));
+    });
+    let switched_reply = switched_reply.expect("reply");
+    assert!(
+        switched_reply.drag_preview.is_none(),
+        "omitted ingress after destination effective_view switch must clear drag_preview; view={:?}, traces={traces:?}",
+        engine.effective_view(&OutputId("out-b".to_owned()))
+    );
+}
+
 // Cross-output gesture release suite: pair-targeted slot agreement,
 // retained transfer fences, and gap bookkeeping live in the child;
 // shared rig helpers above are used via `super::*`.

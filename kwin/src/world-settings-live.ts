@@ -11,6 +11,109 @@
 import { readDomainGaps, type DomainGaps } from "./domain-gap";
 import { readShortcutProfileValue, type ShortcutProfile } from "./shortcut-profile";
 
+declare const __OMNITILER_DEV_SETTINGS__: string | undefined;
+
+export function readBakedDevSettings(): string | undefined {
+    return typeof __OMNITILER_DEV_SETTINGS__ === "string" ? __OMNITILER_DEV_SETTINGS__ : undefined;
+}
+
+export interface IsolatedSettingsSnapshot {
+    readonly gap?: number;
+    readonly outer?: number;
+    readonly defaultTiled?: boolean;
+    readonly mode?: "per-output-local" | "global-unique" | "shared";
+    readonly sameAxis?: SameAxisMove;
+    readonly bornMaximized?: BornMaximized;
+    readonly predicate?: FixedSizePredicate;
+    readonly refill?: MigrationSourceRefill;
+    readonly focusFollowsCursor?: boolean;
+}
+
+export function parseIsolatedSettingsSnapshot(raw: string): IsolatedSettingsSnapshot | null {
+    if (typeof raw !== "string" || raw.length === 0 || raw.length > 4096) {
+        return null;
+    }
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(raw);
+    } catch (error) {
+        void error;
+        return null;
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        return null;
+    }
+    const obj = parsed as Record<string, unknown>;
+    const result: {
+        gap?: number;
+        outer?: number;
+        defaultTiled?: boolean;
+        mode?: "per-output-local" | "global-unique" | "shared";
+        sameAxis?: SameAxisMove;
+        bornMaximized?: BornMaximized;
+        predicate?: FixedSizePredicate;
+        refill?: MigrationSourceRefill;
+        focusFollowsCursor?: boolean;
+    } = {};
+    const keys = Object.keys(obj);
+    for (let i = 0; i < keys.length; i += 1) {
+        const key = keys[i];
+        if (key === undefined) {
+            continue;
+        }
+        const value = obj[key];
+        if (key === "gap") {
+            if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 64) {
+                return null;
+            }
+            result.gap = value;
+        } else if (key === "outer") {
+            if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 64) {
+                return null;
+            }
+            result.outer = value;
+        } else if (key === "defaultTiled") {
+            if (typeof value !== "boolean") {
+                return null;
+            }
+            result.defaultTiled = value;
+        } else if (key === "mode") {
+            if (value !== "per-output-local" && value !== "global-unique" && value !== "shared") {
+                return null;
+            }
+            result.mode = value;
+        } else if (key === "sameAxis") {
+            if (value !== SAME_AXIS_MOVE_DEFAULT && value !== SAME_AXIS_MOVE_SWAP) {
+                return null;
+            }
+            result.sameAxis = value;
+        } else if (key === "bornMaximized") {
+            if (value !== BORN_MAXIMIZED_DEFAULT && value !== BORN_MAXIMIZED_OVERLAY) {
+                return null;
+            }
+            result.bornMaximized = value;
+        } else if (key === "predicate") {
+            if (value !== FIXED_SIZE_PREDICATE_DEFAULT && value !== FIXED_SIZE_PREDICATE_EITHER) {
+                return null;
+            }
+            result.predicate = value;
+        } else if (key === "refill") {
+            if (value !== MIGRATION_SOURCE_REFILL_DEFAULT && value !== MIGRATION_SOURCE_REFILL_MRU) {
+                return null;
+            }
+            result.refill = value;
+        } else if (key === "focusFollowsCursor") {
+            if (typeof value !== "boolean") {
+                return null;
+            }
+            result.focusFollowsCursor = value;
+        } else {
+            return null;
+        }
+    }
+    return result;
+}
+
 // Consolidated config carriage (behavior/defaults/timing unchanged):
 // validated KWin script startup tokens previously in same-axis-move.ts,
 // migration-source-refill.ts (carriage only; the pure
@@ -211,6 +314,7 @@ export interface WorldSettingsLive {
     // restart. The core owns admission/clear policy from this ingress;
     // the adapter never decides.
     readonly readBornMaximizedLive: () => BornMaximized;
+    readonly readPredicateLive: () => FixedSizePredicate;
     // Drifted startup-consumed keys since activation, for the
     // restart-required log. Never adopted here.
     checkStartupDrift: () => string[];
@@ -225,7 +329,62 @@ export interface WorldSettingsLive {
 
 export function createWorldSettingsLive(
     overrides: WorldSettingsLiveOverrides = {},
+    isolatedSettings: IsolatedSettingsSnapshot | null = null,
 ): WorldSettingsLive {
+    if (isolatedSettings !== null) {
+        const startupProfile: ShortcutProfile = "cosmic";
+        const startupWorkspaceMode: unknown =
+            isolatedSettings.mode !== undefined ? isolatedSettings.mode : "per-output-local";
+        const gaps: DomainGaps = {
+            innerGap: isolatedSettings.gap !== undefined ? isolatedSettings.gap : 8,
+            outerGap: isolatedSettings.outer !== undefined ? isolatedSettings.outer : 8,
+        };
+        const readMode = (): unknown => startupWorkspaceMode;
+        const readDefaultTiled = (): boolean =>
+            isolatedSettings.defaultTiled !== undefined ? isolatedSettings.defaultTiled : true;
+        const readGapLive = (): number => gaps.innerGap;
+        const readOuterGapLive = (): number => gaps.outerGap;
+        const readSameAxisLive = (): string =>
+            isolatedSettings.sameAxis !== undefined ? isolatedSettings.sameAxis : SAME_AXIS_MOVE_DEFAULT;
+        const readRefillLive = (): MigrationSourceRefill =>
+            isolatedSettings.refill !== undefined ? isolatedSettings.refill : MIGRATION_SOURCE_REFILL_DEFAULT;
+        const readBornMaximizedLive = (): BornMaximized =>
+            isolatedSettings.bornMaximized !== undefined ? isolatedSettings.bornMaximized : BORN_MAXIMIZED_DEFAULT;
+        const readPredicateLive = (): FixedSizePredicate =>
+            isolatedSettings.predicate !== undefined ? isolatedSettings.predicate : FIXED_SIZE_PREDICATE_DEFAULT;
+        const checkStartupDrift = (): string[] => [];
+        const snapshotConnectionValues = (): Array<[string, unknown]> => {
+            const values: Array<[string, unknown]> = [
+                ["gap", readGapLive()],
+                ["outer", readOuterGapLive()],
+                ["defaultTiled", readDefaultTiled()],
+                ["mode", startupWorkspaceMode],
+                ["sameAxis", readSameAxisLive()],
+                ["bornMaximized", readBornMaximizedLive()],
+                ["predicate", readPredicateLive()],
+                ["refill", readRefillLive()],
+            ];
+            if (isolatedSettings.focusFollowsCursor !== undefined) {
+                values.push(["focusFollowsCursor", isolatedSettings.focusFollowsCursor]);
+            }
+            return values;
+        };
+        return {
+            startupProfile,
+            startupWorkspaceMode,
+            gaps,
+            readMode,
+            readDefaultTiled,
+            readGapLive,
+            readOuterGapLive,
+            readSameAxisLive,
+            readRefillLive,
+            readBornMaximizedLive,
+            readPredicateLive,
+            checkStartupDrift,
+            snapshotConnectionValues,
+        };
+    }
     // Startup-consumed shortcut profile (legacy parity): all profiles
     // share one directional core, so the validated value is snapshotted
     // once here and never re-read for behavior. Registration below keeps
@@ -358,6 +517,8 @@ export function createWorldSettingsLive(
     // beyond each reader's own normalization. `mode` is the
     // startup-consumed adoption (restart-only); live drift against it is
     // reported through checkStartupDrift and never adopted here.
+    const readPredicateLive = (): FixedSizePredicate =>
+        readFixedSizePredicateValue(overrides.readFixedPredicateFn);
     const snapshotConnectionValues = (): Array<[string, unknown]> => [
         ["gap", readGapLive()],
         ["outer", readOuterGapLive()],
@@ -365,7 +526,7 @@ export function createWorldSettingsLive(
         ["mode", startupWorkspaceMode],
         ["sameAxis", readSameAxisLive()],
         ["bornMaximized", readBornMaximizedLive()],
-        ["predicate", readFixedSizePredicateValue(overrides.readFixedPredicateFn)],
+        ["predicate", readPredicateLive()],
         ["refill", readRefillLive()],
     ];
     return {
@@ -379,6 +540,7 @@ export function createWorldSettingsLive(
         readSameAxisLive,
         readRefillLive,
         readBornMaximizedLive,
+        readPredicateLive,
         checkStartupDrift,
         snapshotConnectionValues,
     };

@@ -313,6 +313,7 @@ export interface NativeStateExecutorDeps {
     readonly host: NativeStateHost;
     readonly getFences: () => NativeStateFences;
     readonly isStillAuthorized: (win: string, property: WorldStateProperty) => boolean;
+    readonly requestFollowup?: () => void;
 }
 
 export interface NativeStateExecutor {
@@ -798,6 +799,11 @@ export function createNativeStateExecutor(deps: NativeStateExecutorDeps): Native
             }
             try {
                 state.noteFollowup();
+            } catch (error) {
+                void error;
+            }
+            try {
+                deps.requestFollowup?.();
             } catch (error) {
                 void error;
             }

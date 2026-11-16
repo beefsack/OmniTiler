@@ -1628,11 +1628,12 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         }))
         : [];
     const equalCount = native.every((n) => n.order.length === (native[0]?.order.length ?? 0));
-    // Fresh cursor sample on each event/command/gesture capture only: no
-    // pure-motion capture (cursor-driven behavior disabled), no polling, no
-    // cursorPosChanged subscription; motion rides the next relevant capture.
-    // Host pins v6.7.4: cursorPos Q_PROPERTY (src/scripting/workspace_wrapper.h:145-149,:355;
-    // src/scripting/workspace_wrapper.cpp:61,:148-151), QList windowAt (h:483-495; cpp:369-395).
+    // Fresh cursor sample on every capture; world-entry subscribes to
+    // cursorPosChanged only while focusFollowsCursor is enabled (no polling;
+    // when disabled, motion rides the next relevant capture).
+    // Host pins v6.8.1: cursorPos Q_PROPERTY + cursorPosChanged() signal
+    // (src/scripting/workspace_wrapper.h:153,280; src/scripting/workspace_wrapper.cpp:61),
+    // QList windowAt (h:483-495; cpp:369-395 at v6.7.4).
     const cursor = (() => {
         try {
             const pos = readProp(target, "cursorPos");

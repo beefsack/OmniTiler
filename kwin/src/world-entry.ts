@@ -80,6 +80,7 @@ interface WorldTraceProbe {
         sourceToken: string,
     ): (ref: object, rect: { x: number; y: number; w: number; h: number }) => boolean;
     noteSettlementReceipt(parsed: WorldReply): void;
+    noteFixtureDescribeReceipt(parsed: WorldReply): void;
     noteSettlementApplied(parsed: WorldReply): void;
     noteGestureSettlementDecision(
         path: "discharge" | "in-apply",
@@ -207,7 +208,12 @@ import { normalizeNativeId } from "./native-id";
 import { createWorldCloseTracker } from "./world-close-tracker";
 import { isSeparateWorkspaceMode, readPerOutputVirtualDesktopsFlag, supportsPerOutputDesktops } from "./workspace-native";
 import { createWorldCommandContext } from "./world-command-context";
-import { createWorldSettingsLive } from "./world-settings-live";
+import {
+    createWorldSettingsLive,
+    parseIsolatedSettingsSnapshot,
+    readBakedDevSettings,
+    type IsolatedSettingsSnapshot,
+} from "./world-settings-live";
 import {
     buildHandshakeRequest,
     buildSettingsRequest,
@@ -342,6 +348,7 @@ export interface WorldEntryOverrides {
     // pass `scopeClass` directly.
     readonly scopeClass?: string | readonly string[];
     readonly readScopeClassFn?: () => unknown;
+    readonly devSettingsJson?: string;
     // Compatibility seams accepted from the production entry: generation is
     // superseded by authenticated discovery (never used as the core
     // generation); floatIntent enables opaque intent persistence (bounded
@@ -722,6 +729,160 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         const traceDiagXferKind = (value: unknown): string => (
             value === "window" || value === "view" || value === "migration" ? value : "-"
         );
+        const traceEmitFixtureDescribeReceipt = (parsed: WorldReply): void => {
+            try {
+                const gen = traceDiagId(parsed.gen);
+                const req = traceDiagId(parsed.req);
+                const rev = traceDiagStamp(parsed.rev);
+                const obs = traceDiagStamp(parsed.obs);
+
+                const wsModeByKey = new Map<string, string>();
+                for (const ws of parsed.workspaces) {
+                    wsModeByKey.set(
+                        `${ws.out}\u0000${ws.id}`,
+                        ws.mode === "tiled" || ws.mode === "floating" ? ws.mode : "-",
+                    );
+                }
+
+                const xfersByWin = new Map<string, WorldReply["transfers"]>();
+                for (const t of parsed.transfers) {
+                    if (t.win !== "") {
+                        const list = xfersByWin.get(t.win);
+                        if (list !== undefined) {
+                            list.push(t);
+                        } else {
+                            xfersByWin.set(t.win, [t]);
+                        }
+                    }
+                }
+
+                let frameOps = 0;
+                let clearOps = 0;
+                let stateTargets = 0;
+                let aboveTargets = 0;
+                const pendingWins: WorldReply["windows"] = [];
+                const idleWins: WorldReply["windows"] = [];
+                for (const w of parsed.windows) {
+                    const hasFrameOp = w.frame_op !== "";
+                    const hasClearOp = w.clear_op !== "";
+                    const hasState = w.state.length > 0;
+                    if (hasFrameOp) {
+                        frameOps += 1;
+                    }
+                    if (hasClearOp) {
+                        clearOps += 1;
+                    }
+                    if (hasState) {
+                        stateTargets += w.state.length;
+                        for (const s of w.state) {
+                            if (s.property === "above") {
+                                aboveTargets += 1;
+                            }
+                        }
+                    }
+                    const winXfers = xfersByWin.get(w.win);
+                    if (hasFrameOp || hasClearOp || hasState || w.cmdSeq !== null || (winXfers !== undefined && winXfers.length > 0)) {
+                        pendingWins.push(w);
+                    } else {
+                        idleWins.push(w);
+                    }
+                }
+
+                const focusProjected = parsed.focusRequest !== null ? 1 : 0;
+                const dragProjected = parsed.dragPreview !== null ? 1 : 0;
+                const projectedTargets =
+                    frameOps +
+                    clearOps +
+                    stateTargets +
+                    parsed.transfers.length +
+                    parsed.nativeCreations.length +
+                    focusProjected +
+                    dragProjected;
+
+                const shownWindows = pendingWins.length >= OBSERVE_MAX_WINS
+                    ? pendingWins.slice(0, OBSERVE_MAX_WINS)
+                    : pendingWins.concat(idleWins.slice(0, OBSERVE_MAX_WINS - pendingWins.length));
+                const windowsOmitted = Math.max(0, parsed.windows.length - shownWindows.length);
+
+                traceLogSafe(
+                    `omnitiler:world:trace ev=describe-receipt gen=${gen} req=${req} rev=${rev} obs=${obs} ` +
+                    `ready=${traceDiagBool(parsed.ready)} consumed=${traceDiagBool(parsed.consumed)} ` +
+                    `windows=${parsed.windows.length} shownWindows=${shownWindows.length} windowsOmitted=${windowsOmitted} ` +
+                    `intentDesired=${parsed.intentDesired.length} ` +
+                    `projectedTargets=${projectedTargets} frameOps=${frameOps} clearOps=${clearOps} ` +
+                    `stateTargets=${stateTargets} aboveTargets=${aboveTargets} ` +
+                    `transfers=${parsed.transfers.length} creations=${parsed.nativeCreations.length} ` +
+                    `focusReq=${focusProjected} dragPreview=${dragProjected} ` +
+                    `switchPending=absent gesturePending=absent ` +
+                    `settledOps=${parsed.operationSettled.length} settledSwitches=${parsed.switchSettled.length} ` +
+                    `settledGesture=${parsed.gestureSettled !== null ? 1 : 0}`,
+                );
+
+                for (const w of shownWindows) {
+                    const wsMode = wsModeByKey.get(`${w.out}\u0000${w.ws}`) ?? "-";
+                    const stateOpsStr = w.state.length === 0
+                        ? "-"
+                        : w.state.map((s) => (
+                            `${traceDiagProperty(s.property)}=${traceDiagBool(s.value)}` +
+                            `@${traceDiagAuth(s.auth)}:${traceDiagHold(s.reason)}` +
+                            `#${s.cmdSeq !== null ? traceDiagStamp(s.cmdSeq) : "-"}`
+                        )).join(",");
+                    const winXfers = xfersByWin.get(w.win);
+                    const xferOpsStr = winXfers === undefined || winXfers.length === 0
+                        ? "-"
+                        : winXfers.slice(0, OBSERVE_MAX_XFERS).map((t) => (
+                            `${traceDiagXferKind(t.kind)}:${traceDiagId(t.op)}:${t.held ? "held" : "active"}#${t.cmdSeq !== null ? traceDiagStamp(t.cmdSeq) : "-"}`
+                        )).join(",");
+                    traceLogSafe(
+                        `omnitiler:world:trace ev=describe-window gen=${gen} req=${req} rev=${rev} obs=${obs} ` +
+                        `win=${traceDiagId(w.win)} floating=${traceDiagBool(w.floating)} ` +
+                        `floatOrigin=${w.float_origin === "capacity" ? "capacity" : "-"} ` +
+                        `wsMode=${wsMode} out=${traceDiagId(w.out)} ws=${traceDiagId(w.ws)} ` +
+                        `frame=${traceDiagRect(w.frame)} alloc=${traceDiagRect(w.alloc)} ` +
+                        `frameAuth=${traceDiagAuth(w.frame_auth)} frameHold=${traceDiagHold(w.frame_hold)} ` +
+                        `memberAuth=${traceDiagAuth(w.member_auth)} memberHold=${traceDiagHold(w.member_hold)} ` +
+                        `frameOp=${w.frame_op !== "" ? traceDiagId(w.frame_op) : "-"} ` +
+                        `clearOp=${w.clear_op !== "" ? traceDiagId(w.clear_op) : "-"} ` +
+                        `cmdSeq=${w.cmdSeq !== null ? traceDiagStamp(w.cmdSeq) : "-"} ` +
+                        `stateOps=${stateOpsStr} xferOps=${xferOpsStr}`,
+                    );
+                }
+
+                for (const t of parsed.transfers.slice(0, OBSERVE_MAX_XFERS)) {
+                    traceLogSafe(
+                        `omnitiler:world:trace ev=describe-op lane=transfer gen=${gen} req=${req} rev=${rev} obs=${obs} ` +
+                        `op=${traceDiagId(t.op)} kind=${traceDiagXferKind(t.kind)} win=${t.win !== "" ? traceDiagId(t.win) : "-"} ` +
+                        `out=${traceDiagId(t.out)} ws=${traceDiagId(t.ws)} held=${traceDiagBool(t.held)} ` +
+                        `cmdSeq=${t.cmdSeq !== null ? traceDiagStamp(t.cmdSeq) : "-"}`,
+                    );
+                }
+                for (const c of parsed.nativeCreations.slice(0, OBSERVE_MAX_XFERS)) {
+                    traceLogSafe(
+                        `omnitiler:world:trace ev=describe-op lane=creation gen=${gen} req=${req} rev=${rev} obs=${obs} ` +
+                        `op=${traceDiagId(c.op)} out=${traceDiagId(c.out)} ws=${traceDiagId(c.ws)}`,
+                    );
+                }
+                if (parsed.focusRequest !== null) {
+                    const f = parsed.focusRequest;
+                    traceLogSafe(
+                        `omnitiler:world:trace ev=describe-op lane=focus gen=${gen} req=${req} rev=${rev} obs=${obs} ` +
+                        `op=${traceDiagId(f.id)} target=${traceDiagId(f.target)} out=${traceDiagId(f.out)} ws=${traceDiagId(f.ws)} ` +
+                        `cmdSeq=${f.cmdSeq !== null ? traceDiagStamp(f.cmdSeq) : "-"} ` +
+                        `afterShownOp=${f.afterShown !== null ? traceDiagId(f.afterShown.op) : "-"}`,
+                    );
+                }
+                if (parsed.dragPreview !== null) {
+                    const d = parsed.dragPreview;
+                    traceLogSafe(
+                        `omnitiler:world:trace ev=describe-op lane=drag-preview gen=${gen} req=${req} rev=${rev} obs=${obs} ` +
+                        `op=${traceDiagId(d.id)} win=${traceDiagId(d.win)} ` +
+                        `domainOut=${traceDiagId(d.domainOut)} domainWs=${traceDiagId(d.domainWs)}`,
+                    );
+                }
+            } catch (error) {
+                void error;
+            }
+        };
         // Closed native-setter vocabulary (world-contract FrameSetter);
         // anything else collapses to "-".
         const traceDiagSetter = (value: unknown): string => (
@@ -1549,6 +1710,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             noteSettlementReceipt: (parsed) => {
                 traceEmitSettlementSnapshot("receipt", parsed);
             },
+            noteFixtureDescribeReceipt: (parsed) => {
+                traceEmitFixtureDescribeReceipt(parsed);
+            },
             noteSettlementApplied: (parsed) => {
                 traceEmitSettlementSnapshot("apply", parsed);
             },
@@ -1933,11 +2097,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // drop, resize, and hover routing all run through the core
     // GestureIngress lane. No script-side verdict route remains.
 
-    // Live settings seams (startup snapshots plus per-dispatch
-    // re-reads) live in world-settings-live; the entry only consumes
-    // them here. Behavior identical to the previous inline closures.
-    const settings = createWorldSettingsLive(overrides);
-
     // Dev/test admission scope, resolved once at startup: explicit
     // override, test seam, baked define, `scopeClass` script config, else
     // whole world. Invalid input or a throwing reader fails closed
@@ -1974,6 +2133,59 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         return null;
     }
     log(`omnitiler:world:scope class=${scopeClass.length === 0 ? "-" : scopeClass.join(",")}`);
+
+    const devFixtureControlsEnabled =
+        typeof __OMNITILER_TRACE__ === "string" &&
+        __OMNITILER_TRACE__ === "1" &&
+        scopeClass.length === 1 &&
+        scopeClass[0] === "OmniTilerTestWindow";
+
+    let isolatedSettings: IsolatedSettingsSnapshot | null = null;
+    if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+        const rawDevSettings =
+            overrides.devSettingsJson !== undefined
+                ? overrides.devSettingsJson
+                : readBakedDevSettings();
+        if (typeof rawDevSettings === "string" && rawDevSettings.length > 0) {
+            if (!devFixtureControlsEnabled) {
+                log("omnitiler:world:dev-settings-invalid reason=scope-or-trace recovery=refuse-start");
+                return null;
+            }
+            const parsedDevSettings = parseIsolatedSettingsSnapshot(rawDevSettings);
+            if (parsedDevSettings === null) {
+                log("omnitiler:world:dev-settings-invalid reason=malformed recovery=refuse-start");
+                return null;
+            }
+            isolatedSettings = parsedDevSettings;
+        }
+    }
+
+    // Live settings seams (startup snapshots plus per-dispatch
+    // re-reads) live in world-settings-live; the entry only consumes
+    // them here. Behavior identical to the previous inline closures.
+    const settings = createWorldSettingsLive(overrides, isolatedSettings);
+    let devOmitNextGestureIngress = false;
+    let devSkipNextPreviewReply = false;
+    let devSkipNextWorldReply = false;
+    const diagOpaqueId = (value: unknown): string => (
+        isOpaqueId(value) ? value as string : "-"
+    );
+    const clearDevFixtureControls = (reason: "generation-reset" | "stop"): void => {
+        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+            if (devOmitNextGestureIngress) {
+                devOmitNextGestureIngress = false;
+                log(`omnitiler:world:trace ev=dev-omit-gesture-ingress state=cleared reason=${reason}`);
+            }
+            if (devSkipNextPreviewReply) {
+                devSkipNextPreviewReply = false;
+                log(`omnitiler:world:trace ev=dev-skip-preview-reply state=cleared reason=${reason}`);
+            }
+            if (devSkipNextWorldReply) {
+                devSkipNextWorldReply = false;
+                log(`omnitiler:world:trace ev=dev-skip-world-reply state=cleared reason=${reason}`);
+            }
+        }
+    };
 
     const gestureActive = (): boolean => {
         if (overrides.gestureActive !== undefined) {
@@ -2068,12 +2280,38 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         // and invalidates on change, so every capture carries facts that
         // precede their observation.
         presentationFacts: effectSnapshot,
-        ...(overrides.readFixedPredicateFn !== undefined ? { readFixedPredicate: overrides.readFixedPredicateFn } : {}),
+        ...(isolatedSettings !== null
+            ? { readFixedPredicate: settings.readPredicateLive }
+            : (overrides.readFixedPredicateFn !== undefined ? { readFixedPredicate: overrides.readFixedPredicateFn } : {})),
         ...(overrides.fixedOriginOf !== undefined ? { fixedOriginOf: overrides.fixedOriginOf } : {}),
-        nativeGesture: gestureSnapshot,
+        nativeGesture: (
+            typeof __OMNITILER_TRACE__ === "string" &&
+            __OMNITILER_TRACE__ === "1" &&
+            devFixtureControlsEnabled &&
+            devOmitNextGestureIngress &&
+            gestureSnapshot !== null
+        ) ? null : gestureSnapshot,
     });
         if (observation === null) {
             return null;
+        }
+        if (
+            typeof __OMNITILER_TRACE__ === "string" &&
+            __OMNITILER_TRACE__ === "1" &&
+            devFixtureControlsEnabled &&
+            devOmitNextGestureIngress &&
+            gestureSnapshot !== null
+        ) {
+            devOmitNextGestureIngress = false;
+            log(
+                `omnitiler:world:trace ev=dev-omit-gesture-ingress state=consumed ` +
+                `gen=${diagOpaqueId(startGen)} ` +
+                `instance=${diagOpaqueId(gestureSnapshot.instance)} ` +
+                `serial=${diagOpaqueId(gestureSnapshot.serial)} ` +
+                `rev=${diagOpaqueId(gestureSnapshot.revision)} ` +
+                `phase=${gestureSnapshot.phase} ` +
+                `win=${diagOpaqueId(gestureSnapshot.win)}`,
+            );
         }
         const endInvalid = state.currentInvalid;
         const endGen = state.boundGen;
@@ -2191,6 +2429,43 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         // gestures, BEFORE any debounce.
         state.invalidate();
         scheduleDispatch();
+    };
+    const isHoverEnabledInValues = (values: ReadonlyArray<readonly [string, unknown]>): boolean => {
+        for (let i = 0; i < values.length; i += 1) {
+            const entry = values[i];
+            if (entry !== undefined && entry[0] === "focusFollowsCursor") {
+                return entry[1] === true;
+            }
+        }
+        return false;
+    };
+    let cursorMotionDetach: (() => void) | null = null;
+    const detachCursorMotion = (): void => {
+        const detach = cursorMotionDetach;
+        cursorMotionDetach = null;
+        if (detach === null) {
+            return;
+        }
+        try {
+            detach();
+        } catch (error) {
+            void error;
+        }
+    };
+    const syncCursorMotionSubscription = (enabled: boolean): void => {
+        if (stopped || !enabled) {
+            detachCursorMotion();
+            return;
+        }
+        if (cursorMotionDetach !== null) {
+            return;
+        }
+        try {
+            cursorMotionDetach = connectSignal(readSignal(surface, "cursorPosChanged"), onNativeInvalidation);
+        } catch (error) {
+            void error;
+            cursorMotionDetach = null;
+        }
     };
 
     // Shortcut/command failure line: one bounded log, native state untouched.
@@ -3128,6 +3403,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         state,
         store: nativePreimageStore,
         host: scopedStateHost,
+        requestFollowup: () => {
+            if (!stopped && state.dirty) {
+                scheduleDispatch();
+            }
+        },
         getFences: () => ({
             generation: state.boundGen,
             settingsRev,
@@ -3515,6 +3795,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         pendingSettings = null;
                         settingsAcceptedGen = null;
                         settingsAcceptedRev = null;
+                        syncCursorMotionSubscription(false);
                         try {
                             settingsTimeoutCancel?.();
                         } catch (error) {
@@ -3586,6 +3867,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         clearTerminalCaptureRetry();
                         if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
                             worldTraceProbes.get(state)?.noteGestureReset();
+                            clearDevFixtureControls("generation-reset");
                         }
                         lastResolvedCaptureSource = null;
                         gestureWaiterOutstanding = false;
@@ -3643,6 +3925,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         } catch (error) {
             void error;
             return;
+        }
+        const hoverEnabled = isHoverEnabledInValues(values);
+        if (!hoverEnabled) {
+            syncCursorMotionSubscription(false);
         }
         let valuesKey = "";
         try {
@@ -3793,6 +4079,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     pendingSettings = null;
                     settingsAcceptedGen = gen;
                     settingsAcceptedRev = sentRev;
+                    if (!hoverEnabled || !settingsDirty) {
+                        syncCursorMotionSubscription(hoverEnabled);
+                    }
                     const diag = parsed.diagnostics
                         .map((d) => `${d.key}:${d.kind}`)
                         .join(",");
@@ -6437,6 +6726,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
                         worldTraceProbes.get(state)?.noteSettlementReceipt(parsed);
+                        if (devFixtureControlsEnabled) {
+                            worldTraceProbes.get(state)?.noteFixtureDescribeReceipt(parsed);
+                        }
                     }
                     // Previous accepted snapshot is the accepted-reply cache
                     // in adapter state; the core owns admitted-lifetime
@@ -6479,16 +6771,62 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // retained outcome has not discharged the obligation.
                     const discharged = tryDischargeTerminalSettlement(parsed, flight);
                     resolveTerminalRetryAfterReply(discharged, envelope, flight);
-                    if (state.currentInvalid !== flight.watermark) {
-                        // Native input landed during flight: the drained
-                        // command already executed server-side (collect its
-                        // terminal result), but this observation is
-                        // superseded, so no setters run on it. Follow-up
-                        // observes the newer watermark (dirty is set).
+                    const supersededDuringFlight = state.currentInvalid !== flight.watermark;
+                    const devSkipWorldReply = !supersededDuringFlight &&
+                        typeof __OMNITILER_TRACE__ === "string" &&
+                        __OMNITILER_TRACE__ === "1" &&
+                        devFixtureControlsEnabled &&
+                        devSkipNextWorldReply;
+                    if (devSkipWorldReply) {
                         if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
-                            worldTraceProbes.get(state)?.noteReplySkipped("flight", parsed.gen, parsed.req, parsed.rev, parsed.obs, "superseded-during-flight");
+                            devSkipNextWorldReply = false;
+                            worldTraceProbes.get(state)?.noteReplySkipped("dev-skip", parsed.gen, parsed.req, parsed.rev, parsed.obs, "dev-skip-world-reply");
+                            log(
+                                `omnitiler:world:trace ev=dev-skip-world-reply state=consumed ` +
+                                `gen=${diagOpaqueId(parsed.gen)} req=${diagOpaqueId(parsed.req)} ` +
+                                `rev=${diagOpaqueId(parsed.rev)} obs=${diagOpaqueId(parsed.obs)} ` +
+                                `intentRows=${parsed.intentDesired.length}`,
+                            );
                         }
-                        log("omnitiler:world:stale reason=superseded-during-flight recovery=catchup");
+                        takeResultsForUndecided(() => {
+                            flightBatches.delete(flight.source);
+                            if (state.dirty || pendingQueue.length > 0) {
+                                scheduleDispatch();
+                            }
+                            wakeFollowup();
+                        });
+                        return;
+                    }
+                    const devSkipPreviewReply = !supersededDuringFlight &&
+                        typeof __OMNITILER_TRACE__ === "string" &&
+                        __OMNITILER_TRACE__ === "1" &&
+                        devFixtureControlsEnabled &&
+                        devSkipNextPreviewReply &&
+                        parsed.dragPreview !== null;
+                    if (supersededDuringFlight || devSkipPreviewReply) {
+                        // Native input landed during flight (or dev preview
+                        // skip was armed): the drained command already executed
+                        // server-side (collect its terminal result), but this
+                        // observation is skipped, so no setters run on it.
+                        if (supersededDuringFlight) {
+                            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                                worldTraceProbes.get(state)?.noteReplySkipped("flight", parsed.gen, parsed.req, parsed.rev, parsed.obs, "superseded-during-flight");
+                            }
+                            log("omnitiler:world:stale reason=superseded-during-flight recovery=catchup");
+                        } else if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                            devSkipNextPreviewReply = false;
+                            worldTraceProbes.get(state)?.noteReplySkipped("dev-skip", parsed.gen, parsed.req, parsed.rev, parsed.obs, "dev-skip-preview-reply");
+                            const skippedPreview = parsed.dragPreview;
+                            if (skippedPreview !== null) {
+                                log(
+                                    `omnitiler:world:trace ev=dev-skip-preview-reply state=consumed ` +
+                                    `gen=${diagOpaqueId(parsed.gen)} req=${diagOpaqueId(parsed.req)} ` +
+                                    `rev=${diagOpaqueId(parsed.rev)} obs=${diagOpaqueId(parsed.obs)} ` +
+                                    `previewId=${diagOpaqueId(skippedPreview.id)} previewRev=${diagOpaqueId(skippedPreview.rev)} ` +
+                                    `rect=${skippedPreview.rect.join(",")} win=${diagOpaqueId(skippedPreview.win)}`,
+                                );
+                            }
+                        }
                         // Retained desire durability: an accepted but
                         // superseded reply still replaces the latest desired
                         // target and converges it to durable storage, but its
@@ -7669,10 +8007,56 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         readSameAxisMove: () => settings.readSameAxisLive(),
         readResizeSignature: () => route.resizeSignature(),
     });
+    if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1" && devFixtureControlsEnabled) {
+        const registerDev = overrides.registerShortcutFn ?? ((() => {
+            try {
+                const fn: unknown = registerShortcut;
+                return typeof fn === "function"
+                    ? (fn as (name: string, text: string, sequence: string, callback: () => void) => boolean)
+                    : undefined;
+            } catch (error) {
+                void error;
+                return undefined;
+            }
+        })());
+        if (registerDev !== undefined) {
+            const tryRegisterDev = (name: string, text: string, callback: () => void): void => {
+                try {
+                    registerDev(name, text, "", callback);
+                } catch (error) {
+                    void error;
+                }
+            };
+            tryRegisterDev("omnitiler-dev-omit-next-gesture-ingress", "Dev: Omit next gesture ingress", () => {
+                if (stopped) {
+                    return;
+                }
+                devOmitNextGestureIngress = true;
+                log(`omnitiler:world:trace ev=dev-omit-gesture-ingress state=armed gen=${diagOpaqueId(state.boundGen)}`);
+            });
+            tryRegisterDev("omnitiler-dev-skip-next-preview-reply", "Dev: Skip next preview reply", () => {
+                if (stopped) {
+                    return;
+                }
+                devSkipNextPreviewReply = true;
+                log(`omnitiler:world:trace ev=dev-skip-preview-reply state=armed gen=${diagOpaqueId(state.boundGen)}`);
+            });
+            tryRegisterDev("omnitiler-dev-skip-next-world-reply", "Dev: Skip next world reply", () => {
+                if (stopped) {
+                    return;
+                }
+                devSkipNextWorldReply = true;
+                log(`omnitiler:world:trace ev=dev-skip-world-reply state=armed gen=${diagOpaqueId(state.boundGen)}`);
+            });
+        }
+    }
 
     return {
         stop: () => {
             stopped = true;
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                clearDevFixtureControls("stop");
+            }
             // Intent store teardown: drop seed/write rounds so late
             // callbacks no-op on the fence; the map itself needs no I/O.
             try {
@@ -7811,6 +8195,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 }
                 dispatchTimerCancel = null;
             }
+            detachCursorMotion();
             for (const detach of detaches.splice(0)) {
                 try {
                     detach();
