@@ -156,15 +156,31 @@ describe("world native toggles", () => {
         });
     });
 
-    it("refuses float while the world flight is busy, clearing nothing", () => {
-        const { ref, order } = makeWin({ maximizeMode: 3 });
+    it("queues float while the world flight is busy without fencing", () => {
+        const { ref, order } = makeWin();
         const h = setup(ref, order);
         h.env.setBusy(true);
+        assert.equal(h.toggles.submitFloat("float"), true);
+        assert.equal(h.calls.length, 1);
+        assert.deepEqual(h.calls[0], {
+            op: "toggle-float", win: "win-a", rect: null,
+        });
+        assert.ok(!h.logs.some((l) => l.includes("native-fenced")));
+    });
+
+    it("queues rect-null float while busy without reading unreadable frame or mutating maximized state", () => {
+        const { ref, order } = makeWin({ maximizeMode: 3 });
+        const h = setup(ref, order, () => null);
+        h.env.setBusy(true);
         h.env.setFloating(true);
-        assert.equal(h.toggles.submitFloat("float"), false);
-        assert.equal(ref.maximizeMode, 3, "B9 clear never runs before the busy fence");
-        assert.equal(h.calls.length, 0);
-        assert.ok(h.logs.some((l) => l.includes("native-fenced")));
+        assert.equal(h.toggles.submitFloat("float"), true);
+        assert.equal(ref.maximizeMode, 3, "no eager maximize clear while busy");
+        assert.deepEqual(order, [], "no invalidate or native setter while busy");
+        assert.equal(h.calls.length, 1);
+        assert.deepEqual(h.calls[0], {
+            op: "toggle-float", win: "win-a", rect: null,
+        });
+        assert.ok(!h.logs.some((l) => l.includes("float-refused-unreadable")));
     });
 
     it("defers the maximized unfloat command until the first-report boundary", () => {

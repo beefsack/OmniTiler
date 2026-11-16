@@ -2088,3 +2088,197 @@ fn rapid_input_capture_boundary_stale_native_keeps_implicit_subject() {
         "changed (caught-up) native lets the same implicit resize plan",
     );
 }
+
+#[test]
+fn rapid_input_start_floating_unfloat_then_refloat_retains_moved_frame() {
+    let mut engine = engine();
+    let moved_rect = crate::geometry::Rect {
+        x: 140,
+        y: 120,
+        w: 620,
+        h: 420,
+    };
+    let initial = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
+    engine
+        .handle_report_v4_for_test(&observe(1, initial(), "win-a"))
+        .expect("admission observes");
+    let (float_reply, float_settlements) = run_batched(
+        &mut engine,
+        &observe(2, initial(), "win-a"),
+        &[(1, implicit_toggle_float())],
+    );
+    assert_accepted(&float_settlements, "initial float accepts");
+    let centered_rect = float_reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-a")
+        .and_then(|row| row.effective_frame)
+        .expect("initial float target rect");
+
+    let mut settled_a = fact("win-a", "out-a", 0);
+    settled_a.rect = Some(centered_rect);
+    let (_arrived_reply, arrived_settlements) = run_batched(
+        &mut engine,
+        &observe(3, vec![settled_a, fact("win-b", "out-a", 100)], "win-a"),
+        &[],
+    );
+    assert_accepted(&arrived_settlements, "initial float arrives");
+
+    let mut moved_a = fact("win-a", "out-a", 0);
+    moved_a.rect = Some(moved_rect);
+    let moved_windows = || vec![moved_a.clone(), fact("win-b", "out-a", 100)];
+    let (_settled_reply, settled_settlements) =
+        run_batched(&mut engine, &observe(4, moved_windows(), "win-a"), &[]);
+    assert_accepted(&settled_settlements, "moved float settles");
+
+    let unfloat_with_moved = implicit(WorldCommand::Operation(CoreCommand::ToggleFloat {
+        window: String::new(),
+        float_rect: Some(moved_rect),
+    }));
+    let (reply, settlements) = run_batched(
+        &mut engine,
+        &observe(5, moved_windows(), "win-a"),
+        &[(2, unfloat_with_moved), (3, implicit_toggle_float())],
+    );
+    assert_eq!(settlements.len(), 2, "both toggles settle exactly once");
+    assert_ready_settlement(&settlements[0]);
+    assert_ready_settlement(&settlements[1]);
+    assert_accepted(&settlements, "unfloat then re-float batch accepts");
+    assert_eq!(
+        settlements[0].result,
+        Some(CommandResult::Float {
+            window: WindowId("win-a".to_owned()),
+            rect: None,
+            no_space: false,
+        })
+    );
+    assert_eq!(
+        settlements[1].result,
+        Some(CommandResult::Float {
+            window: WindowId("win-a".to_owned()),
+            rect: Some(moved_rect),
+            no_space: false,
+        })
+    );
+    let row_a = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-a")
+        .expect("win-a row published");
+    assert!(
+        row_a.floating,
+        "unfloat then re-float from floating must end floating: {row_a:?}"
+    );
+    assert_eq!(
+        row_a.allocation, None,
+        "floating row has no tile allocation"
+    );
+    assert_eq!(
+        row_a.effective_frame,
+        Some(moved_rect),
+        "re-float must retain moved native frame: {row_a:?}"
+    );
+    let row_b = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-b")
+        .expect("win-b row published");
+    assert!(!row_b.floating, "win-b stays tiled: {row_b:?}");
+    assert!(row_b.allocation.is_some(), "win-b keeps tile allocation");
+    assert_eq!(
+        reply.intent_desired.len(),
+        1,
+        "latest intent save for win-a publishes: {:?}",
+        reply.intent_desired
+    );
+    assert_eq!(
+        float_write_pair(&reply.intent_desired[0]),
+        ("win-a".to_owned(), IntentData::new(Some(true), None))
+    );
+}
+
+#[test]
+fn rapid_input_tiled_float_then_unfloat_ends_tiled() {
+    let mut engine = engine();
+    setup_float_subject(&mut engine);
+    let windows = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
+    let (reply, settlements) = run_batched(
+        &mut engine,
+        &observe(4, windows(), "win-b"),
+        &[(2, implicit_toggle_float()), (3, implicit_toggle_float())],
+    );
+    assert_eq!(settlements.len(), 2, "both toggles settle exactly once");
+    assert_ready_settlement(&settlements[0]);
+    assert_ready_settlement(&settlements[1]);
+    assert_accepted(&settlements, "float then unfloat batch accepts");
+    let row_a = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-a")
+        .expect("win-a row published");
+    let row_b = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-b")
+        .expect("win-b row published");
+    assert!(!row_a.floating && row_a.allocation.is_some(), "{row_a:?}");
+    assert!(!row_b.floating && row_b.allocation.is_some(), "{row_b:?}");
+    assert_eq!(
+        reply.intent_desired.len(),
+        1,
+        "latest intent save for win-b publishes: {:?}",
+        reply.intent_desired
+    );
+    assert_eq!(
+        float_write_pair(&reply.intent_desired[0]),
+        ("win-b".to_owned(), IntentData::new(Some(false), None))
+    );
+}
+
+#[test]
+fn rapid_input_single_command_float_and_unfloat_batches_unchanged() {
+    let mut engine = engine();
+    setup_float_subject(&mut engine);
+    let windows = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
+    let (float_reply, float_settlements) = run_batched(
+        &mut engine,
+        &observe(4, windows(), "win-b"),
+        &[(2, implicit_toggle_float())],
+    );
+    assert_accepted(&float_settlements, "single float batch accepts");
+    let row_b = float_reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-b")
+        .expect("win-b row published");
+    assert!(row_b.floating && row_b.allocation.is_none(), "{row_b:?}");
+
+    let moved_rect = crate::geometry::Rect {
+        x: 180,
+        y: 160,
+        w: 580,
+        h: 380,
+    };
+    let mut moved_b = fact("win-b", "out-a", 100);
+    moved_b.rect = Some(moved_rect);
+    let moved_windows = || vec![fact("win-a", "out-a", 0), moved_b.clone()];
+    let (_settled_reply, settled_settlements) =
+        run_batched(&mut engine, &observe(5, moved_windows(), "win-b"), &[]);
+    assert_accepted(&settled_settlements, "moved float settles");
+
+    let (unfloat_reply, unfloat_settlements) = run_batched(
+        &mut engine,
+        &observe(6, moved_windows(), "win-b"),
+        &[(3, implicit_toggle_float())],
+    );
+    assert_accepted(&unfloat_settlements, "single unfloat batch accepts");
+    let row_b_after = unfloat_reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-b")
+        .expect("win-b row published");
+    assert!(
+        !row_b_after.floating && row_b_after.allocation.is_some(),
+        "{row_b_after:?}"
+    );
+}

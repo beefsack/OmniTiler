@@ -742,4 +742,317 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             await h.stop();
         }
     });
+
+    it("queues two rapid float presses while pending, executing float then unfloat FIFO with latest-only apply", async () => {
+        const h = await makeHarness("win-a", ["win-a", "win-b"]);
+        try {
+            await discover(h);
+            const initialFrames = replyFrames(lastDescribeReply(h));
+            const frameABefore = initialFrames.get("win-a");
+            const frameBBefore = initialFrames.get("win-b");
+            assert.ok(frameABefore !== undefined && frameBBefore !== undefined);
+            h.geometryWrites.length = 0;
+
+            const n0 = describeCount(h);
+            h.handle.requestFloat();
+            h.handle.requestFloat();
+
+            assert.ok(!h.logs.some((l) => l.includes("native-fenced")), "no busy fence on rapid float");
+            assert.ok(!h.logs.some((l) => l.includes("command-busy")), "no command-busy refusal");
+            assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "no shortcut failure");
+
+            await awaitQueueCount(h, "toggle-float", 2);
+            const payloads = h.commandPayloads("toggle-float");
+            assert.equal(payloads.length, 2, "both rapid float presses file FIFO");
+            for (const q of payloads) {
+                assert.deepEqual(
+                    (q.body["command"] as Record<string, unknown>)["win"],
+                    { currentFocus: true },
+                    "toggle-float files explicit execution-time currentFocus marker",
+                );
+            }
+
+            const batchIndex = await awaitDispatch(h);
+            assert.equal(describeCount(h), n0 + 1, "one capture drains both parked float presses");
+            const batchReply = JSON.parse(h.replies.get(await h.flushAt(batchIndex)) as string) as Record<string, unknown>;
+            assert.notEqual(batchReply["outcome"], "rejected", "real Engine drains the float batch");
+            appliedMatchesReply(h, batchReply);
+
+            const takes = takeReadys(h);
+            assert.equal(takes.length, 2, "both float presses settle FIFO on the take lane");
+            assert.deepEqual(takes.map((t) => t["globalCmd"]), ["1", "2"]);
+            assert.deepEqual(
+                takes.map((t) => (t["result"] as Record<string, unknown>)["op"]),
+                ["toggle-float", "toggle-float"],
+            );
+            assert.deepEqual(
+                takes.map((t) => (t["result"] as Record<string, unknown>)["win"]),
+                ["win-a", "win-a"],
+            );
+
+            // Final publication returns win-a to tiled: no intermediate float frame written.
+            const winRows = (batchReply["windows"] as Record<string, unknown>[]) ?? [];
+            const rowA = winRows.find((r) => r["win"] === "win-a");
+            assert.ok(rowA !== undefined && rowA["floating"] === false, "float then unfloat leaves win-a tiled");
+            assert.deepEqual(frameOf(winById(h, "win-a")), frameABefore, "win-a ends at tiled frame without intermediate float writes");
+            assert.deepEqual(frameOf(winById(h, "win-b")), frameBBefore, "win-b ends at tiled frame without intermediate reflow writes");
+            assert.deepEqual(h.geometryWrites, [], "exact latest-only setter history: zero intermediate geometry writes");
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("queues two rapid float presses while capture is in-flight against execution-time currentFocus", async () => {
+        const h = await makeHarness("win-a", ["win-a", "win-b", "win-c"]);
+        try {
+            await discover(h);
+            const frames = replyFrames(lastDescribeReply(h));
+            assert.ok(
+                (frames.get("win-b")?.x ?? 0) < (frames.get("win-c")?.x ?? 0) &&
+                (frames.get("win-c")?.x ?? 0) < (frames.get("win-a")?.x ?? 0),
+                "engine settles positional row B,C,A",
+            );
+
+            // Dispatch a focus-left capture so a DescribeWorld flight is in-flight.
+            h.handle.requestFocus("left");
+            await awaitQueueCount(h, "focus-directional", 1);
+            const focusFlightIndex = await awaitDispatch(h);
+
+            // While the first capture is in-flight, press Meta+G twice rapidly.
+            h.handle.requestFloat();
+            h.handle.requestFloat();
+
+            assert.ok(!h.logs.some((l) => l.includes("native-fenced")), "no busy fence while capture in-flight");
+            assert.ok(!h.logs.some((l) => l.includes("command-busy")), "no command-busy refusal");
+            assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "no shortcut failure");
+
+            // Answer the in-flight focus capture (shifts core focus to win-c);
+            // the parked second float press files once the capture settles and
+            // both drain together in the follow-up capture.
+            const focusReply = JSON.parse(h.replies.get(await h.flushAt(focusFlightIndex)) as string) as Record<string, unknown>;
+            assert.notEqual(focusReply["outcome"], "rejected");
+            appliedMatchesReply(h, focusReply);
+            assert.deepEqual(h.focused, ["win-c"], "focus flight settles on win-c");
+
+            await awaitQueueCount(h, "toggle-float", 2);
+            const floatPayloads = h.commandPayloads("toggle-float");
+            assert.equal(floatPayloads.length, 2, "both float presses queued while capture was in-flight");
+            for (const q of floatPayloads) {
+                assert.deepEqual(
+                    (q.body["command"] as Record<string, unknown>)["win"],
+                    { currentFocus: true },
+                    "in-flight float press files explicit currentFocus marker",
+                );
+            }
+
+            // One follow-up capture drains both parked float commands against execution-time currentFocus (win-c).
+            const floatBatchIndex = await awaitDispatch(h);
+            const floatBatchReply = JSON.parse(h.replies.get(await h.flushAt(floatBatchIndex)) as string) as Record<string, unknown>;
+            assert.notEqual(floatBatchReply["outcome"], "rejected", "real Engine drains the parked float batch");
+            appliedMatchesReply(h, floatBatchReply);
+
+            const takes = takeReadys(h);
+            assert.equal(takes.length, 3, "focus + both float presses settle FIFO");
+            assert.deepEqual(takes.map((t) => t["globalCmd"]), ["1", "2", "3"]);
+            assert.deepEqual(
+                takes.slice(1).map((t) => (t["result"] as Record<string, unknown>)["op"]),
+                ["toggle-float", "toggle-float"],
+            );
+            assert.deepEqual(
+                takes.slice(1).map((t) => (t["result"] as Record<string, unknown>)["win"]),
+                ["win-c", "win-c"],
+                "both float commands resolve to execution-time currentFocus win-c, not press-time win-a",
+            );
+
+            const winRows = (floatBatchReply["windows"] as Record<string, unknown>[]) ?? [];
+            const rowC = winRows.find((r) => r["win"] === "win-c");
+            assert.ok(rowC !== undefined && rowC["floating"] === false, "float then unfloat leaves win-c tiled");
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("does not attach press-time frame of a floating moved window to a different execution-time subject", async () => {
+        const h = await makeHarness("win-a", ["win-a", "win-b", "win-c"]);
+        try {
+            await discover(h);
+            // Float win-a (right) and win-b (left) with distinct native frames.
+            h.handle.requestFloat();
+            await h.flush();
+            h.runTimers();
+            await h.settle();
+            winById(h, "win-a").frameGeometry = { x: 1400, y: 77, width: 333, height: 222 };
+
+            h.activeRef = winById(h, "win-b");
+            h.fire("windowActivated");
+            h.runTimers();
+            await h.settle();
+            h.handle.requestFloat();
+            await h.flush();
+            h.runTimers();
+            await h.settle();
+            winById(h, "win-b").frameGeometry = { x: 200, y: 100, width: 300, height: 200 };
+
+            h.activeRef = winById(h, "win-a");
+            h.fire("windowActivated");
+            h.runTimers();
+            await h.settle();
+            h.geometryWrites.length = 0;
+            h.focused.length = 0;
+
+            // Queue focus-left (shifts execution-time focus from win-a to win-b).
+            h.handle.requestFocus("left");
+            await awaitQueueCount(h, "focus-directional", 1);
+            const focusFlightIndex = await awaitDispatch(h);
+
+            // Press float while focus-left is in-flight (press-time active is win-a at [1400, 77, 333, 222]).
+            h.handle.requestFloat();
+            const focusReply = JSON.parse(h.replies.get(await h.flushAt(focusFlightIndex)) as string) as Record<string, unknown>;
+            assert.notEqual(focusReply["outcome"], "rejected");
+            assert.deepEqual(h.focused, ["win-b"], "focus shifts from win-a to win-b");
+
+            await awaitQueueCount(h, "toggle-float", 3);
+            const floatPayloads = h.commandPayloads("toggle-float");
+            assert.equal(floatPayloads.length, 3);
+            assert.deepEqual(
+                (floatPayloads[2]?.body["command"] as Record<string, unknown>)["win"],
+                { currentFocus: true },
+            );
+            assert.equal(
+                (floatPayloads[2]?.body["command"] as Record<string, unknown>)["rect"],
+                null,
+                "press-time floating frame of win-a must not attach to execution-time subject win-b",
+            );
+
+            const floatFlightIndex = await awaitDispatch(h);
+            const floatReply = JSON.parse(h.replies.get(await h.flushAt(floatFlightIndex)) as string) as Record<string, unknown>;
+            assert.notEqual(floatReply["outcome"], "rejected");
+
+            const takes = takeReadys(h);
+            assert.equal(takes.length, 4);
+            const floatResult = takes[3]?.["result"] as Record<string, unknown>;
+            assert.equal(floatResult["op"], "toggle-float");
+            assert.equal(floatResult["win"], "win-b");
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("does not eagerly mutate a press-time floating-maximized window while a focus shift is in-flight", async () => {
+        const h = await makeHarness("win-a", ["win-a", "win-b"], {
+            withNativePreimage: true,
+            desktops: ["ws1", "ws2"],
+            outputs: [
+                { name: "out-left", geometry: { x: 0, y: 0, width: 1000, height: 800 }, manufacturer: "Acme", model: "Panel-L", serialNumber: "SN-LEFT-1" },
+                { name: "out-right", geometry: { x: 1000, y: 0, width: 1000, height: 800 }, manufacturer: "Acme", model: "Panel-R", serialNumber: "SN-RIGHT-1" },
+            ],
+            currents: { "out-left": "ws1", "out-right": "ws2" },
+            homes: { "win-a": "out-right", "win-b": "out-left" },
+        });
+        try {
+            await discover(h);
+            // Float and maximize win-a on out-right; win-b sits on out-left so
+            // focus("left") genuinely crosses outputs from floating-maximized win-a.
+            h.handle.requestFloat();
+            await awaitQueueCount(h, "toggle-float", 1);
+            await h.flushAt(await awaitDispatch(h));
+            h.runTimers();
+            await h.settle();
+
+            h.handle.requestMaximize();
+            await awaitQueueCount(h, "toggle-maximize", 1);
+            const maxFlightIndex = await awaitDispatch(h);
+            const maxReply = JSON.parse(h.replies.get(await h.flushAt(maxFlightIndex)) as string) as Record<string, unknown>;
+            assert.notEqual(maxReply["outcome"], "rejected");
+            h.runTimers();
+            await h.settle();
+            assert.equal(winById(h, "win-a").maximizeMode, 3, "precondition: win-a is floating-maximized before focus shift");
+            h.nativeStateWrites.length = 0;
+            h.focused.length = 0;
+
+            h.handle.requestFocus("left");
+            await awaitQueueCount(h, "focus-directional", 1);
+            const focusFlightIndex = await awaitDispatch(h);
+
+            // Press float while focus-left is in-flight: must queue for win-b, never clear win-a's maximize!
+            h.handle.requestFloat();
+            assert.equal(winById(h, "win-a").maximizeMode, 3, "must not eagerly clear maximize on press-time win-a");
+            assert.ok(
+                !h.nativeStateWrites.some((w) => w.startsWith("win-a@setMaximize:")),
+                "no eager native maximize-clear write on press-time win-a",
+            );
+
+            const focusReply = JSON.parse(h.replies.get(await h.flushAt(focusFlightIndex)) as string) as Record<string, unknown>;
+            assert.notEqual(focusReply["outcome"], "rejected");
+            assert.deepEqual(h.focused, ["win-b"]);
+
+            await awaitQueueCount(h, "toggle-float", 2);
+            const floatFlightIndex = await awaitDispatch(h);
+            const floatReply = JSON.parse(h.replies.get(await h.flushAt(floatFlightIndex)) as string) as Record<string, unknown>;
+            assert.notEqual(floatReply["outcome"], "rejected");
+
+            const takes = takeReadys(h);
+            assert.equal(takes.length, 4);
+            assert.equal((takes[3]?.["result"] as Record<string, unknown>)["win"], "win-b");
+            assert.equal(winById(h, "win-a").maximizeMode, 3, "win-a maximize state stays untouched");
+            assert.ok(
+                !h.nativeStateWrites.some((w) => w.startsWith("win-a@setMaximize:")),
+                "win-a receives no native maximize mutation across the flight",
+            );
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("queues start-floating double toggle retaining moved placement with zero intermediate tile writes", async () => {
+        const h = await makeHarness("win-a", ["win-a", "win-b"]);
+        try {
+            await discover(h);
+            h.handle.requestFloat();
+            await h.flush();
+            h.runTimers();
+            await h.settle();
+
+            // Move floating win-a natively, then clear geometryWrites.
+            winById(h, "win-a").frameGeometry = { x: 111, y: 77, width: 333, height: 222 };
+            h.geometryWrites.length = 0;
+
+            // Rapid double toggle: unfloat (captures moved rect) -> re-float (restores moved rect).
+            h.handle.requestFloat();
+            h.handle.requestFloat();
+
+            await awaitQueueCount(h, "toggle-float", 3);
+            const payloads = h.commandPayloads("toggle-float");
+            assert.equal(payloads.length, 3);
+            assert.deepEqual(
+                (payloads[1]?.body["command"] as Record<string, unknown>)["rect"],
+                [111, 77, 333, 222],
+                "first idle unfloat carries moved float rect",
+            );
+            assert.equal(
+                (payloads[2]?.body["command"] as Record<string, unknown>)["rect"],
+                null,
+                "second queued re-float carries rect:null so core restores retained placement",
+            );
+
+            const batchIndex = await awaitDispatch(h);
+            const batchReply = JSON.parse(h.replies.get(await h.flushAt(batchIndex)) as string) as Record<string, unknown>;
+            assert.notEqual(batchReply["outcome"], "rejected");
+            appliedMatchesReply(h, batchReply);
+
+            const takes = takeReadys(h);
+            assert.equal(takes.length, 3);
+            assert.deepEqual(takes.slice(1).map((t) => t["globalCmd"]), ["2", "3"]);
+            const refloatResult = takes[2]?.["result"] as Record<string, unknown>;
+            assert.equal(refloatResult["op"], "toggle-float");
+            assert.equal(refloatResult["win"], "win-a");
+            const winRows = (batchReply["windows"] as Record<string, unknown>[]) ?? [];
+            const rowA = winRows.find((r) => r["win"] === "win-a");
+            assert.ok(rowA !== undefined && rowA["floating"] === true, "double toggle from floating leaves win-a floating");
+            assert.deepEqual(rowA["frame"], [111, 77, 333, 222], "retained moved placement survives double toggle");
+            assert.deepEqual(h.geometryWrites, [], "zero intermediate tile/reflow geometry writes");
+        } finally {
+            await h.stop();
+        }
+    });
 });

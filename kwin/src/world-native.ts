@@ -1,11 +1,11 @@
 // Native float toggle for the world adapter: float with deferred B9
 // maximized-unfloat parity (sticky/maximize/fullscreen/state-tables are
 // core Controlled state targets now, driven by world-native-state.ts;
-// startup recovery lives in world-native-recovery.ts). The toggle fences
-// outstanding world applies BEFORE setters (no races) and reports an
-// explicit outcome line; applied writes invalidate synchronously BEFORE the
-// first setter so the next full report carries the authoritative
-// observation. Explicit float toggles route fullscreen subjects through
+// startup recovery lives in world-native-recovery.ts). Ordinary user
+// float toggles queue FIFO through submitCommand without a busy fence;
+// the deferred B9 maximize clear runs only when idle (before setters,
+// invalidating synchronously so the next full report carries the
+// authoritative observation). Explicit float toggles route fullscreen subjects through
 // core (no adapter fullscreen refusal): the core owns membership beneath
 // the retained overlay, and D5 forbids every subject write (native state,
 // geometry, focus, stacking) while fullscreen holds. The B9 clear uses
@@ -42,7 +42,8 @@ export interface WorldNativeEnv {
     // fails the unfloat closed.
     readLiveRect: (ref: object) => { x: number; y: number; w: number; h: number } | null;
     // True while a DescribeWorld flight or a queued command is outstanding:
-    // toggles fail closed until it settles.
+    // used to keep B9 pollPendingUnfloat single-flight and to avoid
+    // press-time native reads/mutations when queueing FIFO behind prior work.
     isWorldBusy: () => boolean;
     isFloating: (win: string) => boolean;
     activeWindowId: () => string | null;
@@ -171,17 +172,6 @@ export function isLiveWindowListed(surface: object, readProp: NativeReadProp, re
 
 export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggles {
     const { surface, log, token, readProp } = env;
-
-    // Fence outstanding world applies BEFORE setters (no races): an
-    // in-flight DescribeWorld or a queued command fails the toggle closed
-    // with one bounded line; the caller retries after the flight settles.
-    const worldApplyFenced = (label: string): boolean => {
-        if (env.isWorldBusy()) {
-            log(`omnitiler:world:native-fenced label=${token(label)} reason=world-apply-in-flight`);
-            return true;
-        }
-        return false;
-    };
 
     const isListed = (ref: object): boolean => {
         // Stable-id liveness: the scripting engine renews wrappers per
@@ -363,10 +353,10 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
         cancelPending(cause);
     };
 
-    // Float toggle with B9 maximized-unfloat parity (native only). Fence
-    // order is load-bearing: busy fence, then the maximize clear (when a
-    // floating maximized non-fullscreen window needs it), and only then
-    // the toggle-float operation. Fullscreen never refuses: explicit
+    // Float toggle with B9 maximized-unfloat parity (native only): maximize
+    // clear first (when a floating maximized non-fullscreen window needs
+    // it), otherwise submit the toggle-float operation FIFO. Fullscreen
+    // never refuses: explicit
     // intent routes through core, which owns base membership beneath the
     // retained overlay (siblings reflow, subject takes no writes per D5).
     // Rect capture follows legacy frame semantics, except fullscreen
@@ -390,12 +380,18 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
             env.shortcutFailed(label);
             return false;
         }
-        if (worldApplyFenced("float")) {
+        // When prior commands or a capture flight are outstanding, press-time
+        // subject flags/rects cannot be trusted for execution-time currentFocus:
+        // queue FIFO with rect=null and no eager native maximize clear.
+        if (env.isWorldBusy()) {
             if (pendingUnfloat !== null) {
                 cancelPendingSilent("newer-input-superseded");
             }
-            env.shortcutFailed(label);
-            return false;
+            if (!env.submitCommand({ op: "toggle-float", win: w, rect: null }, "float")) {
+                env.shortcutFailed(label);
+                return false;
+            }
+            return true;
         }
         const fullscreen = readFullscreen(readProp, ref);
         const floating = env.isFloating(w);

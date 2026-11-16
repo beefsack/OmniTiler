@@ -17,6 +17,11 @@ key delivery and perceived latency remain separate acceptance checks.
 
 ## Material decisions
 
+- User 2026-11-16 selected removal of the `submitFloat` busy fence: every
+  physical Meta+G press queues FIFO, with execution-time current focus. Two
+  presses float then unfloat. Core executes every action; the platform applies
+  only the latest received publication, dropping superseded unissued targets.
+  Internal drag-verdict and unfloat continuations keep their separate path.
 - The rapid-input decision permits an explicit ingress distinction for current
   core focus at execution: `win:{"currentFocus":true}`, preserving existing
   explicit identities, null refusal and the empty directional no-focus marker.
@@ -489,7 +494,7 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
 | `undelivered16`: initial mixed attempt | BLOCKED before product queue | Input exits 0 but no callbacks/queues or terminal results (`kwin-owner-journal-full.log:315-333`, `planner-current.log:60-79`). Native state stays unchanged. Daemon attachment/delivery cause is UNKNOWN; socket appearance and client exit are insufficient. No FIFO failure is inferred. |
 | `serial-mixed`: six serial controls, then one 16-press mixed burst | PASS, behavior; native-event timing BLOCKED | Controls alternate left/right and restore `H[A,B*]` (`controls-transcript.txt:1-18`). Burst callbacks 7-22 and queues appear in `kwin-owner-journal-full.log:943-1133`; 10 nonempty batches sum to 16, plus one commandless capture. All 16 distinct Take results are READY (19 raw reads; `planner-current.log:338-503`). Final revisions 42/43 have `geom=0`; `native-post-read.json:1` agrees with desired frames and B focus. |
 | `nested8`: four up/down move pairs | PASS, accounting and frames; exact tree qualified | `burst-transcript.txt:1-2`, `burst-kwin-journal.log:2-134`, `planner-current.log:186-286`: 8 callbacks/queues, 6 batches `1+1+1+2+1+2`, 8 distinct READY results from 9 raw Take calls. Five intermediate publications are superseded; revisions 24/25 have `geom=0`. `native-post-read.json:1` matches all three normalized allocations with C foreground. `H[A,V[B,C*]]` is inferred from ordinary admission, frames and the serial vertical swaps leaving A unchanged (`c1-native-read.json:1`, `c2-native-read.json:1`), not directly exposed named core-tree readback. |
-| Rapid float toggles | BLOCKED; no live input | Physical Meta+G routes through `submitFloat`, which fences a pending queue or in-flight world apply before submission (`kwin/src/world-shortcuts.ts:228-229`, `world-native.ts:175-184,383-459`, `world-entry.ts:7958`). Eight queued toggles are therefore not a valid current-implementation oracle. This conflicts with the decision's every-command/no-busy-refusal wording; resolution is unselected, not a new reproduced defect or permission to remove the fence. See the [minimal discriminator](../spec/reference-outcomes.md#kde-queued-execution-time-subject). |
+| Rapid float toggles, pre-decision investigation | BLOCKED; no live input | At the investigated revision, `submitFloat` fenced a pending queue or in-flight world apply before submission. The 2026-11-16 selection and offline correction below supersede that contract blocker; physical even/odd verification remains pending. See the [minimal discriminator](../spec/reference-outcomes.md#kde-queued-execution-time-subject). |
 | D2 cross-output | NOT RUN | No proven empty-target crossing leg was collected before the float contract decision stopped further live work. Same-output success is not crossing evidence. |
 
 ### Timing denominator and clock boundary
@@ -543,8 +548,8 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
   proves absence, not successful unload. Later helper receipts report successful
   unload and absence. Explicit key-ups/traps are not independent global
   modifier-state observations.
-- This note stays active. Remaining: resolve the float fence/FIFO contract
-  boundary; genuine empty-target D2 crossings; direct nested structural proof
+- This note stays active. Remaining: physical even/odd float bursts after the
+  correction below; genuine empty-target D2 crossings; direct nested structural proof
   if required; exact native-event timing; user-owned perceived latency and
   loaded-effect visual flicker checks. No Windows/macOS behavior changed.
 - Final sequential offline gates exit 0: Rust formatting, three-package
@@ -552,3 +557,52 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
   71 summaries), KWin typecheck/tests (1,351 passed across 199 suites), dev-loop
   launcher checks (703 passed) and native-effect launcher checks (204 passed).
   Protected fixture families and backlog are unchanged.
+
+## Float FIFO correction (2026-11-16)
+
+- The earlier rapid-float BLOCKED row records the pre-decision investigation,
+  not the selected behavior. The clarification is now the
+  [platform-independent ordered-core rule](../decisions/commands.md#ordered-core-commands-and-latest-world-application);
+  KDE filing includes Meta+G without busy refusal. Native acceptance remains
+  incomplete.
+- Initial failing-first adapter regressions reject both a second parked press
+  and presses during a capture. Removing the fence passes those cases through
+  the retained production broker. Review then exposed press-time float-frame
+  carriage and eager maximize clearing against a different execution-time
+  subject. The pending-work branch now queues without those native reads or
+  writes. Idle B9 unfloat and internal drag-verdict continuations retain their
+  paths. A source scan found no other ordinary user-command busy fence.
+- A start-floating discriminator exposed a shared-core defect: move a float
+  to a distinct frame, then queue unfloat and re-float in one capture. Both
+  commands filed, but the final publication was tiled. The adapter-free
+  regression proves the second command returned another unfloat (`rect=None`)
+  rather than re-float at the retained frame (`red-same-batch-float.log:328-340`).
+  Earlier attribution to a not-tiled refusal was incorrect.
+- Cause and correction: batch domain rebuilding used the initial derived
+  floating classification. Convergence before the next toggle could re-float
+  the just-unfloated member, so the next toggle unfloated again.
+  `world_run_v4.rs` now restages classification and rebuilds domains after
+  successful command bookkeeping. Core-only regressions cover both starting
+  modes, moved placement, exact per-command results and single-command batches.
+- Review caught native echo evidence lost by the newly reused classification
+  helper. `world_observe.rs` now preserves the current report's `echoes`.
+  A genuine pending-view-switch regression first failed `None` versus the native
+  workspace, then passed with the repair. Independent focused review closed
+  this finding; per-report intake and mapping gates still bound echo authority.
+- The invalid maximized-focus regression setup was repaired, not removed:
+  native-preimage capability, settled maximize and a real cross-output neighbor
+  establish the focus shift before testing queued float. Tests now assert
+  `geometryWrites=[]`, not merely final-frame equality, for net-zero float
+  batches. Generic genuine-broker supersession coverage continues to withhold
+  stale unissued setters; these are offline native-surface doubles, not live
+  rendering proof.
+- All eight latest sequential gates exit 0: Rust formatting, all-target
+  three-package build and strict Clippy, 3,459 Rust tests across 71 summaries,
+  KWin typecheck and 1,357 tests, launcher 703 and native-effect launcher 204.
+  One formatting-only failure was repaired before rerunning these gates.
+  No frozen fixture edits. Shared behavior now uses post-command classification
+  between batch commands; no macOS/Windows native acceptance is claimed.
+- Tier 1 tagged source citations and the selected outcome are in the
+  [reference discriminator](../spec/reference-outcomes.md#kde-queued-execution-time-subject).
+  Physical even/odd Meta+G bursts and bounded D2 crossing verification remain
+  pending. Existing timing and visual-acceptance qualifications are unchanged.

@@ -2616,3 +2616,89 @@ fn retained_drag_preview_persists_across_skipped_publication_and_commandless_rep
         other => panic!("expected accepted commandless reply, got {other:?}"),
     }
 }
+
+#[test]
+fn restage_classification_preserves_native_echo_across_same_batch_command() {
+    let mut engine = host_owned_engine_v4();
+    let out_a = OutputId("out-a".to_owned());
+    let native_n1 = || vec![native_row("out-a", &[HOST_N1, HOST_N2], Some(HOST_N1))];
+    let windows_n1 = || {
+        vec![
+            known_fact("win-a", "out-a", 0, HOST_N1),
+            known_fact("win-b", "out-a", 0, HOST_N2),
+        ]
+    };
+
+    let boot = host_report(1, windows_n1(), "win-a", native_n1());
+    assert!(matches!(
+        engine.handle_report(&boot, &[]).0,
+        V4RunOutcome::Accepted(_)
+    ));
+    let l1 = engine
+        .views
+        .get("out-a")
+        .expect("initial retained view on out-a")
+        .clone();
+    let l2 = engine
+        .mapping
+        .get("out-a")
+        .expect("ring on out-a")
+        .iter()
+        .find(|id| *id != &l1)
+        .expect("second workspace on out-a")
+        .clone();
+
+    // Retained view moves to l2 while native current remains HOST_N1 (l1).
+    let switch = host_command(
+        2,
+        windows_n1(),
+        "win-a",
+        native_n1(),
+        1,
+        WorldCommand::SwitchView {
+            output: out_a.clone(),
+            workspace: l2.clone(),
+        },
+    );
+    assert!(matches!(
+        engine.handle_report(&switch, &[]).0,
+        V4RunOutcome::Accepted(_)
+    ));
+    assert_eq!(engine.views.get("out-a"), Some(&l2));
+
+    // Same-batch command sequence on a report where native current is still
+    // HOST_N1 (l1) != retained view (l2): ToggleFloat triggers
+    // restage_classification(), which must preserve staged.echoes["out-a"].
+    let batch = host_command(
+        3,
+        windows_n1(),
+        "win-a",
+        native_n1(),
+        2,
+        WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: "win-a".to_owned(),
+            float_rect: None,
+        }),
+    );
+    let queued = [(
+        3,
+        WorldCommand::SetSticky {
+            window: WindowId("win-a".to_owned()),
+            value: true,
+        },
+    )];
+    let (outcome, settlements) = engine.handle_report(&batch, &queued);
+    assert!(matches!(outcome, V4RunOutcome::Accepted(_)));
+    assert_eq!(settlements.len(), 2);
+
+    assert_eq!(
+        engine.known_echo(&out_a),
+        Some(l1.clone()),
+        "native echo must survive restage_classification"
+    );
+    assert_eq!(
+        engine.effective_view(&out_a),
+        Some(l1),
+        "effective_view must keep native echo over retained view"
+    );
+}

@@ -635,6 +635,8 @@ impl WorldEngine {
                     self.settle_intent_admissions();
                     self.sync_toggle_float_command(&bookkeeping);
                     self.upsert_ordinary_toggle_float_save(&bookkeeping, &result);
+                    self.restage_classification();
+                    self.build_staged_domains();
                     if effect.kind == EffectKind::Focus {
                         // Latest explicit focus wins: drop every unissued
                         // prior Focus (admission or earlier batch). Canonical
@@ -670,6 +672,8 @@ impl WorldEngine {
                     self.sync_toggle_float_command(&bookkeeping);
                     let result = self.command_result.take();
                     self.upsert_ordinary_toggle_float_save(&bookkeeping, &result);
+                    self.restage_classification();
+                    self.build_staged_domains();
                     crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
                     if effects
                         .iter()
