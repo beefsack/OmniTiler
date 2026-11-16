@@ -90,12 +90,26 @@ inline constexpr KdeEnumOptionDescriptor kOptionsForMigrationSourceRefill[] = {
     {"most-recently-used-workspace", kli18n("Most recently used workspace"), kli18n("bspwm, i3, awesome")},
 };
 
+inline constexpr KdeEnumOptionDescriptor kOptionsForSwitchTarget[] = {
+    {"cursor-output", kli18n("Cursor output"), kli18n("COSMIC")},
+    {"focused-output", kli18n("Focused output"), kli18n("i3, sway")},
+};
+
+inline constexpr KdeEnumOptionDescriptor kOptionsForFreshPlacement[] = {
+    {"cursor-output-last-focused", kli18n("Cursor output, last-focused window"), kli18n("COSMIC")},
+    {"cursor-output-cursor-closest", kli18n("Cursor output, cursor-closest window"), kli18n("Hyprland")},
+    {"focused-output-last-focused", kli18n("Focused output, last-focused window"), kli18n("i3, sway")},
+};
+
 inline constexpr KdeFieldDescriptor kKdeFields[] = {
     {"workspace.mode", "Script-omnitiler-kwin", "workspaceMode", "workspaceModeCombo", kli18n("The multi-output workspace model"), kli18n("The multi-output workspace model (requires session restart; per-output needs KWin 6.7+, 6.6 uses shared):"), "Enum", "per-output-local", "", "", kOptionsForWorkspaceMode, 3, "tiling-workspaces"},
     {"move.same-axis", "Script-omnitiler-kwin", "sameAxisMove", "sameAxisMoveCombo", kli18n("The same-axis move behavior"), kli18n("Same-axis move behavior:"), "Enum", "group-with-neighbor", "", "", kOptionsForSameAxisMove, 2, "tiling-workspaces"},
     {"admission.fixed-size", "Script-omnitiler-kwin", "fixedSizePredicate", "fixedSizePredicateCombo", kli18n("The fixed-size admission predicate"), kli18n("Fixed-size admission predicate:"), "Enum", "both-axes-fixed", "", "", kOptionsForFixedSizePredicate, 2, "tiling-workspaces"},
     {"admission.born-maximized", "Script-omnitiler-kwin", "bornMaximized", "bornMaximizedCombo", kli18n("The born-maximized admission behavior"), kli18n("Born-maximized admission behavior:"), "Enum", "tile-on-launch", "", "", kOptionsForBornMaximized, 2, "tiling-workspaces"},
     {"migration.refill", "Script-omnitiler-kwin", "migrationSourceRefill", "migrationSourceRefillCombo", kli18n("Source workspace after migration"), kli18n("Source workspace after migration:"), "Enum", "last-remaining-workspace", "", "", kOptionsForMigrationSourceRefill, 2, "tiling-workspaces"},
+    {"output.switch-target", "Script-omnitiler-kwin", "switchTarget", "switchTargetCombo", kli18n("Workspace-switch target"), kli18n("Workspace-switch target:"), "Enum", "cursor-output", "", "", kOptionsForSwitchTarget, 2, "tiling-workspaces"},
+    {"output.fresh-placement", "Script-omnitiler-kwin", "freshPlacement", "freshPlacementCombo", kli18n("New-window placement"), kli18n("New-window placement:"), "Enum", "cursor-output-last-focused", "", "", kOptionsForFreshPlacement, 3, "tiling-workspaces"},
+    {"output.focus-follows-cursor", "Script-omnitiler-kwin", "focusFollowsCursor", "focusFollowsCursorCheckBox", kli18n("Focus follows cursor"), kli18n("Focus follows cursor"), "Bool", "false", "", "", nullptr, 0, "tiling-workspaces"},
     {"gaps.inner", "Script-omnitiler-kwin", "innerGap", "innerGapSpinBox", kli18n("Gap between tiled windows"), kli18n("Gap between tiled windows:"), "Int", "8", "0", "64", nullptr, 0, "tiling-workspaces"},
     {"gaps.outer", "Script-omnitiler-kwin", "outerGap", "outerGapSpinBox", kli18n("Gap between tiled windows and the work area edge"), kli18n("Gap between tiled windows and the work area edge:"), "Int", "8", "0", "64", nullptr, 0, "tiling-workspaces"},
     {"border.color", "Effect-omnitiler-active-border", "BorderColor", "kcfg_BorderColor", kli18n("Fallback border color"), kli18n("Fallback border color:"), "Color", "#2a82da", "", "", nullptr, 0, "appearance"},
@@ -122,11 +136,11 @@ inline constexpr KdePanelDescriptor kKdePanels[] = {
 };
 
 inline constexpr int kKdeTabCount = 4;
-inline constexpr int kKdeExposedFieldCount = 14;
+inline constexpr int kKdeExposedFieldCount = 17;
 inline constexpr int kKdeNativePanelCount = 11;
 
 static_assert(kKdeTabCount == 4, "four native tabs");
-static_assert(kKdeExposedFieldCount == 14, "fourteen exposed fields");
+static_assert(kKdeExposedFieldCount == 17, "seventeen exposed fields");
 static_assert(kKdeNativePanelCount == 11, "native panels");
 
 } // namespace OmnitilerKdeSettings

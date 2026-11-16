@@ -43,7 +43,8 @@
   in `world_tiling_views.rs` / `world_commands.rs`.
 - The active KDE v4 report encoder omits legacy observer targeting declarations;
   settings use the separate revisioned connection lane. Normal runtime settings
-  now carry the three approved fields; native catalog mappings remain pending.
+  and native controls now carry the three approved fields through the existing
+  catalog/descriptor route.
 - Existing hover-motion subscription is settings-acceptance gated; this work
   adopts its normal settings surface, not another motion mechanism.
 
@@ -86,4 +87,28 @@
   Rust format, three-package all-target build and strict clippy; Rust tests
   3,460 passed, 3 ignored; KWin typecheck and 1,367 tests; launcher 703 and
   native-effect launcher 204 checks.
-- Native controls and fixture-only PX acceptance remain.
+
+### Native targeting controls
+
+- The exporter now exposes the same three catalog fields through two enum
+  controls and one Boolean checkbox. Generated schema and descriptor entries
+  preserve the existing keys, tokens, defaults and descriptor shape. Cursor
+  warp remains unsupported; no core or protocol changes were needed.
+- Load, dirty tracking, Defaults and exact-key Save include all three fields.
+  Save requests live reconfigure without claiming application; failures retain
+  the existing retry path. Only workspace mode requires restart. Hidden,
+  foreign, shortcut and host settings retain their existing ownership.
+- The first native run failed two new assertions that assumed malformed stored
+  Boolean text used the false default. KWin and the native control both delegate
+  storage decoding to KConfig; the corrected tests preserve that existing
+  behavior while separately pinning missing-key false and actual Boolean type.
+  Strict protocol and isolated JSON validation remain unchanged.
+- Final review found no blocking issues. Verification passed: Rust format,
+  three-package all-target build and
+  strict clippy; Rust tests 3,460 passed, 3 ignored; KWin typecheck and 1,367
+  tests; launcher 703 and native-effect launcher 204 checks. Exporter tests
+  passed 14/14, strict exporter clippy passed, and all generated artifacts
+  matched the exporter. The isolated settings-only native check passed 27/27,
+  including targeting persistence, Defaults/Cancel, reconfigure and retry.
+- Frozen fixtures were unchanged. Fixture-only PX execution and native
+  keyboard/visual acceptance remain; these offline checks do not close them.

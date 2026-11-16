@@ -49,6 +49,9 @@ const SCRIPT_SETTINGS = {
     fixedSizePredicate: { type: "Enum", defaultValue: "both-axes-fixed" },
     bornMaximized: { type: "Enum", defaultValue: "tile-on-launch" },
     migrationSourceRefill: { type: "Enum", defaultValue: "last-remaining-workspace" },
+    switchTarget: { type: "Enum", defaultValue: "cursor-output" },
+    freshPlacement: { type: "Enum", defaultValue: "cursor-output-last-focused" },
+    focusFollowsCursor: { type: "Bool", defaultValue: "false" },
     innerGap: { type: "Int", defaultValue: "8" },
     outerGap: { type: "Int", defaultValue: "8" },
 } as const;
@@ -157,6 +160,9 @@ describe("native KCM static contract", () => {
             "fixedSizePredicateCombo",
             "bornMaximizedCombo",
             "migrationSourceRefillCombo",
+            "switchTargetCombo",
+            "freshPlacementCombo",
+            "focusFollowsCursorCheckBox",
             "innerGapSpinBox",
             "outerGapSpinBox",
             "shortcutApplyButton",
@@ -213,7 +219,14 @@ describe("native KCM static contract", () => {
         // Catalog-owned metadata lives in the generated descriptors and the
         // focused adapter: defaults, bounds, tokens and enum rows derive
         // from there, while the module keeps persistence and staging.
-        assert.match(descriptors, /kKdeExposedFieldCount == 14/);
+        assert.match(descriptors, /kKdeExposedFieldCount == 17/);
+        assert.match(descriptors, /"switchTarget", "switchTargetCombo"/);
+        assert.match(descriptors, /"focused-output"/);
+        assert.match(descriptors, /"freshPlacement", "freshPlacementCombo"/);
+        assert.match(descriptors, /"cursor-output-cursor-closest"/);
+        assert.match(descriptors, /"focusFollowsCursor", "focusFollowsCursorCheckBox"/);
+        assert.doesNotMatch(descriptors, /cursorWarp/);
+        assert.doesNotMatch(descriptors, /CursorWarp/);
         assert.match(descriptors, /"workspaceMode", "workspaceModeCombo"/);
         assert.match(descriptors, /"innerGap", "innerGapSpinBox"/);
         assert.match(adapterHeader, /findScriptFieldByKey/);
@@ -299,6 +312,12 @@ describe("native KCM static contract", () => {
         assert.doesNotMatch(unified, /noSpaceResult/);
         assert.match(unified, /findScriptFieldByKey\(QStringLiteral\("migrationSourceRefill"\)\)/);
         assert.match(unified, /writeEntry\(QStringLiteral\("migrationSourceRefill"\)/);
+        assert.match(unified, /findScriptFieldByKey\(QStringLiteral\("switchTarget"\)\)/);
+        assert.match(unified, /writeEntry\(QStringLiteral\("switchTarget"\)/);
+        assert.match(unified, /findScriptFieldByKey\(QStringLiteral\("freshPlacement"\)\)/);
+        assert.match(unified, /writeEntry\(QStringLiteral\("freshPlacement"\)/);
+        assert.match(unified, /findScriptFieldByKey\(QStringLiteral\("focusFollowsCursor"\)\)/);
+        assert.match(unified, /writeEntry\(QStringLiteral\("focusFollowsCursor"\)/);
         assert.doesNotMatch(unified, /tilingAlgorithm|automaticSplitTarget|dropOutlinePreview/);
     });
 
@@ -437,6 +456,8 @@ describe("native KCM static contract", () => {
             ["label_fixedSizePredicate", "fixedSizePredicateCombo"],
             ["label_bornMaximized", "bornMaximizedCombo"],
             ["label_migrationSourceRefill", "migrationSourceRefillCombo"],
+            ["label_switchTarget", "switchTargetCombo"],
+            ["label_freshPlacement", "freshPlacementCombo"],
             ["label_innerGap", "innerGapSpinBox"],
             ["label_outerGap", "outerGapSpinBox"],
         ]) {

@@ -61,6 +61,27 @@
                 <choice name="most-recently-used-workspace" value="most-recently-used-workspace"/>
             </choices>
         </entry>
+        <entry name="switchTarget" type="Enum">
+            <label>Workspace-switch target</label>
+            <default>cursor-output</default>
+            <choices>
+                <choice name="cursor-output" value="cursor-output"/>
+                <choice name="focused-output" value="focused-output"/>
+            </choices>
+        </entry>
+        <entry name="freshPlacement" type="Enum">
+            <label>New-window placement</label>
+            <default>cursor-output-last-focused</default>
+            <choices>
+                <choice name="cursor-output-last-focused" value="cursor-output-last-focused"/>
+                <choice name="cursor-output-cursor-closest" value="cursor-output-cursor-closest"/>
+                <choice name="focused-output-last-focused" value="focused-output-last-focused"/>
+            </choices>
+        </entry>
+        <entry name="focusFollowsCursor" type="Bool">
+            <label>Focus follows cursor</label>
+            <default>false</default>
+        </entry>
         <entry name="innerGap" type="Int">
             <label>Gap between tiled windows</label>
             <default>8</default>

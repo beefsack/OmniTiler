@@ -36,8 +36,8 @@ namespace KWin
 namespace KdeSettingsAdapter
 {
 
-/// kwinrc group owning the seven script settings (workspace mode, move,
-/// admission, refill, gaps). Effect keys stay KConfigXT-managed.
+/// kwinrc group owning the ten script settings (workspace mode, move,
+/// admission, refill, output targeting, gaps). Effect keys stay KConfigXT-managed.
 QString scriptConfigGroupName();
 
 /// Descriptor lookups over the generated tables (nullptr when absent; the
@@ -53,6 +53,8 @@ const OmnitilerKdeSettings::KdeFieldDescriptor *findScriptFieldByKey(const QStri
 /// - readBoundedInt clamps to [min, max] with the descriptor default for
 ///   missing/non-numeric/out-of-range entries; isBoundedIntRawValid reports
 ///   whether the stored entry needs that repair.
+/// - readBool uses native KConfig Boolean decoding with the descriptor
+///   default for missing keys; it does not add a separate text parser.
 QString readEnumToken(const KConfigGroup &group,
                       const OmnitilerKdeSettings::KdeFieldDescriptor *field);
 QString readWorkspaceMode(const KConfigGroup &group);
@@ -60,10 +62,13 @@ int readBoundedInt(const KConfigGroup &group,
                    const OmnitilerKdeSettings::KdeFieldDescriptor *field);
 bool isBoundedIntRawValid(const KConfigGroup &group,
                           const OmnitilerKdeSettings::KdeFieldDescriptor *field);
+bool readBool(const KConfigGroup &group,
+              const OmnitilerKdeSettings::KdeFieldDescriptor *field);
 
 int intMinimum(const OmnitilerKdeSettings::KdeFieldDescriptor *field);
 int intMaximum(const OmnitilerKdeSettings::KdeFieldDescriptor *field);
 int intDefault(const OmnitilerKdeSettings::KdeFieldDescriptor *field);
+bool boolDefault(const OmnitilerKdeSettings::KdeFieldDescriptor *field);
 
 double doubleMinimum(const OmnitilerKdeSettings::KdeFieldDescriptor *field);
 double doubleMaximum(const OmnitilerKdeSettings::KdeFieldDescriptor *field);

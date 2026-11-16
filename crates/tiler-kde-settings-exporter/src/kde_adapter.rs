@@ -10,13 +10,11 @@
 //! no native operations (no Fix/Force/Revert, no shortcut apply); it only
 //! describes mappings for the development-only exporter.
 //!
-//! Coverage: 14 of the 21 portable fields have KCM controls. Six portable
+//! Coverage: 17 of the 21 portable fields have KCM controls. Three portable
 //! fields are explicitly unsupported on KDE (no KConfig key, no widget):
-//! `border.enabled`, `underlay.enabled`, plus the four output-targeting
-//! fields `output.switch-target`, `output.fresh-placement`,
-//! `output.focus-follows-cursor` and `output.cursor-warp`, which the KDE
-//! runtime does not expose today (fixed focused-output/last-focused
-//! targeting, false cursor toggles). One portable field,
+//! `border.enabled`, `underlay.enabled` and the one remaining output-targeting
+//! field `output.cursor-warp`, which the KDE runtime does not expose today
+//! (cursor warp unsupported; no warp capability). One portable field,
 //! `workspace.default-tiled`, is schema-only on KDE (persisted in
 //! `main.xml`, consumed by the tray/script; intentionally no KCM control).
 //! Two entries are KDE-native-only and stay out of the catalog: the
@@ -185,7 +183,7 @@ pub fn kde_exposed_options(field_id: &str) -> Vec<&'static EnumOption> {
         .collect()
 }
 
-/// Every KDE-exposed portable field in native UI row order (14 entries:
+/// Every KDE-exposed portable field in native UI row order (17 entries:
 /// script rows as laid out in the Tiling & Workspaces form, then effect
 /// rows as laid out in the Appearance form).
 pub const KDE_EXPOSED_FIELDS: &[KdeField] = &[
@@ -238,6 +236,36 @@ pub const KDE_EXPOSED_FIELDS: &[KdeField] = &[
         schema_label: "Source workspace after migration",
         schema_tooltip: "",
         ui_label: "Source workspace after migration:",
+    },
+    KdeField {
+        field_id: settings_catalog::FIELD_SWITCH_TARGET,
+        group: GROUP_SCRIPT,
+        key: "switchTarget",
+        widget: "switchTargetCombo",
+        schema_type: "Enum",
+        schema_label: "Workspace-switch target",
+        schema_tooltip: "",
+        ui_label: "Workspace-switch target:",
+    },
+    KdeField {
+        field_id: settings_catalog::FIELD_FRESH_PLACEMENT,
+        group: GROUP_SCRIPT,
+        key: "freshPlacement",
+        widget: "freshPlacementCombo",
+        schema_type: "Enum",
+        schema_label: "New-window placement",
+        schema_tooltip: "",
+        ui_label: "New-window placement:",
+    },
+    KdeField {
+        field_id: settings_catalog::FIELD_FOCUS_FOLLOWS_CURSOR,
+        group: GROUP_SCRIPT,
+        key: "focusFollowsCursor",
+        widget: "focusFollowsCursorCheckBox",
+        schema_type: "Bool",
+        schema_label: "Focus follows cursor",
+        schema_tooltip: "",
+        ui_label: "Focus follows cursor",
     },
     KdeField {
         field_id: settings_catalog::FIELD_INNER_GAP,
@@ -336,15 +364,12 @@ pub const KDE_EXPOSED_FIELDS: &[KdeField] = &[
 // ---------------------------------------------------------------------------
 
 /// Portable fields with no KDE control (no KConfig key, no widget).
-/// Adapter-only exclusion list; shared capabilities are unchanged. The four
-/// output-targeting entries stay catalog-portable but have no KCM control
-/// or schema key on KDE today (not a Stage 6 control decision).
+/// Adapter-only exclusion list; shared capabilities are unchanged. The one
+/// remaining output-targeting entry stays catalog-portable but has no KCM
+/// control or schema key on KDE today (cursor warp stays unsupported).
 pub const KDE_UNSUPPORTED_FIELDS: &[&str] = &[
     settings_catalog::FIELD_BORDER_ENABLED,
     settings_catalog::FIELD_UNDERLAY_ENABLED,
-    settings_catalog::FIELD_SWITCH_TARGET,
-    settings_catalog::FIELD_FRESH_PLACEMENT,
-    settings_catalog::FIELD_FOCUS_FOLLOWS_CURSOR,
     settings_catalog::FIELD_CURSOR_WARP,
 ];
 
@@ -496,6 +521,13 @@ mod tests {
         ("admission.fixed-size", "both-axes-fixed", "Enum"),
         ("admission.born-maximized", "tile-on-launch", "Enum"),
         ("migration.refill", "last-remaining-workspace", "Enum"),
+        ("output.switch-target", "cursor-output", "Enum"),
+        (
+            "output.fresh-placement",
+            "cursor-output-last-focused",
+            "Enum",
+        ),
+        ("output.focus-follows-cursor", "false", "Bool"),
         ("gaps.inner", "8", "Int"),
         ("gaps.outer", "8", "Int"),
         ("border.color", "#2a82da", "Color"),
@@ -529,6 +561,15 @@ mod tests {
             "migration.refill",
             &["last-remaining-workspace", "most-recently-used-workspace"],
         ),
+        ("output.switch-target", &["cursor-output", "focused-output"]),
+        (
+            "output.fresh-placement",
+            &[
+                "cursor-output-last-focused",
+                "cursor-output-cursor-closest",
+                "focused-output-last-focused",
+            ],
+        ),
     ];
 
     /// Independent golden native key order (script form rows, then
@@ -539,6 +580,9 @@ mod tests {
         "fixedSizePredicate",
         "bornMaximized",
         "migrationSourceRefill",
+        "switchTarget",
+        "freshPlacement",
+        "focusFollowsCursor",
         "innerGap",
         "outerGap",
         "BorderColor",
@@ -559,6 +603,9 @@ mod tests {
         "Fixed-size admission predicate:",
         "Born-maximized admission behavior:",
         "Source workspace after migration:",
+        "Workspace-switch target:",
+        "New-window placement:",
+        "Focus follows cursor",
         "Gap between tiled windows:",
         "Gap between tiled windows and the work area edge:",
         "Fallback border color:",
@@ -581,8 +628,8 @@ mod tests {
                 field.field_id
             );
         }
-        assert_eq!(KDE_EXPOSED_FIELDS.len(), 14);
-        assert_eq!(KDE_UNSUPPORTED_FIELDS.len(), 6);
+        assert_eq!(KDE_EXPOSED_FIELDS.len(), 17);
+        assert_eq!(KDE_UNSUPPORTED_FIELDS.len(), 3);
         for unsupported in KDE_UNSUPPORTED_FIELDS {
             assert!(
                 settings_catalog::find_field(unsupported).is_some(),

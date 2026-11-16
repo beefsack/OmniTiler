@@ -8,6 +8,7 @@
 #include <KLocalizedString>
 #include <QLoggingCategory>
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDBusConnection>
 #include <QDBusInterface>
@@ -49,7 +50,7 @@ void ShortcutTaskWorker::execute(Task task, quint64 generation)
 namespace
 {
 
-QStringList liveChangedNames(bool gapChanged, bool sameAxisMoveChanged, bool fixedPredicateChanged, bool bornMaximizedChanged, bool refillChanged)
+QStringList liveChangedNames(bool gapChanged, bool sameAxisMoveChanged, bool fixedPredicateChanged, bool bornMaximizedChanged, bool refillChanged, bool switchTargetChanged, bool freshPlacementChanged, bool focusFollowsCursorChanged)
 {
     QStringList names;
     if (gapChanged) {
@@ -66,6 +67,15 @@ QStringList liveChangedNames(bool gapChanged, bool sameAxisMoveChanged, bool fix
     }
     if (refillChanged) {
         names.append(QStringLiteral("migration source refill"));
+    }
+    if (switchTargetChanged) {
+        names.append(QStringLiteral("workspace-switch target"));
+    }
+    if (freshPlacementChanged) {
+        names.append(QStringLiteral("new-window placement"));
+    }
+    if (focusFollowsCursorChanged) {
+        names.append(QStringLiteral("focus follows cursor"));
     }
     return names;
 }
@@ -130,6 +140,11 @@ UnifiedSettingsModule::UnifiedSettingsModule(QObject *parent, const KPluginMetaD
             &UnifiedSettingsModule::updateScriptState);
     connect(m_ui.migrationSourceRefillCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             &UnifiedSettingsModule::updateScriptState);
+    connect(m_ui.switchTargetCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &UnifiedSettingsModule::updateScriptState);
+    connect(m_ui.freshPlacementCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &UnifiedSettingsModule::updateScriptState);
+    connect(m_ui.focusFollowsCursorCheckBox, &QCheckBox::toggled, this, &UnifiedSettingsModule::updateScriptState);
     connect(m_ui.innerGapSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this,
             &UnifiedSettingsModule::updateScriptState);
     connect(m_ui.outerGapSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this,
@@ -1570,6 +1585,9 @@ QVariantMap UnifiedSettingsModule::currentScriptValues() const
         {QStringLiteral("fixedSizePredicate"), m_ui.fixedSizePredicateCombo->currentData()},
         {QStringLiteral("bornMaximized"), m_ui.bornMaximizedCombo->currentData()},
         {QStringLiteral("migrationSourceRefill"), m_ui.migrationSourceRefillCombo->currentData()},
+        {QStringLiteral("switchTarget"), m_ui.switchTargetCombo->currentData()},
+        {QStringLiteral("freshPlacement"), m_ui.freshPlacementCombo->currentData()},
+        {QStringLiteral("focusFollowsCursor"), m_ui.focusFollowsCursorCheckBox->isChecked()},
         {QStringLiteral("innerGap"), m_ui.innerGapSpinBox->value()},
         {QStringLiteral("outerGap"), m_ui.outerGapSpinBox->value()},
     };
@@ -1624,6 +1642,12 @@ void UnifiedSettingsModule::load()
         group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("bornMaximized")));
     const QString migrationSourceRefill = KdeSettingsAdapter::readEnumToken(
         group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("migrationSourceRefill")));
+    const QString switchTarget = KdeSettingsAdapter::readEnumToken(
+        group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("switchTarget")));
+    const QString freshPlacement = KdeSettingsAdapter::readEnumToken(
+        group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("freshPlacement")));
+    const bool focusFollowsCursor = KdeSettingsAdapter::readBool(
+        group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("focusFollowsCursor")));
     const int innerGap = KdeSettingsAdapter::readBoundedInt(
         group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("innerGap")));
     const int outerGap = KdeSettingsAdapter::readBoundedInt(
@@ -1642,6 +1666,9 @@ void UnifiedSettingsModule::load()
     select(m_ui.bornMaximizedCombo, bornMaximized, catalogDefaults.value(QStringLiteral("bornMaximized")).toString());
     select(m_ui.migrationSourceRefillCombo, migrationSourceRefill,
            catalogDefaults.value(QStringLiteral("migrationSourceRefill")).toString());
+    select(m_ui.switchTargetCombo, switchTarget, catalogDefaults.value(QStringLiteral("switchTarget")).toString());
+    select(m_ui.freshPlacementCombo, freshPlacement, catalogDefaults.value(QStringLiteral("freshPlacement")).toString());
+    m_ui.focusFollowsCursorCheckBox->setChecked(focusFollowsCursor);
     m_ui.innerGapSpinBox->setValue(innerGap);
     m_ui.outerGapSpinBox->setValue(outerGap);
     m_loadedScriptValues = {
@@ -1650,6 +1677,9 @@ void UnifiedSettingsModule::load()
         {QStringLiteral("fixedSizePredicate"), fixedSizePredicate},
         {QStringLiteral("bornMaximized"), bornMaximized},
         {QStringLiteral("migrationSourceRefill"), migrationSourceRefill},
+        {QStringLiteral("switchTarget"), switchTarget},
+        {QStringLiteral("freshPlacement"), freshPlacement},
+        {QStringLiteral("focusFollowsCursor"), focusFollowsCursor},
         {QStringLiteral("innerGap"), innerGap},
         {QStringLiteral("outerGap"), outerGap},
     };
@@ -1686,6 +1716,12 @@ void UnifiedSettingsModule::save()
         != m_loadedScriptValues.value(QStringLiteral("bornMaximized"));
     const bool refillChanged = current.value(QStringLiteral("migrationSourceRefill"))
         != m_loadedScriptValues.value(QStringLiteral("migrationSourceRefill"));
+    const bool switchTargetChanged = current.value(QStringLiteral("switchTarget"))
+        != m_loadedScriptValues.value(QStringLiteral("switchTarget"));
+    const bool freshPlacementChanged = current.value(QStringLiteral("freshPlacement"))
+        != m_loadedScriptValues.value(QStringLiteral("freshPlacement"));
+    const bool focusFollowsCursorChanged = current.value(QStringLiteral("focusFollowsCursor")).toBool()
+        != m_loadedScriptValues.value(QStringLiteral("focusFollowsCursor")).toBool();
     const bool startupConsumedChanged = workspaceModeChanged;
     const bool scriptRetryArmed = m_gapReconfigurePending;
 
@@ -1699,8 +1735,9 @@ void UnifiedSettingsModule::save()
         updateScriptState();
     } else {
     // This module owns exactly workspaceMode, sameAxisMove,
-    // fixedSizePredicate, bornMaximized, migrationSourceRefill, innerGap, and outerGap. Any other key in this
-    // group (including the hidden shortcutProfile) is never read here
+    // fixedSizePredicate, bornMaximized, migrationSourceRefill, switchTarget,
+    // freshPlacement, focusFollowsCursor, innerGap, and outerGap. Any other
+    // key in this group (including the hidden shortcutProfile) is never read here
     // beyond the group open and is never written; there is no migration. A
     // pure retry save (pending request, unchanged widgets) skips
     // persistence: the loaded values already match the widgets.
@@ -1728,6 +1765,18 @@ void UnifiedSettingsModule::save()
             group.writeEntry(QStringLiteral("migrationSourceRefill"), current.value(QStringLiteral("migrationSourceRefill")).toString());
             written.append(QStringLiteral("migrationSourceRefill"));
         }
+        if (switchTargetChanged) {
+            group.writeEntry(QStringLiteral("switchTarget"), current.value(QStringLiteral("switchTarget")).toString());
+            written.append(QStringLiteral("switchTarget"));
+        }
+        if (freshPlacementChanged) {
+            group.writeEntry(QStringLiteral("freshPlacement"), current.value(QStringLiteral("freshPlacement")).toString());
+            written.append(QStringLiteral("freshPlacement"));
+        }
+        if (focusFollowsCursorChanged) {
+            group.writeEntry(QStringLiteral("focusFollowsCursor"), current.value(QStringLiteral("focusFollowsCursor")).toBool());
+            written.append(QStringLiteral("focusFollowsCursor"));
+        }
         if (!m_loadedInnerGapRawValid
             || current.value(QStringLiteral("innerGap")) != m_loadedScriptValues.value(QStringLiteral("innerGap"))) {
             group.writeEntry(QStringLiteral("innerGap"), current.value(QStringLiteral("innerGap")).toInt());
@@ -1754,15 +1803,17 @@ void UnifiedSettingsModule::save()
                         QStringLiteral("keys=%1").arg(startupWritten.join(QStringLiteral(","))));
     }
     // Changed gaps, same-axis moves, fixed-size predicates, born-maximized
-    // modes, and migration
-    // source refills request one
+    // modes, migration source refills, workspace-switch targets,
+    // new-window placements, and focus-follows-cursor request one
     // typed KWin reconfigure after persistence whose pickup is the running
     // controller's Options configChanged live re-read (gaps re-resolve,
     // same-axis applies to subsequent moves with no tree rebuild,
     // fixed-size predicate applies to subsequent admissions with no
     // reclassification, born-maximized applies to subsequent admissions with
     // no rebuild or reclassification, source refill applies to subsequent
-    // migrations with no destination/history/lifecycle work).
+    // migrations with no destination/history/lifecycle work, switch target
+    // applies to subsequent selections, fresh placement applies to subsequent
+    // admissions, focus-follows-cursor applies live).
     // KWin's reconfigure is Q_NOREPLY, so a queued send never proves the
     // running script reread kwinrc. Success reports sent-but-unconfirmed and
     // clears any pending retry; failure arms a retry on the next save (an
@@ -1772,14 +1823,14 @@ void UnifiedSettingsModule::save()
     // was saved by the retry. A queued send never clears a pending
     // session-restart requirement for the startup-consumed setting
     // (workspaceMode) and never claims the running tiler applied saved values.
-    // Same-axis move, fixed-size predicate, born-maximized,
-    // and migration
-    // source refill
-    // changes never set the restart
-    // requirement: they apply to subsequent moves/admissions/migrations after the live
+    // Same-axis move, fixed-size predicate, born-maximized, migration
+    // source refill, workspace-switch target, new-window placement, and
+    // focus-follows-cursor changes never set the restart
+    // requirement: they apply to subsequent moves/admissions/migrations/
+    // selections or live after the live
     // re-read.
-    const bool liveChanged = gapChanged || sameAxisMoveChanged || fixedPredicateChanged || bornMaximizedChanged || refillChanged;
-    const QString liveNames = liveChangedNames(gapChanged, sameAxisMoveChanged, fixedPredicateChanged, bornMaximizedChanged, refillChanged).join(QStringLiteral(", "));
+    const bool liveChanged = gapChanged || sameAxisMoveChanged || fixedPredicateChanged || bornMaximizedChanged || refillChanged || switchTargetChanged || freshPlacementChanged || focusFollowsCursorChanged;
+    const QString liveNames = liveChangedNames(gapChanged, sameAxisMoveChanged, fixedPredicateChanged, bornMaximizedChanged, refillChanged, switchTargetChanged, freshPlacementChanged, focusFollowsCursorChanged).join(QStringLiteral(", "));
     if (liveChanged || scriptRetryArmed) {
         if (requestScriptReconfigure()) {
             m_gapReconfigurePending = false;
@@ -1796,7 +1847,7 @@ void UnifiedSettingsModule::save()
                         "settings are unchanged. Restart the session to guarantee pickup.");
                 }
             } else if (m_scriptRestartRequired) {
-                if (refillChanged) {
+                if (refillChanged || switchTargetChanged || freshPlacementChanged || focusFollowsCursorChanged) {
                     m_scriptStatus = QStringLiteral(
                         "Settings saved to kwinrc. Reconfigure request sent for live settings including %1; "
                         "application unconfirmed. Session restart remains required for workspace mode. Restart the "
@@ -1827,7 +1878,7 @@ void UnifiedSettingsModule::save()
                         "application unconfirmed. Session restart remains required for workspace mode. Restart the "
                         "session to guarantee pickup.");
                 }
-            } else if (refillChanged) {
+            } else if (refillChanged || switchTargetChanged || freshPlacementChanged || focusFollowsCursorChanged) {
                 m_scriptStatus = QStringLiteral(
                     "Live settings including %1 saved to kwinrc. Reconfigure request sent; application unconfirmed. Restart the "
                     "session to guarantee pickup.").arg(liveNames);
@@ -1868,7 +1919,7 @@ void UnifiedSettingsModule::save()
                         "nothing; the request will retry on the next save. Restart the session to guarantee pickup.");
                 }
             } else if (m_scriptRestartRequired) {
-                if (refillChanged) {
+                if (refillChanged || switchTargetChanged || freshPlacementChanged || focusFollowsCursorChanged) {
                     m_scriptStatus = QStringLiteral(
                         "Settings saved to kwinrc. Reconfigure request failed; pickup of "
                         "live settings including %1 is unconfirmed. The request will retry on the next save. Session restart remains required for "
@@ -1899,7 +1950,7 @@ void UnifiedSettingsModule::save()
                         "startup gap values. The request will retry on the next save. Session restart remains required for "
                         "workspace mode.");
                 }
-            } else if (refillChanged) {
+            } else if (refillChanged || switchTargetChanged || freshPlacementChanged || focusFollowsCursorChanged) {
                 m_scriptStatus = QStringLiteral(
                     "Live settings including %1 saved to kwinrc. Reconfigure request failed; pickup of live settings "
                     "is unconfirmed. The request will retry on the next save; restart the session to guarantee pickup.").arg(liveNames);
@@ -1970,6 +2021,13 @@ void UnifiedSettingsModule::defaults()
     KdeSettingsAdapter::selectEnumCombo(m_ui.migrationSourceRefillCombo,
                                        catalogDefaults.value(QStringLiteral("migrationSourceRefill")).toString(),
                                        catalogDefaults.value(QStringLiteral("migrationSourceRefill")).toString());
+    KdeSettingsAdapter::selectEnumCombo(m_ui.switchTargetCombo,
+                                       catalogDefaults.value(QStringLiteral("switchTarget")).toString(),
+                                       catalogDefaults.value(QStringLiteral("switchTarget")).toString());
+    KdeSettingsAdapter::selectEnumCombo(m_ui.freshPlacementCombo,
+                                       catalogDefaults.value(QStringLiteral("freshPlacement")).toString(),
+                                       catalogDefaults.value(QStringLiteral("freshPlacement")).toString());
+    m_ui.focusFollowsCursorCheckBox->setChecked(catalogDefaults.value(QStringLiteral("focusFollowsCursor")).toBool());
     m_ui.innerGapSpinBox->setValue(catalogDefaults.value(QStringLiteral("innerGap")).toInt());
     m_ui.outerGapSpinBox->setValue(catalogDefaults.value(QStringLiteral("outerGap")).toInt());
     // Defaults restage Keep for the shortcut draft with no preview;

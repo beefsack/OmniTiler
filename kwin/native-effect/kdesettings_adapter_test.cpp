@@ -128,7 +128,7 @@ void descriptorTablesMatchNativeContract()
 {
     using namespace OmnitilerKdeSettings;
     CHECK(kKdeTabCount == 4);
-    CHECK(kKdeExposedFieldCount == 14);
+    CHECK(kKdeExposedFieldCount == 17);
     CHECK(kKdeNativePanelCount == 11);
     const QStringList wantedTabs = {
         QStringLiteral("tiling-workspaces"),
@@ -154,6 +154,9 @@ void descriptorTablesMatchNativeContract()
         QStringLiteral("fixedSizePredicate"),
         QStringLiteral("bornMaximized"),
         QStringLiteral("migrationSourceRefill"),
+        QStringLiteral("switchTarget"),
+        QStringLiteral("freshPlacement"),
+        QStringLiteral("focusFollowsCursor"),
         QStringLiteral("innerGap"),
         QStringLiteral("outerGap"),
     };
@@ -165,9 +168,12 @@ void descriptorTablesMatchNativeContract()
     CHECK(defaults.value(QStringLiteral("bornMaximized")).toString() == QStringLiteral("tile-on-launch"));
     CHECK(defaults.value(QStringLiteral("migrationSourceRefill")).toString()
           == QStringLiteral("last-remaining-workspace"));
+    CHECK(defaults.value(QStringLiteral("switchTarget")).toString() == QStringLiteral("cursor-output"));
+    CHECK(defaults.value(QStringLiteral("freshPlacement")).toString() == QStringLiteral("cursor-output-last-focused"));
+    CHECK(defaults.value(QStringLiteral("focusFollowsCursor")).metaType().id() == QMetaType::Bool);
     CHECK(defaults.value(QStringLiteral("innerGap")).toInt() == 8);
     CHECK(defaults.value(QStringLiteral("outerGap")).toInt() == 8);
-    CHECK(sizeof(kKdeFields) / sizeof(kKdeFields[0]) == 14);
+    CHECK(sizeof(kKdeFields) / sizeof(kKdeFields[0]) == 17);
     for (const auto &field : kKdeFields) {
         CHECK(KWin::KdeSettingsAdapter::findFieldById(field.field_id) == &field);
         CHECK(!QString::fromUtf8(field.key).isEmpty());
@@ -199,11 +205,15 @@ void tolerantReadersPreserveFallback()
     }
     const auto *move = findScriptFieldByKey(QStringLiteral("sameAxisMove"));
     const auto *inner = findScriptFieldByKey(QStringLiteral("innerGap"));
+    const auto *hover = findScriptFieldByKey(QStringLiteral("focusFollowsCursor"));
     CHECK(move != nullptr);
     CHECK(inner != nullptr);
+    CHECK(hover != nullptr);
     // Missing keys read as catalog defaults.
     CHECK(readEnumToken(scriptGroup(), move) == QStringLiteral("group-with-neighbor"));
     CHECK(readBoundedInt(scriptGroup(), inner) == 8);
+    CHECK(readBool(scriptGroup(), hover) == false);
+    CHECK(boolDefault(hover) == false);
     CHECK(isBoundedIntRawValid(scriptGroup(), inner));
     CHECK(intMinimum(inner) == 0);
     CHECK(intMaximum(inner) == 64);
@@ -212,22 +222,38 @@ void tolerantReadersPreserveFallback()
         KConfigGroup group = scriptGroup();
         group.writeEntry(QStringLiteral("sameAxisMove"), QStringLiteral("swap-with-neighbor"));
         group.writeEntry(QStringLiteral("innerGap"), 64);
+        group.writeEntry(QStringLiteral("switchTarget"), QStringLiteral("focused-output"));
+        group.writeEntry(QStringLiteral("freshPlacement"), QStringLiteral("focused-output-last-focused"));
+        group.writeEntry(QStringLiteral("focusFollowsCursor"), true);
         group.sync();
     }
     CHECK(readEnumToken(scriptGroup(), move) == QStringLiteral("swap-with-neighbor"));
     CHECK(readBoundedInt(scriptGroup(), inner) == 64);
+    CHECK(readBool(scriptGroup(), hover) == true);
+    CHECK(readEnumToken(scriptGroup(), findScriptFieldByKey(QStringLiteral("switchTarget"))) == QStringLiteral("focused-output"));
+    CHECK(readEnumToken(scriptGroup(), findScriptFieldByKey(QStringLiteral("freshPlacement"))) == QStringLiteral("focused-output-last-focused"));
     CHECK(isBoundedIntRawValid(scriptGroup(), inner));
-    // Invalid tokens fall back; the startup-only mode keeps the raw entry.
+    // Invalid enum/int tokens fall back to defaults; the startup-only mode
+    // keeps the raw entry; the stored Bool uses native KConfig decoding
+    // (platform-owned per settings.md, not the protocol strict-bool policy).
     {
         KConfigGroup group = scriptGroup();
         group.writeEntry(QStringLiteral("sameAxisMove"), QStringLiteral("bogus"));
         group.writeEntry(QStringLiteral("workspaceMode"), QStringLiteral("bogus-mode"));
         group.writeEntry(QStringLiteral("innerGap"), QStringLiteral("not-a-number"));
+        group.writeEntry(QStringLiteral("switchTarget"), QStringLiteral("bogus"));
+        group.writeEntry(QStringLiteral("freshPlacement"), QStringLiteral("bogus"));
+        group.writeEntry(QStringLiteral("focusFollowsCursor"), QStringLiteral("bogus"));
         group.sync();
     }
     CHECK(readEnumToken(scriptGroup(), move) == QStringLiteral("group-with-neighbor"));
     CHECK(readWorkspaceMode(scriptGroup()) == QStringLiteral("bogus-mode"));
     CHECK(readBoundedInt(scriptGroup(), inner) == 8);
+    // KConfig decodes this stored "bogus" text as true; the missing-key
+    // false default is covered separately above.
+    CHECK(readBool(scriptGroup(), hover) == true);
+    CHECK(readEnumToken(scriptGroup(), findScriptFieldByKey(QStringLiteral("switchTarget"))) == QStringLiteral("cursor-output"));
+    CHECK(readEnumToken(scriptGroup(), findScriptFieldByKey(QStringLiteral("freshPlacement"))) == QStringLiteral("cursor-output-last-focused"));
     CHECK(!isBoundedIntRawValid(scriptGroup(), inner));
     {
         KConfigGroup group = scriptGroup();
@@ -241,6 +267,9 @@ void tolerantReadersPreserveFallback()
         group.deleteEntry(QStringLiteral("sameAxisMove"));
         group.deleteEntry(QStringLiteral("workspaceMode"));
         group.deleteEntry(QStringLiteral("innerGap"));
+        group.deleteEntry(QStringLiteral("switchTarget"));
+        group.deleteEntry(QStringLiteral("freshPlacement"));
+        group.deleteEntry(QStringLiteral("focusFollowsCursor"));
         group.sync();
     }
 }
@@ -486,28 +515,41 @@ void crossTabDraftApplyDefaultsCancelAndExactKeys()
     module.load();
     QComboBox *mode = combo(module, "workspaceModeCombo");
     QComboBox *axis = combo(module, "sameAxisMoveCombo");
+    QComboBox *target = combo(module, "switchTargetCombo");
+    QComboBox *placement = combo(module, "freshPlacementCombo");
+    QCheckBox *hover = module.widget()->findChild<QCheckBox *>(QStringLiteral("focusFollowsCursorCheckBox"));
     CHECK(combo(module, "anchorFallbackCombo") == nullptr);
     CHECK(combo(module, "noSpaceResultCombo") == nullptr);
+    CHECK(combo(module, "cursorWarpCombo") == nullptr);
+    CHECK(combo(module, "cursorWarpCheckBox") == nullptr);
     QSpinBox *inner = gapSpin(module, "innerGapSpinBox");
     QDoubleSpinBox *borderWidth =
         module.widget()->findChild<QDoubleSpinBox *>(QStringLiteral("kcfg_BorderWidth"));
     CHECK(mode != nullptr);
     CHECK(axis != nullptr);
+    CHECK(target != nullptr);
+    CHECK(placement != nullptr);
+    CHECK(hover != nullptr);
     CHECK(inner != nullptr);
     CHECK(borderWidth != nullptr);
-    if (!mode || !axis || !inner || !borderWidth) {
+    if (!mode || !axis || !target || !placement || !hover || !inner || !borderWidth) {
         return;
     }
     // Tolerant load: invalid gap shows the catalog default, valid enum stays.
     CHECK(inner->value() == 8);
     CHECK(axis->currentData().toString() == QStringLiteral("swap-with-neighbor"));
-    // Cross-tab draft: tiling mode + gap plus an Appearance border change.
+    // Cross-tab draft: tiling mode + gap plus targeting plus Appearance border.
     const int modeIndex = mode->findData(QStringLiteral("shared"));
     CHECK(modeIndex >= 0);
     mode->setCurrentIndex(modeIndex);
     const int axisIndex = axis->findData(QStringLiteral("group-with-neighbor"));
     CHECK(axisIndex >= 0);
     axis->setCurrentIndex(axisIndex);
+    CHECK(target->findData(QStringLiteral("focused-output")) >= 0);
+    target->setCurrentIndex(target->findData(QStringLiteral("focused-output")));
+    CHECK(placement->findData(QStringLiteral("cursor-output-cursor-closest")) >= 0);
+    placement->setCurrentIndex(placement->findData(QStringLiteral("cursor-output-cursor-closest")));
+    hover->setChecked(true);
     inner->setValue(12);
     const double borderTarget = (borderWidth->value() == 7.5) ? 6.5 : 7.5;
     borderWidth->setValue(borderTarget);
@@ -518,6 +560,10 @@ void crossTabDraftApplyDefaultsCancelAndExactKeys()
     // Exact saved keys: changed script keys plus the managed border key.
     CHECK(scriptGroup().readEntry(QStringLiteral("workspaceMode"), QString()) == QStringLiteral("shared"));
     CHECK(scriptGroup().readEntry(QStringLiteral("sameAxisMove"), QString()) == QStringLiteral("group-with-neighbor"));
+    CHECK(scriptGroup().readEntry(QStringLiteral("switchTarget"), QString()) == QStringLiteral("focused-output"));
+    CHECK(scriptGroup().readEntry(QStringLiteral("freshPlacement"), QString())
+          == QStringLiteral("cursor-output-cursor-closest"));
+    CHECK(scriptGroup().readEntry(QStringLiteral("focusFollowsCursor"), false) == true);
     CHECK(scriptGroup().readEntry(QStringLiteral("innerGap"), -1) == 12);
     CHECK(!scriptGroup().hasKey(QStringLiteral("outerGap")));
     // Untouched keys stay untouched: removed anchorFallback/noSpaceResult, hidden profile, foreign key, windows.
@@ -534,30 +580,45 @@ void crossTabDraftApplyDefaultsCancelAndExactKeys()
     module.defaults();
     CHECK(mode->currentData().toString() == QStringLiteral("per-output-local"));
     CHECK(axis->currentData().toString() == QStringLiteral("group-with-neighbor"));
+    CHECK(target->currentData().toString() == QStringLiteral("cursor-output"));
+    CHECK(placement->currentData().toString() == QStringLiteral("cursor-output-last-focused"));
+    CHECK(!hover->isChecked());
     CHECK(inner->value() == 8);
     module.save();
     CHECK(scriptGroup().readEntry(QStringLiteral("workspaceMode"), QString())
           == QStringLiteral("per-output-local"));
     CHECK(scriptGroup().readEntry(QStringLiteral("sameAxisMove"), QString())
           == QStringLiteral("group-with-neighbor"));
+    CHECK(scriptGroup().readEntry(QStringLiteral("switchTarget"), QString()) == QStringLiteral("cursor-output"));
+    CHECK(scriptGroup().readEntry(QStringLiteral("freshPlacement"), QString())
+          == QStringLiteral("cursor-output-last-focused"));
+    CHECK(scriptGroup().readEntry(QStringLiteral("focusFollowsCursor"), true) == false);
     CHECK(scriptGroup().readEntry(QStringLiteral("innerGap"), -1) == 8);
     CHECK(scriptGroup().readEntry(QStringLiteral("anchorFallback"), QString()) == QStringLiteral("no-search"));
     CHECK(scriptGroup().readEntry(QStringLiteral("noSpaceResult"), QString()) == QStringLiteral("allow-overlap"));
     CHECK(scriptGroup().readEntry(QStringLiteral("shortcutProfile"), QString()) == QStringLiteral("hyprland"));
     // Cancel (load) discards an unapplied draft without persisting.
     mode->setCurrentIndex(mode->findData(QStringLiteral("shared")));
+    target->setCurrentIndex(target->findData(QStringLiteral("focused-output")));
+    hover->setChecked(true);
     inner->setValue(20);
     CHECK(module.needsSave());
     module.load();
     CHECK(mode->currentData().toString() == QStringLiteral("per-output-local"));
+    CHECK(target->currentData().toString() == QStringLiteral("cursor-output"));
+    CHECK(!hover->isChecked());
     CHECK(inner->value() == 8);
     CHECK(scriptGroup().readEntry(QStringLiteral("workspaceMode"), QString())
           == QStringLiteral("per-output-local"));
+    CHECK(scriptGroup().readEntry(QStringLiteral("switchTarget"), QString()) == QStringLiteral("cursor-output"));
     // Cleanup seeded keys for other scenarios.
     {
         KConfigGroup group = scriptGroup();
         group.deleteEntry(QStringLiteral("workspaceMode"));
         group.deleteEntry(QStringLiteral("sameAxisMove"));
+        group.deleteEntry(QStringLiteral("switchTarget"));
+        group.deleteEntry(QStringLiteral("freshPlacement"));
+        group.deleteEntry(QStringLiteral("focusFollowsCursor"));
         group.deleteEntry(QStringLiteral("anchorFallback"));
         group.deleteEntry(QStringLiteral("noSpaceResult"));
         group.deleteEntry(QStringLiteral("innerGap"));

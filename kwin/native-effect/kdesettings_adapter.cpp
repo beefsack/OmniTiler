@@ -149,6 +149,22 @@ int intDefault(const OmnitilerKdeSettings::KdeFieldDescriptor *field)
     return QString::fromUtf8(field->native_default).toInt();
 }
 
+bool boolDefault(const OmnitilerKdeSettings::KdeFieldDescriptor *field)
+{
+    if (field == nullptr) {
+        return false;
+    }
+    return QString::fromUtf8(field->native_default).compare(QStringLiteral("true"), Qt::CaseInsensitive) == 0;
+}
+
+bool readBool(const KConfigGroup &group, const OmnitilerKdeSettings::KdeFieldDescriptor *field)
+{
+    if (field == nullptr) {
+        return false;
+    }
+    return group.readEntry(fieldKey(field), boolDefault(field));
+}
+
 void populateEnumCombo(QComboBox *combo,
                        const OmnitilerKdeSettings::KdeFieldDescriptor *field)
 {
@@ -304,7 +320,9 @@ QVariantMap scriptDefaults()
         if (!isScriptField(&field)) {
             continue;
         }
-        if (field.option_count > 0 && field.options != nullptr) {
+        if (field.schema_type != nullptr && std::strcmp(field.schema_type, "Bool") == 0) {
+            defaults.insert(QString::fromUtf8(field.key), boolDefault(&field));
+        } else if (field.option_count > 0 && field.options != nullptr) {
             defaults.insert(QString::fromUtf8(field.key), fieldDefaultToken(&field));
         } else {
             defaults.insert(QString::fromUtf8(field.key), intDefault(&field));

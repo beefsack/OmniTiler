@@ -153,6 +153,9 @@ pub fn emit_main_xml() -> String {
         "fixedSizePredicate",
         "bornMaximized",
         "migrationSourceRefill",
+        "switchTarget",
+        "freshPlacement",
+        "focusFollowsCursor",
         "innerGap",
         "outerGap",
     ];
@@ -232,6 +235,21 @@ fn emit_schema_entry(key: &str) -> String {
                 field.schema_label,
                 rendered_default(def),
                 tooltip = tooltip_xml,
+                space = "            ",
+                space2 = "        ",
+            )
+        }
+        FieldType::Bool => {
+            let SettingValue::Bool(_) = def.default else {
+                panic!("bool default for {key}");
+            };
+            format!(
+                "        <entry name=\"{key}\" type=\"Bool\">\n\
+                 {space}<label>{}</label>\n\
+                 {space}<default>{}</default>\n\
+                 {space2}</entry>\n",
+                field.schema_label,
+                rendered_default(def),
                 space = "            ",
                 space2 = "        ",
             )
@@ -414,7 +432,7 @@ pub fn emit_descriptors_header() -> String {
          inline constexpr int kKdeNativePanelCount = {};\n\
          \n\
          static_assert(kKdeTabCount == 4, \"four native tabs\");\n\
-         static_assert(kKdeExposedFieldCount == 14, \"fourteen exposed fields\");\n\
+         static_assert(kKdeExposedFieldCount == 17, \"seventeen exposed fields\");\n\
          static_assert(kKdeNativePanelCount == {}, \"native panels\");\n\
          \n\
          }} // namespace OmnitilerKdeSettings\n\
@@ -540,6 +558,9 @@ mod tests {
             "fixedSizePredicate",
             "bornMaximized",
             "migrationSourceRefill",
+            "switchTarget",
+            "freshPlacement",
+            "focusFollowsCursor",
             "innerGap",
             "outerGap",
         ] {
@@ -553,6 +574,21 @@ mod tests {
         assert!(schema.contains("<max>64</max>"));
         assert!(schema.contains("<default>group-with-neighbor</default>"));
         assert!(schema.contains("<default>true</default>"));
+        assert!(schema.contains("<default>cursor-output</default>"));
+        assert!(schema.contains("<default>cursor-output-last-focused</default>"));
+        assert!(schema.contains("<choice name=\"focused-output\" value=\"focused-output\"/>"));
+        assert!(schema.contains(
+            "<choice name=\"cursor-output-cursor-closest\" value=\"cursor-output-cursor-closest\"/>"
+        ));
+        assert!(schema.contains(
+            "<choice name=\"focused-output-last-focused\" value=\"focused-output-last-focused\"/>"
+        ));
+        assert!(schema.contains("<entry name=\"focusFollowsCursor\" type=\"Bool\">"));
+        assert!(schema.contains("<label>Focus follows cursor</label>"));
+        assert!(
+            !schema.contains("cursorWarp"),
+            "cursor warp stays unsupported"
+        );
     }
 
     #[test]
@@ -596,7 +632,23 @@ mod tests {
         assert!(!header.contains("kli18n(\"Displays have separate workspaces\")"));
         assert!(header.contains("kli18n(\"Workspaces span displays\")"));
         assert!(header.contains("kli18n(\"Gap between tiled windows:\")"));
-        assert!(header.contains("static_assert(kKdeExposedFieldCount == 14"));
+        assert!(header.contains("kli18n(\"Workspace-switch target:\")"));
+        assert!(header.contains("kli18n(\"New-window placement:\")"));
+        assert!(header.contains("kli18n(\"Focus follows cursor\")"));
+        assert!(header.contains("{\"cursor-output\", kli18n(\"Cursor output\")"));
+        assert!(header.contains("{\"focused-output\", kli18n(\"Focused output\")"));
+        assert!(header.contains(
+            "{\"cursor-output-last-focused\", kli18n(\"Cursor output, last-focused window\")"
+        ));
+        assert!(header.contains(
+            "{\"cursor-output-cursor-closest\", kli18n(\"Cursor output, cursor-closest window\")"
+        ));
+        assert!(header.contains(
+            "{\"focused-output-last-focused\", kli18n(\"Focused output, last-focused window\")"
+        ));
+        assert!(!header.contains("cursor-warp"));
+        assert!(!header.contains("cursorWarp"));
+        assert!(header.contains("static_assert(kKdeExposedFieldCount == 17"));
         assert!(header.contains("\"below-tabs\""));
         let mut widgets = BTreeSet::new();
         for field in KDE_EXPOSED_FIELDS {

@@ -5,6 +5,7 @@
 #include <KSharedConfig>
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -73,6 +74,21 @@ QComboBox *migrationSourceRefillCombo(KWin::ScriptConfigModule &module)
 QComboBox *shortcutProfileCombo(KWin::ScriptConfigModule &module)
 {
     return module.widget()->findChild<QComboBox *>(QStringLiteral("shortcutProfileCombo"));
+}
+
+QComboBox *switchTargetCombo(KWin::ScriptConfigModule &module)
+{
+    return module.widget()->findChild<QComboBox *>(QStringLiteral("switchTargetCombo"));
+}
+
+QComboBox *freshPlacementCombo(KWin::ScriptConfigModule &module)
+{
+    return module.widget()->findChild<QComboBox *>(QStringLiteral("freshPlacementCombo"));
+}
+
+QCheckBox *focusFollowsCursorCheckBox(KWin::ScriptConfigModule &module)
+{
+    return module.widget()->findChild<QCheckBox *>(QStringLiteral("focusFollowsCursorCheckBox"));
 }
 
 QSpinBox *innerGapSpinBox(KWin::ScriptConfigModule &module)
@@ -150,6 +166,37 @@ QString otherMigrationSourceRefill(const QString &current)
         return QStringLiteral("last-remaining-workspace");
     }
     return QStringLiteral("most-recently-used-workspace");
+}
+
+QString storedSwitchTarget()
+{
+    return scriptGroup().readEntry(QStringLiteral("switchTarget"), QStringLiteral("cursor-output"));
+}
+
+QString otherSwitchTarget(const QString &current)
+{
+    if (current == QStringLiteral("focused-output")) {
+        return QStringLiteral("cursor-output");
+    }
+    return QStringLiteral("focused-output");
+}
+
+QString storedFreshPlacement()
+{
+    return scriptGroup().readEntry(QStringLiteral("freshPlacement"), QStringLiteral("cursor-output-last-focused"));
+}
+
+QString otherFreshPlacement(const QString &current)
+{
+    if (current == QStringLiteral("cursor-output-cursor-closest")) {
+        return QStringLiteral("focused-output-last-focused");
+    }
+    return QStringLiteral("cursor-output-cursor-closest");
+}
+
+bool storedFocusFollowsCursor()
+{
+    return scriptGroup().readEntry(QStringLiteral("focusFollowsCursor"), false);
 }
 
 QString storedShortcutProfile()
@@ -1057,6 +1104,249 @@ void migrationSourceRefillContractDefaultsValidatesAndPersists()
     }
 }
 
+void outputTargetingContractDefaultsValidatesAndPersists()
+{
+    // Invalid enums use their cursor-output defaults. KConfig decodes the
+    // stored Bool text "bogus" as true, unlike the strict JSON boundary.
+    {
+        KConfigGroup group = scriptGroup();
+        group.writeEntry(QStringLiteral("switchTarget"), QStringLiteral("bogus"));
+        group.writeEntry(QStringLiteral("freshPlacement"), QStringLiteral("bogus"));
+        group.writeEntry(QStringLiteral("focusFollowsCursor"), QStringLiteral("bogus"));
+        group.sync();
+    }
+    {
+        KWin::ScriptConfigModule module(nullptr, KPluginMetaData());
+        QComboBox *target = switchTargetCombo(module);
+        QComboBox *placement = freshPlacementCombo(module);
+        QCheckBox *hover = focusFollowsCursorCheckBox(module);
+        CHECK(target != nullptr);
+        CHECK(placement != nullptr);
+        CHECK(hover != nullptr);
+        module.load();
+        if (target) {
+            CHECK(target->currentData().toString() == QStringLiteral("cursor-output"));
+        }
+        if (placement) {
+            CHECK(placement->currentData().toString() == QStringLiteral("cursor-output-last-focused"));
+        }
+        if (hover) {
+            CHECK(hover->isChecked());
+        }
+    }
+    // Missing keys stay missing through load and defaults back.
+    {
+        KConfigGroup group = scriptGroup();
+        group.deleteEntry(QStringLiteral("switchTarget"));
+        group.deleteEntry(QStringLiteral("freshPlacement"));
+        group.deleteEntry(QStringLiteral("focusFollowsCursor"));
+        group.sync();
+    }
+    {
+        CountingScriptModule module(nullptr, KPluginMetaData());
+        QComboBox *target = switchTargetCombo(module);
+        QComboBox *placement = freshPlacementCombo(module);
+        QCheckBox *hover = focusFollowsCursorCheckBox(module);
+        CHECK(target != nullptr);
+        CHECK(placement != nullptr);
+        CHECK(hover != nullptr);
+        module.load();
+        if (target) {
+            CHECK(target->currentData().toString() == QStringLiteral("cursor-output"));
+        }
+        if (placement) {
+            CHECK(placement->currentData().toString() == QStringLiteral("cursor-output-last-focused"));
+        }
+        if (hover) {
+            CHECK(!hover->isChecked());
+        }
+        module.scriptSucceed = true;
+        module.save();
+        CHECK(!scriptGroup().hasKey(QStringLiteral("switchTarget")));
+        CHECK(!scriptGroup().hasKey(QStringLiteral("freshPlacement")));
+        CHECK(!scriptGroup().hasKey(QStringLiteral("focusFollowsCursor")));
+        CHECK(module.scriptCalls == 0);
+        CHECK(!module.isScriptRestartRequired());
+    }
+    // All alternatives load (stored directly, then load; not via native save): switchTarget (2), freshPlacement (3).
+    {
+        const QStringList switchTokens = {QStringLiteral("cursor-output"), QStringLiteral("focused-output")};
+        const QStringList freshTokens = {QStringLiteral("cursor-output-last-focused"),
+                                         QStringLiteral("cursor-output-cursor-closest"),
+                                         QStringLiteral("focused-output-last-focused")};
+        for (const QString &token : switchTokens) {
+            KConfigGroup group = scriptGroup();
+            group.writeEntry(QStringLiteral("switchTarget"), token);
+            group.sync();
+            KWin::ScriptConfigModule module(nullptr, KPluginMetaData());
+            QComboBox *combo = switchTargetCombo(module);
+            CHECK(combo != nullptr);
+            module.load();
+            if (combo) {
+                CHECK(combo->currentData().toString() == token);
+            }
+        }
+        for (const QString &token : freshTokens) {
+            KConfigGroup group = scriptGroup();
+            group.writeEntry(QStringLiteral("freshPlacement"), token);
+            group.sync();
+            KWin::ScriptConfigModule module(nullptr, KPluginMetaData());
+            QComboBox *combo = freshPlacementCombo(module);
+            CHECK(combo != nullptr);
+            module.load();
+            if (combo) {
+                CHECK(combo->currentData().toString() == token);
+            }
+        }
+        // Bool true/false both round-trip through load.
+        for (const bool value : {true, false}) {
+            KConfigGroup group = scriptGroup();
+            group.writeEntry(QStringLiteral("focusFollowsCursor"), value);
+            group.sync();
+            KWin::ScriptConfigModule module(nullptr, KPluginMetaData());
+            QCheckBox *box = focusFollowsCursorCheckBox(module);
+            CHECK(box != nullptr);
+            module.load();
+            if (box) {
+                CHECK(box->isChecked() == value);
+            }
+        }
+        KConfigGroup group = scriptGroup();
+        group.deleteEntry(QStringLiteral("switchTarget"));
+        group.deleteEntry(QStringLiteral("freshPlacement"));
+        group.deleteEntry(QStringLiteral("focusFollowsCursor"));
+        group.sync();
+    }
+    // Targeting change persists, sends one live reconfigure, never restarts.
+    {
+        CountingScriptModule module(nullptr, KPluginMetaData());
+        module.load();
+        QComboBox *target = switchTargetCombo(module);
+        QComboBox *placement = freshPlacementCombo(module);
+        QCheckBox *hover = focusFollowsCursorCheckBox(module);
+        CHECK(target != nullptr);
+        CHECK(placement != nullptr);
+        CHECK(hover != nullptr);
+        if (!target || !placement || !hover) {
+            return;
+        }
+        // No cursorWarp control anywhere on the page.
+        CHECK(module.widget()->findChild<QWidget *>(QStringLiteral("cursorWarp")) == nullptr);
+        CHECK(module.widget()->findChild<QWidget *>(QStringLiteral("cursorWarpCheckBox")) == nullptr);
+        CHECK(module.widget()->findChild<QWidget *>(QStringLiteral("cursorWarpCombo")) == nullptr);
+        // Seed hidden + foreign keys that must survive unchanged.
+        {
+            KConfigGroup group = scriptGroup();
+            group.writeEntry(QStringLiteral("shortcutProfile"), QStringLiteral("hyprland"));
+            group.writeEntry(QStringLiteral("tilingAlgorithm"), QStringLiteral("columns"));
+            group.sync();
+        }
+        const QString targetToken = otherSwitchTarget(storedSwitchTarget());
+        const int targetIndex = target->findData(targetToken);
+        CHECK(targetIndex >= 0);
+        CHECK(target->findData(QStringLiteral("cursor-output")) >= 0);
+        CHECK(target->findData(QStringLiteral("focused-output")) >= 0);
+        target->setCurrentIndex(targetIndex);
+        const QString placementToken = otherFreshPlacement(storedFreshPlacement());
+        const int placementIndex = placement->findData(placementToken);
+        CHECK(placementIndex >= 0);
+        CHECK(placement->findData(QStringLiteral("cursor-output-last-focused")) >= 0);
+        CHECK(placement->findData(QStringLiteral("cursor-output-cursor-closest")) >= 0);
+        CHECK(placement->findData(QStringLiteral("focused-output-last-focused")) >= 0);
+        placement->setCurrentIndex(placementIndex);
+        hover->setChecked(!storedFocusFollowsCursor());
+        CHECK(module.needsSave());
+        module.scriptSucceed = true;
+        module.save();
+        CHECK(storedSwitchTarget() == targetToken);
+        CHECK(storedFreshPlacement() == placementToken);
+        CHECK(storedFocusFollowsCursor() == hover->isChecked());
+        CHECK(module.scriptCalls == 1);
+        CHECK(!module.isScriptRestartRequired());
+        CHECK(module.scriptStatusText().contains(QStringLiteral("unconfirmed")));
+        CHECK(module.scriptStatusText().contains(QStringLiteral("workspace-switch target")));
+        CHECK(!containsAppliedClaim(module.scriptStatusText()));
+        CHECK(!module.needsSave());
+        // Untouched hidden/foreign/host keys stay untouched.
+        CHECK(scriptGroup().readEntry(QStringLiteral("shortcutProfile"), QString()) == QStringLiteral("hyprland"));
+        CHECK(scriptGroup().readEntry(QStringLiteral("tilingAlgorithm"), QString()) == QStringLiteral("columns"));
+        // Exact-key persistence: unchanged save sends nothing.
+        module.save();
+        CHECK(module.scriptCalls == 1);
+        CHECK(scriptGroup().readEntry(QStringLiteral("shortcutProfile"), QString()) == QStringLiteral("hyprland"));
+        // Defaults restore all three catalog defaults.
+        module.defaults();
+        CHECK(target->currentData().toString() == QStringLiteral("cursor-output"));
+        CHECK(placement->currentData().toString() == QStringLiteral("cursor-output-last-focused"));
+        CHECK(!hover->isChecked());
+        module.save();
+        CHECK(storedSwitchTarget() == QStringLiteral("cursor-output"));
+        CHECK(storedFreshPlacement() == QStringLiteral("cursor-output-last-focused"));
+        CHECK(!storedFocusFollowsCursor());
+        CHECK(scriptGroup().readEntry(QStringLiteral("shortcutProfile"), QString()) == QStringLiteral("hyprland"));
+        // Cleanup seeded keys.
+        KConfigGroup group = scriptGroup();
+        group.deleteEntry(QStringLiteral("switchTarget"));
+        group.deleteEntry(QStringLiteral("freshPlacement"));
+        group.deleteEntry(QStringLiteral("focusFollowsCursor"));
+        group.deleteEntry(QStringLiteral("shortcutProfile"));
+        group.deleteEntry(QStringLiteral("tilingAlgorithm"));
+        group.sync();
+    }
+}
+
+void outputTargetingSaveFailureArmsRetryOnNextSave()
+{
+    // Mirror of gapSaveSendFailureArmsRetryOnNextSave for targeting-only
+    // change: persists, arms retry, names the key, never claims applied.
+    CountingScriptModule module(nullptr, KPluginMetaData());
+    module.load();
+    QComboBox *target = switchTargetCombo(module);
+    CHECK(target != nullptr);
+    if (!target) {
+        return;
+    }
+    const QString token = otherSwitchTarget(storedSwitchTarget());
+    const int index = target->findData(token);
+    CHECK(index >= 0);
+    target->setCurrentIndex(index);
+    CHECK(module.needsSave());
+    module.scriptSucceed = false;
+    module.save();
+    CHECK(storedSwitchTarget() == token);
+    CHECK(module.scriptCalls == 1);
+    CHECK(module.isGapReconfigurePending());
+    CHECK(!module.isScriptRestartRequired());
+    CHECK(module.scriptStatusText().contains(QStringLiteral("failed")));
+    CHECK(module.scriptStatusText().contains(QStringLiteral("retry on the next save")));
+    CHECK(module.scriptStatusText().contains(QStringLiteral("saved to kwinrc")));
+    CHECK(module.scriptStatusText().contains(QStringLiteral("workspace-switch target")));
+    CHECK(!containsAppliedClaim(module.scriptStatusText()));
+    CHECK(module.needsSave());
+    module.save();
+    CHECK(module.scriptCalls == 2);
+    CHECK(module.isGapReconfigurePending());
+    CHECK(module.scriptStatusText().contains(QStringLiteral("failed")));
+    CHECK(module.scriptStatusText().contains(QStringLiteral("saved nothing")));
+    CHECK(!module.scriptStatusText().contains(QStringLiteral("saved to kwinrc")));
+    CHECK(!containsAppliedClaim(module.scriptStatusText()));
+    CHECK(module.needsSave());
+    module.scriptSucceed = true;
+    module.save();
+    CHECK(module.scriptCalls == 3);
+    CHECK(!module.isGapReconfigurePending());
+    CHECK(!module.isScriptRestartRequired());
+    CHECK(storedSwitchTarget() == token);
+    CHECK(module.scriptStatusText().contains(QStringLiteral("unconfirmed")));
+    CHECK(module.scriptStatusText().contains(QStringLiteral("saved nothing")));
+    CHECK(!module.scriptStatusText().contains(QStringLiteral("saved to kwinrc")));
+    CHECK(!containsAppliedClaim(module.scriptStatusText()));
+    CHECK(!module.needsSave());
+    KConfigGroup group = scriptGroup();
+    group.deleteEntry(QStringLiteral("switchTarget"));
+    group.sync();
+}
+
 void unsupportedControlsAreAbsentAndLegacyValuesUntouched()
 {
     KConfigGroup group = scriptGroup();
@@ -1696,6 +1986,8 @@ int main(int argc, char **argv)
         fixedSizePredicateContractDefaultsValidatesAndPersists();
         bornMaximizedContractDefaultsValidatesAndPersists();
         migrationSourceRefillContractDefaultsValidatesAndPersists();
+        outputTargetingContractDefaultsValidatesAndPersists();
+        outputTargetingSaveFailureArmsRetryOnNextSave();
         startupRestartLogEnumeratesOnlyChangedKeys();
         startupOnlySaveDisablesSendWithRestartMessage();
         hiddenShortcutProfileIsAbsentAndPreservedUntouched();
