@@ -110,5 +110,64 @@
   passed 14/14, strict exporter clippy passed, and all generated artifacts
   matched the exporter. The isolated settings-only native check passed 27/27,
   including targeting persistence, Defaults/Cancel, reconfigure and retry.
-- Frozen fixtures were unchanged. Fixture-only PX execution and native
+- Frozen fixtures were unchanged. Fixture-only PX acceptance and native
   keyboard/visual acceptance remain; these offline checks do not close them.
+
+### Fixture-only PX evidence
+
+- Tested after `f690409e`, with two adjacent outputs, joined XWayland fixtures
+  and isolated default-off hover settings. Bundle
+  `cursor-px-hover-9527623b5976` contains the raw evidence.
+- Keyboard delivery was observed: `0157-single-control-journal.stdout:1-7`
+  joins the physical focus-left callback, queue and capture. The edge result
+  was `operation-refused` with zero effects and unchanged native focus
+  (`:13-16`); this is not no-focus navigation evidence.
+- Cross-output hover is **BLOCKED**, not a policy failure. Both injected mouse
+  commands returned success, but native cursor samples remained `(0,0)` and
+  the topmost hit never reached the target fixture
+  (`125-disabled-before-native.json:1`, `149-single-control-after-native.json:1`,
+  `171-disabled-after-native.json:1`, `events.jsonl:211`).
+  Disabled-hover acceptance was not established; enabled hover and retained
+  focus-request identity were not reached.
+- Teardown completed: key releases and unlocked state
+  (`events.jsonl:213-215`, `0180-lock-final.stdout:1`), runtime log copies before
+  stop (`events.jsonl:218-221`), controller unloaded and Planner unowned
+  (`0183-disabled-error-status.stdout:1-9`), fixture exit and socket absence
+  (`events.jsonl:224-225`), helper absence/current-view restoration and daemon
+  exit (`events.jsonl:243-266`). No helper remained (`outcome.json:1`).
+  Empty-workspace roster churn was observed; exact roster restoration is not
+  claimed.
+
+- Independent native legs used bundle `cursor-px-remainder-38db1945acc0`,
+  without further pointer injection or opposite-pointer claims:
+
+| Leg | Verdict and native observation | Raw evidence within the remainder bundle |
+| --- | --- | --- |
+| Sole minimize/restore | **PASS**, bounded retention/restore only. Minimize retained A's workspace and frame with no managed focus; restore retained the same home/allocation. Native activation on restore was not a tiler focus write. | `157-sole-minimized-state.json:1`, `177-sole-restored-state.json:1`; `0179-sole-restore-focus-journal.stdout:2-10` has `cmds=0`, `focusReq=0`, zero effects and no focus-setter attempt. |
+| No-focus no-neighbor and adjacent edge versus MRU | **BLOCKED**. In both minimize setups KWin selected `plasmashell`; raw native foreground was not absent. No no-focus directional key was injected and no foreground was artificially cleared. | `events.jsonl:189,453`, `375-adjacent-no-focus-precondition-state.json:1`. |
+| Relative send | **OBSERVED**, not opposite-pointer acceptance. A changed workspace on its source output; the other output's current view and B/C stayed unchanged. | `426-subject-home-send-before-state.json:1`, `447-subject-home-send-after-state.json:1`, `events.jsonl:539`. |
+| Explicit send sampling | **OBSERVED**, no policy selection. The native ordinal was not the logical current ordinal: the first numbered send actually moved A. Immediate empty selection followed by that numbered send then refused at ingress after managed focus cleared; it did not move B/C. Exact explicit-current-target sampling remains unverified. | `0470-explicit-send-current-after-journal.stdout:2-18`, `0507-immediate-explicit-send-after-journal.stdout:1-20,43,47-59`; native result `506-immediate-explicit-send-after-state.json:1`. |
+| Sole-source close | **OBSERVED**. The source view stayed selected and empty, shell focus replaced A, and B/C remained on the other output. | `539-close-before-state.json:1`, `558-close-sole-after-state.json:1`, `events.jsonl:672`. |
+| Sole-source hide/show | **OBSERVED** with actual fixture `visible:false`, not inferred from membership. X11 unmap removed D's KWin identity; show required a fresh PID/sentinel/UUID join. The source view stayed selected and shell focus replaced D. | `events.jsonl:756`, `626-hide-after-state.json:1`, `661-show-d-after-state.json:1`. |
+| Empty selection and subsequent send | **OBSERVED**. Selection changed only the source output to an empty view; shell focus replaced D, with no managed subject. The later relative send refused at ingress and B/C did not move. Focusless switch settlement reported `complete/unproven`. | `693-empty-switch-before-state.json:1`, `714-empty-switch-after-state.json:1`; `0715-empty-switch-after-journal.stdout:1-25,56-65`; `0737-empty-output-send-after-journal.stdout:3,7-25`; `736-empty-output-send-after-state.json:1`. |
+
+- Collection limits: the adjacent-edge guard mistakenly read tuple allocations
+  as named properties, so its `edgeProven:false` is not a layout result. Raw
+  allocations/native frames show B left of C
+  (`309-adjacent-staged-state.json:1`), but the independent native-foreground
+  precondition still blocked navigation. The numbered-send sample likewise
+  cannot establish an explicit-current-target case from a native ordinal.
+- Workspace membership exclusion and fixture `visible:true` after a workspace
+  switch do not prove compositor hide/reveal; that visibility evidence remains
+  open. These observations select no new empty-output or sampling policy.
+- The remainder teardown also completed: log copies before stop
+  (`events.jsonl:888-890`), unloaded controller/unowned Planner
+  (`0739-remainder-status.stdout:1-9`), key release/unlocked state
+  (`events.jsonl:893-895`, `0741-lock-final.stdout:1`), fixture exit/socket absence,
+  helper absence/current-view restoration and daemon exit
+  (`events.jsonl:900-942`, `outcome.json:1`).
+- PX remains **PARTIAL**: cross-output pointer routing/hover retention,
+  genuinely absent-foreground navigation, exact explicit-current-target
+  sampling, compositor hide/reveal and human/native-control acceptance remain
+  open. No production code, protocol, frozen fixture or stored user tiler
+  setting was changed by these live legs.
