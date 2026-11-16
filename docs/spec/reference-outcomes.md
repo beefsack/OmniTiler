@@ -140,6 +140,7 @@ Stable-tag source citations (paths/lines belong to these tags, not checkout HEAD
 | Minimal action sequence | Selected outcome | Unproven outcome |
 | --- | --- | --- |
 | Focus A with neighbor B; enqueue directional focus to B, then resize with `win:{"currentFocus":true}`, without native focus settlement; compare an explicit resize of A | User 2026-11-08: core executes both in order and resizes B for the current-focus subject; explicit A still targets A. Empty directional-focus `win` remains genuinely no-focus, not implicit focus | End-to-end mixed-burst delivery, physical keys, perceived latency and equivalent reference-WM observations remain TBD; [decision](../decisions/commands.md#kde-rapid-input) |
+| Focus tiled B beside A; press Meta+G, then press Meta+G again while the first command is queued or its world capture is in flight; contrast a second press after settlement | TBD: current KDE `submitFloat` fences the second press before command submission (`kwin/src/world-native.ts:175-184,383-459`, `world-entry.ts:7958`), whereas the rapid-input decision says every command queues with no busy refusal. No resolution selected | Live rapid-float outcome and reference-WM comparison TBD; no eight-command FIFO claim or fence removal inferred. [Bounded investigation](../changes/kde-rapid-input-latest-world.md#fixture-only-physical-ri-evidence-2026-11-16) |
 
 ### macOS core-designated trailing pager discriminators
 

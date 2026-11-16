@@ -470,3 +470,85 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
   or fixture bytes changed in this leg; the seven scoped gates above remain the
   current code verification. A read-only accounting query's raw-input option
   error was corrected after cleanup; no effective live mutation was repeated.
+
+## Fixture-only physical RI evidence (2026-11-16)
+
+- Outcome: PARTIAL. Real KWin shortcuts driven by physical input injection
+  establish directional callback/FIFO/terminal accounting and final native
+  agreement, not human-keyboard feel or compositor presentation latency.
+  No product drop/stall was reproduced and no product code changed.
+- Each run used joined fixture sentinel/PID/native UUIDs, an appended workspace,
+  exact fixture scope, private settings and intent roots, hover disabled and
+  group-with-neighbor moves. The existing supported border effect stayed loaded;
+  `ep=1` and `presentation-painted` prove the endpoint path, not visible pixels
+  or absence of flicker. Evidence bundles below are externally retained.
+
+| Bundle / leg | Verdict | Raw evidence |
+| --- | --- | --- |
+| `first8`: four left/right move pairs | PASS, behavior; timing qualified | `input-transcript.txt:1-6`, `kwin-owner-journal-full.log:336-499`, `planner-current.log:76-196`: 8 callbacks/queues and distinct terminal READY results; 7 nonempty batches sum to 8. Six intermediate publications are superseded; final revisions 14/15 have `geom=0`, matching native `H[A,B*]` (`native-post-read.json:1`). |
+| `undelivered16`: initial mixed attempt | BLOCKED before product queue | Input exits 0 but no callbacks/queues or terminal results (`kwin-owner-journal-full.log:315-333`, `planner-current.log:60-79`). Native state stays unchanged. Daemon attachment/delivery cause is UNKNOWN; socket appearance and client exit are insufficient. No FIFO failure is inferred. |
+| `serial-mixed`: six serial controls, then one 16-press mixed burst | PASS, behavior; native-event timing BLOCKED | Controls alternate left/right and restore `H[A,B*]` (`controls-transcript.txt:1-18`). Burst callbacks 7-22 and queues appear in `kwin-owner-journal-full.log:943-1133`; 10 nonempty batches sum to 16, plus one commandless capture. All 16 distinct Take results are READY (19 raw reads; `planner-current.log:338-503`). Final revisions 42/43 have `geom=0`; `native-post-read.json:1` agrees with desired frames and B focus. |
+| `nested8`: four up/down move pairs | PASS, accounting and frames; exact tree qualified | `burst-transcript.txt:1-2`, `burst-kwin-journal.log:2-134`, `planner-current.log:186-286`: 8 callbacks/queues, 6 batches `1+1+1+2+1+2`, 8 distinct READY results from 9 raw Take calls. Five intermediate publications are superseded; revisions 24/25 have `geom=0`. `native-post-read.json:1` matches all three normalized allocations with C foreground. `H[A,V[B,C*]]` is inferred from ordinary admission, frames and the serial vertical swaps leaving A unchanged (`c1-native-read.json:1`, `c2-native-read.json:1`), not directly exposed named core-tree readback. |
+| Rapid float toggles | BLOCKED; no live input | Physical Meta+G routes through `submitFloat`, which fences a pending queue or in-flight world apply before submission (`kwin/src/world-shortcuts.ts:228-229`, `world-native.ts:175-184,383-459`, `world-entry.ts:7958`). Eight queued toggles are therefore not a valid current-implementation oracle. This conflicts with the decision's every-command/no-busy-refusal wording; resolution is unselected, not a new reproduced defect or permission to remove the fence. See the [minimal discriminator](../spec/reference-outcomes.md#kde-queued-execution-time-subject). |
+| D2 cross-output | NOT RUN | No proven empty-target crossing leg was collected before the float contract decision stopped further live work. Same-output success is not crossing evidence. |
+
+### Timing denominator and clock boundary
+
+- All three accepted bursts are net-zero at native application: zero new
+  native-frame event timing samples, not zero-millisecond latency. Skipped
+  publications count supersession, not frame arrivals.
+- The first eight commands' final-equality witness gives callback-to-witness
+  bounds, n=8: min 13.240, median 34.050 (middle-pair mean), p95/max 59.457 ms.
+  This is not timing of newly changed native frames.
+- Six serial controls do change native frames. Their saved `frame-attempt`
+  rows are flushed on a later capture (`world-entry.ts:1548-1558`), while
+  `attemptMs` has no saved shared clock anchor to callback/journal time
+  (`world-report.ts:319-324,597-602`). The following deltas are strictly
+  callback-to-delayed-native-readback-evidence upper bounds, not exact write,
+  frame-change or compositor arrival measurements:
+
+  | Serial command | Window A / B upper bounds (ms) |
+  | --- | --- |
+  | 1 | 251.33 / 251.35 |
+  | 2 | 250.10 / 250.12 |
+  | 3 | 241.23 / 241.26 |
+  | 4 | 257.64 / 257.66 |
+  | 5 | 243.63 / 243.66 |
+  | 6 | 258.95 / 258.97 |
+
+  Raw pairs: `serial-mixed/kwin-owner-journal-full.log:509,552-553,583,626-627,655,698-699,727,770-771,799,842-843,871,914-915`.
+  Across 12 window rows: min 241.23, p50 250.12, p95/max 258.97 ms.
+  Across six command maxima: min 241.26, p50 250.12, p95/max 258.97 ms.
+  Quantiles use nearest rank, `ceil(p*n)`. Exact native-event distribution
+  remains BLOCKED with these artifacts; no new timing instrumentation was added.
+
+### Collection limits and remaining acceptance
+
+- The undelivered attempt had an initially backgrounded socket assignment and
+  a daemon started immediately before injection; neither establishes its cause.
+  The changed approach used a persistent private daemon before setup/build and
+  geometric physical controls before the successful mixed burst.
+- Rejected setup arguments, helper scope/nonce errors and serial-run fixture
+  recreation preceded accepted input. Nested teardown's process-name query
+  matched its own shell; exact owned-PID absence receipts were retained instead.
+  These are external test-tool failures, not product fixes.
+- Full current Planner and unfiltered owner-PID journals, separate scripting
+  error queries and runtime-log copies survive. Runtime globs include historical
+  logs and are not all current-run streams. First-run copy order is supported by
+  file times, without a dedicated contemporaneous order marker; later copy
+  receipts and reported ordered tool calls establish stronger provenance.
+  Some launch/prefix/absence-command details remain execution-reported.
+- Saved teardown includes DOWN, fixture/daemon PID and socket absence, unlocked
+  readbacks and helper absence. An initial `unload:false, isScriptLoaded:false`
+  proves absence, not successful unload. Later helper receipts report successful
+  unload and absence. Explicit key-ups/traps are not independent global
+  modifier-state observations.
+- This note stays active. Remaining: resolve the float fence/FIFO contract
+  boundary; genuine empty-target D2 crossings; direct nested structural proof
+  if required; exact native-event timing; user-owned perceived latency and
+  loaded-effect visual flicker checks. No Windows/macOS behavior changed.
+- Final sequential offline gates exit 0: Rust formatting, three-package
+  all-target build/strict Clippy, permitted Rust tests (3,455 passed across
+  71 summaries), KWin typecheck/tests (1,351 passed across 199 suites), dev-loop
+  launcher checks (703 passed) and native-effect launcher checks (204 passed).
+  Protected fixture families and backlog are unchanged.
