@@ -5109,6 +5109,330 @@ fn settle_float_uses_staged_frames_with_replay_dpi_and_close() {
 }
 
 #[test]
+fn settle_float_holds_own_prior_tile_echo_not_external() {
+    use crate::boundary::CoreCommand;
+    use crate::world_engine::WorldOutcome;
+    use crate::world_report::OperationOutcome;
+
+    for (defer_attempt, superseding_tile) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
+        // Floating-start -> unfloat -> refloat -> delayed own tile echo.
+        // All geometry and tokens come from real produced worlds; no
+        // hand-seeded retained state.
+        let float_rect = rect(414, 270, 1219, 655);
+        let mut engine = settle_engine_4b2d();
+        let accepted =
+            |engine: &mut WorldEngine, r: &WorldReportV4| match engine.handle_report(r, &[]) {
+                (WorldOutcome::Accepted(reply), _) => reply,
+                other => panic!("expected accepted, got {other:?}"),
+            };
+        // Bootstrap tiled window, establish a genuine starting float with an
+        // explicit placement, then prove it with a real observation so the
+        // engine holds settled floating state before the tested sequence.
+        let r1 = report_v4_simple(
+            1,
+            vec![screen("out-a", 0)],
+            Vec::new(),
+            vec![fact("win-a", "out-a", 0)],
+            Vec::new(),
+            Vec::new(),
+        );
+        let mut r1 = r1;
+        r1.focused_global = "win-a".to_owned();
+        r1.foreground_known = true;
+        accepted(&mut engine, &r1);
+        let mut start = report_v4_simple(
+            2,
+            vec![screen("out-a", 0)],
+            Vec::new(),
+            vec![fact("win-a", "out-a", 0)],
+            Vec::new(),
+            Vec::new(),
+        );
+        start.focused_global = "win-a".to_owned();
+        start.foreground_known = true;
+        start.command_seq = Some(11);
+        start.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: "win-a".to_owned(),
+            float_rect: Some(float_rect),
+        }));
+        let start_reply = accepted(&mut engine, &start);
+        let start_row = start_reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "win-a")
+            .expect("win-a row after starting float");
+        assert!(start_row.floating, "win-a floats after start command");
+        assert_eq!(
+            start_row.frame_operation.as_deref(),
+            Some("op-11"),
+            "starting float publishes its op token"
+        );
+        assert_eq!(
+            start_row.effective_frame,
+            Some(float_rect),
+            "starting float publishes the explicit rect"
+        );
+        // Real observation proof at the float rect settles the starting float.
+        let mut proof = report_v4_simple(
+            3,
+            vec![screen("out-a", 0)],
+            Vec::new(),
+            {
+                let mut f = fact("win-a", "out-a", 0);
+                f.rect = Some(float_rect);
+                vec![f]
+            },
+            Vec::new(),
+            Vec::new(),
+        );
+        proof.focused_global = "win-a".to_owned();
+        proof.foreground_known = true;
+        accepted(&mut engine, &proof);
+        assert!(
+            engine.retained_floats.is_empty(),
+            "starting float proved by observation"
+        );
+        // Unfloat with None (Meta+G semantics): core resolves remembered
+        // geometry and publishes a real tiled frame for this window.
+        let mut unfloat = report_v4_simple(
+            4,
+            vec![screen("out-a", 0)],
+            Vec::new(),
+            {
+                let mut f = fact("win-a", "out-a", 0);
+                f.rect = Some(float_rect);
+                vec![f]
+            },
+            Vec::new(),
+            Vec::new(),
+        );
+        unfloat.focused_global = "win-a".to_owned();
+        unfloat.foreground_known = true;
+        unfloat.command_seq = Some(12);
+        unfloat.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: "win-a".to_owned(),
+            float_rect: None,
+        }));
+        let tile_reply = accepted(&mut engine, &unfloat);
+        let tile_row = tile_reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "win-a")
+            .expect("win-a row after unfloat");
+        let own_tile_rect = tile_row
+            .effective_frame
+            .expect("unfloat publishes a real tiled frame");
+        let own_tile_token = tile_row.frame_operation.clone();
+        assert!(
+            !tile_row.floating,
+            "unfloat publishes a non-floating (tiled) row"
+        );
+        assert_ne!(
+            own_tile_rect, float_rect,
+            "published tile frame differs from float rect"
+        );
+        let mut latest_screen = screen("out-a", 0);
+        if superseding_tile {
+            latest_screen.work_area = Some(rect(0, 0, 780, 560));
+            let mut newer_tile = unfloat.clone();
+            newer_tile.observation_seq = 5;
+            newer_tile.request_seq = 5;
+            newer_tile.request_id = "req-5".to_owned();
+            newer_tile.command_seq = None;
+            newer_tile.command = None;
+            newer_tile.screens = vec![latest_screen.clone()];
+            let newer_reply = accepted(&mut engine, &newer_tile);
+            let newer_frame = newer_reply
+                .windows
+                .iter()
+                .find(|row| row.lifetime.0 == "win-a")
+                .and_then(|row| row.effective_frame)
+                .expect("newer unissued tiled target");
+            assert_ne!(newer_frame, own_tile_rect);
+            assert_ne!(newer_frame, float_rect);
+        }
+        // Refloat with None before the native tile lands: core resolves the
+        // remembered float rect at execution and retires the start tile.
+        let mut refloat = report_v4_simple(
+            6,
+            vec![latest_screen.clone()],
+            Vec::new(),
+            {
+                let mut f = fact("win-a", "out-a", 0);
+                f.rect = Some(float_rect);
+                vec![f]
+            },
+            Vec::new(),
+            Vec::new(),
+        );
+        refloat.focused_global = "win-a".to_owned();
+        refloat.foreground_known = true;
+        refloat.command_seq = Some(13);
+        refloat.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: "win-a".to_owned(),
+            float_rect: None,
+        }));
+        let own_attempt = FrameAttempt {
+            window: WindowId("win-a".to_owned()),
+            target: own_tile_rect,
+            setter: FrameSetter::Accepted,
+            readback: Some(float_rect),
+            dpi_before: None,
+            dpi_after: None,
+            attempt_ms: 100,
+            operation_id: None,
+            prewrite: None,
+        };
+        if !defer_attempt {
+            refloat.frames.push(own_attempt.clone());
+        }
+        let refloat_reply = accepted(&mut engine, &refloat);
+        let refloat_row = refloat_reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "win-a")
+            .expect("win-a row after refloat");
+        let final_target = refloat_row
+            .effective_frame
+            .expect("refloat publishes a frame");
+        let final_token = refloat_row
+            .frame_operation
+            .clone()
+            .expect("refloat publishes its frame token");
+        assert!(refloat_row.floating, "refloat publishes a floating row");
+        assert_eq!(
+            final_target, float_rect,
+            "refloat target is remembered rect"
+        );
+        assert_ne!(own_tile_rect, final_target);
+        assert_eq!(
+            engine.retained_floats.len(),
+            1,
+            "refloat minted retained float"
+        );
+        // Delayed own tile observation: the frame the core itself published
+        // for the unfloat step (recorded verbatim), not an arbitrary rect.
+        assert!(
+            own_tile_token.is_none(),
+            "tiled rows carry no float token (tile frame is the evidence)"
+        );
+        let mut other_engine = engine.clone();
+        let mut echo = report_v4_simple(
+            7,
+            vec![latest_screen.clone()],
+            Vec::new(),
+            {
+                let mut f = fact("win-a", "out-a", 0);
+                f.rect = Some(own_tile_rect);
+                vec![f]
+            },
+            Vec::new(),
+            Vec::new(),
+        );
+        echo.focused_global = "win-a".to_owned();
+        echo.foreground_known = true;
+        if defer_attempt {
+            for invalid in ["clockless", "refused", "dpi"] {
+                let mut bad_attempt = own_attempt.clone();
+                match invalid {
+                    "clockless" => bad_attempt.attempt_ms = 0,
+                    "refused" => bad_attempt.setter = FrameSetter::Refused,
+                    "dpi" => {
+                        bad_attempt.dpi_before = Some(96);
+                        bad_attempt.dpi_after = Some(144);
+                    }
+                    _ => unreachable!(),
+                }
+                let mut bad_echo = echo.clone();
+                bad_echo.frames.push(bad_attempt);
+                let mut bad_engine = other_engine.clone();
+                accepted(&mut bad_engine, &bad_echo);
+                assert!(
+                    bad_engine.retained_floats.is_empty(),
+                    "{invalid} does not prove an earlier write landed"
+                );
+            }
+            echo.frames.push(own_attempt);
+        }
+        let echo_reply = accepted(&mut engine, &echo);
+        let held = echo_reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "win-a")
+            .expect("held float row");
+        assert_eq!(held.effective_frame, Some(final_target));
+        assert_eq!(held.frame_operation.as_deref(), Some(final_token.as_str()));
+        assert_eq!(
+            engine.retained_floats.len(),
+            1,
+            "own prior published tile echo holds the final float"
+        );
+        assert!(
+            engine
+                .operation_settled
+                .values()
+                .all(|event| event.outcome != OperationOutcome::FloatAbandoned),
+            "no float-abandoned on own tile echo: {:?}",
+            engine.operation_settled
+        );
+        // The held float still confirms when the real target lands.
+        let mut landed = report_v4_simple(
+            8,
+            vec![latest_screen],
+            Vec::new(),
+            {
+                let mut f = fact("win-a", "out-a", 0);
+                f.rect = Some(final_target);
+                vec![f]
+            },
+            Vec::new(),
+            Vec::new(),
+        );
+        landed.focused_global = "win-a".to_owned();
+        landed.foreground_known = true;
+        accepted(&mut engine, &landed);
+        assert!(
+            engine.retained_floats.is_empty(),
+            "held float confirms at its target"
+        );
+        assert!(
+            engine
+                .operation_settled
+                .values()
+                .any(|event| event.operation_id == final_token
+                    && event.outcome == OperationOutcome::FloatFrameProven),
+            "frame-proven under final token: {:?}",
+            engine.operation_settled
+        );
+        // The identical refloat state still abandons an unrelated external frame.
+        let unrelated = rect(10, 10, 50, 50);
+        let mut other_echo = echo.clone();
+        other_echo.windows = {
+            let mut f = fact("win-a", "out-a", 0);
+            f.rect = Some(unrelated);
+            vec![f]
+        };
+        accepted(&mut other_engine, &other_echo);
+        assert!(
+            other_engine.retained_floats.is_empty(),
+            "unrelated frame still abandons as external"
+        );
+        assert!(
+            other_engine
+                .operation_settled
+                .values()
+                .any(|event| event.operation_id == final_token
+                    && event.outcome == OperationOutcome::FloatAbandoned
+                    && event.cause.as_deref() == Some("external")),
+            "external abandonment preserved: {:?}",
+            other_engine.operation_settled
+        );
+    }
+}
+
+#[test]
 fn settle_migration_uses_staged_lanes_not_passed_report() {
     let screens = || vec![screen("out-a", 0), screen("out-b", 800)];
     let windows = || vec![fact("win-a", "out-b", 800)];

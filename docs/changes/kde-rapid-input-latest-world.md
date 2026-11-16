@@ -745,3 +745,54 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
   event samples do not close human-keyboard feel, loaded-effect visual flicker
   or the earlier direct nested-structure gap. No source or frozen fixture
   changes were made during this retry.
+
+## Delayed intermediate tile echo correction
+
+- Scope: reproduce the floating-start failure through adapter-free production
+  ingress before changing settlement. A final retained float must survive its
+  own earlier issued tiled world's delayed echo, without suppressing genuine
+  external displacement or renewing a spent native attempt.
+- Verification: failing-first regression, independent source review and all
+  seven offline gates precede the next live retry. The retry selects the
+  appended fixture desktop on both existing outputs and proves the other
+  current empty before the eight directional crossings; no display changes.
+- Adapter-free RED: `settle_float_holds_own_prior_tile_echo_not_external`
+  establishes and observes a starting float, publishes a real unfloat tile,
+  refloats with neutral intent before that tile arrives, then reports the exact
+  earlier tile. The retained final float incorrectly drops (zero rows instead
+  of one). Its command-time observed source equals the remembered float target,
+  not the intermediate tile; source/target inequality alone cannot establish
+  external input.
+- Review correction: an initial source substitution passed 3,460 tests but used
+  only the immediately preceding tiled publication. An earlier issued tile can
+  outlive a newer unissued world, so that publication is not reliable evidence
+  of the write still in flight. That approach was withdrawn before delivery.
+- The native failure also includes an accepted ordinary frame attempt at the
+  intermediate tile with immediate readback still at the float
+  (`kwin-owner-current.stdout:732`). The regression now includes that mechanical
+  attempt before the delayed echo, matching the real asynchronous write. The
+  correction uses existing staged/consumed attempt evidence, preserves final
+  target/token and retains refusal, replay and DPI safeguards. Offline evidence
+  does not supersede the earlier live FAIL.
+- Accepted correction: before declaring external displacement, float settlement
+  compares the readable frame with the latest same-lifetime native attempt:
+  fresh staged evidence takes precedence over the consumed watermark; stale
+  replays cannot replace newer evidence. An accepted, clocked, DPI-stable write
+  to that frame holds the existing float operation without confirming it,
+  latching new ambiguity or renewing a native attempt. Existing target proof,
+  refusal and ambiguity lanes retain precedence. No command, wire or adapter
+  changes are needed.
+- The final regression covers both fresh and already-consumed ordinary frame
+  attempts, including an intervening newer unissued tile from a work-area
+  report. It checks unchanged final frame/token, later target confirmation,
+  unrelated external displacement from the identical refloat state, and
+  rejection of clockless, refused and DPI-transition echo evidence. The updated
+  RED drops `op-13` (`red-own-attempt.log:330-340`); GREEN passes 3,460 tests
+  across 71 summaries with the one permitted exclusion. Independent review
+  found no remaining source or exact retry-script blocker.
+- Final offline gates pass: Rust formatting, three-package all-target build
+  and strict Clippy, the permitted Rust suite, KWin typecheck and 1,357 tests,
+  launcher `PASS=703 FAIL=0`, native-effect `PASS=204 FAIL=0`. Raw logs are in
+  external bundle `ri-float-echo-fix-20261117`; protected fixture bytes remain
+  unchanged. Live float/D2 retry is still pending, so the native
+  FAIL above remains the latest live verdict.

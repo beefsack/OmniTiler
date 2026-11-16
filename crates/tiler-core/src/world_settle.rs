@@ -1854,8 +1854,10 @@ impl WorldEngine {
     ///   but only on truthful readable complete data: at-target confirms,
     ///   an ambiguous latch holds (an accepted clamp never masquerades as
     ///   external supersession), and a frame matching neither the
-    ///   command-time source nor the target proves newer native input and
-    ///   drops the stale target without a fight.
+    ///   command-time source nor the target proves newer native input unless
+    ///   it matches the latest accepted, clocked, DPI-stable native write.
+    ///   That older issued world's echo holds; unrelated input drops the
+    ///   stale target without a fight.
     /// - Explicit closes always settle, even across gaps; absent facts hold
     ///   across the gap (never an inferred close). Incomplete inventory and
     ///   gesture barriers hold every flight without settling.
@@ -1992,10 +1994,33 @@ impl WorldEngine {
                 keep.push(retained);
                 continue;
             }
+            // An already-issued older world can land after this target was
+            // retained. Its latest mechanical attempt is self-echo evidence,
+            // not a float completion or permission to repeat either write.
+            let prior = self.consumed_frames.get(&retained.window);
+            let latest = self
+                .staged
+                .observation
+                .frames
+                .iter()
+                .find(|attempt| {
+                    attempt.window == retained.window
+                        && !prior.is_some_and(|prior| is_stale_replay(prior, attempt))
+                })
+                .or(prior);
+            if latest.is_some_and(|attempt| {
+                attempt.attempt_ms != 0
+                    && attempt.setter == FrameSetter::Accepted
+                    && !dpi_basis_changed(attempt.dpi_before, attempt.dpi_after)
+                    && attempt.target == current
+            }) {
+                keep.push(retained);
+                continue;
+            }
             if retained.source.is_some_and(|source| current != source) {
                 // Native frame matches neither the command-time
-                // source nor the target: newer external input
-                // (manual move/resize) wins; the stale target drops
+                // source nor the target or latest issued write: newer external
+                // input (manual move/resize) wins; the stale target drops
                 // rather than fighting it.
                 self.emit_operation(
                     retained.operation_id.clone(),
