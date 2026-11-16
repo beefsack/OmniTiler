@@ -796,3 +796,114 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
   external bundle `ri-float-echo-fix-20261117`; protected fixture bytes remain
   unchanged. Live float/D2 retry is still pending, so the native
   FAIL above remains the latest live verdict.
+
+## Corrected float retry and empty-target D2 stop (2026-11-17)
+
+- Outcome: all four float parity legs PASS; D2 FAIL, so RI remains PARTIAL.
+  External bundle `ri-retry-20261117-03` retains the exact executed
+  `retry-step.mjs`, current-owner journal, Planner log and native readbacks.
+  The retry ran after `eda98739` without source changes or procedure deviations;
+  the first failed burst stopped collection (`events.jsonl:458`).
+- Setup appends beyond the complete roster and selects that desktop on both
+  existing outputs (`desktop-append.json:1`, `desktop-select.json:1`). Fixture
+  sentinel/PID/native-UUID joins are exact (`fixture-spawn.stdout:1`,
+  `joins.json:1`, `native-spawn.json:1`). Settings and intent are private,
+  hover is disabled and scope is exactly `OmniTilerTestWindow`. One persistent
+  input daemon starts before setup; single-chord float/tile controls establish
+  callback, FIFO, terminal READY and native parity before bursts
+  (`events.jsonl:1,186,213`).
+
+| Float leg | Ordered callback/queue identities | Distinct terminal Take READY | Final native/core frames and focus |
+| --- | --- | --- | --- |
+| Tiled start, even 4 | 3-6, `tiled-even-journal.stdout:1-28` | `planner-final.log:128-129,147-152` | Tiled, revision 13; `tiled-even-after-state.json:1` |
+| Tiled start, odd 3 | 7-9, `tiled-odd-journal.stdout:1-19` | `planner-final.log:194-195,212-215` | Floating, revision 17; `tiled-odd-after-state.json:1`, desired float `tiled-odd-journal.stdout:102` |
+| Floating start, even 4 | 10-13, `floating-even-journal.stdout:1-27` | `planner-final.log:259-260,278-284` | Same retained float, revision 23; `floating-even-after-state.json:1` |
+| Floating start, odd 3 | 14-16, `floating-odd-journal.stdout:1-19` | `planner-final.log:351-352,369-372` | Tiled, revision 27; `floating-odd-after-state.json:1` |
+
+- The formerly failing sequence is exercised, not merely avoided: the accepted
+  intermediate tile write has old-float immediate readback; its native tile
+  event then arrives while final float `op-13` is retained, and revision 19 is
+  superseded during persistence (`floating-even-journal.stdout:49,54,58,64-65`).
+  Revision 20 still carries `op-13`, issues its one final-frame attempt, and
+  native A returns to the remembered float before that operation is proven
+  (`:73,95,100,110`). Older `op-9` proof is not final `op-13` proof.
+- Passive joined `frameGeometryChanged` callbacks supply these A-final-frame
+  samples. Each burst row is one final-frame event, not a per-command latency
+  distribution. The two controls take 31 ms and 27 ms
+  (`single-control-float-journal.stdout:1,38`,
+  `single-control-tile-journal.stdout:1,40`).
+
+| Burst | First / last callback to final A frame (ms) | Raw callback / native-event lines |
+| --- | --- | --- |
+| Tiled even | 172 / 159 | `tiled-even-journal.stdout:1,21,96` |
+| Tiled odd | 95 / 87 | `tiled-odd-journal.stdout:1,12,54` |
+| Floating even | 191 / 179 | `floating-even-journal.stdout:1,25,100` |
+| Floating odd | 59 / 50 | `floating-odd-journal.stdout:1,12,55` |
+
+- These are wall-clock callback-to-native-frame samples, not compositor
+  presentation, animation completion, human-keyboard feel or absence of flicker.
+  The floating-even leg changes native geometry in the trace before
+  returning; final convergence does not prove zero intermediate work.
+- D2 preconditions pass: after closing only fixture B, joined singleton A is
+  tiled on the left, both outputs show the appended desktop with no foreign
+  normal/sticky occupants, and the right current has zero owned windows
+  (`d2-singleton-state.json:1`, `events.jsonl:432`). One uninterrupted burst
+  sends four right/left pairs. All eight callbacks and FIFO queue identities
+  arrive; offline review recovers terminal accounting because the script's
+  final-output check stopped before its accounting function.
+
+| D2 identity / direction | Callback and queue, `kwin-owner-current.stdout` | Terminal Take, `planner-final.log` | Logical outcome |
+| --- | --- | --- | --- |
+| 17 / right | `:1093-1095` | `:438-439` READY | One crossing to right, `op-17` (`kwin-owner-current.stdout:1108-1109`) |
+| 18 / left | `:1102-1104` | `:456-457` failed | `transfer-in-flight` |
+| 19 / right | `:1121-1123` | `:473-474` failed | `transfer-in-flight` |
+| 20 / left | `:1140-1142` | `:490-491` failed | `transfer-in-flight` |
+| 21 / right | `:1159-1161` | `:507-508` failed | `transfer-in-flight` |
+| 22 / left | `:1178-1180` | `:524-525` failed | `transfer-in-flight` |
+| 23 / right | `:1196-1198` | `:542-543` failed | `transfer-in-flight` |
+| 24 / left | `:1213-1215` | `:544-545` failed | `transfer-in-flight` |
+
+- Result: one logical crossing, zero local moves and seven busy refusals,
+  not eight crossings or input loss. Internal refusal diagnostics independently
+  identify commands 18-24 (`planner-final.log:441,458,475,492,509,530-531`).
+  The same `op-17` survives publications 30-37; native application starts only
+  at revision 37 (`kwin-owner-current.stdout:1108-1109,1224-1226,1238-1256`).
+  Revision 39 and the final joined native frame/focus agree on the right
+  (`d2-eight-after-presentation.stdout:1`, `d2-eight-after-native.json:1`).
+  The stop is a requested-sequence failure, not a final native/core mismatch:
+  the expected net-zero return to the left never occurs. No later burst runs.
+- Source classification: `world_operations.rs:278-294,1692-1701` rejects a move
+  whenever that window has a retained transfer, before directional/local engine
+  mutation. This native-flight dependency conflicts with the selected
+  [ordered-core rule](../decisions/commands.md#ordered-core-commands-and-latest-world-application);
+  at least the first reverse move must be evaluated against preceding logical
+  state, not refused solely because `op-17` lacks native arrival. The precise
+  correction remains unimplemented. Next bounded discriminator: adapter-free
+  singleton left, right then left before native acknowledgement, both within one
+  batch and across captures with lagging source observation; require ordered
+  logical return without a busy refusal while preserving already-issued native
+  write completion and latest-world application.
+- Teardown receipts establish explicit final key-ups and `LockedHint=no`
+  (`events.jsonl:459-462`, `lock-final.stdout:1`). All 24 file-backed helpers
+  have successful unload, `isScriptLoaded=false` and child-absence receipts;
+  the persistent probe is removed before the controller (`events.jsonl:467-471`).
+  Fifteen actual runtime dev logs are copied with sizes/hashes before `dev-off`
+  (`:472-475`), including historical streams; `planner-final.log` and
+  `kwin-owner-current.stdout` are the current-run streams. Controller DOWN and
+  Planner stop are recorded (`dev-status-post.stdout:1-9`,
+  `dev-off.stdout:38`). Fixture shutdown exits 0 with PID/socket absence
+  (`events.jsonl:478-481`); the owned daemon exits on SIGTERM with PID/socket
+  absence (`:560-562`). No helper remains (`outcome.json:1`).
+- Desktop cleanup is qualified, not an exact-roster restoration: original
+  current desktop is restored on both outputs, fixture windows and the explicitly
+  appended test desktop are absent (`native-original.json:1`,
+  `native-final.json:1`). Two prior trailing desktop IDs retired during startup
+  before input (`kwin-owner-current.stdout:224,231,251,258,278`); two new trailing
+  desktops remain as normal lifecycle churn. Therefore the truthful receipt is
+  `originalIDsRetained:false` (`events.jsonl:558`), despite no teardown command
+  error. No heuristic desktop cleanup or display-configuration change followed.
+- Remaining: reproduce and correct the D2 native-flight command fence offline
+  before another crossing attempt; human-keyboard feel, loaded-effect visual
+  flicker and the earlier direct nested-structure proof remain open. This
+  evidence-only retry changes no source or protected fixture bytes; the
+  correction's offline gates above remain current. The note stays active.
