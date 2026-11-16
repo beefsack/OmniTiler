@@ -12,7 +12,7 @@
 
 ### Directional focus without a focused window
 - Decision: when directional focus has no focused window, encode the subject as an explicit empty `win` for both in-process and JSON callers. Missing, null or invalid ids, and empty ids on other commands, retain strict validation. The explicit current-focus object has the separate execution-time meaning in [KDE rapid input](#kde-rapid-input), never the empty marker's no-focus meaning.
-- KDE (User 2026-11-17): KWin desktop-type foreground counts as genuine native absence for that empty directional-focus subject only. Panels, other shell surfaces, foreign apps, games and fullscreen still refuse. Native foreground remains truthfully reported; no native clear-focus is issued.
+- KDE (User 2026-11-17): KWin desktop-type foreground counts as genuine native absence for that empty directional-focus subject only. Other foreign foregrounds (panels, other shell surfaces, apps, games or fullscreen windows) still refuse. Native foreground remains truthfully reported; no native clear-focus is issued.
 - Why: not recorded.
 - Assumes / revisit if: no-focus behavior is described in [workspace lifecycle](workspaces.md#workspace-lifecycle-focus-and-history).
 - Status: active, 2026-10-27

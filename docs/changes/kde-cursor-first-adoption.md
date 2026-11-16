@@ -98,8 +98,27 @@
   112/112 and test typechecking passed. Full offline gates passed: Rust format,
   three-package all-target build and strict clippy; Rust tests 3,460 passed,
   3 ignored; KWin typecheck and 1,376 tests; launcher 703 and native-effect
-  204 checks. Frozen fixtures were unchanged. Fixture-only no-focus navigation
-  remains unverified pending the tested live-helper extraction.
+  204 checks. The tested source is committed as `732af3ae`; checks used the
+  scoped Cargo commands, KWin `npm run typecheck` / `npm test`,
+  `scripts/dev-loop-split.test.sh` and `scripts/dev-native-effect.test.sh`.
+  Frozen fixtures were unchanged. Fixture-only no-focus navigation
+  remains unverified pending native reruns.
+
+### Focused live helpers
+
+- Extracted only the current legs' reusable script lifecycle, native fixture
+  reads/joins, owned input and fixture processes, isolated dev startup and
+  log-before-stop teardown. The scenario runner remains unchanged; external
+  procedures import these pieces. A separate cursor-read command is available.
+- Independent safety review found no blocking issues after correcting the
+  helper load to target the captured KWin owner with a fresh identity check.
+  Hermetic channel/native/input/fixture/dev tests passed 58/58 using
+  `node --test scripts/kde-live-helpers.test.mjs scripts/kde-live-session.test.mjs`.
+- Full offline gates passed again after extraction: Rust format,
+  three-package all-target build and strict clippy; Rust 3,460 passed,
+  3 ignored; KWin typecheck and 1,376 tests; launcher 703 and native-effect
+  204 checks. The locked fixture build also passed. Frozen fixtures and
+  core/protocol source remain unchanged.
 
 ### Normal runtime settings
 
@@ -149,6 +168,13 @@
   keyboard/visual acceptance remain; these offline checks do not close them.
 
 ### Fixture-only PX evidence
+
+- Follow-up inspection: `kwin/src/world-observe.ts:1637-1650` samples
+  `workspace.cursorPos` freshly, rounds finite safe integer coordinates and
+  returns unknown on unreadable/out-of-bound input; it does not synthesize
+  `(0,0)`. Motion observation uses `cursorPosChanged` only after accepted
+  enabled-hover settings. The earlier independent native helpers also read
+  `workspace.cursorPos`; relative injection remains the missing discriminator.
 
 - Tested after `f690409e`, with two adjacent outputs, joined XWayland fixtures
   and isolated default-off hover settings. Bundle

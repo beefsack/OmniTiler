@@ -50,6 +50,12 @@ First live run (from the repo root inside the devenv shell):
   into the helpers; keep one-off procedure logic outside the repository.
 - Extract only what current live legs need, with tests, from the existing runner
   and prior helper scripts. Build incrementally, not through an upfront port.
+- Current pieces: [script channel and native fixture reads](../scripts/kde-live-helpers.mjs)
+  and [fixture, input and isolated dev lifecycles](../scripts/kde-live-session.mjs).
+  The full scenario runner is unchanged. A cursor-only read uses
+  `node scripts/kde-live-cursor.mjs --live --evidence-dir "$RESULTS"` with an
+  existing private results directory. Hermetic checks:
+  `node --test scripts/kde-live-helpers.test.mjs scripts/kde-live-session.test.mjs`.
 - Evidence guidance, applied case by case: keep disposable working bundles and
   logs in the change's gitignored `docs/changes/<change>/results/`, not temporary
   system directories. Never commit those working bundles.
