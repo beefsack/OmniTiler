@@ -606,3 +606,63 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
   [reference discriminator](../spec/reference-outcomes.md#kde-queued-execution-time-subject).
   Physical even/odd Meta+G bursts and bounded D2 crossing verification remain
   pending. Existing timing and visual-acceptance qualifications are unchanged.
+
+## Post-correction float collection stop (2026-11-17)
+
+- Outcome: INCOMPLETE. The four-press tiled-start burst below supplies a bounded
+  behavior observation, not compliant completion of float acceptance: fixtures
+  were created on the existing current workspace, not an appended workspace
+  beyond the roster. No product defect or code correction is established.
+  Raw artifacts are retained externally as `ri-float-20261117-01`.
+- Exact fixture sentinel/PID/native UUIDs join in `fixture-spawn.json:1` and
+  `native-pre-read.json:1`. Private settings disable hover and select
+  group-with-neighbor (`settings/settings.json:1`); private intent storage and
+  exact fixture scope were used. Physical move-right/left controls reached the
+  real shortcuts before the burst (`control-callback-check.txt:3-6`).
+- Tiled-start even observation: four Meta+G callbacks and ordered queue
+  identities 3-6 appear in `float-even-kwin-journal.log:1-22`. Captures drain
+  batches of 1 and 3 (`:5,25`); each distinct identity has terminal Take READY
+  with kind `-` (`planner-float-even.log:141-166`). The final projection is tiled
+  for both fixtures (`float-even-kwin-journal.log:89-91`); both native frames and
+  active fixture agree (`native-post-float-even.json:1`). Revision 13 issued
+  intermediate native work; revision 14 was superseded during persistence
+  (`float-even-kwin-journal.log:29,55-56`). This is not zero-intermediate-write
+  or rendered-history proof.
+- STOP, tiled-start odd attempt: input could not connect to the daemon
+  (`float-odd-ydotool.stdout:1-2`); the corresponding journal slice has no
+  callbacks or queues (`float-odd-kwin-journal.log:1`). Subsequent native readback
+  has no fixture windows (`native-post-float-odd.json:1`). The fixture and input
+  process exit causes are UNKNOWN. This is an undelivered attempt, not a product
+  FIFO failure. No further burst ran. Starting a replacement input daemon after
+  the stop was a collection error; it was stopped without another burst.
+- NOT RUN: floating-start even/odd and genuine empty-target D2. Two outputs were
+  present (`outputs-pre.txt:1-3,28-30`), but the failed input attempt stopped the
+  leg before staging or exercising D2. Output presence alone proves no crossing.
+- Native-event timing remains OPEN. A genuine `frameGeometryChanged` one-shot
+  exists in `kwin/src/world-entry.ts`, but it tracks admission-pending identities
+  (`noteAdded`, `noteSend`, `setGeometryFor`), not an independently armed timing
+  sample for every shortcut. This burst has no paired `ev=write` / `ev=observed`
+  timestamp sample. Its `frame-attempt` rows
+  (`float-even-kwin-journal.log:42-43,81-82`) are not native-event latency; no new
+  instrumentation was added.
+- Collection limits: `kwin-owner-journal-full.log` includes earlier generations,
+  not just the current cursor window. The helper omitted exact script-object
+  introspection before running the returned ID. Eight file-backed helper unload
+  receipts do prove unload and absence (`receipts/helper-lifecycle.log:1-8`).
+  The Planner log was preserved, but the runtime dev-log glob was not copied;
+  `copy-before-off-receipt.txt:1` is not proof of those missing files. Do not
+  treat this collection as a fully conforming live acceptance run.
+- Controller/Planner teardown is recorded in `dev-off.txt:38` and
+  `dev-status-post.txt:1-9` (unowned Planner, unloaded controller, DOWN).
+  Fixture/input process absence and final unlocked state were checked but
+  process-absence receipts were not saved. Fixture shutdown was not graceful:
+  the process had already exited. Input and fixture exit causes remain open.
+- Current offline verification passes without source or frozen-fixture changes:
+  Rust formatting, all-target build and strict Clippy, 3,459 permitted Rust
+  tests; KWin typecheck and 1,357 tests; launcher `PASS=702 FAIL=0` and
+  native-effect `PASS=204 FAIL=0`. The launcher count differs from the previously
+  recorded 703; no test source changed in this collection.
+- Remaining: compliant even/odd float bursts from both starting modes, genuine
+  empty-target D2 crossings, valid native-event timing, user-owned human-keyboard
+  feel and loaded-effect visual flicker. The earlier inferred nested grouping
+  is still not direct structural proof. This note remains active.
