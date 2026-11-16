@@ -878,6 +878,186 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
     );
 }
 
+fn queued_cross_output_move_dir(window: &str, direction: &str) -> WorldCommand {
+    WorldCommand::MoveDirectional {
+        window: WindowId(window.to_owned()),
+        direction: direction.to_owned(),
+        same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
+    }
+}
+
+fn queued_cross_output_bootstrap() -> WorldEngine {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+        ),
+    );
+    engine
+}
+
+fn queued_cross_output_lagging_capture(request_seq: u64) -> WorldReportV4 {
+    report(
+        request_seq,
+        request_seq,
+        two_screens(),
+        vec![fact("win-a", "out-a", 0)],
+        vec![],
+        vec![],
+        "win-a",
+        None,
+        None,
+        true,
+        false,
+    )
+}
+
+fn assert_queued_cross_output_final_out_a(reply: &crate::world_report::WorldReplyV4) {
+    assert_eq!(
+        window_row(reply, "win-a").output.0,
+        "out-a",
+        "right then left returns to out-a: {reply:?}"
+    );
+    for transfer in reply
+        .transfers
+        .iter()
+        .filter(|t| matches!(&t.kind, TransferKind::Window(_)))
+    {
+        assert_eq!(
+            transfer.target_output.0, "out-a",
+            "any final transfer targets latest logical source: {:?}",
+            reply.transfers
+        );
+    }
+}
+
+#[test]
+#[ignore = "pending no-call consumption-evidence decision"]
+fn queued_cross_output_moves_drain_in_order_without_transfer_in_flight() {
+    // Ordered-rapid-input regression (`docs/decisions/commands.md`): a
+    // queued move after a retained cross-output flight must evaluate the
+    // latest logical world without a native ack, never `transfer-in-flight`.
+    // Same-batch arm: one lagging native capture carries queued right then left.
+    let mut engine = queued_cross_output_bootstrap();
+    let capture = queued_cross_output_lagging_capture(2);
+    let (outcome, settlements) = engine.handle_report(
+        &capture,
+        &[
+            (11, queued_cross_output_move_dir("win-a", "right")),
+            (12, queued_cross_output_move_dir("win-a", "left")),
+        ],
+    );
+    let reply = match outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("same-batch capture must accept, got {other:?}"),
+    };
+    assert_eq!(
+        settlements.len(),
+        2,
+        "both queued moves settle: {settlements:?}"
+    );
+    assert_eq!(settlements[0].seq, 11);
+    assert_eq!(settlements[1].seq, 12);
+    assert_eq!(
+        settlements[0].result, None,
+        "first cross-output move must settle successful: {:?}",
+        settlements[0].result
+    );
+    assert_eq!(
+        settlements[1].result, None,
+        "second queued move must evaluate latest logical world and settle successful, not transfer-in-flight; got {:?}",
+        settlements[1].result
+    );
+    assert_queued_cross_output_final_out_a(&reply);
+}
+
+#[test]
+#[ignore = "pending no-call consumption-evidence decision"]
+fn queued_cross_output_moves_split_captures_drain_in_order_without_transfer_in_flight() {
+    // Split-capture arm: a later capture still reports the old native source.
+    let mut engine = queued_cross_output_bootstrap();
+    let first = queued_cross_output_lagging_capture(2);
+    let (outcome, settlements) = engine.handle_report(
+        &first,
+        &[(11, queued_cross_output_move_dir("win-a", "right"))],
+    );
+    let right_reply = match outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("first crossing must accept, got {other:?}"),
+    };
+    assert_eq!(settlements.len(), 1);
+    assert_eq!(settlements[0].seq, 11);
+    assert_eq!(settlements[0].result, None);
+    assert_eq!(window_row(&right_reply, "win-a").output.0, "out-b");
+    let second = queued_cross_output_lagging_capture(3);
+    let (outcome, settlements) = engine.handle_report(
+        &second,
+        &[(12, queued_cross_output_move_dir("win-a", "left"))],
+    );
+    let reply = match outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("split-capture capture must accept, got {other:?}"),
+    };
+    assert_eq!(
+        settlements.len(),
+        1,
+        "queued left settles once: {settlements:?}"
+    );
+    assert_eq!(settlements[0].seq, 12);
+    assert_eq!(
+        settlements[0].result, None,
+        "split-capture left must succeed against latest logical out-b, not refuse transfer-in-flight; got {:?}",
+        settlements[0].result
+    );
+    assert_queued_cross_output_final_out_a(&reply);
+}
+
+#[test]
+#[ignore = "pending no-call consumption-evidence decision"]
+fn queued_cross_output_moves_alternating_eight_drain_in_order_without_transfer_in_flight() {
+    // Eight alternating same-batch moves: every command evaluates the
+    // preceding latest logical world, so the batch composes net-zero and
+    // returns to out-a with every settlement successful.
+    let mut engine = queued_cross_output_bootstrap();
+    let capture = queued_cross_output_lagging_capture(2);
+    let queued: Vec<(u64, WorldCommand)> = (0..8)
+        .map(|i| {
+            let direction = if i % 2 == 0 { "right" } else { "left" };
+            (11 + i, queued_cross_output_move_dir("win-a", direction))
+        })
+        .collect();
+    let (outcome, settlements) = engine.handle_report(&capture, &queued);
+    let reply = match outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("alternating capture must accept, got {other:?}"),
+    };
+    assert_eq!(
+        settlements.len(),
+        8,
+        "all eight queued moves settle: {settlements:?}"
+    );
+    for (i, settlement) in settlements.iter().enumerate() {
+        assert_eq!(settlement.seq, 11 + i as u64);
+        assert_eq!(
+            settlement.result, None,
+            "alternating move {} must settle successful, not transfer-in-flight; got {:?}",
+            settlement.seq, settlement.result
+        );
+    }
+    assert_queued_cross_output_final_out_a(&reply);
+}
+
 #[test]
 fn directional_focus_crosses_outputs_with_explicit_effect() {
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");

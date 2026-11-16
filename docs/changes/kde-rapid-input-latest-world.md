@@ -907,3 +907,64 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
   flicker and the earlier direct nested-structure proof remain open. This
   evidence-only retry changes no source or protected fixture bytes; the
   correction's offline gates above remain current. The note stays active.
+
+## Ordered cross-output remainder
+
+- Scope: reproduce right then left before native acknowledgement through the
+  production adapter-free ingress, both within one queued batch and across
+  captures with lagging native source evidence. Retained transfer work must not
+  become a busy refusal or replace the latest logical command subject/domain.
+- Approach: separate ordered logical movement from pending native application
+  using the existing world model. Preserve lifetime, visibility and output
+  eligibility fences, truthful settlement and already-issued write completion;
+  add no retries or adapter-side routing policy.
+- Acceptance: genuine semantic RED before the correction; successful ordered
+  reversal and multi-pair regression coverage with fence/settlement guards;
+  independent source review and all scoped offline gates; then one bounded
+  fixture-only empty-target D2 retry with complete accounting/native evidence
+  and receipted teardown. Contract/protocol changes or behavior beyond the
+  selected ordered-core rule are outside this correction.
+- Genuine adapter-free RED: `queued_cross_output_moves_drain_in_order_without_transfer_in_flight`
+  drives `handle_report` with a real queued right/left pair. The first cross
+  succeeds; the second returns `Rejected { kind: TransferInFlight }` instead
+  of success (`d2-ordered-core-20261117/red.log:329-344`, exit 101, 2,254 core
+  tests pass and one fails). A missing test-helper name was repaired before
+  this semantic RED. Coverage now uses independent same-batch reversal,
+  split-capture reversal with lagging native source, and eight-command
+  alternating-batch cases. Final native-transfer cardinality is deliberately
+  not prescribed for a superseded unissued net-zero pair.
+- Independent-case RED: all three cases now execute and fail specifically
+  on the second command's `TransferInFlight` rejection instead of success
+  (`d2-ordered-core-20261117/red-three.log:339-367`, exit 101, 2,254 core
+  tests pass and three fail).
+- Settlement design remains blocked: `held=false` does not prove an older
+  write was unissued (`world_report.rs:522-524`). Keeping only the latest
+  operation loses late own-arrival provenance; keeping historical targets
+  alone does not distinguish those arrivals from external input. Superseding
+  by treating `held=false` as unissued evidence is rejected.
+- Minimal discriminator: issue A-to-B, queue B-to-A while the capture still
+  reports A, then deliver the older B arrival. Initial A must not retire
+  the latest intent prematurely, and the older own B arrival must not
+  become external displacement. A-to-B-to-C-to-A additionally needs
+  provenance beyond the immediately preceding source.
+- A raw-proof-only replacement guard also has an unresolved completion
+  gap: KDE's already-at-target path performs no setter and reports no
+  `MemberAttempt` (`kwin/src/world-apply.ts:902-909,1087-1102`).
+  `WorldReportV4` has no general applied-world acknowledgement
+  (`world_report.rs:1413-1504`); counting later captures would not prove
+  native application. Requiring raw proof can hang forever after a
+  successful no-call, while accepting the initial target fact can retire
+  the reverse intent before an older issued write lands. Indefinite holds
+  and capture-count heuristics are rejected.
+- Parked pending the no-call consumption-evidence decision: retain the three
+  genuine RED regressions with explicit ignore reasons so the normal suite
+  remains green. No production correction or contract extension is
+  implemented. The open decision is whether to continue seeking a
+  demonstrated core-only settlement strategy or extend the contract with
+  truthful no-call consumption evidence. Neither option is selected.
+  D2 remains FAIL; no further live retry has run.
+- Parking verification: workspace fmt check, scoped all-target build and
+  strict clippy pass. The scoped Rust suite passes 3,460 tests with zero
+  failures, three ignored D2 regressions and one unsafe-posture test
+  filtered; core reports 2,254 passed and three ignored
+  (`d2-ordered-core-20261117/park-{fmt,build,clippy,test}.log`).
