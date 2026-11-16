@@ -657,12 +657,91 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
   Fixture/input process absence and final unlocked state were checked but
   process-absence receipts were not saved. Fixture shutdown was not graceful:
   the process had already exited. Input and fixture exit causes remain open.
+- Bounded collection diagnosis: socket refusal and empty native fixture roster
+  were already observed before teardown, so `dev-off` did not cause either loss.
+  The reported launch commands put both processes in short-lived shell
+  background jobs without detachment or retained wait status. That lifetime
+  plumbing is defective, but no saved exit code or signal proves that shell
+  cleanup caused these exits. The fixture stderr has no terminal cause; the
+  input stderr warning is not an exit receipt. No pre-failure kill is reported.
 - Current offline verification passes without source or frozen-fixture changes:
   Rust formatting, all-target build and strict Clippy, 3,459 permitted Rust
   tests; KWin typecheck and 1,357 tests; launcher `PASS=702 FAIL=0` and
-  native-effect `PASS=204 FAIL=0`. The launcher count differs from the previously
-  recorded 703; no test source changed in this collection.
+  native-effect `PASS=204 FAIL=0`. The launcher source is byte-identical to the
+  recorded 703 baseline at `0bd14b51`; no intervening test change explains 702.
+  The SIGTERM follower-cleanup test introduced in `3b4e63e3` increments PASS once
+  per recorded follower PID (`scripts/dev-loop-split.test.sh:2121-2127`), after a
+  readiness check requiring only nonempty PID files (`:2085-2089`). Thus its total
+  is scheduling-sensitive, not a fixed assertion count. The old per-PID files
+  were not retained, so the exact historical one-PID difference is unproven.
 - Remaining: compliant even/odd float bursts from both starting modes, genuine
   empty-target D2 crossings, valid native-event timing, user-owned human-keyboard
   feel and loaded-effect visual flicker. The earlier inferred nested grouping
   is still not direct structural proof. This note remains active.
+
+## Appended-workspace retry and native mismatch (2026-11-17)
+
+- Outcome: FAIL on floating-start even native convergence; overall acceptance
+  remains incomplete. External bundle `ri-retry-20261117-02` retains the exact
+  step script, current-owner cursor journal, native readbacks and process exits.
+  No product fix or extra burst followed the first mismatch.
+- Setup now appends beyond the complete original roster
+  (`desktop-append.json:1`); both fixture sentinel/PID/UUID joins and appended
+  membership are retained (`fixture-spawn.stdout:1`, `joins.json:1`,
+  `native-spawn.json:1`). Private settings/intent and exact fixture scope are
+  used. One persistent input daemon starts before setup (`events.jsonl:1`).
+  Single-chord float/tile controls each reach callback, queue, terminal READY
+  and native parity before the bursts (`events.jsonl:186,213`).
+- Tiled-start even: four callbacks/queue identities 3-6 in press order
+  (`tiled-even-journal.stdout:1-28`), with distinct successful READY terminals
+  (`planner-final.log:121,140-144`). Final tiled revision 12, both native frames
+  and active fixture agree (`tiled-even-after-state.json:1`).
+- Tiled-start odd: three callbacks/queue identities 7-9 in press order
+  (`tiled-odd-journal.stdout:1-19`), with distinct successful READY terminals
+  (`planner-final.log:187,205-207`). Final floating revision 16 and retained
+  frame, sibling full tile and active fixture agree
+  (`tiled-odd-after-state.json:1`).
+- Floating-start even: all four callbacks/queue identities 10-13 reach successful
+  READY (`kwin-owner-current.stdout:684-711`,
+  `planner-final.log:252,272-276`). Revision 17 issues the intermediate tiled
+  geometry (`kwin-owner-current.stdout:700,713,732`); its genuine native frame
+  event reaches that tile (`:745`). Revision 18 retains final float `op-13` at
+  the original floating frame (`:737`), but is superseded during persistence
+  (`:747`). Revision 19 then reports `float-abandoned cause=external` with no
+  pending float (`planner-final.log:280-283`). Through revision 22, core remains
+  floating at the retained frame while native A remains at the intermediate
+  tile (`kwin-owner-current.stdout:858,880`,
+  `floating-even-after-native.json:1`). This is a real joined native/core
+  mismatch, not input loss. The precise settlement correction remains pending.
+- STOP is recorded at `events.jsonl:358`. Floating-start odd and D2 are NOT RUN.
+  The existing second output's current had one foreign normal occupant
+  (`floating-even-before-state.json:1`), so output presence alone would not
+  satisfy D2's empty-target precondition.
+- Native-event timing is now sampled by a passive fixture-joined
+  `frameGeometryChanged` callback using `Date.now()`, not delayed reads.
+  Single float and tile controls reach their final native frames 83 ms and
+  50 ms after the callback (`kwin-owner-current.stdout:278,317,350,391`).
+  Tiled-even final tile arrives 187 ms after first callback / 175 ms after last
+  (`tiled-even-journal.stdout:1,26,102`); tiled-odd final float arrives 94 ms /
+  84 ms (`tiled-odd-journal.stdout:1,12,59`). These are wall-clock
+  callback-to-native-frame samples, not compositor presentation, animation
+  completion, human feel or flicker evidence. The failing leg has no final
+  matching float event.
+- Teardown is directly receipted: explicit key-ups and unlocked hint
+  (`events.jsonl:359-362`, `lock-final.stdout:1`); every helper unload verifies
+  `isScriptLoaded=false` and child absence, with the persistent probe removed
+  before the older controller (`events.jsonl:367-371`). Fifteen actual runtime
+  dev-log files are copied with sizes/hashes before `dev-off`
+  (`events.jsonl:372-375`); these include historical logs, while
+  `planner-final.log` and `kwin-owner-current.stdout` are current-run evidence.
+  Controller is DOWN (`dev-status-post.stdout:1-9`), fixture exits 0 with
+  PID/socket absence (`events.jsonl:379-380`), and daemon exits on the owned
+  SIGTERM with PID/socket absence (`:460-461`). Original desktop IDs/current
+  are retained/restored and the explicitly appended test desktop is removed
+  (`:458`, `native-final.json:1`); two controller-created trailing desktops
+  remain as normal lifecycle churn, not display-configuration changes.
+- Remaining: correct the floating-start latest-world convergence defect,
+  rerun all four parity legs, then prove empty-target D2 crossings. Native
+  event samples do not close human-keyboard feel, loaded-effect visual flicker
+  or the earlier direct nested-structure gap. No source or frozen fixture
+  changes were made during this retry.
