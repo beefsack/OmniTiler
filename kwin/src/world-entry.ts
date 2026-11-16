@@ -8001,7 +8001,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         submitFloat: (label) => native.submitFloat(label),
         activeOutputName,
         activeWindowId,
-        activeWindowRef,
+        activeWindowRef: () => {
+            const raw = readProp(surface, "activeWindow");
+            return typeof raw === "object" && raw !== null ? raw : null;
+        },
         currentScopeId,
         registerShortcutFn: overrides.registerShortcutFn,
         readSameAxisMove: () => settings.readSameAxisLive(),

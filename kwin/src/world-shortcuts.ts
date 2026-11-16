@@ -95,6 +95,7 @@ export interface WorldShortcutsEnv {
     submitFloat: (label: string) => boolean;
     activeOutputName: () => string | null;
     activeWindowId: () => string | null;
+    // Raw foreground distinguishes genuine absence from scope-filtered focus.
     activeWindowRef: () => object | null;
     currentScopeId: () => string;
     registerShortcutFn?: WorldShortcutRegisterFn;
@@ -109,7 +110,7 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
     const {
         isDirection, shortcutFailed, submitCommand,
         submitCatalogMove, submitOutputSend, submitMigration, submitFloat,
-        activeOutputName, activeWindowId,
+        activeOutputName, activeWindowId, activeWindowRef,
         currentScopeId,
     } = env;
     const register = env.registerShortcutFn ?? ((() => {
@@ -156,12 +157,18 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
             // Command-only: every subject (tiled, floating, sticky) routes
             // the direction-only Planner command; the core owns the
             // float-focus lattice, crossing (left/right) and local fallback.
+            // Only genuine native absence authorizes the empty subject;
+            // scope-filtered foreign focus still refuses.
             const w = focusedWin();
-            if (!isDirection(d) || w === null) {
+            if (!isDirection(d)) {
                 shortcutFailed(`focus-${d}`);
                 return;
             }
-            const cmd = cmdFocusDirectional(w, d);
+            if (w === null && activeWindowRef() !== null) {
+                shortcutFailed(`focus-${d}`);
+                return;
+            }
+            const cmd = cmdFocusDirectional(w ?? "", d);
             if (cmd === null || !submitCommand(cmd, `focus-${d}`)) {
                 shortcutFailed(`focus-${d}`);
             }

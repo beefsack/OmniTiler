@@ -12,7 +12,9 @@ import {
     cmdSendDirectional,
     explicitSource,
     implicitSource,
+    type WorldCommand,
 } from "../src/world-report";
+import { registerWorldShortcuts, type WorldShortcutsEnv } from "../src/world-shortcuts";
 
 describe("direction-only world intents (no adapter endpoint)", () => {
     it("builds focus/move/send/migrate direction-only shapes", () => {
@@ -53,5 +55,83 @@ describe("direction-only world intents (no adapter endpoint)", () => {
     it("names typed send sources, never bare strings", () => {
         assert.deepEqual(explicitSource("out-a"), { explicit: "out-a" });
         assert.deepEqual(implicitSource("home-then-action"), { implicit: "home-then-action" });
+    });
+
+    it("submits explicit empty win for directional focus with no active window", () => {
+        const commands: WorldCommand[] = [];
+        const failures: string[] = [];
+        const registered = new Map<string, () => void>();
+        const env: WorldShortcutsEnv = {
+            readProp: (value, property) => Reflect.get(value as object, property),
+            isDirection: (value): value is "left" | "right" | "up" | "down" =>
+                value === "left" || value === "right" || value === "up" || value === "down",
+            shortcutFailed: (action) => { failures.push(action); },
+            submitCommand: (command, _label) => { commands.push(command); return true; },
+            submitCatalogMove: () => {},
+            submitOutputSend: () => false,
+            submitMigration: () => false,
+            submitFloat: () => false,
+            activeOutputName: () => "out-a",
+            activeWindowId: () => null,
+            activeWindowRef: () => null,
+            currentScopeId: () => "out-a/ws-a",
+            registerShortcutFn: (name, _text, _seq, callback) => { registered.set(name, callback); return true; },
+        };
+        registerWorldShortcuts(env);
+        registered.get("omnitiler-focus-left")?.();
+        assert.deepEqual(commands, [{ op: "focus-directional", win: "", direction: "left" }]);
+        assert.deepEqual(failures, []);
+    });
+
+    it("still refuses move with no active window", () => {
+        const commands: WorldCommand[] = [];
+        const failures: string[] = [];
+        const registered = new Map<string, () => void>();
+        const env: WorldShortcutsEnv = {
+            readProp: (value, property) => Reflect.get(value as object, property),
+            isDirection: (value): value is "left" | "right" | "up" | "down" =>
+                value === "left" || value === "right" || value === "up" || value === "down",
+            shortcutFailed: (action) => { failures.push(action); },
+            submitCommand: (command, _label) => { commands.push(command); return true; },
+            submitCatalogMove: () => {},
+            submitOutputSend: () => false,
+            submitMigration: () => false,
+            submitFloat: () => false,
+            activeOutputName: () => "out-a",
+            activeWindowId: () => null,
+            activeWindowRef: () => null,
+            currentScopeId: () => "out-a/ws-a",
+            registerShortcutFn: (name, _text, _seq, callback) => { registered.set(name, callback); return true; },
+        };
+        registerWorldShortcuts(env);
+        registered.get("omnitiler-move-left")?.();
+        assert.deepEqual(commands, []);
+        assert.deepEqual(failures, ["move-left"]);
+    });
+
+    it("refuses directional focus when a foreign raw foreground exists but the filtered id is null", () => {
+        const commands: WorldCommand[] = [];
+        const failures: string[] = [];
+        const registered = new Map<string, () => void>();
+        const env: WorldShortcutsEnv = {
+            readProp: (value, property) => Reflect.get(value as object, property),
+            isDirection: (value): value is "left" | "right" | "up" | "down" =>
+                value === "left" || value === "right" || value === "up" || value === "down",
+            shortcutFailed: (action) => { failures.push(action); },
+            submitCommand: (command, _label) => { commands.push(command); return true; },
+            submitCatalogMove: () => {},
+            submitOutputSend: () => false,
+            submitMigration: () => false,
+            submitFloat: () => false,
+            activeOutputName: () => "out-a",
+            activeWindowId: () => null,
+            activeWindowRef: () => ({ internalId: "win-foreign" }),
+            currentScopeId: () => "out-a/ws-a",
+            registerShortcutFn: (name, _text, _seq, callback) => { registered.set(name, callback); return true; },
+        };
+        registerWorldShortcuts(env);
+        registered.get("omnitiler-focus-left")?.();
+        assert.deepEqual(commands, []);
+        assert.deepEqual(failures, ["focus-left"]);
     });
 });

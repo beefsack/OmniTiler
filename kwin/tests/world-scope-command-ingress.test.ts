@@ -261,4 +261,19 @@ describe("world scope command ingress", () => {
         assert.deepEqual(filed[0], { op: "toggle-sticky", win: { currentFocus: true } });
         h.handle?.stop();
     });
+
+    it("files the explicit empty marker for directional focus with a genuine null foreground through the registered shortcut", () => {
+        const ws = desk("ws-a");
+        const foreign = tiledWin("win-foreign", "firefox", "out-a", ws, 0);
+        const domestic = tiledWin("win-domestic", "OmniTilerTestWindow", "out-a", ws, 210);
+        const h = makeScopedHarness(foreign, domestic);
+        discover(h);
+        h.setActive(null);
+        h.shortcuts.get("omnitiler-focus-left")?.();
+        h.runTimers();
+        assert.deepEqual(queueCommands(h), [
+            { op: "focus-directional", win: "", direction: "left" },
+        ], "genuine nofocus files the explicit empty win through production entry");
+        h.handle?.stop();
+    });
 });
