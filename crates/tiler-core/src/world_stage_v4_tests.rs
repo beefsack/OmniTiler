@@ -986,7 +986,7 @@ fn v4_state_offroute_uses_retained_home_when_carried_output_missing() {
         let mut with_caps = engine_with_caps(HostCapabilities::default());
         // Carry over the retained membership so core_homing resolves.
         with_caps.members = engine.members.clone();
-        with_caps.engine = engine.engine.clone();
+        with_caps.layout = engine.layout.clone();
         with_caps
     };
     let mut report = report_v4(

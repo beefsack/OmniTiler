@@ -222,7 +222,7 @@ impl WorldEngine {
         self.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Frames);
         self.prev_cursor = self.last_cursor;
         self.last_cursor = self.staged.observation.cursor;
-        self.engine.set_fresh_cursor(self.staged.observation.cursor);
+        self.layout.set_fresh_cursor(self.staged.observation.cursor);
         self.floating_scopes = self
             .staged
             .domains
@@ -244,36 +244,25 @@ impl WorldEngine {
             if self.floating_scopes.contains(&domain.key) {
                 continue;
             }
-            let Some(session) = self.engine.session(&domain.key) else {
+            if !self.layout.contains_domain(&domain.key) {
                 continue;
-            };
+            }
             let mut known = BTreeSet::new();
-            for link in session.snapshot().windows {
-                if link.output == domain.key.output && link.workspace == domain.key.workspace {
-                    known.insert(link.window.0.clone());
-                }
+            for window in self.layout.tiled_windows(&domain.key) {
+                known.insert(window.0.clone());
             }
-            for observed in session.exception_observed() {
-                if observed.output == domain.key.output
-                    && observed.workspace == domain.key.workspace
-                {
-                    known.insert(observed.window.0.clone());
-                }
+            for window in self.layout.exception_windows(&domain.key) {
+                known.insert(window.0.clone());
             }
-            for (window, output, workspace) in session.minimized_entries() {
-                if output == domain.key.output && workspace == domain.key.workspace {
-                    known.insert(window.0.clone());
-                }
+            for window in self.layout.minimized_windows(&domain.key) {
+                known.insert(window.0.clone());
             }
             known_before.insert(domain.key.clone(), known);
         }
         let mut slotted_before: BTreeSet<WindowId> = BTreeSet::new();
         for domain in &self.staged.domains {
-            let Some(session) = self.engine.session(&domain.key) else {
-                continue;
-            };
-            for link in session.snapshot().windows {
-                slotted_before.insert(link.window.clone());
+            for window in self.layout.tiled_windows(&domain.key) {
+                slotted_before.insert(window.clone());
             }
         }
         self.hold_reasons.clear();
@@ -432,10 +421,10 @@ impl WorldEngine {
             self.mint_born_clears_v4(&pre_known, &slotted_before);
         }
         for (key, window) in std::mem::take(&mut self.pending_forget) {
-            self.engine.forget_minimized_slot(&key, &window);
+            self.layout.forget_minimized_slot(&key, &window);
         }
         for (key, window) in self.confirmed_minimized_rehomes() {
-            self.engine.forget_minimized_slot(&key, &window);
+            self.layout.forget_minimized_slot(&key, &window);
         }
         self.command_result = None;
         match self.gesture_act(issue, &mut held_scopes) {

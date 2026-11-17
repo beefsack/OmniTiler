@@ -431,3 +431,8 @@
   Source review and scoped formatting pass; a library/tests diagnostic still
   fails on 59 library and 244 test-build errors in unmigrated consumers, with
   no new helper or test error. Runtime acceptance remains pending.
+- Report ingress now updates the layout cursor and derives known-before and
+  tiled-before lifetime sets directly from per-key bindings, exceptions and
+  restore slots. Post-sweep slot cleanup and three existing test accessors
+  use the same owned layout. Source review and scoped formatting pass; no
+  additional build or runtime acceptance is claimed.

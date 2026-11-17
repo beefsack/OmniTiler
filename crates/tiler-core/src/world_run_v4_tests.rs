@@ -1783,7 +1783,7 @@ fn migration_unknown_minimized_refuses_before_engine_commit() {
         workspace: crate::directional::WorkspaceId(source_view.clone()),
     };
     assert!(
-        engine.engine.session(&target_key).is_none(),
+        !engine.layout.contains_domain(&target_key),
         "target session absent after refusal"
     );
     let source_key = crate::session::DomainKey {
@@ -1791,7 +1791,7 @@ fn migration_unknown_minimized_refuses_before_engine_commit() {
         workspace: crate::directional::WorkspaceId(source_view),
     };
     assert!(
-        engine.engine.session(&source_key).is_some(),
+        engine.layout.contains_domain(&source_key),
         "source session intact after refusal"
     );
     let ids: Vec<String> = reply
