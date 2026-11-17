@@ -12,10 +12,10 @@
 //! and commits the release over the existing session drag/resize
 //! machinery. The adapter only observes, captures, renders, and applies.
 //!
-//! No second policy: preview and release synthesize the same [`CoreCommand`]
-//! shapes the operation route carries and run them through the same
-//! [`Engine`] resolver, without consuming a command sequence (gesture
-//! ingress is observation, never a command). Cross-output releases run
+//! No second policy: preview and release run through the same typed
+//! [`WorldLayout`](crate::world_layout::WorldLayout) operations, without
+//! consuming a command sequence (gesture ingress is observation, never a
+//! command). Cross-output releases run
 //! the same source-first pair drop the preview showed (live coordinates,
 //! targeted slot and orientation, membership move plus follow); empty
 //! destinations and points the pair cannot place keep the send
@@ -27,9 +27,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
-use crate::directional::{OutputId, WindowId, WorkspaceId};
-use crate::engine::Engine;
+use crate::directional::{Axis, OutputId, WindowId, WorkspaceId};
 use crate::gesture::{
     GestureIngress, GestureIntent, GestureKind, GesturePhase, classify_gesture, prefer_modal_move,
     resolve_drop_destination,
@@ -37,6 +35,7 @@ use crate::gesture::{
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, DragHoverPrior, OutputDomain};
 use crate::world_engine::{RetainedTransfer, WorldEngine};
+use crate::world_layout::{LocalOperationContext, PairOperationContext};
 use crate::world_report::{DragPreviewV4, TransferKind, TransferTarget};
 
 /// Retained gesture session: one open native move/size gesture bound to an
@@ -345,7 +344,7 @@ impl WorldEngine {
                         GestureOutcome::Held
                     }
                     GesturePhase::Started | GesturePhase::Updated => {
-                        self.gesture_updated(issue, &ingress, held_scopes)
+                        self.gesture_updated(&ingress, held_scopes)
                     }
                     GesturePhase::Released => self.gesture_released(issue, &ingress, held_scopes),
                     GesturePhase::Cancelled => {
@@ -486,11 +485,7 @@ impl WorldEngine {
         if derived.overlay_fullscreen || derived.overlay_maximized {
             return false;
         }
-        self.engine.domain_keys().iter().any(|key| {
-            self.engine
-                .session(key)
-                .is_some_and(|session| session.is_exception(window))
-        })
+        self.layout.is_exception_window_any(window)
     }
 
     /// Release-frame ground truth for the retained window: the staged
@@ -532,7 +527,6 @@ impl WorldEngine {
     /// adapter never needs to second-guess a published result.
     fn gesture_updated(
         &mut self,
-        issue: &crate::world_engine::EventIssue,
         ingress: &GestureIngress,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> GestureOutcome {
@@ -592,65 +586,60 @@ impl WorldEngine {
         // staged work-area bounds, matching `operation_drag`. The pair
         // route carries the capture domain as its source; the local route
         // carries none.
-        let preview = match self.drag_pointer_domain_staged(cursor_x, cursor_y, held_scopes) {
-            Some((pointer_key, _)) if pointer_key != retained.home => {
-                let command = CoreCommand::DragPreview {
-                    window: retained.window.0.clone(),
-                    x: cursor_x,
-                    y: cursor_y,
-                    hover_prior: retained.hover.clone(),
-                    source: Some(retained.home.clone()),
-                };
-                return match self.gesture_pair_preview(
-                    issue,
-                    &retained,
-                    &command,
-                    &pointer_key,
-                    held_scopes,
-                ) {
-                    Some(preview) => {
-                        if let Some(session) = self.gesture.as_mut() {
-                            session.hover = preview.hover.clone();
-                        }
-                        self.drag_preview = Some(preview.clone());
-                        self.set_drag_preview_trace_reason("preview-pair");
-                        GestureOutcome::Settled { committed: false }
+        if let Some((pointer_key, _)) =
+            self.drag_pointer_domain_staged(cursor_x, cursor_y, held_scopes)
+            && pointer_key != retained.home
+        {
+            return match self.gesture_pair_preview(
+                &retained,
+                cursor_x,
+                cursor_y,
+                &pointer_key,
+                held_scopes,
+            ) {
+                Some(preview) => {
+                    if let Some(session) = self.gesture.as_mut() {
+                        session.hover = preview.hover.clone();
                     }
-                    None => {
-                        self.drag_preview = None;
-                        GestureOutcome::Held
-                    }
-                };
-            }
-            _ => {
-                let command = CoreCommand::DragPreview {
-                    window: retained.window.0.clone(),
-                    x: cursor_x,
-                    y: cursor_y,
-                    hover_prior: retained.hover.clone(),
-                    source: None,
-                };
-                self.gesture_local_event(issue, &retained, &command, held_scopes)
-            }
-        };
-        let Some(event) = preview else {
+                    self.drag_preview = Some(preview);
+                    self.set_drag_preview_trace_reason("preview-pair");
+                    GestureOutcome::Settled { committed: false }
+                }
+                None => {
+                    self.drag_preview = None;
+                    GestureOutcome::Held
+                }
+            };
+        }
+        let Some((_, inset, domain_report)) = self.gesture_local_context(&retained, held_scopes)
+        else {
             self.drag_preview = None;
             self.set_drag_preview_trace_reason("local-event-none");
             return GestureOutcome::Held;
         };
-        match self.engine.handle(&event) {
-            CoreReply::DragPreview(plan) => {
-                let preview = Self::drag_preview_from_plan(retained.id, &plan);
+        let observed = self.shielded_windows(&retained.home, &domain_report.windows);
+        match self.layout.run_local_drag_preview(
+            &inset,
+            domain_report.outer_gap,
+            &retained.window,
+            &domain_report.focused,
+            &observed,
+            cursor_x,
+            cursor_y,
+            retained.hover.as_ref(),
+        ) {
+            Ok(outcome) => {
+                let preview = Self::drag_preview_from_outcome(retained.id, outcome);
                 if let Some(session) = self.gesture.as_mut() {
                     session.hover = preview.hover.clone();
                 }
-                self.drag_preview = Some(preview.clone());
+                self.drag_preview = Some(preview);
                 self.set_drag_preview_trace_reason("preview-local");
                 GestureOutcome::Settled { committed: false }
             }
             // Engine refusals (self/centre/outside/unchanged) and session
             // mismatches suppress the overlay but retain the session.
-            _ => {
+            Err(_) => {
                 self.drag_preview = None;
                 self.set_drag_preview_trace_reason("local-engine-refused");
                 GestureOutcome::Held
@@ -724,7 +713,6 @@ impl WorldEngine {
                 direction2,
                 boundary2,
             }) if !owned_float => self.gesture_resize_release(
-                issue,
                 &retained,
                 direction,
                 boundary,
@@ -812,26 +800,39 @@ impl WorldEngine {
         );
         match destination {
             crate::gesture::DropDestination::SameOutput => {
-                let command = CoreCommand::DragDrop {
-                    window: retained.window.0.clone(),
-                    x,
-                    y,
-                    hover_prior: retained.hover.clone(),
-                    source: None,
-                };
-                let Some(event) = self.gesture_local_event(issue, retained, &command, held_scopes)
+                let Some((domain_key, inset, domain_report)) =
+                    self.gesture_local_context(retained, held_scopes)
                 else {
                     return GestureOutcome::Settled { committed: false };
                 };
-                match self.engine.handle(&event) {
-                    CoreReply::Tiled(_) => GestureOutcome::Settled {
-                        // The Engine committed the resolved placement
-                        // inside `handle`; the snapshot below publishes
-                        // the desired geometry for native actuation.
-                        committed: true,
-                    },
-                    _ => GestureOutcome::Settled { committed: false },
+                let windows = self.shielded_windows(&retained.home, &domain_report.windows);
+                if self.layout.contains_domain(&domain_key)
+                    && self
+                        .layout
+                        .converge_retained_observation(
+                            &domain_key,
+                            &windows,
+                            &domain_report.focused,
+                            &domain_report.closed,
+                        )
+                        .is_err()
+                {
+                    return GestureOutcome::Settled { committed: false };
                 }
+                let committed = self
+                    .layout
+                    .run_local_drag_drop(
+                        &inset,
+                        domain_report.outer_gap,
+                        &retained.window,
+                        &domain_report.focused,
+                        &windows,
+                        x,
+                        y,
+                        retained.hover.as_ref(),
+                    )
+                    .is_ok();
+                GestureOutcome::Settled { committed }
             }
             crate::gesture::DropDestination::Cross { output } => {
                 let Some(workspace) = self.effective_view(&output) else {
@@ -844,7 +845,6 @@ impl WorldEngine {
                 // also serves empty destinations; send refusals snap back
                 // as before.
                 if let Some(outcome) = self.gesture_pair_drop(
-                    issue,
                     retained,
                     &operation_id,
                     &output,
@@ -929,7 +929,6 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     fn gesture_resize_release(
         &mut self,
-        issue: &crate::world_engine::EventIssue,
         retained: &RetainedGesture,
         direction: &str,
         boundary: i32,
@@ -937,28 +936,65 @@ impl WorldEngine {
         boundary2: Option<i32>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> GestureOutcome {
-        let command = CoreCommand::PointerResize {
-            window: retained.window.0.clone(),
-            direction: direction.to_owned(),
-            boundary,
-            direction2: direction2.map(str::to_owned),
-            boundary2,
-        };
-        let Some(event) = self.gesture_local_event(issue, retained, &command, held_scopes) else {
+        let Some((domain_key, inset, domain_report)) =
+            self.gesture_local_context(retained, held_scopes)
+        else {
             return GestureOutcome::Settled { committed: false };
         };
-        // The mover must still home where the gesture started:
-        // membership drift between start and release snaps back.
-        if event.domain_key != retained.home {
+        let Some(dir) = crate::world_operations::parse_direction_token(direction) else {
             return GestureOutcome::Settled { committed: false };
-        }
-        match self.engine.handle(&event) {
-            CoreReply::Tiled(_)
-            | CoreReply::Projection(_)
-            | CoreReply::Resize(_)
-            | CoreReply::DragPreview(_) => GestureOutcome::Settled { committed: true },
-            _ => GestureOutcome::Settled { committed: false },
-        }
+        };
+        let windows = self.shielded_windows(&retained.home, &domain_report.windows);
+        let preconverged = if self.layout.contains_domain(&domain_key) {
+            if self
+                .layout
+                .converge_retained_observation(
+                    &domain_key,
+                    &windows,
+                    &domain_report.focused,
+                    &domain_report.closed,
+                )
+                .is_err()
+            {
+                return GestureOutcome::Settled { committed: false };
+            }
+            true
+        } else {
+            false
+        };
+        let ctx = LocalOperationContext {
+            domain: &inset,
+            outer_gap: domain_report.outer_gap,
+            observed_focus: &domain_report.focused,
+            observed: &windows,
+            preconverged,
+        };
+        let committed = match (direction2, boundary2) {
+            (None, None) => self
+                .layout
+                .run_pointer_resize(&ctx, &retained.window, dir, boundary)
+                .is_ok(),
+            (Some(raw), Some(second)) => {
+                let Some(parsed) = crate::world_operations::parse_direction_token(raw) else {
+                    return GestureOutcome::Settled { committed: false };
+                };
+                if Axis::for_direction(dir) == Axis::for_direction(parsed) {
+                    return GestureOutcome::Settled { committed: false };
+                }
+                self.layout
+                    .run_pointer_resize_corner(
+                        &ctx,
+                        &retained.window,
+                        dir,
+                        boundary,
+                        parsed,
+                        second,
+                    )
+                    .is_ok()
+            }
+            _ => false,
+        };
+        GestureOutcome::Settled { committed }
     }
 
     /// Commit an owned composed-float release: adopt the staged release
@@ -1000,10 +1036,10 @@ impl WorldEngine {
             return GestureOutcome::Settled { committed: false };
         };
         if target_key == retained.home {
-            let Some(session) = self.engine.session_mut(&retained.home) else {
-                return GestureOutcome::Settled { committed: false };
-            };
-            if !session.adopt_float_placement(&retained.window, release_frame) {
+            if !self
+                .layout
+                .adopt_float_placement(&retained.home, &retained.window, release_frame)
+            {
                 return GestureOutcome::Settled { committed: false };
             }
             self.retained_floats
@@ -1026,8 +1062,7 @@ impl WorldEngine {
             return GestureOutcome::Settled { committed: false };
         }
         self.composed_maximized.remove(&retained.window);
-        if self.engine.session(&target_key).is_none()
-            || self.engine.session(&retained.home).is_none()
+        if !self.layout.contains_domain(&target_key) || !self.layout.contains_domain(&retained.home)
         {
             // Restage without the cleared gesture shield so the scopes
             // below converge the same unshielded staging the ordinary
@@ -1053,38 +1088,12 @@ impl WorldEngine {
             self.settle_intent_admissions();
             return GestureOutcome::Settled { committed: false };
         }
-        let mut ids = BTreeSet::new();
-        ids.insert(retained.window.clone());
-        let moved = self
-            .engine
-            .session_mut(&retained.home)
-            .map(|session| session.extract_exception_floats(&ids));
-        let Some(moved) = moved else {
-            return GestureOutcome::Settled { committed: false };
-        };
-        if moved.is_empty() {
-            return GestureOutcome::Settled { committed: false };
-        }
-        self.engine
-            .session_mut(&target_key)
-            .expect("target session checked")
-            .insert_exception_floats(moved, &target_key);
-        let adopted = self
-            .engine
-            .session_mut(&target_key)
-            .expect("target session checked")
-            .adopt_float_placement(&retained.window, release_frame);
-        if !adopted {
-            let mut back = BTreeSet::new();
-            back.insert(retained.window.clone());
-            let moved = self
-                .engine
-                .session_mut(&target_key)
-                .expect("target session checked")
-                .extract_exception_floats(&back);
-            if let Some(home) = self.engine.session_mut(&retained.home) {
-                home.insert_exception_floats(moved, &retained.home);
-            }
+        if !self.layout.move_exception_float_with_placement(
+            &retained.home,
+            &target_key,
+            &retained.window,
+            release_frame,
+        ) {
             return GestureOutcome::Settled { committed: false };
         }
         self.commit_send_member(&retained.window, &target_key);
@@ -1093,39 +1102,48 @@ impl WorldEngine {
         GestureOutcome::Settled { committed: true }
     }
 
-    /// Build the local Engine event envelope for one gesture preview,
-    /// drop, or resize: identical observation binding to
-    /// `run_local_operation` (mover-homed domain, shielded rows, inset
-    /// bounds, accepted revision), without consuming a command sequence.
-    /// `None` selects the same refusal the operation route returns, with
-    /// no mutation.
-    fn gesture_local_event(
+    /// Resolve staged local domain matching `window` (homed, readable,
+    /// unheld), falling back to the first readable unheld domain.
+    fn gesture_local_domain_staged(
         &self,
-        issue: &crate::world_engine::EventIssue,
-        retained: &RetainedGesture,
-        command: &CoreCommand,
+        window: &WindowId,
         held_scopes: &BTreeSet<DomainKey>,
-    ) -> Option<CoreEvent> {
-        let window = match command {
-            CoreCommand::DragDrop { window, .. }
-            | CoreCommand::DragPreview { window, .. }
-            | CoreCommand::PointerResize { window, .. } => WindowId(window.clone()),
-            _ => return None,
-        };
-        if window != retained.window {
+    ) -> Option<(DomainKey, crate::world_engine::StagedDomain)> {
+        if let Some(key) = self
+            .staged_homing(window)
+            .filter(|key| !held_scopes.contains(key))
+            && let Some(domain) = self
+                .staged
+                .domains
+                .iter()
+                .find(|d| d.readable && d.key == key)
+        {
+            return Some((key, domain.clone()));
+        }
+        self.staged
+            .domains
+            .iter()
+            .filter(|d| d.readable && !held_scopes.contains(&d.key))
+            .map(|d| (d.key.clone(), d.clone()))
+            .next()
+    }
+
+    /// Build the local staged domain, inset `OutputDomain`, and staged
+    /// report for one gesture preview, drop, or resize. `None` selects
+    /// the same refusal as the operation route, with no mutation.
+    fn gesture_local_context(
+        &self,
+        retained: &RetainedGesture,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> Option<(DomainKey, OutputDomain, crate::world_engine::StagedDomain)> {
+        if retained.window.0.is_empty() {
             return None;
         }
-        let (domain_key, domain_report) = self.operation_domain_staged(command, held_scopes)?;
+        let (domain_key, domain_report) =
+            self.gesture_local_domain_staged(&retained.window, held_scopes)?;
         if domain_key != retained.home {
             return None;
         }
-        let owner = issue.owner.clone();
-        let correlation = issue.correlation.clone();
-        let accepted = self
-            .engine
-            .session(&domain_key)
-            .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
-        let (revision, fingerprint) = accepted.unwrap_or((0, 0));
         let staged_output = OutputDomain {
             id: domain_key.output.clone(),
             workspace: domain_key.workspace.clone(),
@@ -1135,43 +1153,25 @@ impl WorldEngine {
         };
         let inset =
             crate::world_engine::inset_world_domain(&staged_output, domain_report.outer_gap)?;
-        Some(CoreEvent {
-            owner,
-            generation: self.core_generation.clone(),
-            correlation,
-            revision,
-            fingerprint,
-            domain: Engine::canonical_component_domain(&inset),
-            domain_key,
-            outer_gap: domain_report.outer_gap,
-            focused_window: domain_report.focused.clone(),
-            windows: self.shielded_windows(&retained.home, &domain_report.windows),
-            closed_windows: domain_report.closed.clone(),
-            directional: None,
-            directional_target_outer_gap: None,
-            target_domain: None,
-            target_windows: Vec::new(),
-            command: command.clone(),
-        })
+        Some((domain_key, inset, domain_report))
     }
 
-    /// Build the source-first pair Engine event for a cross-output
-    /// preview or drop: identical binding to `operation_drag_pair`
-    /// (pointer domain as destination, source-first combined rows, inset
-    /// pair bounds), without consuming a command sequence. `None`
-    /// selects the same refusal the operation route returns.
-    ///
-    /// Gap convention follows the directional pair: `outer_gap` carries
-    /// the source gap and `directional_target_outer_gap` the destination
-    /// gap, so both sessions retain their own staged gaps.
-    fn gesture_pair_event(
+    /// Build the source-first pair geometry and combined shielded
+    /// observation for a cross-output preview or drop.
+    fn gesture_pair_inputs(
         &self,
-        issue: &crate::world_engine::EventIssue,
         retained: &RetainedGesture,
-        command: &CoreCommand,
         pointer_key: &DomainKey,
         held_scopes: &BTreeSet<DomainKey>,
-    ) -> Option<CoreEvent> {
+    ) -> Option<(
+        OutputDomain,
+        OutputDomain,
+        i32,
+        i32,
+        WindowId,
+        Vec<EngineWindow>,
+        Vec<WindowId>,
+    )> {
         let source_key = retained.home.clone();
         let domain_key = pointer_key.clone();
         let source_report = self
@@ -1189,69 +1189,55 @@ impl WorldEngine {
             .iter()
             .find(|d| d.readable && d.key == domain_key)?
             .clone();
-        let owner = issue.owner.clone();
-        let correlation = issue.correlation.clone();
-        let accepted = self
-            .engine
-            .session(&domain_key)
-            .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
-        let (revision, fingerprint) = accepted.unwrap_or((0, 0));
         let mut combined = self.shielded_windows(&source_key, &source_report.windows);
         combined.extend(self.shielded_windows(&domain_key, &domain_report.windows));
         let source_output_domain = OutputDomain {
-            id: source_key.output.clone(),
-            workspace: source_key.workspace.clone(),
+            id: source_key.output,
+            workspace: source_key.workspace,
             bounds: source_report.bounds,
             gap: source_report.gap,
             adjacent: BTreeMap::new(),
         };
         let domain_output_domain = OutputDomain {
-            id: domain_key.output.clone(),
-            workspace: domain_key.workspace.clone(),
+            id: domain_key.output,
+            workspace: domain_key.workspace,
             bounds: domain_report.bounds,
             gap: domain_report.gap,
             adjacent: BTreeMap::new(),
         };
-        let (Some(inset_source), Some(inset_target)) = (
-            crate::world_engine::inset_world_domain(&source_output_domain, source_report.outer_gap),
-            crate::world_engine::inset_world_domain(&domain_output_domain, domain_report.outer_gap),
-        ) else {
-            return None;
-        };
-        Some(CoreEvent {
-            owner,
-            generation: self.core_generation.clone(),
-            correlation,
-            revision,
-            fingerprint,
-            domain: Engine::canonical_component_domain(&inset_target),
-            domain_key,
-            outer_gap: source_report.outer_gap,
-            focused_window: domain_report.focused.clone(),
-            windows: combined,
-            closed_windows: domain_report.closed.clone(),
-            directional: Some(vec![
-                (inset_source, source_key),
-                (inset_target, domain_report.key.clone()),
-            ]),
-            directional_target_outer_gap: Some(domain_report.outer_gap),
-            target_domain: None,
-            target_windows: Vec::new(),
-            command: command.clone(),
-        })
+        let inset_source = crate::world_engine::inset_world_domain(
+            &source_output_domain,
+            source_report.outer_gap,
+        )?;
+        let inset_target = crate::world_engine::inset_world_domain(
+            &domain_output_domain,
+            domain_report.outer_gap,
+        )?;
+        Some((
+            inset_source,
+            inset_target,
+            source_report.outer_gap,
+            domain_report.outer_gap,
+            domain_report.focused,
+            combined,
+            domain_report.closed,
+        ))
     }
 
-    /// Build one retained [`DragPreviewV4`] from a core drag-preview plan,
+    /// Build one retained [`DragPreviewV4`] from a typed [`DragPreviewOutcome`],
     /// stamped with the active gesture's `retained.id`.
-    fn drag_preview_from_plan(id: u64, plan: &crate::boundary::DragPreviewPlan) -> DragPreviewV4 {
+    fn drag_preview_from_outcome(
+        id: u64,
+        outcome: crate::world_layout::DragPreviewOutcome,
+    ) -> DragPreviewV4 {
         DragPreviewV4 {
             id,
-            rect: plan.preview.proposed_rect,
-            hover: Some(plan.preview.hover_prior()),
-            domain: plan.preview.domain.clone(),
-            source: plan.preview.source_domain.clone(),
-            target: plan.preview.target_window.clone(),
-            revision: plan.preview.revision,
+            rect: outcome.proposed_rect,
+            hover: Some(outcome.hover),
+            domain: outcome.domain,
+            source: outcome.source_domain,
+            target: outcome.target_window,
+            revision: outcome.base_revision,
         }
     }
 
@@ -1342,44 +1328,65 @@ impl WorldEngine {
         }
     }
 
-    /// Resolve one cross-output preview through the shared pair event:
-    /// read-only, never commits. `None` holds the session with no
-    /// overlay, exactly as before.
+    /// Resolve one cross-output preview through the shared pair operation:
+    /// read-only, never commits preview topology. `None` holds the session
+    /// with no overlay, exactly as before.
     fn gesture_pair_preview(
         &mut self,
-        issue: &crate::world_engine::EventIssue,
         retained: &RetainedGesture,
-        command: &CoreCommand,
+        x: i32,
+        y: i32,
         pointer_key: &DomainKey,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> Option<DragPreviewV4> {
-        let Some(event) =
-            self.gesture_pair_event(issue, retained, command, pointer_key, held_scopes)
+        let Some((
+            inset_source,
+            inset_target,
+            source_outer_gap,
+            target_outer_gap,
+            focused,
+            combined,
+            closed,
+        )) = self.gesture_pair_inputs(retained, pointer_key, held_scopes)
         else {
             self.set_drag_preview_trace_reason("pair-event-none");
             return None;
         };
-        match self.engine.handle(&event) {
-            CoreReply::DragPreview(plan) => Some(Self::drag_preview_from_plan(retained.id, &plan)),
-            _ => {
+        let ctx = PairOperationContext {
+            source_domain: &inset_source,
+            target_domain: &inset_target,
+            source_outer_gap,
+            target_outer_gap: Some(target_outer_gap),
+            observed_focus: &focused,
+            observed: &combined,
+            closed: &closed,
+        };
+        match self.layout.run_pair_drag_preview(
+            &ctx,
+            &retained.window,
+            x,
+            y,
+            retained.hover.as_ref(),
+        ) {
+            Ok(outcome) => Some(Self::drag_preview_from_outcome(retained.id, outcome)),
+            Err(_) => {
                 self.set_drag_preview_trace_reason("pair-engine-refused");
                 None
             }
         }
     }
 
-    /// Commit one cross-output drop through the shared pair event at the
-    /// live coordinates: the Engine commits the pointer-targeted
-    /// placement inside `handle`, and the caller retains the window
-    /// transfer with member/follow settlement exactly like the send
-    /// path, so arrival proof and focus behave unchanged. `Some` only
-    /// on a committed placement; `None` (pair inapplicable or refused,
-    /// including empty destinations with no usable session) lets the
-    /// caller fall back to the send admission.
+    /// Commit one cross-output drop through the shared pair operation at the
+    /// live coordinates: `WorldLayout` commits the pointer-targeted
+    /// placement atomically, and the caller retains the window transfer
+    /// with member/follow settlement exactly like the send path, so
+    /// arrival proof and focus behave unchanged. `Some` only on a committed
+    /// placement; `None` (pair inapplicable or refused, including empty
+    /// destinations with no usable domain) lets the caller fall back to
+    /// the send admission.
     #[allow(clippy::too_many_arguments)]
     fn gesture_pair_drop(
         &mut self,
-        issue: &crate::world_engine::EventIssue,
         retained: &RetainedGesture,
         operation_id: &str,
         output: &OutputId,
@@ -1408,17 +1415,29 @@ impl WorldEngine {
             output: output.clone(),
             workspace: WorkspaceId(workspace.to_owned()),
         };
-        let command = CoreCommand::DragDrop {
-            window: retained.window.0.clone(),
-            x,
-            y,
-            hover_prior: retained.hover.clone(),
-            source: Some(retained.home.clone()),
+        let (
+            inset_source,
+            inset_target,
+            source_outer_gap,
+            target_outer_gap,
+            focused,
+            combined,
+            closed,
+        ) = self.gesture_pair_inputs(retained, &pointer_key, held_scopes)?;
+        let ctx = PairOperationContext {
+            source_domain: &inset_source,
+            target_domain: &inset_target,
+            source_outer_gap,
+            target_outer_gap: Some(target_outer_gap),
+            observed_focus: &focused,
+            observed: &combined,
+            closed: &closed,
         };
-        let event =
-            self.gesture_pair_event(issue, retained, &command, &pointer_key, held_scopes)?;
-        match self.engine.handle(&event) {
-            CoreReply::Tiled(_) => {
+        match self
+            .layout
+            .run_pair_drag_drop(&ctx, &retained.window, x, y, retained.hover.as_ref())
+        {
+            Ok(_) => {
                 let transfer = RetainedTransfer {
                     target: TransferTarget {
                         operation_id: operation_id.to_owned(),
@@ -1455,7 +1474,7 @@ impl WorldEngine {
                 self.retained.push(transfer);
                 Some(GestureOutcome::Settled { committed: true })
             }
-            _ => None,
+            Err(_) => None,
         }
     }
 

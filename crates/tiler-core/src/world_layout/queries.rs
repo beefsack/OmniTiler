@@ -349,4 +349,84 @@ impl WorldLayout {
         domain.retained_float_geometry.insert(window.clone(), rect);
         true
     }
+
+    /// Atomically move a floating non-sticky exception from `from` to `to`
+    /// while adopting `rect` as its live and durable float placement.
+    /// Revision-neutral. Returns `false` without mutating either domain when
+    /// the rectangle, domains, or exception flags are invalid.
+    pub(crate) fn move_exception_float_with_placement(
+        &mut self,
+        from: &DomainKey,
+        to: &DomainKey,
+        window: &WindowId,
+        rect: Rect,
+    ) -> bool {
+        if from == to
+            || rect.w <= 0
+            || rect.h <= 0
+            || rect.x.checked_add(rect.w).is_none()
+            || rect.y.checked_add(rect.h).is_none()
+        {
+            return false;
+        }
+        let Some(source) = self.domains.get(from) else {
+            return false;
+        };
+        let Some(target) = self.domains.get(to) else {
+            return false;
+        };
+        let Some(record) = source.exceptions.get(window) else {
+            return false;
+        };
+        if !record.flags.floating
+            || record.flags.sticky
+            || record.flags.fullscreen
+            || record.flags.maximized
+        {
+            return false;
+        }
+        if target.leaves.contains_key(window) || target.exceptions.contains_key(window) {
+            return false;
+        }
+
+        let mut moved_record = {
+            let source_mut = self.domains.get_mut(from).expect("checked source");
+            let record = source_mut
+                .exceptions
+                .remove(window)
+                .expect("checked exception");
+            source_mut.retained_float_geometry.remove(window);
+            let automatic_fixed = source_mut.automatic_fixed.remove(window);
+            let fixed_tile_override = source_mut.fixed_tile_override.remove(window);
+            let capacity_float = source_mut.capacity_floats.remove(window);
+            let admission_order = source_mut.admission_order.remove(window);
+            (
+                record,
+                automatic_fixed,
+                fixed_tile_override,
+                capacity_float,
+                admission_order,
+            )
+        };
+        moved_record.0.floating_geometry = Some(rect);
+
+        let target_mut = self.domains.get_mut(to).expect("checked target");
+        target_mut.exceptions.insert(window.clone(), moved_record.0);
+        target_mut
+            .retained_float_geometry
+            .insert(window.clone(), rect);
+        if moved_record.1 {
+            target_mut.automatic_fixed.insert(window.clone());
+        }
+        if moved_record.2 {
+            target_mut.fixed_tile_override.insert(window.clone());
+        }
+        if moved_record.3 {
+            target_mut.capacity_floats.insert(window.clone());
+        }
+        if let Some(order) = moved_record.4 {
+            target_mut.admission_order.insert(window.clone(), order);
+        }
+        true
+    }
 }

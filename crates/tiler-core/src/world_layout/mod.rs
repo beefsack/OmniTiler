@@ -19,6 +19,8 @@ mod convergence_phases;
 mod fit;
 mod float;
 mod focus;
+mod gesture;
+mod gesture_resolve;
 mod local_focus;
 mod local_move;
 mod local_operation;
@@ -48,6 +50,8 @@ mod workspace_swap;
 #[cfg(test)]
 mod float_tests;
 #[cfg(test)]
+mod gesture_tests;
+#[cfg(test)]
 mod local_directional_tests;
 #[cfg(test)]
 mod local_operation_tests;
@@ -72,13 +76,13 @@ mod workspace_swap_tests;
 
 pub(crate) use local_operation::LocalOperationContext;
 pub(crate) use outcome::{
-    AdmissionOutcome, FittedAdmissionDecline, FittedAdmissionReason, FloatOutcome,
-    FreshDomainFailure, FreshDomainOutcome, FreshOutcomeKind, LayoutFailure, LocalFocusOutcome,
-    LocalMoveOutcome, LocalOperationFailure, OrientationOutcome, PairFocusOutcome, PairMoveCross,
-    PairMoveOutcome, PairOperationFailure, PairSendKind, PairSendOutcome,
-    PointerCornerResizeOutcome, ResizeOutcome, RetainedProjectionOutcome, RetainedReconcileFailure,
-    WorkspaceMigrationFailure, WorkspaceMigrationOutcome, WorkspaceSwapFailure,
-    WorkspaceSwapOutcome,
+    AdmissionOutcome, DragDropOutcome, DragPreviewOutcome, FittedAdmissionDecline,
+    FittedAdmissionReason, FloatOutcome, FreshDomainFailure, FreshDomainOutcome, FreshOutcomeKind,
+    LayoutFailure, LocalFocusOutcome, LocalMoveOutcome, LocalOperationFailure, OrientationOutcome,
+    PairFocusOutcome, PairMoveCross, PairMoveOutcome, PairOperationFailure, PairSendKind,
+    PairSendOutcome, PointerCornerResizeOutcome, ResizeOutcome, RetainedProjectionOutcome,
+    RetainedReconcileFailure, WorkspaceMigrationFailure, WorkspaceMigrationOutcome,
+    WorkspaceSwapFailure, WorkspaceSwapOutcome,
 };
 pub(crate) use pair::PairAssemblyFailure;
 pub(crate) use pair_operation::PairOperationContext;

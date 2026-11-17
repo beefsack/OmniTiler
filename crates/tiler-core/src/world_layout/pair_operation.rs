@@ -43,9 +43,23 @@ impl WorldLayout {
         ctx: &PairOperationContext<'_>,
         require_adjacency: bool,
     ) -> Result<(PairCandidate, Vec<ObservedWindow>), PairOperationFailure> {
-        let mut pair =
-            self.assemble_pair(ctx.source_domain, ctx.target_domain, require_adjacency)?;
+        let pair = self.assemble_pair(ctx.source_domain, ctx.target_domain, require_adjacency)?;
+        self.converge_assembled_pair(pair, ctx)
+    }
 
+    pub(super) fn prepare_converged_occupied_pair(
+        &mut self,
+        ctx: &PairOperationContext<'_>,
+    ) -> Result<(PairCandidate, Vec<ObservedWindow>), PairOperationFailure> {
+        let pair = self.assemble_pair_occupied(ctx.source_domain, ctx.target_domain)?;
+        self.converge_assembled_pair(pair, ctx)
+    }
+
+    fn converge_assembled_pair(
+        &mut self,
+        mut pair: PairCandidate,
+        ctx: &PairOperationContext<'_>,
+    ) -> Result<(PairCandidate, Vec<ObservedWindow>), PairOperationFailure> {
         let observed: Vec<ObservedWindow> = ctx
             .observed
             .iter()

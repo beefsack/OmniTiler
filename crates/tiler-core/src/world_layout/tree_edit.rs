@@ -230,3 +230,215 @@ fn remove_node(policy: &dyn LayoutPolicy, node: Node, leaf: &NodeId) -> Option<N
         }
     }
 }
+
+pub(super) fn find_group(tree: &Node, id: &NodeId) -> Option<(Vec<Node>, Axis, NodeId)> {
+    match tree {
+        Node::Leaf { .. } => None,
+        Node::Group {
+            id: gid,
+            axis,
+            children,
+            ..
+        } => {
+            if gid == id {
+                return Some((children.clone(), *axis, gid.clone()));
+            }
+            for child in children {
+                if let Some(found) = find_group(child, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+    }
+}
+
+pub(super) fn find_group_shares(tree: &Node, id: &NodeId) -> Option<Vec<u64>> {
+    match tree {
+        Node::Leaf { .. } => None,
+        Node::Group {
+            id: gid,
+            children,
+            shares,
+            ..
+        } => {
+            if gid == id {
+                return Some(shares.clone());
+            }
+            for child in children {
+                if let Some(found) = find_group_shares(child, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+    }
+}
+
+pub(super) fn find_group_full(
+    tree: &Node,
+    id: &NodeId,
+) -> Option<(Vec<Node>, Vec<u64>, NodeId, Axis)> {
+    match tree {
+        Node::Leaf { .. } => None,
+        Node::Group {
+            id: gid,
+            axis,
+            children,
+            shares,
+        } => {
+            if gid == id {
+                return Some((children.clone(), shares.clone(), gid.clone(), *axis));
+            }
+            for child in children {
+                if let Some(found) = find_group_full(child, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+    }
+}
+
+pub(super) fn find_subtree<'a>(tree: &'a Node, id: &NodeId) -> Option<&'a Node> {
+    if tree.id() == id {
+        return Some(tree);
+    }
+    match tree {
+        Node::Leaf { .. } => None,
+        Node::Group { children, .. } => children.iter().find_map(|c| find_subtree(c, id)),
+    }
+}
+
+pub(super) fn direct_parent_of_leaf(tree: &Node, leaf: &NodeId) -> Option<NodeId> {
+    match tree {
+        Node::Leaf { .. } => None,
+        Node::Group { id, children, .. } => {
+            for child in children {
+                if child.id() == leaf && matches!(child, Node::Leaf { .. }) {
+                    return Some(id.clone());
+                }
+            }
+            for child in children {
+                if let Some(found) = direct_parent_of_leaf(child, leaf) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+    }
+}
+
+pub(super) fn parent_of_group(tree: &Node, group: &NodeId) -> Option<NodeId> {
+    match tree {
+        Node::Leaf { .. } => None,
+        Node::Group { id, children, .. } => {
+            for child in children {
+                if child.id() == group {
+                    return Some(id.clone());
+                }
+            }
+            for child in children {
+                if let Some(found) = parent_of_group(child, group) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+    }
+}
+
+pub(super) fn replace_child_at(
+    tree: &Node,
+    group_id: &NodeId,
+    index: usize,
+    replacement: Node,
+    replacement_share: u64,
+) -> Option<Node> {
+    match tree {
+        Node::Leaf { .. } => None,
+        Node::Group {
+            id,
+            axis,
+            children,
+            shares,
+        } => {
+            if id == group_id {
+                if index >= children.len() {
+                    return None;
+                }
+                let mut new_children = children.clone();
+                let mut new_shares = shares.clone();
+                new_children[index] = replacement;
+                new_shares[index] = replacement_share;
+                return Some(Node::Group {
+                    id: id.clone(),
+                    axis: *axis,
+                    children: new_children,
+                    shares: new_shares,
+                });
+            }
+            for (pos, child) in children.iter().enumerate() {
+                if child.id() == group_id || subtree_contains(child, group_id) {
+                    let updated =
+                        replace_child_at(child, group_id, index, replacement, replacement_share)?;
+                    let mut new_children = children.clone();
+                    new_children[pos] = updated;
+                    return Some(Node::Group {
+                        id: id.clone(),
+                        axis: *axis,
+                        children: new_children,
+                        shares: shares.clone(),
+                    });
+                }
+            }
+            None
+        }
+    }
+}
+
+pub(super) fn insert_leaf_into_group(
+    policy: &dyn LayoutPolicy,
+    tree: Node,
+    group_id: &NodeId,
+    index: usize,
+    leaf: Node,
+) -> Option<Node> {
+    match tree {
+        Node::Leaf { .. } => None,
+        Node::Group {
+            id,
+            axis,
+            mut children,
+            shares,
+        } => {
+            if &id == group_id {
+                if index > children.len() {
+                    return None;
+                }
+                let new_shares = policy.proportional_insertion_shares(&shares, index)?;
+                children.insert(index, leaf);
+                return Some(Node::Group {
+                    id,
+                    axis,
+                    children,
+                    shares: new_shares,
+                });
+            }
+            for (pos, child) in children.iter().enumerate() {
+                if child.id() == group_id || subtree_contains(child, group_id) {
+                    let updated =
+                        insert_leaf_into_group(policy, child.clone(), group_id, index, leaf)?;
+                    children[pos] = updated;
+                    return Some(Node::Group {
+                        id,
+                        axis,
+                        children,
+                        shares,
+                    });
+                }
+            }
+            None
+        }
+    }
+}

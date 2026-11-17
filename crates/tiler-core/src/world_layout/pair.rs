@@ -22,6 +22,7 @@ use super::topology::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PairAssemblyFailure {
     SourceUnavailable,
+    TargetUnavailable,
     TargetUnusable,
     DomainMismatch,
     DuplicateState,
@@ -34,6 +35,7 @@ impl PairAssemblyFailure {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::SourceUnavailable => "canonical-source-unavailable",
+            Self::TargetUnavailable => "canonical-target-unavailable",
             Self::TargetUnusable => "canonical-pair-unusable",
             Self::DomainMismatch => "canonical-pair-domain-mismatch",
             Self::DuplicateState => "canonical-pair-duplicate-state",
@@ -351,6 +353,7 @@ impl WorldLayout {
             false,
             include_retained_target,
             true,
+            false,
         )
     }
 
@@ -360,7 +363,22 @@ impl WorldLayout {
         target_domain: &OutputDomain,
         require_adjacency: bool,
     ) -> Result<PairCandidate, PairAssemblyFailure> {
-        self.assemble_pair_inner(source_domain, target_domain, require_adjacency, true, false)
+        self.assemble_pair_inner(
+            source_domain,
+            target_domain,
+            require_adjacency,
+            true,
+            false,
+            false,
+        )
+    }
+
+    pub(super) fn assemble_pair_occupied(
+        &self,
+        source_domain: &OutputDomain,
+        target_domain: &OutputDomain,
+    ) -> Result<PairCandidate, PairAssemblyFailure> {
+        self.assemble_pair_inner(source_domain, target_domain, false, true, true, true)
     }
 
     fn assemble_pair_inner(
@@ -370,6 +388,7 @@ impl WorldLayout {
         require_adjacency: bool,
         include_retained_target: bool,
         unusable_source_as_target_unusable: bool,
+        require_retained_target: bool,
     ) -> Result<PairCandidate, PairAssemblyFailure> {
         let source_key = source_domain.key();
         let target_key = target_domain.key();
@@ -397,6 +416,9 @@ impl WorldLayout {
             None
         } else {
             match self.domain(&target_key) {
+                None if require_retained_target => {
+                    return Err(PairAssemblyFailure::TargetUnavailable);
+                }
                 None => None,
                 Some(domain)
                     if validate_domain_topology(&target_key, domain)

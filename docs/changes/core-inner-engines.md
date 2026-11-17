@@ -496,3 +496,14 @@
   library/tests diagnostic still fails on 24 library and 200 test-build errors
   in remaining consumers, with no new send-module/test error. Runtime acceptance
   remains pending.
+- Gesture ingress now calls typed local and occupied-pair preview/drop operations
+  and pointer resize directly, retaining lifecycle, capture shields, hover
+  identity, transfer settlement and release-frame placement. Pure pointer
+  resolution shares the generation allocator; discarded previews install no
+  topology. Composed-float moves validate both domains before revision-neutral
+  placement installation. Review restores fresh-drag legacy configuration and
+  occupied-pair source/target checks before convergence. Nine direct tests cover
+  these boundaries but remain unexecuted. Scoped formatting passes; a reported
+  library/tests diagnostic still fails on remaining consumers (183 test-build
+  errors), with no gesture-module/test error. Public drag-command consumers and
+  executed acceptance remain pending.

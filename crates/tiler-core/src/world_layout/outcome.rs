@@ -4,7 +4,7 @@ use crate::contract::ResizeOperation;
 use crate::directional::{Capability, Direction, NodeId, OutputId, Rule, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::seed::FitDeclineReason;
-use crate::session::{DesiredGeometry, RefusalKind};
+use crate::session::{DesiredGeometry, DomainKey, DragHoverPrior, RefusalKind};
 
 /// Typed result of an accepted parent-axis orientation flip.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -463,4 +463,22 @@ pub(crate) struct PairSendOutcome {
     pub(crate) focus_leaf: Option<NodeId>,
     pub(crate) stay_focus_window: Option<WindowId>,
     pub(crate) geometry: Vec<DesiredGeometry>,
+}
+
+/// Typed result of a read-only local or cross-output drag preview.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DragPreviewOutcome {
+    pub(crate) base_revision: u64,
+    pub(crate) domain: DomainKey,
+    pub(crate) source_domain: DomainKey,
+    pub(crate) target_window: WindowId,
+    pub(crate) proposed_rect: Rect,
+    pub(crate) hover: DragHoverPrior,
+}
+
+/// Typed result of an accepted local or cross-output drag drop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DragDropOutcome {
+    pub(crate) base_revision: u64,
+    pub(crate) revision: u64,
 }
