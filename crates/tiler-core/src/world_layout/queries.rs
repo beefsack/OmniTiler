@@ -218,6 +218,13 @@ impl WorldLayout {
             .any(|domain| domain.capacity_floats.contains(window))
     }
 
+    /// Whether `window` carries capacity-float provenance in `key` only.
+    #[must_use]
+    pub(crate) fn is_capacity_float(&self, key: &DomainKey, window: &WindowId) -> bool {
+        self.domain(key)
+            .is_some_and(|domain| domain.capacity_floats.contains(window))
+    }
+
     /// Retained admission sequence for a window in one domain, if any.
     #[must_use]
     pub(crate) fn admission_sequence(&self, key: &DomainKey, window: &WindowId) -> Option<u64> {

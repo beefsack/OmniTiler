@@ -145,11 +145,11 @@ pub(super) fn sort_geometry(geometry: &mut [DesiredGeometry]) {
 
 /// Hinted projection of one retained candidate domain at caller-supplied
 /// bounds/gap, reusing the advisory `project_borrowed` implementation for all
-/// hint/positive/unbound/overconstraint geometry. Only the update-gaps-specific
-/// observed client-clamp flags are layered on, then the geometry is ordered by
-/// `(output, workspace, leaf)` and gated on complete window-binding coverage.
-/// No `Session` is read and no world is cloned. `None` means no tree, a failed
-/// borrowed projection, or incomplete coverage.
+/// hint/positive/unbound/overconstraint geometry. Observed client-clamp flags
+/// are layered on (shared by gap updates and reconcile), then the geometry is
+/// ordered by `(output, workspace, leaf)` and gated on complete window-binding
+/// coverage. No `Session` is read and no world is cloned. `None` means no tree,
+/// a failed borrowed projection, or incomplete coverage.
 pub(super) fn project_retained_candidate(
     key: &DomainKey,
     domain: &DomainLayout,
@@ -238,6 +238,22 @@ impl WorldLayout {
             return false;
         };
         project_borrowed_fit(key, tree, &domain.leaves, domain.bounds, domain.gap, hints)
+    }
+
+    /// Reconcile-projection geometry for one retained domain at already-inset
+    /// bounds/gap: hinted geometry with client-clamp assessment, ordered by
+    /// `(output, workspace, leaf)` and gated on complete window-binding coverage.
+    /// `None` means no domain/tree, a failed projection, or incomplete coverage.
+    pub(crate) fn project_retained_tiled_geometry(
+        &self,
+        key: &DomainKey,
+        bounds: Rect,
+        gap: i32,
+        hints: &BTreeMap<WindowId, WindowSizeHints>,
+        observed: &[EngineWindow],
+    ) -> Option<Vec<DesiredGeometry>> {
+        let domain = self.domain(key)?;
+        project_retained_candidate(key, domain, bounds, gap, hints, observed)
     }
 
     /// Per-domain accepted layout revision (zero for an unknown domain).

@@ -7,7 +7,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::boundary::{ProjectionKind, project_retained_tiled_geometry};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::session::{DomainKey, RefusalKind};
@@ -145,7 +144,7 @@ impl WorldEngine {
         }
         let float = if rect.is_some() {
             if !self.is_exception_window_any(&window)
-                || self.engine.is_automatic_fixed_float_any(&window)
+                || self.layout().is_automatic_fixed_float_any(&window)
             {
                 return None;
             }
@@ -322,14 +321,8 @@ impl WorldEngine {
             for window in &domain.windows {
                 live.insert(window.window.0.clone());
             }
-            if let Some(session) = self.engine.session(&domain.key) {
-                for observed in session.exception_observed() {
-                    if observed.output == domain.key.output
-                        && observed.workspace == domain.key.workspace
-                    {
-                        live.insert(observed.window.0.clone());
-                    }
-                }
+            for window in self.layout().exception_windows(&domain.key) {
+                live.insert(window.0.clone());
             }
         }
         // Backstop dedupe among non-live rows themselves.
@@ -512,14 +505,13 @@ impl WorldEngine {
                 // with narrow holds, never silent absence. Omission inside a
                 // held scope authorizes no write or retirement; these rows
                 // make the retained lifetimes visible instead.
-                if let Some(session) = self.engine.session(&key) {
+                if self.layout().contains_domain(&key) {
                     let reason = match authority {
                         ScopeAuthority::Hold(reason) => reason,
                         _ => HoldReason::Unreadable,
                     };
                     self.push_held_lifetimes(
                         Self::style_born_paused(born_paused, style_held_output, &key.output),
-                        session,
                         &key,
                         reason,
                         &live,
@@ -619,38 +611,26 @@ impl WorldEngine {
                 }
                 continue;
             }
-            let Some(session) = self.engine.session(&key) else {
+            if !self.layout().contains_domain(&key) {
                 continue;
-            };
+            }
             // Sole-minimized scope (MNZ-03): no tiled members and no
             // exceptions homed here but live minimized slots are: the scope
             // stays controlled and the slots publish explicit minimized
             // rows, never a projection failure hold.
-            let tiled_here = session
-                .snapshot()
-                .windows
-                .iter()
-                .any(|link| link.output == key.output && link.workspace == key.workspace);
-            let exceptions_here = session.exception_observed().iter().any(|observed| {
-                observed.output == key.output && observed.workspace == key.workspace
-            });
+            let tiled_here = self.layout().tiled_count(&key) > 0;
+            let exceptions_here = self.layout().exception_count(&key) > 0;
             if !tiled_here && !exceptions_here {
-                let slots: Vec<_> = session
-                    .minimized_entries()
-                    .into_iter()
-                    .filter(|(_, output, workspace)| {
-                        output == &key.output && workspace == &key.workspace
-                    })
-                    .collect();
+                let slots: Vec<WindowId> = self.layout().minimized_windows(&key).cloned().collect();
                 if !slots.is_empty() {
-                    for (window, output, workspace) in slots {
+                    for window in slots {
                         if live.contains(&window.0) || !emitted.insert(window.0.clone()) {
                             continue;
                         }
                         windows.push(WindowDesire {
                             lifetime: window,
-                            output: output.clone(),
-                            workspace: workspace.0.clone(),
+                            output: key.output.clone(),
+                            workspace: key.workspace.0.clone(),
                             allocation: None,
                             effective_frame: None,
                             frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),
@@ -684,12 +664,6 @@ impl WorldEngine {
                 for window in &shielded {
                     hints.insert(window.window.clone(), window.hints);
                 }
-                let focus = session.focus();
-                let (focus_domain, focus_leaf) = focus;
-                let focus_pair = match (focus_domain, focus_leaf) {
-                    (Some(domain), Some(leaf)) => Some((domain, leaf)),
-                    _ => None,
-                };
                 // Project the outer-inset work area, never the raw client
                 // area. Inset exhaustion here mirrors the sweep hold (the
                 // sweep already held, so this is only a backstop).
@@ -711,7 +685,6 @@ impl WorldEngine {
                     }
                     self.push_held_lifetimes(
                         born_paused,
-                        session,
                         &key,
                         HoldReason::ConstraintClamp,
                         &live,
@@ -720,13 +693,10 @@ impl WorldEngine {
                     );
                     continue;
                 };
-                let Some(plan) = project_retained_tiled_geometry(
-                    session,
+                let Some(plan) = self.layout().project_retained_tiled_geometry(
                     &key,
                     inset.bounds,
                     inset.gap,
-                    focus_pair,
-                    ProjectionKind::Reconcile,
                     &hints,
                     &shielded,
                 ) else {
@@ -742,7 +712,6 @@ impl WorldEngine {
                     }
                     self.push_held_lifetimes(
                         born_paused,
-                        session,
                         &key,
                         HoldReason::ConstraintClamp,
                         &live,
@@ -755,7 +724,7 @@ impl WorldEngine {
             } else {
                 None
             };
-            for geometry in plan.iter().flat_map(|plan| plan.geometry.iter()) {
+            for geometry in plan.iter().flatten() {
                 // Outstanding movers keep one homing at the transfer target.
                 // Cross-output tiled movers (window transfers and migration
                 // members) publish their actionable target slot here
@@ -955,14 +924,14 @@ impl WorldEngine {
             // write authority. Game safety overrides parity. A retained D16
             // float send authorizes membership at the target without
             // authorizing any frame change.
-            for observed in session.exception_observed() {
-                if observed.output != key.output || observed.workspace != key.workspace {
-                    continue;
-                }
-                let in_flight = self.retained.iter().any(
-                    |r| matches!(&r.target.kind, TransferKind::Window(w) if w == &observed.window),
-                );
-                emitted.insert(observed.window.0.clone());
+            let exceptions: Vec<WindowId> =
+                self.layout().exception_windows(&key).cloned().collect();
+            for window in exceptions {
+                let in_flight = self
+                    .retained
+                    .iter()
+                    .any(|r| matches!(&r.target.kind, TransferKind::Window(w) if w == &window));
+                emitted.insert(window.0.clone());
                 // Explicit retained float target, if outstanding: the row
                 // carries the stable property operation id so the adapter
                 // places the exact retained frame exactly once. Ordinary
@@ -976,24 +945,24 @@ impl WorldEngine {
                 let retained_float = self
                     .retained_floats
                     .iter()
-                    .find(|held| held.window == observed.window);
+                    .find(|held| held.window == window);
                 let retained_target = retained_float.map(|held| held.target);
                 let mut frame_operation = retained_float.map(|held| held.operation_id.clone());
                 let mut frame_seq = retained_float.map(|held| held.command_seq);
                 if frame_operation.is_some() {
-                    let target =
-                        retained_target.or_else(|| session.floating_geometry(&observed.window));
-                    let fact_rect = staged
-                        .facts
-                        .get(&observed.window)
-                        .and_then(|fact| fact.rect);
+                    let target = retained_target.or_else(|| {
+                        self.layout()
+                            .exception_record(&key, &window)
+                            .and_then(|r| r.floating_geometry)
+                    });
+                    let fact_rect = staged.facts.get(&window).and_then(|fact| fact.rect);
                     match (target, fact_rect) {
                         (Some(desired), Some(current)) if desired == current => {
-                            self.frames.remove(&observed.window);
+                            self.frames.remove(&window);
                         }
                         (Some(desired), current)
                             if self.frame_suppressed(
-                                &observed.window,
+                                &window,
                                 &desired,
                                 current,
                                 self.staged.observation.monotonic_ms,
@@ -1007,11 +976,11 @@ impl WorldEngine {
                 }
                 // No placement write without readable hints; the binding
                 // survives for recovery.
-                if self.is_held_window(&observed.window)
-                    || self.is_excluded_window(&observed.window)
+                if self.is_held_window(&window)
+                    || self.is_excluded_window(&window)
                     || staged
                         .facts
-                        .get(&observed.window)
+                        .get(&window)
                         .is_none_or(|fact| fact.hints.is_none())
                 {
                     frame_operation = None;
@@ -1021,8 +990,9 @@ impl WorldEngine {
                 // retained exception row in a controlled scope converges
                 // adapter float intent. The diagnostic capacity origin
                 // rides along for truthful echo; it grants no behavior.
-                let float_origin = session
-                    .is_capacity_float(&observed.window)
+                let float_origin = self
+                    .layout()
+                    .is_capacity_float(&key, &window)
                     .then_some(FloatOrigin::Capacity);
                 // One-shot clear token: never re-actuated once spent; the
                 // settlement owns every verdict. A float-route clear is
@@ -1031,21 +1001,22 @@ impl WorldEngine {
                 let fact_unreadable = self
                     .staged
                     .facts
-                    .get(&observed.window)
+                    .get(&window)
                     .is_none_or(|fact| fact.minimized == Some(true) || fact.rect.is_none());
-                let directional = self.retained_clears.iter().find(|retained| {
-                    retained.window == observed.window && retained.pending.is_none()
-                });
+                let directional = self
+                    .retained_clears
+                    .iter()
+                    .find(|retained| retained.window == window && retained.pending.is_none());
                 let float_blocked = directional.is_some_and(|retained| retained.float_route)
                     && staged
                         .facts
-                        .get(&observed.window)
+                        .get(&window)
                         .is_none_or(|fact| fact.hints.is_none());
                 let (clear_operation, clear_seq) = if self.staged.gesture_barrier
                     || fact_unreadable
                     || float_blocked
-                    || self.is_held_window(&observed.window)
-                    || self.is_excluded_window(&observed.window)
+                    || self.is_held_window(&window)
+                    || self.is_excluded_window(&window)
                 {
                     (None, None)
                 } else {
@@ -1056,7 +1027,7 @@ impl WorldEngine {
                         ),
                         // Born commandless clears ride the token lane
                         // with no command correlation.
-                        None => (self.born_desire_for(&observed.window, born_paused), None),
+                        None => (self.born_desire_for(&window, born_paused), None),
                     }
                 };
                 // Single command slot for the row. The clear->float continuation
@@ -1079,34 +1050,36 @@ impl WorldEngine {
                 // (the shared composed gate below); a withheld window
                 // publishes exactly like an uncomposed float.
                 let composed = !self.capabilities().is_some_and(|caps| caps.maximize)
-                    && self.composed_maximized.contains(&observed.window);
-                let work_area = self.composed_work_area(&observed.output);
-                let float_base =
-                    retained_target.or_else(|| session.floating_geometry(&observed.window));
+                    && self.composed_maximized.contains(&window);
+                let work_area = self.composed_work_area(&key.output);
+                let float_base = retained_target.or_else(|| {
+                    self.layout()
+                        .exception_record(&key, &window)
+                        .and_then(|r| r.floating_geometry)
+                });
                 let composed_home = DomainKey {
-                    output: observed.output.clone(),
-                    workspace: observed.workspace.clone(),
+                    output: key.output.clone(),
+                    workspace: key.workspace.clone(),
                 };
                 let fullscreen_released = staged
                     .facts
-                    .get(&observed.window)
+                    .get(&window)
                     .is_some_and(|fact| fact.fullscreen == Some(false));
-                let composed_active = composed
-                    && fullscreen_released
-                    && !self.fullscreen_entry_pending(&observed.window);
+                let composed_active =
+                    composed && fullscreen_released && !self.fullscreen_entry_pending(&window);
                 let composed_controlled = composed_active
                     && work_area.is_some()
                     && self.staged.observation.inventory_complete
                     && !self.staged.gesture_barrier
                     && !self.floating_scopes.contains(&composed_home)
                     && !self.hold_reasons.contains_key(&composed_home)
-                    && !self.is_held_window(&observed.window)
-                    && !self.is_excluded_window(&observed.window)
+                    && !self.is_held_window(&window)
+                    && !self.is_excluded_window(&window)
                     && !in_flight
-                    && !self.derived_for(&observed.window).hidden
+                    && !self.derived_for(&window).hidden
                     && staged
                         .facts
-                        .get(&observed.window)
+                        .get(&window)
                         .is_some_and(|fact| fact.hints.is_some() && fact.minimized != Some(true));
                 // Shared clamp policy against the actually published frame
                 // (like the tiled lane above): a suppressed pair publishes
@@ -1114,16 +1087,13 @@ impl WorldEngine {
                 // adapter skips the write and retries only on genuine
                 // change, never an auto-authorized retry outside policy.
                 let overlay_frame = work_area.or(float_base);
-                let overlay_observed = staged
-                    .facts
-                    .get(&observed.window)
-                    .and_then(|fact| fact.rect);
+                let overlay_observed = staged.facts.get(&window).and_then(|fact| fact.rect);
                 let mut overlay_suppressed = false;
                 let mut overlay_burst = false;
                 if composed_active && let Some(desired) = overlay_frame {
                     overlay_suppressed = overlay_observed.is_some_and(|current| {
                         self.frame_suppressed(
-                            &observed.window,
+                            &window,
                             &desired,
                             Some(current),
                             self.staged.observation.monotonic_ms,
@@ -1131,7 +1101,7 @@ impl WorldEngine {
                     });
                     overlay_burst = Self::frame_burst_gate(
                         &mut self.frame_bursts,
-                        &observed.window,
+                        &window,
                         &desired,
                         overlay_observed,
                         self.staged.observation.monotonic_ms,
@@ -1141,15 +1111,22 @@ impl WorldEngine {
                 // fullscreen is unreleased, nor while a native entry pends
                 // (shared composed gate): the lane carries one frame
                 // authority only.
-                if composed && !fullscreen_released || self.composed_frame_gated(&observed.window) {
+                if composed && !fullscreen_released || self.composed_frame_gated(&window) {
                     frame_operation = None;
                     frame_seq = None;
                 }
                 let command_seq = frame_seq.or(clear_seq);
+                let membership_authority = if self.style_flight_held(style_held_output, &window) {
+                    ScopeAuthority::Hold(HoldReason::Unreadable)
+                } else if in_flight {
+                    ScopeAuthority::Controlled
+                } else {
+                    ScopeAuthority::Untouched
+                };
                 windows.push(WindowDesire {
-                    lifetime: observed.window.clone(),
-                    output: observed.output.clone(),
-                    workspace: observed.workspace.0.clone(),
+                    lifetime: window,
+                    output: key.output.clone(),
+                    workspace: key.workspace.0.clone(),
                     allocation: None,
                     effective_frame: if composed_active {
                         overlay_frame
@@ -1164,15 +1141,7 @@ impl WorldEngine {
                     } else {
                         ScopeAuthority::Untouched
                     },
-                    membership_authority: if self
-                        .style_flight_held(style_held_output, &observed.window)
-                    {
-                        ScopeAuthority::Hold(HoldReason::Unreadable)
-                    } else if in_flight {
-                        ScopeAuthority::Controlled
-                    } else {
-                        ScopeAuthority::Untouched
-                    },
+                    membership_authority,
                     frame_operation,
                     clear_operation,
                     command_seq,
@@ -1187,10 +1156,8 @@ impl WorldEngine {
             // geometry, never silent absence and never an inferred close.
             // The slot stays homed until restore, explicit close, or the
             // retained transfer settles it.
-            for (window, output, workspace) in session.minimized_entries() {
-                if output != key.output || workspace != key.workspace {
-                    continue;
-                }
+            let minimized: Vec<WindowId> = self.layout().minimized_windows(&key).cloned().collect();
+            for window in minimized {
                 if live.contains(&window.0) || !emitted.insert(window.0.clone()) {
                     continue;
                 }
@@ -1201,7 +1168,7 @@ impl WorldEngine {
                 let (home_output, home_workspace) = redirect
                     .get(&window.0)
                     .map(|target| (target.output.clone(), target.workspace.0.clone()))
-                    .unwrap_or((output.clone(), workspace.0.clone()));
+                    .unwrap_or((key.output.clone(), key.workspace.0.clone()));
                 let session_flight_held = self.style_flight_held(style_held_output, &window);
                 windows.push(WindowDesire {
                     lifetime: window,
@@ -1458,40 +1425,39 @@ impl WorldEngine {
         PublicationRows { scopes, windows }
     }
 
-    /// Retained lifetime rows for a held scope: snapshot windows, exceptions,
+    /// Retained lifetime rows for a held scope: tiled windows, exceptions,
     /// and minimized slots homed on `key`, each with narrow holds. Skips
     /// live lifetimes (they carry their own rows) and already-emitted ids,
-    /// so every window keeps exactly one homing.
+    /// so every window keeps exactly one homing. Tiles emit before exceptions
+    /// before slots, each in window-id order, with every home derived from
+    /// `key`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn push_held_lifetimes(
         &self,
         born_paused: bool,
-        session: &crate::session::Session,
         key: &DomainKey,
         reason: HoldReason,
         live: &BTreeSet<String>,
         emitted: &mut BTreeSet<String>,
         windows: &mut Vec<WindowDesire>,
     ) {
-        for link in session.snapshot().windows {
-            if link.output != key.output || link.workspace != key.workspace {
-                continue;
-            }
+        let layout = self.layout();
+        for window in layout.tiled_windows(key) {
             // Exclusions never ride held rows: no slot, no control, even
             // when the surrounding scope holds for another lifetime.
-            if self.is_excluded_window(&link.window) {
+            if self.is_excluded_window(window) {
                 continue;
             }
-            if live.contains(&link.window.0) || !emitted.insert(link.window.0.clone()) {
+            if live.contains(&window.0) || !emitted.insert(window.0.clone()) {
                 continue;
             }
             // Like the fresh-seed held rows above: no frame/member write,
             // but an outstanding born clear still rides its token.
-            let clear_operation = self.born_desire_for(&link.window, born_paused);
+            let clear_operation = self.born_desire_for(window, born_paused);
             windows.push(WindowDesire {
-                lifetime: link.window.clone(),
-                output: link.output.clone(),
-                workspace: link.workspace.0.clone(),
+                lifetime: window.clone(),
+                output: key.output.clone(),
+                workspace: key.workspace.0.clone(),
                 allocation: None,
                 effective_frame: None,
                 frame_authority: ScopeAuthority::Hold(reason),
@@ -1506,21 +1472,18 @@ impl WorldEngine {
                 state: Vec::new(),
             });
         }
-        for observed in session.exception_observed() {
-            if observed.output != key.output || observed.workspace != key.workspace {
+        for window in layout.exception_windows(key) {
+            if self.is_excluded_window(window) {
                 continue;
             }
-            if self.is_excluded_window(&observed.window) {
+            if live.contains(&window.0) || !emitted.insert(window.0.clone()) {
                 continue;
             }
-            if live.contains(&observed.window.0) || !emitted.insert(observed.window.0.clone()) {
-                continue;
-            }
-            let clear_operation = self.born_desire_for(&observed.window, born_paused);
+            let clear_operation = self.born_desire_for(window, born_paused);
             windows.push(WindowDesire {
-                lifetime: observed.window.clone(),
-                output: observed.output.clone(),
-                workspace: observed.workspace.0.clone(),
+                lifetime: window.clone(),
+                output: key.output.clone(),
+                workspace: key.workspace.0.clone(),
                 allocation: None,
                 effective_frame: None,
                 frame_authority: ScopeAuthority::Hold(reason),
@@ -1535,20 +1498,17 @@ impl WorldEngine {
                 state: Vec::new(),
             });
         }
-        for (window, output, workspace) in session.minimized_entries() {
-            if output != key.output || workspace != key.workspace {
-                continue;
-            }
-            if self.is_excluded_window(&window) {
+        for window in layout.minimized_windows(key) {
+            if self.is_excluded_window(window) {
                 continue;
             }
             if live.contains(&window.0) || !emitted.insert(window.0.clone()) {
                 continue;
             }
             windows.push(WindowDesire {
-                lifetime: window,
-                output: output.clone(),
-                workspace: workspace.0.clone(),
+                lifetime: window.clone(),
+                output: key.output.clone(),
+                workspace: key.workspace.0.clone(),
                 allocation: None,
                 effective_frame: None,
                 frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),

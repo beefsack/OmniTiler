@@ -415,3 +415,10 @@
   compilation errors are corrected. Scoped formatting passes. A library/tests
   diagnostic still fails on 79 library and 264 test-build errors in unmigrated
   consumers, with no new local-path/test error; runtime acceptance is pending.
+- Retained publication now reads per-domain layout bindings, exceptions and
+  restore slots directly. Geometry-only projection reuses the existing hinted
+  client-clamp projector; key-derived homes, per-domain capacity provenance and
+  tile/exception/slot ordering preserve the held and controlled row paths.
+  Source review and scoped formatting pass. A reported library diagnostic still
+  fails on 75 unmigrated consumers, with no publication-module error; runtime
+  acceptance remains pending.
