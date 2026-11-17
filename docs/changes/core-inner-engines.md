@@ -298,3 +298,10 @@
   local repair tail. Three relocation/reconcile tests are ported but unexecuted;
   source review and scoped formatting pass. Fresh routing and caller integration
   remain pending.
+- Fresh fitted admission now uses the shared recursive-cut fitter and validates
+  one local candidate before installation. Fixed-member, centre-split and
+  minimum-infeasible declines preserve their diagnostics and allocation burns;
+  successful rosters share one admission sequence and one accepted revision.
+  Two direct tests cover the focus/sequence tail and discarded-fit burns.
+  Scoped formatting passes; a library-and-tests check still fails on unmigrated
+  engine consumers, with no fitted-admission diagnostic. Tests remain unexecuted.

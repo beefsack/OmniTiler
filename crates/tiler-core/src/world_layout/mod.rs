@@ -14,6 +14,7 @@ mod admit;
 mod bootstrap;
 mod capacity;
 mod convergence;
+mod fit;
 mod focus;
 mod observation;
 mod orientation;
@@ -31,8 +32,8 @@ mod tree_edit;
 mod query_focus_tests;
 
 pub(crate) use outcome::{
-    AdmissionOutcome, LayoutFailure, OrientationOutcome, RetainedProjectionOutcome,
-    RetainedReconcileFailure,
+    AdmissionOutcome, FittedAdmissionDecline, FittedAdmissionReason, LayoutFailure,
+    OrientationOutcome, RetainedProjectionOutcome, RetainedReconcileFailure,
 };
 pub(crate) use projection::ProjectionFailure;
 pub(crate) use state::WorldLayout;

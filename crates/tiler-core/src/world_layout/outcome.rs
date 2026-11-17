@@ -1,6 +1,7 @@
 //! Compact typed outcomes and failures for direct-endpoint layout operations.
 
 use crate::directional::{NodeId, OutputId, WindowId, WorkspaceId};
+use crate::seed::FitDeclineReason;
 use crate::session::{DesiredGeometry, RefusalKind};
 
 /// Typed result of an accepted parent-axis orientation flip.
@@ -37,6 +38,38 @@ pub(crate) struct AdmissionOutcome {
     /// branch. A tolerated fullscreen-only subject is stripped from this
     /// vector before it is returned.
     pub(crate) geometry: Vec<DesiredGeometry>,
+}
+
+/// Typed reason a fresh fitted admission did not install. A fit-stage decline
+/// carries the fitter's reason; a semantic, validation or commit failure after
+/// the fit succeeded collapses to `CommitFailed` (the old fit route fell back
+/// on any failed commit). No correlation, report or topology text is stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FittedAdmissionReason {
+    Fit(FitDeclineReason),
+    CommitFailed,
+}
+
+impl FittedAdmissionReason {
+    /// Stable diagnostic token, matching the fitter's tokens for fit declines
+    /// and `commit_failed` for the collapsed commit-failure branch.
+    #[must_use]
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Fit(reason) => reason.as_str(),
+            Self::CommitFailed => "commit_failed",
+        }
+    }
+}
+
+/// Typed decline for [`WorldLayout::try_fitted_admission`](super::WorldLayout::try_fitted_admission).
+/// `centre_splits` is the fitter's committed centre-split count for a centre
+/// decline and zero otherwise; the generation-shared allocator burns survive
+/// every decline regardless of the reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FittedAdmissionDecline {
+    pub(crate) reason: FittedAdmissionReason,
+    pub(crate) centre_splits: usize,
 }
 
 /// Typed result of an atomic single-domain retained gap update. The domain is
