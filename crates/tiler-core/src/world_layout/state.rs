@@ -19,26 +19,26 @@ pub(crate) struct WorldLayout {
     /// Per-domain layout data keyed by the logical domain. The key is the
     /// sole home of its exceptions and restore slots: no stored row carries
     /// an independent output/workspace home.
-    domains: BTreeMap<DomainKey, DomainLayout>,
+    pub(super) domains: BTreeMap<DomainKey, DomainLayout>,
     /// The single layout policy. Stateless transactionally; carried once and
     /// never copied into domains.
-    policy: Arc<dyn LayoutPolicy>,
+    pub(super) policy: Arc<dyn LayoutPolicy>,
     /// Generation-shared monotonic group allocator.
-    group_alloc: GroupAllocator,
+    pub(super) group_alloc: GroupAllocator,
     /// Layout-wide first-successful-tiled-admission sequence value (D7 victim
     /// order input). One high-water, not one per domain.
-    admission_seq_next: u64,
+    pub(super) admission_seq_next: u64,
     /// Layout configuration held once, never propagated into domains.
-    config: LayoutConfig,
+    pub(super) config: LayoutConfig,
 }
 
 /// Layout configuration, owned once by [`WorldLayout`].
 #[derive(Debug, Clone, Copy)]
-struct LayoutConfig {
-    fixed_size_admission: bool,
-    fixed_size_predicate: FixedSizePredicate,
-    fresh_placement: FreshPlacement,
-    fresh_cursor: Option<(i32, i32)>,
+pub(super) struct LayoutConfig {
+    pub(super) fixed_size_admission: bool,
+    pub(super) fixed_size_predicate: FixedSizePredicate,
+    pub(super) fresh_placement: FreshPlacement,
+    pub(super) fresh_cursor: Option<(i32, i32)>,
 }
 
 /// Retained layout data for one logical domain.
@@ -47,46 +47,73 @@ struct LayoutConfig {
 /// or native-settlement machine lives here. An accepted layout revision is
 /// per-domain and distinct from the world publication revision.
 #[derive(Debug, Clone)]
-struct DomainLayout {
-    tree: Option<Node>,
+pub(super) struct DomainLayout {
+    pub(super) tree: Option<Node>,
     /// Leaf association only, never a second homing authority: membership in
     /// `WorldEngine` remains the sole owner of window lifetimes.
-    leaves: BTreeMap<WindowId, NodeId>,
-    bounds: Rect,
-    gap: i32,
-    outer_gap: i32,
-    focused_leaf: Option<NodeId>,
+    pub(super) leaves: BTreeMap<WindowId, NodeId>,
+    pub(super) bounds: Rect,
+    pub(super) gap: i32,
+    pub(super) outer_gap: i32,
+    pub(super) focused_leaf: Option<NodeId>,
     /// Logical focus recency (oldest-to-newest) for removal fallback.
-    focus_stack: Vec<NodeId>,
+    pub(super) focus_stack: Vec<NodeId>,
     /// Focus-only per-domain history for directional descent.
-    focus_history: Vec<NodeId>,
-    last_active: Option<NodeId>,
-    exceptions: BTreeMap<WindowId, DomainException>,
-    retained_float_geometry: BTreeMap<WindowId, Rect>,
+    pub(super) focus_history: Vec<NodeId>,
+    pub(super) last_active: Option<NodeId>,
+    pub(super) exceptions: BTreeMap<WindowId, DomainException>,
+    pub(super) retained_float_geometry: BTreeMap<WindowId, Rect>,
     /// Classifier-created automatic fixed floats.
-    automatic_fixed: BTreeSet<WindowId>,
+    pub(super) automatic_fixed: BTreeSet<WindowId>,
     /// Explicit user tile wins.
-    fixed_tile_override: BTreeSet<WindowId>,
+    pub(super) fixed_tile_override: BTreeSet<WindowId>,
     /// Capacity-float provenance.
-    capacity_floats: BTreeSet<WindowId>,
-    admission_order: BTreeMap<WindowId, u64>,
-    minimized_slots: BTreeMap<WindowId, DomainRestoreSlot>,
-    accepted_revision: u64,
+    pub(super) capacity_floats: BTreeSet<WindowId>,
+    pub(super) admission_order: BTreeMap<WindowId, u64>,
+    pub(super) minimized_slots: BTreeMap<WindowId, DomainRestoreSlot>,
+    pub(super) accepted_revision: u64,
 }
 
 /// Stored exception with no independent home. Output/workspace are derived
 /// from the owning [`DomainKey`] when a public snapshot is produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DomainException {
-    flags: ExceptionFlags,
-    floating_geometry: Option<Rect>,
+pub(super) struct DomainException {
+    pub(super) flags: ExceptionFlags,
+    pub(super) floating_geometry: Option<Rect>,
 }
 
 /// Stored minimize restore slot with no independent home.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DomainRestoreSlot {
-    leaf: NodeId,
-    tree: Node,
+pub(super) struct DomainRestoreSlot {
+    pub(super) leaf: NodeId,
+    pub(super) tree: Node,
+}
+
+impl DomainLayout {
+    /// Initialize an empty retained domain with the given geometry. No tree,
+    /// bindings, focus history or provenance marks are present yet.
+    #[must_use]
+    pub(super) fn new(bounds: Rect, gap: i32, outer_gap: i32) -> Self {
+        Self {
+            tree: None,
+            leaves: BTreeMap::new(),
+            bounds,
+            gap,
+            outer_gap,
+            focused_leaf: None,
+            focus_stack: Vec::new(),
+            focus_history: Vec::new(),
+            last_active: None,
+            exceptions: BTreeMap::new(),
+            retained_float_geometry: BTreeMap::new(),
+            automatic_fixed: BTreeSet::new(),
+            fixed_tile_override: BTreeSet::new(),
+            capacity_floats: BTreeSet::new(),
+            admission_order: BTreeMap::new(),
+            minimized_slots: BTreeMap::new(),
+            accepted_revision: 0,
+        }
+    }
 }
 
 impl WorldLayout {
@@ -128,7 +155,7 @@ impl WorldLayout {
         self.config.fresh_cursor = cursor;
     }
 
-    fn domain(&self, key: &DomainKey) -> Option<&DomainLayout> {
+    pub(super) fn domain(&self, key: &DomainKey) -> Option<&DomainLayout> {
         self.domains.get(key)
     }
 

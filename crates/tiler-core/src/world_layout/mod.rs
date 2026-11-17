@@ -9,6 +9,12 @@
 //! `WorldEngine`; a layout binding stores only a leaf association, and
 //! public vocabulary snapshots derive their home from the owning map key.
 
+mod focus;
+mod queries;
 mod state;
+mod topology;
+
+#[cfg(test)]
+mod query_focus_tests;
 
 pub(crate) use state::WorldLayout;

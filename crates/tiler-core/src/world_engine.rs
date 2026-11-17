@@ -2627,49 +2627,30 @@ impl WorldEngine {
             TransferKind::Window(window) => window.clone(),
             TransferKind::View | TransferKind::Migration => return StaySourceFocus::Unknown,
         };
-        let Some(session) = self.layout.session(source) else {
-            // No committed session for a retained stay source means the send
+        if !self.layout.contains_domain(source) {
+            // No committed domain for a retained stay source means the send
             // emptied and retired it: proven-empty, never unknown. (A
             // mismatched source already refused above, and a floating-only
-            // transfer with no Engine plan leaves its session behind.)
+            // transfer with no layout change leaves its domain behind.)
             return StaySourceFocus::Empty;
         };
-        let (focused_domain, focused_leaf) = session.focus();
-        let snapshot = session.snapshot();
-        if let (Some(domain), Some(leaf)) = (focused_domain.clone(), focused_leaf.clone()) {
-            if domain != *source {
-                return StaySourceFocus::Unknown;
-            }
-            let Some(link) = snapshot.windows.iter().find(|link| {
-                link.leaf == leaf
-                    && link.output == source.output
-                    && link.workspace == source.workspace
-            }) else {
+        if let Some(leaf) = self.layout.focus_leaf(source) {
+            let Some(resident) = self.layout.window_for_leaf(source, leaf) else {
                 return StaySourceFocus::Unknown;
             };
-            if link.window == mover {
+            if resident == mover {
                 return StaySourceFocus::Unknown;
             }
-            StaySourceFocus::Resident(link.window.clone())
-        } else if focused_domain.is_none() && focused_leaf.is_none() {
-            let mut residents: Vec<WindowId> = snapshot
-                .windows
-                .iter()
-                .filter(|link| link.output == source.output && link.workspace == source.workspace)
-                .map(|link| link.window.clone())
-                .collect();
-            residents.sort();
-            residents.dedup();
-            if residents.contains(&mover) {
-                return StaySourceFocus::Unknown;
-            }
-            match residents.len() {
-                0 => StaySourceFocus::Empty,
-                1 => StaySourceFocus::Resident(residents.remove(0)),
-                _ => StaySourceFocus::Unknown,
-            }
-        } else {
-            StaySourceFocus::Unknown
+            return StaySourceFocus::Resident(resident);
+        }
+        let mut residents = self.layout.resident_windows(source);
+        if residents.contains(&mover) {
+            return StaySourceFocus::Unknown;
+        }
+        match residents.len() {
+            0 => StaySourceFocus::Empty,
+            1 => StaySourceFocus::Resident(residents.remove(0)),
+            _ => StaySourceFocus::Unknown,
         }
     }
 
@@ -3042,69 +3023,26 @@ impl WorldEngine {
     }
 
     pub(crate) fn engine_knows_window_any(&self, window: &WindowId) -> bool {
-        if self.members.contains_key(window) {
-            return true;
-        }
-        for key in self.layout.domain_keys() {
-            let Some(session) = self.layout.session(&key) else {
-                continue;
-            };
-            if session
-                .snapshot()
-                .windows
-                .iter()
-                .any(|link| link.window == *window)
-            {
-                return true;
-            }
-            if session.is_exception(window) {
-                return true;
-            }
-            if session.minimized_slot(window).is_some() {
-                return true;
-            }
-        }
-        false
+        self.members.contains_key(window) || self.layout.knows_window_any(window)
     }
 
     pub(crate) fn is_tiled_window_any(&self, window: &WindowId) -> bool {
-        self.layout.domain_keys().iter().any(|key| {
-            self.layout.session(key).is_some_and(|session| {
-                session
-                    .snapshot()
-                    .windows
-                    .iter()
-                    .any(|link| link.window == *window)
-            })
-        })
+        self.layout.is_tiled_window_any(window)
     }
 
     pub(crate) fn is_exception_window_any(&self, window: &WindowId) -> bool {
-        self.layout.domain_keys().iter().any(|key| {
-            self.layout
-                .session(key)
-                .is_some_and(|session| session.is_exception(window))
-        })
+        self.layout.is_exception_window_any(window)
     }
 
     /// Conservative pre-mutation count of retained lifetimes that can
     /// publish a target-lane row without a live fact in this report: every
-    /// retained session's tiled links plus exceptions plus minimize slots
+    /// retained domain's tiled links plus exceptions plus minimize slots
     /// (surviving a gapped previous report that left staged small), plus
     /// retained mover rows (one per outstanding window transfer plus every
     /// migration member). A union upper bound via the sum: deduped
     /// lifetimes counted twice still fit.
     pub(crate) fn retained_publish_footprint(&self) -> usize {
-        let mut total = 0usize;
-        for key in self.layout.domain_keys() {
-            let Some(session) = self.layout.session(&key) else {
-                continue;
-            };
-            total = total
-                .saturating_add(session.snapshot().windows.len())
-                .saturating_add(session.exception_count())
-                .saturating_add(session.minimized_count());
-        }
+        let mut total = self.layout.retained_bound_count();
         for retained in &self.retained {
             match &retained.target.kind {
                 TransferKind::Window(_) => total = total.saturating_add(1),
@@ -3257,19 +3195,12 @@ impl WorldEngine {
         // even when held, so members latch only on staged health.
         // Pending-only latching would miss record-free first admissions.
         let mut known: Vec<WindowId> = Vec::new();
-        for key in self.layout.domain_keys() {
-            let Some(session) = self.layout.session(&key) else {
+        known.extend(self.layout.all_tiled_windows());
+        for (window, flags) in self.layout.all_exception_windows_with_flags() {
+            if !flags.floating && (flags.fullscreen || flags.maximized) {
                 continue;
-            };
-            for link in &session.snapshot().windows {
-                known.push(link.window.clone());
             }
-            for observed in session.exception_observed() {
-                if !observed.floating && (observed.fullscreen || observed.maximized) {
-                    continue;
-                }
-                known.push(observed.window.clone());
-            }
+            known.push(window);
         }
         let member_windows: Vec<WindowId> = self.members.keys().cloned().collect();
         for window in member_windows {
@@ -3375,25 +3306,14 @@ impl WorldEngine {
                 self.pending_intent.remove(&win);
             }
         }
-        // Exclusion-ledger truth sync for live sessions only: current
-        // session marks win over stale mirrors (e.g. a successful runtime
+        // Exclusion-ledger truth sync for live layout domains only: current
+        // layout marks win over stale mirrors (e.g. a successful runtime
         // float clears a restored tile win), while exclusion gaps with no
-        // live session preserve continuity untouched.
+        // live domain preserve continuity untouched.
         let mut live: Vec<WindowId> = Vec::new();
-        for key in self.layout.domain_keys() {
-            let Some(session) = self.layout.session(&key) else {
-                continue;
-            };
-            for link in &session.snapshot().windows {
-                live.push(link.window.clone());
-            }
-            for observed in session.exception_observed() {
-                live.push(observed.window.clone());
-            }
-            for (window, _, _) in session.minimized_entries() {
-                live.push(window.clone());
-            }
-        }
+        live.extend(self.layout.all_tiled_windows());
+        live.extend(self.layout.all_exception_windows());
+        live.extend(self.layout.all_minimized_windows());
         live.sort();
         live.dedup();
         for win in live {
@@ -3412,7 +3332,7 @@ impl WorldEngine {
             }
         }
         // Runtime unfloat wins over restored float provenance: a lifetime
-        // the session now proves tiled leaves the explicit-float set.
+        // the layout now proves tiled leaves the explicit-float set.
         // Unknown/excluded lifetimes keep the mark for recovery.
         let floated_marked: Vec<WindowId> = self.restored_floats.iter().cloned().collect();
         for win in floated_marked {

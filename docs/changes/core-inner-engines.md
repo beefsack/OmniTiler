@@ -232,3 +232,13 @@
   Old engine/session modules remain to supply algorithms during replacement,
   not as a working compatibility route. Compilation and behavioural acceptance
   are not yet established; only scoped formatting and source review are current.
+- World-owned membership/provenance queries and per-domain focus bookkeeping
+  now replace `WorldEngine`'s session-query assumptions. Useful tests are ported
+  for leaf-only focus matching, stale recency pruning, native-focus versus
+  accepted-history separation, convergence MRU repair and domain isolation.
+  These tests are not yet executed while caller migration is incomplete.
+- Source review corrected the initial focus-tail extraction to preserve its
+  unconditional MRU append, confined indexes/validation to affected domains,
+  and restored distinct minimized-slot retention for fixed-size versus capacity
+  provenance. Scoped formatting passes; a partial library check reports only
+  unmigrated engine-field callers, not a successful crate build.
