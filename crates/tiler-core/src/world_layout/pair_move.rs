@@ -3,17 +3,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::contract::MAX_REVISION;
 use crate::directional::{
     Axis, Capabilities, CrossOutputTarget, Direction, MoveIntent, MoveOperation, MoveOutcome,
     MovePlan, Node, NodeId, Output, Precondition, RejectionKind, Rule, SameAxisMove, Snapshot,
     WindowId, WindowLink,
 };
 use crate::policy::LayoutPolicy;
-use crate::session::{DesiredGeometry, DomainKey, ExceptionFlags, GroupAllocator, RefusalKind};
+use crate::session::{DesiredGeometry, DomainKey, GroupAllocator, RefusalKind};
 use crate::size_hints::WindowSizeHints;
 
-use super::convergence_phases::candidate_focus_stack_fallback;
 use super::local_move::{apply_local_move_operation, geometry_covers_domain, step_for_direction};
 use super::observation::valid_observed_shapes;
 use super::outcome::{LayoutFailure, PairMoveCross, PairMoveOutcome, PairOperationFailure};
@@ -21,10 +19,10 @@ use super::pair::{PairAssemblyFailure, PairCandidate};
 use super::pair_operation::{
     PairOperationContext, hints_from_observed, opposite_direction, pair_geometry_covers_domains,
     pair_known_windows, pair_observed_known_match, project_pair_geometry,
-    settle_pair_focus_and_prune,
 };
+use super::pair_transfer::{commit_pair_revision_and_settle, stage_capacity_float_on_pair};
 use super::projection::{project_borrowed_geometry, sort_geometry};
-use super::state::{DomainException, WorldLayout};
+use super::state::WorldLayout;
 use super::topology::collect_node_ids;
 use super::tree_edit::{generate_group_id, remove_leaf_from_tree};
 
@@ -201,21 +199,7 @@ impl WorldLayout {
             geometry
         };
 
-        let base = pair.pair_revision;
-        if base >= MAX_REVISION {
-            return Err(LayoutFailure::RevisionLimit {
-                base,
-                limit: MAX_REVISION,
-            }
-            .into());
-        }
-        let revision = base.checked_add(1).ok_or(LayoutFailure::RevisionLimit {
-            base,
-            limit: MAX_REVISION,
-        })?;
-
-        pair.pair_revision = revision;
-        settle_pair_focus_and_prune(&mut pair, false);
+        let (base, revision) = commit_pair_revision_and_settle(&mut pair)?;
 
         let target_outer_override = if is_cross { ctx.target_outer_gap } else { None };
         self.install_pair(&pair, ctx.source_outer_gap, target_outer_override)
@@ -253,94 +237,23 @@ impl WorldLayout {
         orig_target_tree: Option<Node>,
         hints: &BTreeMap<WindowId, WindowSizeHints>,
     ) -> Result<PairMoveOutcome, PairOperationFailure> {
-        let refuse = |kind| PairOperationFailure::Layout(LayoutFailure::Semantics(kind));
         let source_key = pair.source_key();
         let target_key = pair.target_key();
-
-        for domain in [&pair.source_domain, &pair.target_domain] {
-            if domain.bounds.w <= 0 || domain.bounds.h <= 0 || domain.gap < 0 {
-                return Err(refuse(RefusalKind::MalformedTopology));
-            }
-        }
-
-        // Prove the source remaps before staging a cross-output float.
-        let Some(orig_tree) = orig_source_tree.as_ref() else {
-            return Err(refuse(RefusalKind::MalformedTopology));
-        };
         let mut orig_source_leaves = pair.source.leaves.clone();
         orig_source_leaves.insert(mover_window.clone(), mover_leaf.clone());
-        let pre_geo = project_borrowed_geometry(
-            &source_key,
-            orig_tree,
+
+        let (base, revision, geometry) = stage_capacity_float_on_pair(
+            pair,
+            mover_window,
+            mover_leaf,
+            orig_source_tree.as_ref(),
             &orig_source_leaves,
-            pair.source.bounds,
-            pair.source.gap,
+            orig_target_tree,
+            None,
+            true,
+            true,
             hints,
-        );
-        if pre_geo.is_none_or(|geo| !geo.iter().any(|g| &g.leaf == mover_leaf)) {
-            return Err(refuse(RefusalKind::MalformedTopology));
-        }
-
-        // Restore target tree to its pre-wrap state; mover becomes a
-        // capacity-float exception homed on target with floating_geometry: None.
-        pair.target.tree = orig_target_tree;
-        pair.target.leaves.remove(mover_window);
-        pair.target.exceptions.insert(
-            mover_window.clone(),
-            DomainException {
-                flags: ExceptionFlags {
-                    floating: true,
-                    fullscreen: false,
-                    maximized: false,
-                    sticky: false,
-                },
-                floating_geometry: None,
-            },
-        );
-        pair.target.capacity_floats.insert(mover_window.clone());
-
-        // Follow-only focus: target bookkeeping MRU else first tiled leaf on target.
-        let follow_leaf = candidate_focus_stack_fallback(&pair.target, &pair.target.focus_stack)
-            .or_else(|| pair.target.leaves.values().next().cloned());
-        match follow_leaf {
-            Some(leaf) => {
-                pair.focused_domain = Some(target_key.clone());
-                pair.focused_leaf = Some(leaf);
-            }
-            None => {
-                pair.focused_domain = None;
-                pair.focused_leaf = None;
-            }
-        }
-
-        if !pair.validate_pair_topology() {
-            return Err(refuse(RefusalKind::MalformedTopology));
-        }
-
-        let geometry = project_pair_geometry(pair, hints)
-            .ok_or_else(|| refuse(RefusalKind::MalformedTopology))?;
-        if !pair_geometry_covers_domains(&geometry, pair) {
-            return Err(refuse(RefusalKind::MalformedTopology));
-        }
-        if geometry.iter().any(|g| &g.window == mover_window) {
-            return Err(refuse(RefusalKind::MalformedTopology));
-        }
-
-        let base = pair.pair_revision;
-        if base >= MAX_REVISION {
-            return Err(LayoutFailure::RevisionLimit {
-                base,
-                limit: MAX_REVISION,
-            }
-            .into());
-        }
-        let revision = base.checked_add(1).ok_or(LayoutFailure::RevisionLimit {
-            base,
-            limit: MAX_REVISION,
-        })?;
-
-        pair.pair_revision = revision;
-        settle_pair_focus_and_prune(pair, false);
+        )?;
 
         self.install_pair(pair, ctx.source_outer_gap, ctx.target_outer_gap)
             .map_err(|_| PairOperationFailure::Assembly(PairAssemblyFailure::CommitRejected))?;

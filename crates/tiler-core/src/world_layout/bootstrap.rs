@@ -11,18 +11,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::contract::MAX_REVISION;
+use crate::cursor_targeting::FreshPlacement;
 use crate::directional::{NodeId, WindowId};
 use crate::seed::EngineWindow;
 use crate::session::{
     ExceptionFlags, ObservationConvergence, ObservedWindow, OutputDomain, RefusalKind,
 };
-use crate::size_hints::WindowSizeHints;
+use crate::size_hints::{FixedSizePredicate, WindowSizeHints};
 
 use super::admission::plan_admission_leg;
 use super::focus::{domain_focus_resolves, settle_domain_focus_tail};
 use super::outcome::LayoutFailure;
 use super::projection::project_borrowed_geometry;
-use super::state::{DomainException, DomainLayout, WorldLayout};
+use super::state::{DomainException, DomainLayout, LayoutConfig, WorldLayout};
 use super::topology::{collect_node_ids, validate_domain_topology};
 use super::tree_edit::admission_placement_for;
 
@@ -44,6 +45,49 @@ impl WorldLayout {
         observed: &[ObservedWindow],
         observed_focus: Option<&WindowId>,
     ) -> Result<ObservationConvergence, LayoutFailure> {
+        self.converge_fresh_domain_with_config(
+            domain,
+            outer_gap,
+            observed,
+            observed_focus,
+            self.config,
+        )
+    }
+
+    /// Converge a brand-new domain using `Session::new` legacy default config
+    /// (`fixed_size_admission=false`, `BothAxes`, default placement, no cursor)
+    /// while preserving `self.policy`, `self.group_alloc`, and
+    /// `self.admission_seq_next`.
+    pub(super) fn converge_fresh_domain_legacy(
+        &mut self,
+        domain: &OutputDomain,
+        outer_gap: i32,
+        observed: &[ObservedWindow],
+        observed_focus: Option<&WindowId>,
+    ) -> Result<ObservationConvergence, LayoutFailure> {
+        let legacy_config = LayoutConfig {
+            fixed_size_admission: false,
+            fixed_size_predicate: FixedSizePredicate::BothAxes,
+            fresh_placement: FreshPlacement::default(),
+            fresh_cursor: None,
+        };
+        self.converge_fresh_domain_with_config(
+            domain,
+            outer_gap,
+            observed,
+            observed_focus,
+            legacy_config,
+        )
+    }
+
+    fn converge_fresh_domain_with_config(
+        &mut self,
+        domain: &OutputDomain,
+        outer_gap: i32,
+        observed: &[ObservedWindow],
+        observed_focus: Option<&WindowId>,
+        config: LayoutConfig,
+    ) -> Result<ObservationConvergence, LayoutFailure> {
         let refuse = LayoutFailure::Semantics;
         let key = domain.key();
         if self.domains.contains_key(&key) {
@@ -54,8 +98,14 @@ impl WorldLayout {
         }
 
         let original = DomainLayout::new(domain.bounds, domain.gap, outer_gap);
-        let (candidate, counter, counts) =
-            self.converge_candidate(&key, &original, observed, observed_focus, &BTreeSet::new())?;
+        let (candidate, counter, counts) = self.converge_candidate_with_config(
+            &key,
+            &original,
+            observed,
+            observed_focus,
+            &BTreeSet::new(),
+            config,
+        )?;
         if candidate.leaves.is_empty()
             && candidate.exceptions.is_empty()
             && candidate.minimized_slots.is_empty()

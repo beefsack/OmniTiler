@@ -31,7 +31,7 @@ use super::observation::valid_observed_shapes;
 use super::outcome::LayoutFailure;
 #[cfg(test)]
 use super::state::{DomainException, DomainRestoreSlot};
-use super::state::{DomainLayout, WorldLayout};
+use super::state::{DomainLayout, LayoutConfig, WorldLayout};
 use super::topology::{collect_node_ids, validate_domain_topology};
 
 #[cfg(test)]
@@ -121,6 +121,25 @@ impl WorldLayout {
         observed_focus: Option<&WindowId>,
         hidden: &BTreeSet<WindowId>,
     ) -> Result<(DomainLayout, u64, ObservationConvergence), LayoutFailure> {
+        self.converge_candidate_with_config(
+            key,
+            original,
+            observed,
+            observed_focus,
+            hidden,
+            self.config,
+        )
+    }
+
+    pub(super) fn converge_candidate_with_config(
+        &self,
+        key: &DomainKey,
+        original: &DomainLayout,
+        observed: &[ObservedWindow],
+        observed_focus: Option<&WindowId>,
+        hidden: &BTreeSet<WindowId>,
+        config: LayoutConfig,
+    ) -> Result<(DomainLayout, u64, ObservationConvergence), LayoutFailure> {
         let refuse = LayoutFailure::Semantics;
 
         // Pre-candidate validation: retained topology, observed id shape and
@@ -191,8 +210,8 @@ impl WorldLayout {
             &original.fixed_tile_override,
             &mut automatic_fixed,
             &mut fixed_tile_override,
-            self.config.fixed_size_admission,
-            self.config.fixed_size_predicate,
+            config.fixed_size_admission,
+            config.fixed_size_predicate,
         );
         candidate.automatic_fixed = automatic_fixed;
         candidate.fixed_tile_override = fixed_tile_override;
@@ -250,7 +269,7 @@ impl WorldLayout {
             .collect();
         let mut evolving = original_focus_leaf.clone();
         let mut new_counter = self.admission_seq_next;
-        let hypr = self.config.fresh_placement == FreshPlacement::CursorOutputCursorClosest;
+        let hypr = config.fresh_placement == FreshPlacement::CursorOutputCursorClosest;
         let mut automatic_fixed = std::mem::take(&mut candidate.automatic_fixed);
         let mut fixed_tile_override = std::mem::take(&mut candidate.fixed_tile_override);
         let mut capacity_floats = std::mem::take(&mut candidate.capacity_floats);
@@ -273,7 +292,7 @@ impl WorldLayout {
             let eligible = if hypr {
                 observed_leaf.or_else(|| {
                     fresh_admit_anchor(
-                        self.config,
+                        config,
                         current,
                         original_remembered.clone(),
                         &candidate,
@@ -283,7 +302,7 @@ impl WorldLayout {
             } else {
                 evolving_leaf.or_else(|| {
                     fresh_admit_anchor(
-                        self.config,
+                        config,
                         current,
                         original_remembered.clone(),
                         &candidate,
@@ -297,7 +316,7 @@ impl WorldLayout {
                 eligible,
                 policy,
                 &self.group_alloc,
-                self.config,
+                config,
                 &mut existing_ids,
                 &hints_all,
                 None,

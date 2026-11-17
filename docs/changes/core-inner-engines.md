@@ -485,3 +485,14 @@
   Scoped formatting passes; a library/tests diagnostic still fails on 35
   library and 211 test-build errors in unmigrated consumers, with no new pair
   operation/test error. All nine tests and end-to-end acceptance remain pending.
+- Explicit workspace/output sends now compose typed source seeding, combined
+  convergence and tiled, deferred or capacity-float transfer candidates directly.
+  Shared transfer tails retain focus, revision and global provenance semantics.
+  Source review preserves explicit-send differences: empty hidden sets, retained
+  close slots, ignored empty-target residue, legacy seed configuration and
+  distinct focus refusal messages. Same-output capacity fallback replaces prior
+  durable geometry; cross-output fallback keeps its untouched-frame semantics.
+  Nine direct tests are added but unexecuted. Scoped formatting passes; a direct
+  library/tests diagnostic still fails on 24 library and 200 test-build errors
+  in remaining consumers, with no new send-module/test error. Runtime acceptance
+  remains pending.

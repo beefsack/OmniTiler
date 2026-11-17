@@ -2929,6 +2929,10 @@ fn reject_pair_operation_failure(err: PairOperationFailure) -> CommandApplied {
             message: OBSERVATION_MESSAGE,
         },
         PairOperationFailure::Layout(err) => reject_layout_failure(err),
+        PairOperationFailure::SeedFailed => CommandApplied::Rejected {
+            kind: "seed-failed",
+            message: OBSERVATION_MESSAGE,
+        },
     }
 }
 

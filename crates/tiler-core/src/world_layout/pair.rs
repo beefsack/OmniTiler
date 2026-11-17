@@ -334,36 +334,80 @@ impl WorldLayout {
         self.assemble_pair(source_domain, target_domain, false)
     }
 
+    /// Assemble an explicit-send pair skipping cross-output reciprocal adjacency,
+    /// mapping an existing unusable/empty/mismatched source to `TargetUnusable`
+    /// (`canonical-pair-unusable`) while an absent source remains
+    /// `SourceUnavailable` (`canonical-source-unavailable`), and ignoring any
+    /// retained target when `include_retained_target` is false.
+    pub(super) fn assemble_send_pair_with_target(
+        &self,
+        source_domain: &OutputDomain,
+        target_domain: &OutputDomain,
+        include_retained_target: bool,
+    ) -> Result<PairCandidate, PairAssemblyFailure> {
+        self.assemble_pair_inner(
+            source_domain,
+            target_domain,
+            false,
+            include_retained_target,
+            true,
+        )
+    }
+
     pub(super) fn assemble_pair(
         &self,
         source_domain: &OutputDomain,
         target_domain: &OutputDomain,
         require_adjacency: bool,
     ) -> Result<PairCandidate, PairAssemblyFailure> {
+        self.assemble_pair_inner(source_domain, target_domain, require_adjacency, true, false)
+    }
+
+    fn assemble_pair_inner(
+        &self,
+        source_domain: &OutputDomain,
+        target_domain: &OutputDomain,
+        require_adjacency: bool,
+        include_retained_target: bool,
+        unusable_source_as_target_unusable: bool,
+    ) -> Result<PairCandidate, PairAssemblyFailure> {
         let source_key = source_domain.key();
         let target_key = target_domain.key();
 
-        let source_orig = self
-            .domain(&source_key)
-            .filter(|domain| {
-                validate_domain_topology(&source_key, domain)
+        let source_orig = match self.domain(&source_key) {
+            None => return Err(PairAssemblyFailure::SourceUnavailable),
+            Some(domain)
+                if validate_domain_topology(&source_key, domain)
                     && !domain_is_empty(domain)
                     && domain.bounds == source_domain.bounds
-                    && domain.gap == source_domain.gap
-            })
-            .ok_or(PairAssemblyFailure::SourceUnavailable)?;
-
-        let target_orig = match self.domain(&target_key) {
-            None => None,
-            Some(domain)
-                if validate_domain_topology(&target_key, domain)
-                    && !domain_is_empty(domain)
-                    && domain.bounds == target_domain.bounds
-                    && domain.gap == target_domain.gap =>
+                    && domain.gap == source_domain.gap =>
             {
-                Some(domain)
+                domain
             }
-            Some(_) => return Err(PairAssemblyFailure::TargetUnusable),
+            Some(_) => {
+                return Err(if unusable_source_as_target_unusable {
+                    PairAssemblyFailure::TargetUnusable
+                } else {
+                    PairAssemblyFailure::SourceUnavailable
+                });
+            }
+        };
+
+        let target_orig = if !include_retained_target {
+            None
+        } else {
+            match self.domain(&target_key) {
+                None => None,
+                Some(domain)
+                    if validate_domain_topology(&target_key, domain)
+                        && !domain_is_empty(domain)
+                        && domain.bounds == target_domain.bounds
+                        && domain.gap == target_domain.gap =>
+                {
+                    Some(domain)
+                }
+                Some(_) => return Err(PairAssemblyFailure::TargetUnusable),
+            }
         };
 
         if !source_domain.validate()

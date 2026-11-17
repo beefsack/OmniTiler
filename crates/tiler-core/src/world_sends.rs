@@ -7,21 +7,21 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
+use crate::contract::DivergenceKind;
 use crate::directional::{OutputId, WindowId, WorkspaceId};
-use crate::engine::Engine;
 use crate::seed::EngineWindow;
-use crate::session::RefusalKind;
-use crate::session::{DomainKey, OutputDomain};
+use crate::session::{DomainKey, OutputDomain, RefusalKind};
 use crate::workspace_scope::{TrailingSelection, resolve_numbered, resolve_trailing};
 use crate::world_commands::CommandApplied;
 use crate::world_engine::{
     KIND_CREATION_EXHAUSTED, KIND_IN_FLIGHT, KIND_SCOPE_HELD, KIND_SEND_REFUSED, KIND_SEND_TARGET,
-    KIND_SEND_WINDOW, KIND_SNAPSHOT, MSG_CREATION_EXHAUSTED, MSG_IN_FLIGHT, MSG_SCOPE_HELD,
-    MSG_SEND_REFUSED, MSG_SEND_TARGET, MSG_SEND_WINDOW, MSG_SNAPSHOT, RetainedTransfer,
-    StagedDomain, WorldEngine,
+    KIND_SEND_WINDOW, MSG_CREATION_EXHAUSTED, MSG_IN_FLIGHT, MSG_SCOPE_HELD, MSG_SEND_REFUSED,
+    MSG_SEND_TARGET, MSG_SEND_WINDOW, RetainedTransfer, StagedDomain, WorldEngine,
 };
+use crate::world_layout::{LayoutFailure, PairOperationContext, PairOperationFailure};
 use crate::world_report::{OneShotEffect, TransferKind, TransferTarget};
+
+const OBSERVATION_MESSAGE: &str = "observation does not cover the known window set";
 
 impl WorldEngine {
     /// Record one consumed command sequence on the monotonic high-watermark.
@@ -112,41 +112,26 @@ impl WorldEngine {
         if self.staged.excluded.contains(window) {
             return false;
         }
-        let home = self.engine.domain_keys().into_iter().find(|key| {
+        let home = self.layout.domain_keys().into_iter().find(|key| {
             !held_scopes.contains(key)
-                && self.engine.session(key).is_some_and(|session| {
-                    session
-                        .snapshot()
-                        .windows
-                        .iter()
-                        .any(|link| &link.window == window)
-                        || session.is_exception(window)
-                })
+                && (self.layout.is_tiled_window(key, window)
+                    || self.layout.is_exception(key, window))
         });
         let Some(home) = home else {
             return false;
         };
-        let is_linked = self.engine.session(&home).is_some_and(|session| {
-            session
-                .snapshot()
-                .windows
-                .iter()
-                .any(|link| &link.window == window)
-        });
+        let is_linked = self.layout.is_tiled_window(&home, window);
         let sticky = self
             .staged
             .facts
             .get(window)
             .is_some_and(|fact| fact.sticky == Some(true));
         // Tiled command contract first (pre-canonical behavior): the owned
-        // Session gate alone decides. Staged effective/readability state
+        // layout gate alone decides. Staged effective/readability state
         // may lag a just-committed move (post-swap moved domain), so no
-        // staged gate may veto a Session-accepted tiled choice here.
+        // staged gate may veto a layout-accepted tiled choice here.
         if advance_tiled && is_linked && !sticky {
-            let recorded = self
-                .engine
-                .session_mut(&home)
-                .is_some_and(|session| session.remember_focus(&home, window));
+            let recorded = self.layout.remember_focus(&home, window);
             if !recorded {
                 return false;
             }
@@ -182,46 +167,25 @@ impl WorldEngine {
             return false;
         }
         if is_linked {
-            let ok = self
-                .engine
-                .session(&home)
-                .is_some_and(|session| session.validates_memory_target(window));
-            if !ok {
+            if !self.layout.validates_memory_target(&home, window) {
                 return false;
             }
             if advance_tiled {
-                let recorded = self
-                    .engine
-                    .session_mut(&home)
-                    .is_some_and(|session| session.remember_focus(&home, window));
-                if !recorded {
+                if !self.layout.remember_focus(&home, window) {
                     return false;
                 }
             } else if !sticky {
-                let _ = self
-                    .engine
-                    .session_mut(&home)
-                    .is_some_and(|session| session.record_focus_history(&home, window));
+                let _ = self.layout.record_focus_history(&home, window);
             }
             self.last_active_window.insert(effective, window.clone());
             self.logical_focus_cursor = Some(window.clone());
             return true;
         }
-        let ok = self
-            .engine
-            .session(&home)
-            .is_some_and(|session| session.validates_memory_target(window));
-        if !ok {
+        if !self.layout.validates_memory_target(&home, window) {
             return false;
         }
         if !sticky {
-            let homed_here = self.engine.session(&home).is_some_and(|session| {
-                session.exception_observed().iter().any(|entry| {
-                    &entry.window == window
-                        && entry.output == effective.output
-                        && entry.workspace == effective.workspace
-                })
-            });
+            let homed_here = home == effective;
             if !homed_here {
                 let linked_home = self
                     .staged
@@ -495,12 +459,66 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn execute_send(
         &mut self,
-        issue: &crate::world_engine::EventIssue,
+        _issue: &crate::world_engine::EventIssue,
         operation_id: &str,
         window: &WindowId,
         target_output: &OutputId,
         target_workspace: &str,
         follow: bool,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> Result<(RetainedTransfer, Option<WindowId>), (&'static str, &'static str)> {
+        self.execute_send_impl(
+            operation_id,
+            window,
+            target_output,
+            target_workspace,
+            follow,
+            false,
+            by_id,
+            held_scopes,
+        )
+    }
+
+    /// Cross-output tiled send for direction-only intents: identical to
+    /// [`WorldEngine::execute_send`] except the layout operation uses
+    /// cross-output scope (`allow_cross_output=true`). Same-output targets
+    /// refuse as `CrossDomainMismatch` so the two ops stay distinct.
+    /// Floating workspaces retain membership-only exactly like the
+    /// same-output path.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn execute_output_send(
+        &mut self,
+        _issue: &crate::world_engine::EventIssue,
+        operation_id: &str,
+        window: &WindowId,
+        target_output: &OutputId,
+        target_workspace: &str,
+        follow: bool,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> Result<(RetainedTransfer, Option<WindowId>), (&'static str, &'static str)> {
+        self.execute_send_impl(
+            operation_id,
+            window,
+            target_output,
+            target_workspace,
+            follow,
+            true,
+            by_id,
+            held_scopes,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_send_impl(
+        &mut self,
+        operation_id: &str,
+        window: &WindowId,
+        target_output: &OutputId,
+        target_workspace: &str,
+        follow: bool,
+        allow_cross_output: bool,
         by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> Result<(RetainedTransfer, Option<WindowId>), (&'static str, &'static str)> {
@@ -524,8 +542,8 @@ impl WorldEngine {
         // No automatic permission for sticky windows and unexplained
         // fit-excluded rows (game/overlay without a floating, fullscreen,
         // or maximized origin): only tiled members, D16-eligible floats,
-        // and approved combos pass, and the engine decides their
-        // admission (deferred slotless carry).
+        // and approved combos pass, and the layout operation decides
+        // their admission (deferred slotless carry).
         if source_row.sticky
             || (source_row.fit_excluded
                 && !source_row.floating
@@ -542,15 +560,15 @@ impl WorldEngine {
             output: target_output.clone(),
             workspace: crate::directional::WorkspaceId(target_workspace.to_owned()),
         };
-        // Same-domain sends are honest unchanged no-ops (shared-core
-        // `RefusalKind::Unchanged`, no plan): never a native transfer,
-        // never a mistargeted failure. This shortcut returns exactly the
-        // verdict the Engine ordinary transfer below would produce.
         if target_key == source_key {
-            return Err((
-                RefusalKind::Unchanged.as_str(),
-                RefusalKind::Unchanged.message(),
-            ));
+            return Err(if allow_cross_output {
+                (KIND_SEND_TARGET, MSG_SEND_TARGET)
+            } else {
+                (
+                    RefusalKind::Unchanged.as_str(),
+                    RefusalKind::Unchanged.message(),
+                )
+            });
         }
         // Outstanding whole-workspace migrations own their destination
         // cell until arrival: a window send onto the same cell would
@@ -575,12 +593,10 @@ impl WorldEngine {
             return Err((KIND_SCOPE_HELD, MSG_SCOPE_HELD));
         }
         // Floating-workspace sends (either endpoint floating, including
-        // both): transfer project membership with no two-domain Engine
-        // plan, mirroring the legacy native-only path (`!sourceTiled ||
-        // !targetTiled` in the plan adapter entry). Shielding presents
-        // the mover at the target so the tiled side reconciles through
-        // its sweep; floating-side frames stay untouched (explicit
-        // untouched rows, never geometry).
+        // both): transfer project membership with no two-domain layout
+        // plan. Shielding presents the mover at the target so the tiled
+        // side reconciles through its sweep; floating-side frames stay
+        // untouched (explicit untouched rows, never geometry).
         let source_floating = self.floating_scopes.contains(&source_key);
         let target_floating = self.floating_scopes.contains(&target_key);
         if source_floating || target_floating {
@@ -628,13 +644,11 @@ impl WorldEngine {
                     pending_view: None,
                 },
                 // Membership-only floating boundary: follow names the mover.
-                // Stay keeps the native boundary focus (no engine MRU to
+                // Stay keeps the native boundary focus (no layout MRU to
                 // name), so no invented fallback is emitted.
                 follow.then(|| window.clone()),
             ));
         }
-        let owner = issue.owner.clone();
-        let correlation = issue.correlation.clone();
         let Some(source_domain) = self.staged.domains.iter().find(|d| d.key == source_key) else {
             return Err((KIND_SEND_WINDOW, MSG_SEND_WINDOW));
         };
@@ -646,9 +660,6 @@ impl WorldEngine {
         else {
             return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
         };
-        // Source-only in `windows`, target-only in `target_windows`:
-        // the engine combines them for pair convergence, so
-        // concatenating here would duplicate every row.
         let source_output_domain = OutputDomain {
             id: source_key.output.clone(),
             workspace: source_key.workspace.clone(),
@@ -669,46 +680,37 @@ impl WorldEngine {
         ) else {
             return Err((KIND_SCOPE_HELD, MSG_SCOPE_HELD));
         };
-        let event = CoreEvent {
-            owner,
-            generation: self.core_generation.clone(),
-            correlation,
-            revision: 0,
-            fingerprint: 0,
-            domain: Engine::canonical_component_domain(&inset_source),
-            domain_key: source_key.clone(),
-            outer_gap: source_domain.outer_gap,
-            focused_window: self.effective_operation_focus(&source_key, &source_domain.focused),
-            windows: self.shielded_windows(&source_key, &source_domain.windows),
-            closed_windows: source_domain.closed.clone(),
-            directional: None,
-            directional_target_outer_gap: None,
-            target_domain: Some((
-                Engine::canonical_component_domain(&inset_target),
-                target_key.clone(),
-            )),
-            target_windows: self.shielded_windows(&target_key, &target_domain.windows),
-            command: CoreCommand::SendToWorkspace {
-                window: window.0.clone(),
-                target_output: target_output.0.clone(),
-                target_workspace: target_workspace.to_owned(),
-                follow,
-            },
+        let observed_focus = self.effective_operation_focus(&source_key, &source_domain.focused);
+        if observed_focus.0.is_empty() {
+            return Err(("absent-focus", "no focused window is observed"));
+        }
+        if window != &observed_focus {
+            return Err((
+                RefusalKind::FocusMismatch.as_str(),
+                "the moved window is not the focused window",
+            ));
+        }
+        let source_outer_gap = source_domain.outer_gap;
+        let mut combined = self.shielded_windows(&source_key, &source_domain.windows);
+        combined.extend(self.shielded_windows(&target_key, &target_domain.windows));
+        let ctx = PairOperationContext {
+            source_domain: &inset_source,
+            target_domain: &inset_target,
+            source_outer_gap,
+            target_outer_gap: None,
+            observed_focus: &observed_focus,
+            observed: &combined,
+            closed: &[],
         };
-        match self.engine.handle(&event) {
-            CoreReply::SendWorkspace(plan) | CoreReply::SendOutput(plan) => {
-                // Follow names the mover. Stay names the engine's
-                // source-MRU survivor leaf resolved to its window through
-                // the plan geometry; an emptied source names nothing.
+        match self
+            .layout
+            .run_pair_send(&ctx, window, follow, allow_cross_output)
+        {
+            Ok(outcome) => {
                 let focus = if follow {
                     Some(window.clone())
                 } else {
-                    plan.focus_leaf.as_ref().and_then(|leaf| {
-                        plan.geometry
-                            .iter()
-                            .find(|g| &g.leaf == leaf)
-                            .map(|g| g.window.clone())
-                    })
+                    outcome.stay_focus_window
                 };
                 Ok((
                     RetainedTransfer {
@@ -743,252 +745,7 @@ impl WorldEngine {
                     focus,
                 ))
             }
-            // Engine refusals are fixed redacted vocabularies: safe
-            // to forward without echoing input.
-            CoreReply::Rejected { kind, message } => Err((kind, message)),
-            CoreReply::SnapshotInvalid { message, detail } => Err((detail, message)),
-            CoreReply::Diverged(reason) => Err((reason.as_str(), reason.message())),
-            _ => Err((KIND_SNAPSHOT, MSG_SNAPSHOT)),
-        }
-    }
-
-    /// Cross-output tiled send for direction-only intents: identical to
-    /// [`WorldEngine::execute_send`] except the Engine event carries
-    /// `SendToOutput`/`MoveToOutput` (cross-output only). Same-output
-    /// targets refuse as `CrossDomainMismatch` so the two ops stay
-    /// distinct. Floating workspaces retain membership-only exactly like
-    /// the same-output path.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn execute_output_send(
-        &mut self,
-        issue: &crate::world_engine::EventIssue,
-        operation_id: &str,
-        window: &WindowId,
-        target_output: &OutputId,
-        target_workspace: &str,
-        follow: bool,
-        by_id: &BTreeMap<&WindowId, &EngineWindow>,
-        held_scopes: &BTreeSet<DomainKey>,
-    ) -> Result<(RetainedTransfer, Option<WindowId>), (&'static str, &'static str)> {
-        if self.retained.iter().any(|r| match &r.target.kind {
-            TransferKind::Window(w) => w == window,
-            TransferKind::View | TransferKind::Migration => false,
-        }) {
-            return Err((KIND_IN_FLIGHT, MSG_IN_FLIGHT));
-        }
-        let Some(source_row) = by_id.get(window) else {
-            // Observed-but-excluded windows refuse (no automatic
-            // permission) instead of reading unknown: the adapter reported
-            // them and the core tracks them; membership is what is withheld.
-            // Own-process facts drop before staging, so the excluded set
-            // (not the fact map) carries both exclusion kinds.
-            if self.staged.excluded.contains(window) {
-                return Err((KIND_SEND_REFUSED, MSG_SEND_REFUSED));
-            }
-            return Err((KIND_SEND_WINDOW, MSG_SEND_WINDOW));
-        };
-        if source_row.sticky
-            || (source_row.fit_excluded
-                && !source_row.floating
-                && !source_row.fullscreen
-                && !source_row.maximized)
-        {
-            return Err((KIND_SEND_REFUSED, MSG_SEND_REFUSED));
-        }
-        let source_key = DomainKey {
-            output: source_row.output.clone(),
-            workspace: source_row.workspace.clone(),
-        };
-        let target_key = DomainKey {
-            output: target_output.clone(),
-            workspace: crate::directional::WorkspaceId(target_workspace.to_owned()),
-        };
-        if target_key == source_key {
-            return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
-        }
-        // Outstanding whole-workspace migrations own their destination
-        // cell until arrival: a window send onto the same cell would
-        // double-book the workspace before the moved unit lands.
-        if self.retained.iter().any(|r| {
-            matches!(&r.target.kind, TransferKind::Migration)
-                && r.target.target_output == *target_output
-                && r.target.target_workspace == target_workspace
-        }) {
-            return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
-        }
-        // Logical homing prerequisites: the target workspace lives in its
-        // ring and neither key is held.
-        if !self
-            .mapping
-            .get(&target_output.0)
-            .is_some_and(|ring| ring.iter().any(|id| id == target_workspace))
-        {
-            return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
-        }
-        if held_scopes.contains(&source_key) || held_scopes.contains(&target_key) {
-            return Err((KIND_SCOPE_HELD, MSG_SCOPE_HELD));
-        }
-        let source_floating = self.floating_scopes.contains(&source_key);
-        let target_floating = self.floating_scopes.contains(&target_key);
-        if source_floating || target_floating {
-            if !self
-                .staged
-                .domains
-                .iter()
-                .any(|d| d.readable && d.key == target_key)
-            {
-                return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
-            }
-            if !self.staged.domains.iter().any(|d| d.key == source_key) {
-                return Err((KIND_SEND_WINDOW, MSG_SEND_WINDOW));
-            }
-            return Ok((
-                RetainedTransfer {
-                    target: TransferTarget {
-                        operation_id: operation_id.to_owned(),
-                        kind: TransferKind::Window(window.clone()),
-                        target_output: target_output.clone(),
-                        target_workspace: target_workspace.to_owned(),
-                        follow,
-                        held: false,
-                    },
-                    policy: false,
-                    // No command correlation here: `settle_send`
-                    // stamps the originating sequence for the command
-                    // path, and the direct gesture path stays None.
-                    command_seq: None,
-                    source_output: source_key.output,
-                    source_workspace: source_key.workspace.0,
-                    members: Vec::new(),
-                    migration_refill: None,
-                    migration_initial_empty: false,
-                    migration_source_index: None,
-                    migration_source_view: None,
-                    migration_target_view: None,
-                    migration_terminal: None,
-                    migration_selection_rev: None,
-                    pending_member: None,
-                    member_predecessors: Vec::new(),
-                    pending_members: BTreeMap::new(),
-                    pending_view: None,
-                },
-                // Membership-only floating boundary: follow names the mover.
-                // Stay keeps the native boundary focus (no engine MRU to
-                // name), so no invented fallback is emitted.
-                follow.then(|| window.clone()),
-            ));
-        }
-        let owner = issue.owner.clone();
-        let correlation = issue.correlation.clone();
-        let Some(source_domain) = self.staged.domains.iter().find(|d| d.key == source_key) else {
-            return Err((KIND_SEND_WINDOW, MSG_SEND_WINDOW));
-        };
-        let Some(target_domain) = self
-            .staged
-            .domains
-            .iter()
-            .find(|d| d.readable && d.key == target_key)
-        else {
-            return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
-        };
-        let source_output_domain = OutputDomain {
-            id: source_key.output.clone(),
-            workspace: source_key.workspace.clone(),
-            bounds: source_domain.bounds,
-            gap: source_domain.gap,
-            adjacent: BTreeMap::new(),
-        };
-        let target_output_domain = OutputDomain {
-            id: target_key.output.clone(),
-            workspace: target_key.workspace.clone(),
-            bounds: target_domain.bounds,
-            gap: target_domain.gap,
-            adjacent: BTreeMap::new(),
-        };
-        let (Some(inset_source), Some(inset_target)) = (
-            crate::world_engine::inset_world_domain(&source_output_domain, source_domain.outer_gap),
-            crate::world_engine::inset_world_domain(&target_output_domain, target_domain.outer_gap),
-        ) else {
-            return Err((KIND_SCOPE_HELD, MSG_SCOPE_HELD));
-        };
-        let event = CoreEvent {
-            owner,
-            generation: self.core_generation.clone(),
-            correlation,
-            revision: 0,
-            fingerprint: 0,
-            domain: Engine::canonical_component_domain(&inset_source),
-            domain_key: source_key.clone(),
-            outer_gap: source_domain.outer_gap,
-            focused_window: self.effective_operation_focus(&source_key, &source_domain.focused),
-            windows: self.shielded_windows(&source_key, &source_domain.windows),
-            closed_windows: source_domain.closed.clone(),
-            directional: None,
-            directional_target_outer_gap: None,
-            target_domain: Some((
-                Engine::canonical_component_domain(&inset_target),
-                target_key.clone(),
-            )),
-            target_windows: self.shielded_windows(&target_key, &target_domain.windows),
-            command: CoreCommand::SendToOutput {
-                window: window.0.clone(),
-                target_output: target_output.0.clone(),
-                target_workspace: target_workspace.to_owned(),
-                follow,
-            },
-        };
-        match self.engine.handle(&event) {
-            CoreReply::SendWorkspace(plan) | CoreReply::SendOutput(plan) => {
-                // Follow names the mover. Stay names the engine's
-                // source-MRU survivor leaf resolved to its window through
-                // the plan geometry; an emptied source names nothing.
-                let focus = if follow {
-                    Some(window.clone())
-                } else {
-                    plan.focus_leaf.as_ref().and_then(|leaf| {
-                        plan.geometry
-                            .iter()
-                            .find(|g| &g.leaf == leaf)
-                            .map(|g| g.window.clone())
-                    })
-                };
-                Ok((
-                    RetainedTransfer {
-                        target: TransferTarget {
-                            operation_id: operation_id.to_owned(),
-                            kind: TransferKind::Window(window.clone()),
-                            target_output: target_output.clone(),
-                            target_workspace: target_workspace.to_owned(),
-                            follow,
-                            held: false,
-                        },
-                        policy: false,
-                        // No command correlation here: `settle_send`
-                        // stamps the originating sequence for the command
-                        // path, and the direct gesture path stays None.
-                        command_seq: None,
-                        source_output: source_key.output,
-                        source_workspace: source_key.workspace.0,
-                        members: Vec::new(),
-                        migration_refill: None,
-                        migration_initial_empty: false,
-                        migration_source_index: None,
-                        migration_source_view: None,
-                        migration_target_view: None,
-                        migration_terminal: None,
-                        migration_selection_rev: None,
-                        pending_member: None,
-                        member_predecessors: Vec::new(),
-                        pending_members: BTreeMap::new(),
-                        pending_view: None,
-                    },
-                    focus,
-                ))
-            }
-            CoreReply::Rejected { kind, message } => Err((kind, message)),
-            CoreReply::SnapshotInvalid { message, detail } => Err((detail, message)),
-            CoreReply::Diverged(reason) => Err((reason.as_str(), reason.message())),
-            _ => Err((KIND_SNAPSHOT, MSG_SNAPSHOT)),
+            Err(err) => Err(map_pair_send_failure(err)),
         }
     }
 
@@ -1193,5 +950,19 @@ impl WorldEngine {
             );
             self.settle_send(command_seq, operation_id, result, held_scopes)
         }
+    }
+}
+
+fn map_pair_send_failure(err: PairOperationFailure) -> (&'static str, &'static str) {
+    match err {
+        PairOperationFailure::Assembly(failure) => (failure.as_str(), OBSERVATION_MESSAGE),
+        PairOperationFailure::Layout(LayoutFailure::Semantics(kind)) => {
+            (kind.as_str(), kind.message())
+        }
+        PairOperationFailure::Layout(LayoutFailure::RevisionLimit { .. }) => (
+            DivergenceKind::RevisionExhausted.as_str(),
+            DivergenceKind::RevisionExhausted.message(),
+        ),
+        PairOperationFailure::SeedFailed => ("seed-failed", OBSERVATION_MESSAGE),
     }
 }

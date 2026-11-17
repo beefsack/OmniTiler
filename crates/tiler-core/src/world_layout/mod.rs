@@ -30,6 +30,8 @@ mod pair_convergence;
 mod pair_focus;
 mod pair_move;
 mod pair_operation;
+mod pair_send;
+mod pair_transfer;
 mod projection;
 mod queries;
 mod relocation;
@@ -54,6 +56,8 @@ mod pair_convergence_tests;
 #[cfg(test)]
 mod pair_directional_tests;
 #[cfg(test)]
+mod pair_send_tests;
+#[cfg(test)]
 mod pair_tests;
 #[cfg(test)]
 mod query_focus_tests;
@@ -71,9 +75,10 @@ pub(crate) use outcome::{
     AdmissionOutcome, FittedAdmissionDecline, FittedAdmissionReason, FloatOutcome,
     FreshDomainFailure, FreshDomainOutcome, FreshOutcomeKind, LayoutFailure, LocalFocusOutcome,
     LocalMoveOutcome, LocalOperationFailure, OrientationOutcome, PairFocusOutcome, PairMoveCross,
-    PairMoveOutcome, PairOperationFailure, PointerCornerResizeOutcome, ResizeOutcome,
-    RetainedProjectionOutcome, RetainedReconcileFailure, WorkspaceMigrationFailure,
-    WorkspaceMigrationOutcome, WorkspaceSwapFailure, WorkspaceSwapOutcome,
+    PairMoveOutcome, PairOperationFailure, PairSendKind, PairSendOutcome,
+    PointerCornerResizeOutcome, ResizeOutcome, RetainedProjectionOutcome, RetainedReconcileFailure,
+    WorkspaceMigrationFailure, WorkspaceMigrationOutcome, WorkspaceSwapFailure,
+    WorkspaceSwapOutcome,
 };
 pub(crate) use pair::PairAssemblyFailure;
 pub(crate) use pair_operation::PairOperationContext;

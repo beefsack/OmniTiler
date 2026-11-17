@@ -367,6 +367,8 @@ pub(crate) enum PairOperationFailure {
     Assembly(PairAssemblyFailure),
     /// Semantic or revision failure from layout validation, convergence, or command.
     Layout(LayoutFailure),
+    /// First-time source seed construction or non-revision convergence failed.
+    SeedFailed,
 }
 
 impl From<PairAssemblyFailure> for PairOperationFailure {
@@ -436,4 +438,29 @@ pub(crate) enum PairMoveOutcome {
         follow: bool,
         geometry: Vec<DesiredGeometry>,
     },
+}
+
+/// Which transfer path executed an accepted explicit two-domain send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PairSendKind {
+    Tiled,
+    CapacityFloat,
+    Deferred,
+}
+
+/// Typed result of an accepted explicit two-domain send (workspace or output).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PairSendOutcome {
+    pub(crate) base_revision: u64,
+    pub(crate) revision: u64,
+    pub(crate) kind: PairSendKind,
+    pub(crate) window: WindowId,
+    pub(crate) source_output: OutputId,
+    pub(crate) source_workspace: WorkspaceId,
+    pub(crate) target_output: OutputId,
+    pub(crate) target_workspace: WorkspaceId,
+    pub(crate) follow: bool,
+    pub(crate) focus_leaf: Option<NodeId>,
+    pub(crate) stay_focus_window: Option<WindowId>,
+    pub(crate) geometry: Vec<DesiredGeometry>,
 }
