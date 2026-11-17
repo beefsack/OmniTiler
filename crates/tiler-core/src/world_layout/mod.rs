@@ -53,6 +53,8 @@ mod deferred_send_tests;
 #[cfg(test)]
 mod fixed_send_tests;
 #[cfg(test)]
+mod float_focus_tests;
+#[cfg(test)]
 mod float_tests;
 #[cfg(test)]
 mod gesture_tests;
@@ -62,6 +64,8 @@ mod lifecycle_tests;
 mod local_directional_tests;
 #[cfg(test)]
 mod local_operation_tests;
+#[cfg(test)]
+mod orientation_tests;
 #[cfg(test)]
 mod overlay_send_tests;
 #[cfg(test)]
