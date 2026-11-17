@@ -330,3 +330,30 @@ impl From<LayoutFailure> for WorkspaceMigrationFailure {
         Self::Layout(value)
     }
 }
+
+/// Typed result of an accepted global-unique two-workspace swap across outputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WorkspaceSwapOutcome {
+    pub(crate) moved_a: bool,
+    pub(crate) moved_b: bool,
+    pub(crate) stay_a: bool,
+    pub(crate) stay_b: bool,
+}
+
+/// Typed failure for a global-unique two-workspace swap. Any failure leaves
+/// `WorldLayout` untouched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkspaceSwapFailure {
+    /// Swap keys do not form a valid two-output, two-workspace exchange.
+    InvalidKeys,
+    /// Either target domain slot is already occupied.
+    TargetOccupied,
+    /// Either target bounds, inner gap, or outer gap is invalid.
+    InvalidGeometry,
+    /// A tiled or minimized window in a source domain is sticky.
+    StickyTiledOrMinimized,
+    /// Source or relocated candidate topology failed validation.
+    MalformedTopology,
+    /// Deriving a same-output sticky stay domain failed.
+    StayFailed,
+}

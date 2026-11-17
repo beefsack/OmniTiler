@@ -36,6 +36,7 @@ mod topology;
 mod tree_edit;
 mod unchanged;
 mod workspace_migration;
+mod workspace_swap;
 
 #[cfg(test)]
 mod float_tests;
@@ -53,6 +54,8 @@ mod resize_tests;
 mod unchanged_tests;
 #[cfg(test)]
 mod workspace_migration_tests;
+#[cfg(test)]
+mod workspace_swap_tests;
 
 pub(crate) use local_operation::LocalOperationContext;
 pub(crate) use outcome::{
@@ -60,7 +63,8 @@ pub(crate) use outcome::{
     FreshDomainFailure, FreshDomainOutcome, FreshOutcomeKind, LayoutFailure, LocalFocusOutcome,
     LocalMoveOutcome, LocalOperationFailure, OrientationOutcome, PointerCornerResizeOutcome,
     ResizeOutcome, RetainedProjectionOutcome, RetainedReconcileFailure, WorkspaceMigrationFailure,
-    WorkspaceMigrationOutcome,
+    WorkspaceMigrationOutcome, WorkspaceSwapFailure, WorkspaceSwapOutcome,
 };
 pub(crate) use projection::ProjectionFailure;
 pub(crate) use state::WorldLayout;
+pub(crate) use workspace_swap::WorkspaceSwapSide;

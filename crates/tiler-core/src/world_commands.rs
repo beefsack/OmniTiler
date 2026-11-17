@@ -26,7 +26,7 @@ use crate::world_engine::{
     MSG_MIGRATION_TARGET_GEOMETRY, MSG_MIGRATION_TARGET_INCOMPLETE, MSG_OPERATION, MSG_SCOPE_HELD,
     MSG_SELECT_UNKNOWN, MSG_SEND_TARGET, MSG_SEND_WINDOW, RetainedTransfer, WorldEngine,
 };
-use crate::world_layout::{LayoutFailure, WorkspaceMigrationFailure};
+use crate::world_layout::{LayoutFailure, WorkspaceMigrationFailure, WorkspaceSwapSide};
 use crate::world_report::{
     CommandResult, OneShotEffect, SendSource, TransferKind, TransferTarget, WorldCommand,
 };
@@ -239,10 +239,10 @@ impl WorldEngine {
                                 message: MSG_MIGRATION,
                             };
                         }
-                        let has_session_a = self.engine.session(&src_a).is_some();
-                        let has_session_b = self.engine.session(&src_b).is_some();
-                        if !has_session_a
-                            && !has_session_b
+                        let has_domain_a = self.layout.contains_domain(&src_a);
+                        let has_domain_b = self.layout.contains_domain(&src_b);
+                        if !has_domain_a
+                            && !has_domain_b
                             && members_a.is_empty()
                             && members_b.is_empty()
                         {
@@ -288,8 +288,8 @@ impl WorldEngine {
                                 message: MSG_MIGRATION,
                             };
                         }
-                        if self.engine.session(&tgt_a).is_some()
-                            || self.engine.session(&tgt_b).is_some()
+                        if self.layout.contains_domain(&tgt_a)
+                            || self.layout.contains_domain(&tgt_b)
                         {
                             return CommandApplied::Rejected {
                                 kind: KIND_MIGRATION,
@@ -325,166 +325,47 @@ impl WorldEngine {
                                 message: MSG_MIGRATION,
                             };
                         };
-                        // Validate both relocates on clones before mutating, with the
-                        // migration sticky-exclusion policy: sticky floats stay
-                        // on the physical source output (same-output rehome to
-                        // the incoming view), never cross-output. Strip sticky
-                        // exceptions before relocate validation; they merge
-                        // into the incoming moved session on the same physical
-                        // output. A stripped sticky-only side is still a valid
-                        // rootless empty domain to move (trees holds key with
-                        // `None`), then the opposite physical sticky
-                        // reattaches to it. A side with no session at all
-                        // contributes no host: the opposite sticky then rides
-                        // a stay derived from its own actual source session
-                        // (never a fresh session). Tiled or minimized sticky
-                        // fences with the migration vocabulary (no silent
-                        // wrong move).
-                        let sticky_ids_for =
-                            |session: &crate::session::Session| -> (BTreeSet<WindowId>, bool) {
-                                let mut ids = BTreeSet::new();
-                                for observed in session.exception_observed() {
-                                    if self
-                                        .staged
-                                        .facts
-                                        .get(&observed.window)
-                                        .is_some_and(|fact| fact.sticky != Some(false))
-                                    {
-                                        ids.insert(observed.window.clone());
-                                    }
-                                }
-                                let tiled_sticky = session.snapshot().windows.iter().any(|link| {
-                                    self.staged
-                                        .facts
-                                        .get(&link.window)
-                                        .is_some_and(|fact| fact.sticky != Some(false))
-                                });
-                                let minimized_sticky =
-                                    session.minimized_entries().iter().any(|(window, _, _)| {
-                                        self.staged
-                                            .facts
-                                            .get(window)
-                                            .is_some_and(|fact| fact.sticky != Some(false))
-                                    });
-                                (ids, tiled_sticky || minimized_sticky)
-                            };
-                        let mut moved_a = None;
-                        let mut sticky_a = Vec::new();
-                        let mut ids_a = BTreeSet::new();
-                        let mut source_a = None;
-                        if let Some(session) = self.engine.session(&src_a).cloned() {
-                            let (ids, bad) = sticky_ids_for(&session);
-                            if bad {
-                                return CommandApplied::Rejected {
-                                    kind: KIND_MIGRATION,
-                                    message: MSG_MIGRATION,
-                                };
-                            }
-                            let mut stripped = session.clone();
-                            sticky_a = stripped.extract_exception_floats(&ids);
-                            let stripped_empty = stripped.snapshot().windows.is_empty()
-                                && stripped.exception_count() == 0
-                                && stripped.minimized_entries().is_empty();
-                            if stripped_empty && sticky_a.is_empty() {
-                                // Degenerate empty session carries nothing;
-                                // leave the stale slot for the usual cleanup
-                                // (exact prior behavior).
-                            } else {
-                                // Rootless empty domains relocate fine, so
-                                // sticky-only sides validate like the rest.
-                                if !stripped.relocate_domain(&src_a, &tgt_a, bounds_a, gap_a) {
-                                    return CommandApplied::Rejected {
-                                        kind: KIND_MIGRATION,
-                                        message: MSG_MIGRATION,
-                                    };
-                                }
-                                moved_a = Some(stripped);
-                            }
-                            ids_a = ids;
-                            source_a = Some(session);
-                        }
-                        let mut moved_b = None;
-                        let mut sticky_b = Vec::new();
-                        let mut ids_b = BTreeSet::new();
-                        let mut source_b = None;
-                        if let Some(session) = self.engine.session(&src_b).cloned() {
-                            let (ids, bad) = sticky_ids_for(&session);
-                            if bad {
-                                return CommandApplied::Rejected {
-                                    kind: KIND_MIGRATION,
-                                    message: MSG_MIGRATION,
-                                };
-                            }
-                            let mut stripped = session.clone();
-                            sticky_b = stripped.extract_exception_floats(&ids);
-                            let stripped_empty = stripped.snapshot().windows.is_empty()
-                                && stripped.exception_count() == 0
-                                && stripped.minimized_entries().is_empty();
-                            if stripped_empty && sticky_b.is_empty() {
-                                // Degenerate empty session: see above.
-                            } else {
-                                if !stripped.relocate_domain(&src_b, &tgt_b, bounds_b, gap_b) {
-                                    return CommandApplied::Rejected {
-                                        kind: KIND_MIGRATION,
-                                        message: MSG_MIGRATION,
-                                    };
-                                }
-                                moved_b = Some(stripped);
-                            }
-                            ids_b = ids;
-                            source_b = Some(session);
-                        }
-                        // Derive both sessionless sticky stays before any
-                        // commit: the derivation is fallible, so both sides
-                        // prepare before the mapping/views/history commit
-                        // and either Engine rekey. A failed preparation
-                        // refuses with the migration vocabulary and leaves
-                        // all world state untouched.
-                        let mut stay_a = None;
-                        if moved_a.is_none() && !sticky_b.is_empty() {
-                            let Some(source_b) = source_b.as_ref() else {
-                                return CommandApplied::Rejected {
-                                    kind: KIND_MIGRATION,
-                                    message: MSG_MIGRATION,
-                                };
-                            };
-                            let Some(stay) =
-                                source_b.split_sticky_stay(&ids_b, &tgt_a, bounds_a, gap_a)
-                            else {
-                                return CommandApplied::Rejected {
-                                    kind: KIND_MIGRATION,
-                                    message: MSG_MIGRATION,
-                                };
-                            };
-                            stay_a = Some(stay);
-                        }
-                        let mut stay_b = None;
-                        if moved_b.is_none() && !sticky_a.is_empty() {
-                            let Some(source_a) = source_a.as_ref() else {
-                                return CommandApplied::Rejected {
-                                    kind: KIND_MIGRATION,
-                                    message: MSG_MIGRATION,
-                                };
-                            };
-                            let Some(stay) =
-                                source_a.split_sticky_stay(&ids_a, &tgt_b, bounds_b, gap_b)
-                            else {
-                                return CommandApplied::Rejected {
-                                    kind: KIND_MIGRATION,
-                                    message: MSG_MIGRATION,
-                                };
-                            };
-                            stay_b = Some(stay);
-                        }
-                        // Commit mapping/views/history first (existing
-                        // parked-history semantics: out-of-scope previous
-                        // entries invalidate via observe).
+                        let sticky_windows: BTreeSet<WindowId> = self
+                            .staged
+                            .facts
+                            .iter()
+                            .filter_map(|(window, fact)| {
+                                (fact.sticky != Some(false)).then(|| window.clone())
+                            })
+                            .collect();
+                        let side_a = WorkspaceSwapSide {
+                            source: src_a.clone(),
+                            target: tgt_a.clone(),
+                            bounds: bounds_a,
+                            gap: gap_a,
+                            outer_gap: outer_a,
+                        };
+                        let side_b = WorkspaceSwapSide {
+                            source: src_b.clone(),
+                            target: tgt_b.clone(),
+                            bounds: bounds_b,
+                            gap: gap_b,
+                            outer_gap: outer_b,
+                        };
                         // R-WS-09 for the requested output: the destination
                         // workspace's remembered leaf lives in its pre-move
-                        // source session; the post-commit staged lookup
+                        // source layout; the post-commit staged lookup
                         // misses on the stale observation and the pre-moved
-                        // views gate changed false, so capture before rekey.
+                        // views gate changed false, so capture before swap.
                         let swap_focus = self.remembered_view_focus(&src_b, held_scopes, &by_id);
+                        if self
+                            .layout
+                            .swap_workspaces(&side_a, &side_b, &sticky_windows)
+                            .is_err()
+                        {
+                            return CommandApplied::Rejected {
+                                kind: KIND_MIGRATION,
+                                message: MSG_MIGRATION,
+                            };
+                        }
+                        // Commit mapping/views/history (existing
+                        // parked-history semantics: out-of-scope previous
+                        // entries invalidate via observe).
                         let next =
                             crate::workspace_scope::apply_swap_assignments(&self.mapping, &plan);
                         self.mapping = next;
@@ -497,46 +378,6 @@ impl WorldEngine {
                             if let Some(cur) = self.views.get(out).cloned() {
                                 self.history.observe(out, &cur, &ring);
                             }
-                        }
-                        // Commit the Engine rekey atomically: both sources
-                        // removed, both targets stored. Targets were proven
-                        // free above, so no member state is deleted to avoid
-                        // a collision. Sticky merges into the incoming moved
-                        // session on the same physical output (no frame
-                        // writes, Untouched). When this side contributed no
-                        // moved host (no source session at all), the opposite
-                        // sticky rides the stay derived before the commit
-                        // above; the derivation already fenced there rather
-                        // than losing the lifetime.
-                        if let Some(mut moved) = moved_a {
-                            if !sticky_b.is_empty() {
-                                moved.insert_exception_floats(sticky_b, &tgt_a);
-                            }
-                            self.engine.remove(&src_a);
-                            self.engine.insert_raw(tgt_a.clone(), moved, outer_a);
-                        } else if !sticky_b.is_empty() {
-                            let Some(stay) = stay_a else {
-                                return CommandApplied::Rejected {
-                                    kind: KIND_MIGRATION,
-                                    message: MSG_MIGRATION,
-                                };
-                            };
-                            self.engine.insert_raw(tgt_a.clone(), stay, outer_a);
-                        }
-                        if let Some(mut moved) = moved_b {
-                            if !sticky_a.is_empty() {
-                                moved.insert_exception_floats(sticky_a, &tgt_b);
-                            }
-                            self.engine.remove(&src_b);
-                            self.engine.insert_raw(tgt_b.clone(), moved, outer_b);
-                        } else if !sticky_a.is_empty() {
-                            let Some(stay) = stay_b else {
-                                return CommandApplied::Rejected {
-                                    kind: KIND_MIGRATION,
-                                    message: MSG_MIGRATION,
-                                };
-                            };
-                            self.engine.insert_raw(tgt_b.clone(), stay, outer_b);
                         }
                         // Tiling modes and floating scopes follow the ids.
                         let mode_a = self.tiling.remove(&src_a);

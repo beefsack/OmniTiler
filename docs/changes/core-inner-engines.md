@@ -457,3 +457,11 @@
   review and scoped formatting pass. A library/tests diagnostic still fails
   on 48 library and 224 test-build errors in unmigrated consumers, with no
   new migration-module/test error. Runtime acceptance remains pending.
+- Global workspace swaps now prepare both relocated candidates and physical
+  sticky stays before an atomic affected-domain installation. Extraction carries
+  all per-window provenance; rootless sticky-only hosts, stale empty sources,
+  remembered focus and world rekey consequences retain their prior behavior.
+  Seven direct tests are added but unexecuted. Source review and scoped
+  formatting pass; a library/tests diagnostic still fails on 36 library and
+  212 test-build errors in unmigrated consumers, with no swap-module/test error.
+  Runtime acceptance remains pending.
