@@ -479,3 +479,235 @@ fn relocate_domain_probe_nonmutating_commit_preserves_state_collision_keeps_both
     );
     assert!(layout.domain(&occupied).is_some());
 }
+
+#[test]
+fn retained_domains_scale_beyond_sixteen_without_cap() {
+    let mut layout = WorldLayout::new();
+    let bounds = rect(0, 0, 800, 600);
+    for i in 0..20 {
+        let out = format!("out-{i}");
+        let ws = format!("ws-{i}");
+        let win = format!("win-{i}");
+        let k = key_for(&out, &ws);
+        let dom = seeded_domain(bounds, 0, 0, &[&win]);
+        layout.domains.insert(k.clone(), dom);
+        assert!(layout.contains_domain(&k), "domain {i} retained");
+        assert_eq!(layout.domains.len(), i + 1);
+    }
+}
+
+#[test]
+fn relocate_refuses_empty_source_invalid_outer_gap_and_ambiguous_sources() {
+    let mut layout = WorldLayout::new();
+    let bounds = rect(0, 0, 800, 600);
+    let src_key = key_for("out", "ws");
+    let tgt_key = key_for("out-2", "ws");
+
+    // Empty source refuses (no topology to preserve).
+    layout
+        .domains
+        .insert(src_key.clone(), DomainLayout::new(bounds, 0, 5));
+    assert_eq!(
+        layout
+            .reconcile_retained(
+                &tgt_key,
+                bounds,
+                0,
+                5,
+                &window("win-1"),
+                &[observed_window("win-1", "out-2", "ws", false)],
+                &[],
+            )
+            .expect("empty source yields fresh routing"),
+        None
+    );
+    assert!(!layout.contains_domain(&tgt_key));
+    assert!(layout.contains_domain(&src_key));
+
+    // Seeded source with out-of-range outer gap refuses via reconcile_retained.
+    layout
+        .domains
+        .insert(src_key.clone(), seeded_domain(bounds, 0, 5, &["win-1"]));
+    assert_eq!(
+        layout
+            .reconcile_retained(
+                &tgt_key,
+                bounds,
+                0,
+                65,
+                &window("win-1"),
+                &[observed_window("win-1", "out-2", "ws", false)],
+                &[],
+            )
+            .expect("out-of-range outer gap does not relocate"),
+        None
+    );
+    assert_eq!(
+        layout
+            .reconcile_retained(
+                &tgt_key,
+                bounds,
+                0,
+                -1,
+                &window("win-1"),
+                &[observed_window("win-1", "out-2", "ws", false)],
+                &[],
+            )
+            .expect("negative outer gap does not relocate"),
+        None
+    );
+    assert!(!layout.contains_domain(&tgt_key));
+
+    // Ambiguous same-workspace sources prevent reconcile_retained from relocating.
+    let other_src = key_for("out-3", "ws");
+    layout
+        .domains
+        .insert(other_src.clone(), seeded_domain(bounds, 0, 5, &["win-2"]));
+    assert_eq!(
+        layout
+            .reconcile_retained(
+                &tgt_key,
+                bounds,
+                0,
+                5,
+                &window("win-1"),
+                &[observed_window("win-1", "out-2", "ws", false)],
+                &[],
+            )
+            .expect("ambiguous sources yield fresh routing without relocating"),
+        None
+    );
+    assert!(!layout.contains_domain(&tgt_key));
+    assert!(layout.contains_domain(&src_key));
+    assert!(layout.contains_domain(&other_src));
+}
+
+#[test]
+fn update_gaps_unknown_domain_with_tiled_window_refuses() {
+    let mut layout = WorldLayout::new();
+    let k = key();
+    let observed = vec![tiled_observed(
+        "win-1",
+        rect(0, 0, 100, 100),
+        WindowSizeHints::none(),
+    )];
+    let err = layout
+        .update_domain_gaps(&k, rect(0, 0, 800, 600), 0, 0, &window("win-1"), &observed)
+        .unwrap_err();
+    assert_eq!(err, LayoutFailure::Semantics(RefusalKind::UnknownDomain));
+    assert!(layout.domains.is_empty());
+}
+
+#[test]
+fn converged_move_with_changed_bounds_retains_members_revision_and_gap() {
+    use super::super::local_operation::LocalOperationContext;
+    use super::super::outcome::LocalOperationFailure;
+    use crate::directional::{Direction, SameAxisMove};
+    use crate::session::OutputDomain;
+
+    let orig_bounds = rect(0, 0, 800, 600);
+    let orig_domain = OutputDomain {
+        id: OutputId("out".to_owned()),
+        workspace: WorkspaceId("ws".to_owned()),
+        bounds: orig_bounds,
+        gap: 0,
+        adjacent: BTreeMap::new(),
+    };
+    let k = orig_domain.key();
+    let mut layout = WorldLayout::new();
+    let (seeded, counter) = layout
+        .build_tiled_seed(
+            &orig_domain,
+            0,
+            &[
+                observed_window("win-1", "out", "ws", false),
+                observed_window("win-2", "out", "ws", false),
+            ],
+        )
+        .expect("seeds two");
+    let pre_revision = seeded.accepted_revision;
+    layout.admission_seq_next = counter;
+    layout.domains.insert(k.clone(), seeded);
+
+    let mut observed = vec![
+        observed_window("win-1", "out", "ws", false),
+        observed_window("win-2", "out", "ws", false),
+        observed_window("win-3", "out", "ws", false),
+    ];
+    observed[1].rect.x = 100;
+    observed[2].rect.x = 200;
+    let conv = layout
+        .converge_retained_observation(&k, &observed, &window("win-1"), &[])
+        .expect("converges win-3")
+        .expect("domain present");
+    assert_eq!(conv.admitted, 1);
+
+    let changed_domain = OutputDomain {
+        bounds: rect(0, 0, 1024, 768),
+        ..orig_domain
+    };
+    let ctx = LocalOperationContext {
+        domain: &changed_domain,
+        outer_gap: 0,
+        observed_focus: &window("win-1"),
+        observed: &observed,
+        preconverged: true,
+    };
+    let err = layout
+        .run_local_move(
+            &ctx,
+            &window("win-1"),
+            Direction::Left,
+            SameAxisMove::GroupWithNeighbor,
+        )
+        .unwrap_err();
+    assert_eq!(
+        err,
+        LocalOperationFailure::Layout(LayoutFailure::Semantics(RefusalKind::PartialObservation))
+    );
+
+    let retained = layout.domain(&k).expect("refused op retains slot");
+    assert_eq!(retained.outer_gap, 0);
+    assert!(retained.accepted_revision >= pre_revision);
+    let mut members: Vec<String> = retained.leaves.keys().map(|w| w.0.clone()).collect();
+    members.sort();
+    assert_eq!(
+        members,
+        vec!["win-1".to_owned(), "win-2".to_owned(), "win-3".to_owned()]
+    );
+
+    let out = layout
+        .reconcile_retained(&k, orig_bounds, 0, 0, &window("win-1"), &observed, &[])
+        .expect("original-bounds reconcile succeeds")
+        .expect("retained outcome");
+    assert_eq!(out.geometry.len(), 3);
+}
+
+#[test]
+fn reconcile_retained_changed_bounds_updates_bounds_only() {
+    let k = key();
+    let mut layout = WorldLayout::new();
+    let mut dom = seeded_domain(rect(0, 0, 800, 600), 0, 0, &["win-1", "win-2"]);
+    dom.accepted_revision = 5;
+    let tree_before = dom.tree.clone();
+    let leaves_before = dom.leaves.clone();
+    layout.domains.insert(k.clone(), dom);
+
+    let next_bounds = rect(0, 0, 1024, 768);
+    let observed = vec![
+        observed_window("win-1", "out", "ws", false),
+        observed_window("win-2", "out", "ws", false),
+    ];
+    let out = layout
+        .reconcile_retained(&k, next_bounds, 0, 0, &window("win-1"), &observed, &[])
+        .expect("changed-bounds reconcile succeeds")
+        .expect("retained outcome");
+    assert_eq!(out.base_revision, 5);
+    assert_eq!(out.geometry.len(), 2);
+
+    let updated = layout.domain(&k).expect("domain retained");
+    assert_eq!(updated.bounds, next_bounds);
+    assert_eq!(updated.tree, tree_before);
+    assert_eq!(updated.leaves, leaves_before);
+    assert_eq!(updated.accepted_revision, 5);
+}

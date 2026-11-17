@@ -730,3 +730,419 @@ fn fresh_mixed_one_tile_plus_float_exception_cross_source_singleton_preview_and_
     assert!(layout.is_tiled_window(&key_b, &win("w1")));
     assert!(layout.is_exception(&key_b, &win("w-float")));
 }
+
+#[test]
+fn fresh_empty_singleton_producer_shape_projects() {
+    let mut layout = WorldLayout::new();
+    let source_key = ws_key("o1", "ws1");
+    let source_desc = domain_desc(
+        &source_key,
+        Rect {
+            x: 0,
+            y: 0,
+            w: 2560,
+            h: 1380,
+        },
+        8,
+    );
+    let (source_dom, counter) = layout
+        .build_tiled_seed(&source_desc, 8, &[eng("w29", &source_key, 8, 2544)])
+        .expect("seeds sole-mover source");
+    layout.admission_seq_next = counter;
+    layout.domains.insert(source_key.clone(), source_dom);
+
+    let dest_key = ws_key("o2", "ws1");
+    let dest_desc = domain_desc(
+        &dest_key,
+        Rect {
+            x: 2560,
+            y: 355,
+            w: 1920,
+            h: 1032,
+        },
+        8,
+    );
+    assert!(!layout.contains_domain(&dest_key));
+
+    let mover = EngineWindow {
+        window: win("w29"),
+        output: dest_key.output.clone(),
+        workspace: dest_key.workspace.clone(),
+        rect: Rect {
+            x: 8,
+            y: 8,
+            w: 2544,
+            h: 1364,
+        },
+        floating: false,
+        fit_excluded: false,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress: false,
+        hints: WindowSizeHints {
+            min_w: Some(864),
+            min_h: Some(617),
+            max_w: None,
+            max_h: None,
+        },
+    };
+    let obs = vec![mover];
+
+    let preview = layout
+        .run_local_drag_preview_with_source(
+            &dest_desc,
+            8,
+            &win("w29"),
+            &win("w29"),
+            &obs,
+            3520,
+            871,
+            None,
+            Some(&source_key),
+        )
+        .expect("producer singleton preview projects");
+    assert!(!layout.contains_domain(&dest_key));
+
+    let drop = layout
+        .run_local_drag_drop_with_source(
+            &dest_desc,
+            8,
+            &win("w29"),
+            &win("w29"),
+            &obs,
+            3520,
+            871,
+            None,
+            Some(&source_key),
+        )
+        .expect("producer singleton drop admits");
+    assert_eq!(drop.revision, 1);
+    let hints = BTreeMap::from([(
+        win("w29"),
+        WindowSizeHints {
+            min_w: Some(864),
+            min_h: Some(617),
+            max_w: None,
+            max_h: None,
+        },
+    )]);
+    let geom = layout
+        .project_domain_geometry(&dest_key, &hints)
+        .expect("projects dropped domain");
+    assert_eq!(geom.len(), 1);
+    assert_eq!(geom[0].rect, preview.proposed_rect);
+    assert!(layout.contains_domain(&dest_key));
+}
+
+#[test]
+fn pair_drop_top_edge_wraps_root_and_retires_sole_source() {
+    let bounds_a = Rect {
+        x: 0,
+        y: 0,
+        w: 800,
+        h: 600,
+    };
+    let bounds_b = Rect {
+        x: -1920,
+        y: -200,
+        w: 1920,
+        h: 1080,
+    };
+    let key_a = ws_key("out-1", "ws-1");
+    let key_b = ws_key("out-2", "ws-1");
+    let desc_a = domain_desc(&key_a, bounds_a, 0);
+    let desc_b = domain_desc(&key_b, bounds_b, 0);
+
+    let mut layout = WorldLayout::new();
+    let (d_a, c1) = layout
+        .build_tiled_seed(&desc_a, 0, &[eng("win-b", &key_a, 0, 800)])
+        .expect("seed a");
+    let (d_b, c2) = layout
+        .build_tiled_seed(&desc_b, 0, &[eng("win-c", &key_b, -1920, 1920)])
+        .expect("seed b");
+    layout.admission_seq_next = c1.max(c2);
+    layout.domains.insert(key_a.clone(), d_a);
+    layout.domains.insert(key_b.clone(), d_b);
+
+    let obs = vec![
+        eng("win-b", &key_a, 0, 800),
+        eng("win-c", &key_b, -1920, 1920),
+    ];
+    let ctx = PairOperationContext {
+        source_domain: &desc_a,
+        target_domain: &desc_b,
+        source_outer_gap: 0,
+        target_outer_gap: Some(0),
+        observed_focus: &win("win-b"),
+        observed: &obs,
+        closed: &[],
+    };
+
+    let outcome = layout
+        .run_pair_drag_drop(&ctx, &win("win-b"), -960, -190, None)
+        .expect("cross-output wrap drop commits");
+    assert_eq!(outcome.revision, outcome.base_revision + 1);
+    let geom = layout
+        .project_domain_geometry(&key_b, &BTreeMap::new())
+        .expect("projects destination");
+    assert_eq!(geom.len(), 2);
+    let mover_rect = geom
+        .iter()
+        .find(|g| g.window == win("win-b"))
+        .expect("mover geometry")
+        .rect;
+    assert_eq!(
+        mover_rect,
+        Rect {
+            x: -1920,
+            y: -200,
+            w: 1920,
+            h: 540,
+        }
+    );
+    assert!(!layout.contains_domain(&key_a), "sole source retires");
+    let dst = layout.domain(&key_b).expect("dest retained");
+    assert!(dst.leaves.contains_key(&win("win-b")));
+    assert!(dst.leaves.contains_key(&win("win-c")));
+}
+
+#[test]
+fn pair_drop_refuses_absent_mover_without_mutating_domains() {
+    let bounds_a = Rect {
+        x: 0,
+        y: 0,
+        w: 800,
+        h: 400,
+    };
+    let bounds_b = Rect {
+        x: 800,
+        y: 0,
+        w: 800,
+        h: 400,
+    };
+    let key_a = ws_key("out-a", "ws-1");
+    let key_b = ws_key("out-b", "ws-1");
+    let desc_a = domain_desc(&key_a, bounds_a, 0);
+    let desc_b = domain_desc(&key_b, bounds_b, 0);
+
+    let mut layout = WorldLayout::new();
+    let d_a = two_tile_domain(bounds_a, 0, "g-a", "w1", "a1", "w2", "a2", 2);
+    let d_b = two_tile_domain(bounds_b, 0, "g-b", "w3", "b1", "w4", "b2", 5);
+    let orig_b_tree = d_b.tree.clone();
+    layout.domains.insert(key_a.clone(), d_a);
+    layout.domains.insert(key_b.clone(), d_b);
+
+    // Mover w2 is absent from the combined observation: source converges the
+    // departure, then the drop refuses without committing any drop to target.
+    let obs = vec![
+        eng("w1", &key_a, 0, 400),
+        eng("w3", &key_b, 800, 400),
+        eng("w4", &key_b, 1200, 400),
+    ];
+    let ctx = PairOperationContext {
+        source_domain: &desc_a,
+        target_domain: &desc_b,
+        source_outer_gap: 0,
+        target_outer_gap: Some(0),
+        observed_focus: &win("w1"),
+        observed: &obs,
+        closed: &[],
+    };
+
+    let err = layout
+        .run_pair_drag_drop(&ctx, &win("w2"), 820, 200, None)
+        .unwrap_err();
+    assert_eq!(
+        err,
+        PairOperationFailure::Layout(LayoutFailure::Semantics(RefusalKind::UnknownWindow))
+    );
+    let dst = layout.domain(&key_b).expect("dest retained");
+    assert_eq!(dst.tree, orig_b_tree);
+    assert_eq!(dst.leaves.len(), 2);
+    assert!(!dst.leaves.contains_key(&win("w2")));
+    assert!(
+        !layout
+            .domain(&key_a)
+            .unwrap()
+            .leaves
+            .contains_key(&win("w2"))
+    );
+}
+
+#[test]
+fn retained_empty_arrival_preview_matches_drop() {
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 800,
+        h: 600,
+    };
+    let key_a = ws_key("out-1", "ws-1");
+    let key_b = ws_key("out-2", "ws-1");
+    let desc_b = domain_desc(&key_b, bounds, 0);
+
+    let mut layout = WorldLayout::new();
+    layout
+        .domains
+        .insert(key_b.clone(), DomainLayout::new(bounds, 0, 0));
+    let obs = vec![eng("win-a", &key_b, 0, 100)];
+
+    let preview = layout
+        .run_local_drag_preview_with_source(
+            &desc_b,
+            0,
+            &win("win-a"),
+            &win("win-a"),
+            &obs,
+            400,
+            300,
+            None,
+            Some(&key_a),
+        )
+        .expect("retained empty preview projects arrival");
+    assert!(layout.domain(&key_b).unwrap().leaves.is_empty());
+
+    layout
+        .converge_retained_observation(&key_b, &obs, &win("win-a"), &[])
+        .expect("converges retained empty arrival")
+        .expect("domain present");
+    let drop = layout
+        .run_local_drag_drop_with_source(
+            &desc_b,
+            0,
+            &win("win-a"),
+            &win("win-a"),
+            &obs,
+            400,
+            300,
+            None,
+            Some(&key_a),
+        )
+        .expect("retained empty drop commits");
+    assert_eq!(drop.revision, 1);
+    let geom = layout
+        .project_domain_geometry(&key_b, &BTreeMap::new())
+        .expect("projects dropped domain");
+    assert_eq!(geom[0].rect, preview.proposed_rect);
+    assert!(
+        layout
+            .domain(&key_b)
+            .unwrap()
+            .leaves
+            .contains_key(&win("win-a"))
+    );
+}
+
+#[test]
+fn drag_preview_drop_parity_with_hints_and_prior() {
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 800,
+        h: 600,
+    };
+    let key_a = ws_key("out-1", "ws-1");
+    let key_b = ws_key("out-2", "ws-1");
+    let desc_b = domain_desc(&key_b, bounds, 0);
+
+    let mut layout = WorldLayout::new();
+    let (d_b, counter) = layout
+        .build_tiled_seed(&desc_b, 0, &[eng("win-a", &key_b, 0, 800)])
+        .expect("seed retained destination");
+    layout.admission_seq_next = counter;
+    layout.domains.insert(key_b.clone(), d_b);
+
+    let mut win_a = eng("win-a", &key_b, 0, 800);
+    win_a.hints.min_w = Some(200);
+    let mut win_m = eng("win-m", &key_b, 0, 200);
+    win_m.hints.min_w = Some(200);
+    let obs = vec![win_a, win_m];
+
+    let preview = layout
+        .run_local_drag_preview_with_source(
+            &desc_b,
+            0,
+            &win("win-m"),
+            &win("win-m"),
+            &obs,
+            5,
+            300,
+            None,
+            Some(&key_a),
+        )
+        .expect("hinted preview projects");
+    assert!(
+        !layout
+            .domain(&key_b)
+            .unwrap()
+            .leaves
+            .contains_key(&win("win-m"))
+    );
+
+    let followup = layout
+        .run_local_drag_preview_with_source(
+            &desc_b,
+            0,
+            &win("win-m"),
+            &win("win-m"),
+            &obs,
+            5,
+            300,
+            Some(&preview.hover),
+            Some(&key_a),
+        )
+        .expect("carried prior preview projects");
+    assert_eq!(followup.proposed_rect, preview.proposed_rect);
+
+    layout
+        .converge_retained_observation(&key_b, &obs, &win("win-m"), &[])
+        .expect("converges arrival before drop")
+        .expect("domain present");
+    let drop = layout
+        .run_local_drag_drop_with_source(
+            &desc_b,
+            0,
+            &win("win-m"),
+            &win("win-m"),
+            &obs,
+            5,
+            300,
+            Some(&preview.hover),
+            Some(&key_a),
+        )
+        .expect("hinted drop commits");
+    assert_eq!(drop.revision, drop.base_revision + 1);
+    let hints = BTreeMap::from([
+        (
+            win("win-a"),
+            WindowSizeHints {
+                min_w: Some(200),
+                ..WindowSizeHints::none()
+            },
+        ),
+        (
+            win("win-m"),
+            WindowSizeHints {
+                min_w: Some(200),
+                ..WindowSizeHints::none()
+            },
+        ),
+    ]);
+    let geom = layout
+        .project_domain_geometry(&key_b, &hints)
+        .expect("projects hinted destination");
+    let moved = geom
+        .iter()
+        .find(|g| g.window == win("win-m"))
+        .expect("mover geometry");
+    assert_eq!(moved.rect, preview.proposed_rect);
+    assert!(
+        layout
+            .domain(&key_b)
+            .unwrap()
+            .leaves
+            .contains_key(&win("win-m"))
+    );
+}

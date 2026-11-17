@@ -420,3 +420,222 @@ fn revision_limit_and_later_refusal_atomicity_with_allocator_burns() {
     assert!(layout.contains_domain(&src.key()));
     assert!(!layout.contains_domain(&key("out-2", "ws-2")));
 }
+
+#[test]
+fn cross_native_workspace_migration_and_same_output_refusal() {
+    let (mut layout, src, _) = two_tile_plus_float_layout();
+    let cross_ws_tgt = domain_desc("out-2", "ws-9", rect(1000, 0, 1600, 900), 12);
+    let mut float_obs = observed_window("win-f", "out-1", "ws-2");
+    float_obs.floating = true;
+    let observed = vec![
+        observed_window("win-a", "out-1", "ws-2"),
+        observed_window("win-b", "out-1", "ws-2"),
+        float_obs,
+    ];
+
+    // Same-output cross-workspace target refuses.
+    let same_out = domain_desc("out-1", "ws-9", src.bounds, src.gap);
+    assert_eq!(
+        layout
+            .migrate_workspace(&src, 10, &window("win-a"), &observed, &same_out)
+            .unwrap_err(),
+        WorkspaceMigrationFailure::SameOutput
+    );
+
+    // Cross-output cross-workspace target succeeds and rehomes exceptions/focus.
+    let outcome = layout
+        .migrate_workspace(&src, 10, &window("win-a"), &observed, &cross_ws_tgt)
+        .expect("cross-native migration succeeds");
+    assert_eq!(outcome.members.len(), 3);
+    assert!(!layout.contains_domain(&src.key()));
+    let moved = layout.domain(&cross_ws_tgt.key()).expect("target present");
+    assert_eq!(moved.focused_leaf, Some(node("leaf-a")));
+    assert_eq!(
+        layout
+            .exception_record(&cross_ws_tgt.key(), &window("win-f"))
+            .expect("exception homed on target")
+            .workspace,
+        WorkspaceId("ws-9".to_owned())
+    );
+}
+
+#[test]
+fn float_focus_float_only_and_absent_active_migration() {
+    // 1. Active float focus preserves stored tiled focus without fabricating tile focus.
+    {
+        let (mut layout, src, tgt) = two_tile_plus_float_layout();
+        let mut float_obs = observed_window("win-f", "out-1", "ws-2");
+        float_obs.floating = true;
+        let observed = vec![
+            observed_window("win-a", "out-1", "ws-2"),
+            observed_window("win-b", "out-1", "ws-2"),
+            float_obs,
+        ];
+        let outcome = layout
+            .migrate_workspace(&src, 10, &window("win-f"), &observed, &tgt)
+            .expect("active-float migration succeeds");
+        assert_eq!(outcome.floats, 1);
+        let moved = layout.domain(&tgt.key()).expect("target installed");
+        assert_eq!(moved.focused_leaf, Some(node("leaf-a")));
+        assert!(moved.exceptions.contains_key(&window("win-f")));
+    }
+
+    // 2. Non-sticky float-only source carries exceptions to target and retires source.
+    {
+        let mut layout = WorldLayout::new();
+        let src = domain_desc("out-1", "ws-2", rect(0, 0, 1000, 800), 8);
+        let tgt = domain_desc("out-2", "ws-2", rect(1000, 0, 1600, 900), 12);
+        let mut fdom = DomainLayout::new(src.bounds, src.gap, 10);
+        for name in ["win-a", "win-b"] {
+            fdom.exceptions.insert(
+                window(name),
+                DomainException {
+                    flags: ExceptionFlags {
+                        floating: true,
+                        ..ExceptionFlags::none()
+                    },
+                    floating_geometry: None,
+                },
+            );
+        }
+        layout.domains.insert(src.key(), fdom);
+        let mut fa = observed_window("win-a", "out-1", "ws-2");
+        fa.floating = true;
+        let mut fb = observed_window("win-b", "out-1", "ws-2");
+        fb.floating = true;
+        let outcome = layout
+            .migrate_workspace(&src, 10, &window("win-a"), &[fa, fb], &tgt)
+            .expect("float-only migration succeeds");
+        assert_eq!(outcome.members, vec![window("win-a"), window("win-b")]);
+        assert_eq!(outcome.floats, 2);
+        assert!(!layout.contains_domain(&src.key()));
+        let moved = layout.domain(&tgt.key()).expect("target installed");
+        assert!(moved.exceptions.contains_key(&window("win-a")));
+        assert!(moved.exceptions.contains_key(&window("win-b")));
+    }
+
+    // 3. Absent active client (empty focus with members) still migrates all members.
+    {
+        let (mut layout, src, tgt) = two_tile_plus_float_layout();
+        layout
+            .domains
+            .get_mut(&src.key())
+            .unwrap()
+            .exceptions
+            .clear();
+        let observed = vec![
+            observed_window("win-a", "out-1", "ws-2"),
+            observed_window("win-b", "out-1", "ws-2"),
+        ];
+        let outcome = layout
+            .migrate_workspace(&src, 10, &window(""), &observed, &tgt)
+            .expect("absent active client migration succeeds");
+        assert_eq!(outcome.members, vec![window("win-a"), window("win-b")]);
+        assert!(!layout.contains_domain(&src.key()));
+        assert!(layout.contains_domain(&tgt.key()));
+    }
+}
+
+#[test]
+fn fullscreen_and_maximized_d8_carry() {
+    // Fullscreen tiled member carries with its tiled slot preserved.
+    {
+        let (mut layout, src, tgt) = two_tile_plus_float_layout();
+        layout
+            .domains
+            .get_mut(&src.key())
+            .unwrap()
+            .exceptions
+            .clear();
+        let mut fs = observed_window("win-a", "out-1", "ws-2");
+        fs.fullscreen = true;
+        fs.fit_excluded = true;
+        let outcome = layout
+            .migrate_workspace(
+                &src,
+                10,
+                &window("win-a"),
+                &[fs, observed_window("win-b", "out-1", "ws-2")],
+                &tgt,
+            )
+            .expect("fullscreen carry succeeds");
+        assert_eq!(outcome.members, vec![window("win-a"), window("win-b")]);
+        let moved = layout.domain(&tgt.key()).expect("target installed");
+        assert!(moved.leaves.contains_key(&window("win-a")));
+    }
+
+    // Maximized float carries with its exception slot preserved.
+    {
+        let (mut layout, src, tgt) = two_tile_plus_float_layout();
+        layout
+            .domains
+            .get_mut(&src.key())
+            .unwrap()
+            .exceptions
+            .clear();
+        let mut max_float = observed_window("win-a", "out-1", "ws-2");
+        max_float.floating = true;
+        max_float.maximized = true;
+        let outcome = layout
+            .migrate_workspace(
+                &src,
+                10,
+                &window("win-a"),
+                &[max_float, observed_window("win-b", "out-1", "ws-2")],
+                &tgt,
+            )
+            .expect("maximized float carry succeeds");
+        assert_eq!(outcome.floats, 1);
+        let moved = layout.domain(&tgt.key()).expect("target installed");
+        assert!(moved.exceptions.contains_key(&window("win-a")));
+    }
+
+    // Maximized tiled carries with its reserved tile slot preserved.
+    {
+        let (mut layout, src, tgt) = two_tile_plus_float_layout();
+        layout
+            .domains
+            .get_mut(&src.key())
+            .unwrap()
+            .exceptions
+            .clear();
+        let mut max_tiled = observed_window("win-b", "out-1", "ws-2");
+        max_tiled.maximized = true;
+        max_tiled.fit_excluded = true;
+        let outcome = layout
+            .migrate_workspace(
+                &src,
+                10,
+                &window("win-a"),
+                &[observed_window("win-a", "out-1", "ws-2"), max_tiled],
+                &tgt,
+            )
+            .expect("maximized tiled carry succeeds");
+        assert_eq!(outcome.floats, 0);
+        let moved = layout.domain(&tgt.key()).expect("target installed");
+        assert_eq!(moved.leaves.len(), 2);
+        assert!(!layout.contains_domain(&src.key()));
+    }
+}
+
+#[test]
+fn retained_empty_adopts_carried_newcomers() {
+    let mut layout = WorldLayout::new();
+    let src = domain_desc("out-1", "ws-2", rect(0, 0, 1000, 800), 8);
+    let tgt = domain_desc("out-2", "ws-2", rect(1000, 0, 1600, 900), 12);
+    layout
+        .domains
+        .insert(src.key(), DomainLayout::new(src.bounds, src.gap, 10));
+
+    let observed = vec![
+        observed_window("win-1", "out-1", "ws-2"),
+        observed_window("win-2", "out-1", "ws-2"),
+    ];
+    let outcome = layout
+        .migrate_workspace(&src, 10, &window("win-1"), &observed, &tgt)
+        .expect("retained-empty newcomers adopt and migrate");
+    assert_eq!(outcome.members, vec![window("win-1"), window("win-2")]);
+    assert!(!layout.contains_domain(&src.key()));
+    let moved = layout.domain(&tgt.key()).expect("target installed");
+    assert_eq!(moved.leaves.len(), 2);
+}

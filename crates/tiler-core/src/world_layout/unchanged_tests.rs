@@ -310,3 +310,150 @@ fn unchanged_misses_are_conservative_and_do_not_mutate() {
         d.focused_leaf = Some(node("stale"));
     });
 }
+
+#[test]
+fn unchanged_hit_matches_reconcile_retained_state_and_focus_bookkeeping() {
+    let (mut skipped, k, bounds, gap, outer_gap, focus_win, observed) = fixture();
+    let mut converged = skipped.clone();
+
+    assert!(skipped.try_unchanged_reconcile(
+        &k,
+        bounds,
+        gap,
+        outer_gap,
+        &focus_win,
+        &observed,
+        &[]
+    ));
+    converged
+        .converge_retained_observation(&k, &observed, &focus_win, &[])
+        .expect("converge_retained_observation succeeds")
+        .expect("retained domain present");
+
+    let s = skipped.domain(&k).expect("skipped domain retained");
+    let c = converged.domain(&k).expect("converged domain retained");
+    assert_eq!(s.tree, c.tree);
+    assert_eq!(s.leaves, c.leaves);
+    assert_eq!(s.bounds, c.bounds);
+    assert_eq!(s.gap, c.gap);
+    assert_eq!(s.outer_gap, c.outer_gap);
+    assert_eq!(s.focused_leaf, c.focused_leaf);
+    assert_eq!(s.focus_stack, c.focus_stack);
+    assert_eq!(s.focus_history, c.focus_history);
+    assert_eq!(s.last_active, c.last_active);
+    assert_eq!(s.exceptions.len(), c.exceptions.len());
+    assert_eq!(s.retained_float_geometry, c.retained_float_geometry);
+    assert_eq!(s.automatic_fixed, c.automatic_fixed);
+    assert_eq!(s.fixed_tile_override, c.fixed_tile_override);
+    assert_eq!(s.capacity_floats, c.capacity_floats);
+    assert_eq!(s.admission_order, c.admission_order);
+    assert_eq!(s.minimized_slots.len(), c.minimized_slots.len());
+    assert_eq!(s.accepted_revision, c.accepted_revision);
+    assert_eq!(skipped.admission_seq_next, converged.admission_seq_next);
+    assert_eq!(
+        skipped.project_domain_geometry(&k, &std::collections::BTreeMap::new()),
+        converged.project_domain_geometry(&k, &std::collections::BTreeMap::new())
+    );
+}
+
+#[test]
+fn admission_highwater_survives_domain_retirement() {
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 300,
+        h: 100,
+    };
+    let mut layout = WorldLayout::new();
+
+    // Seed an active domain and a separate retiring domain, consuming real admission stamps.
+    let active_key = key("out", "ws");
+    let active_obs = vec![
+        observed_window("w-a", "out", "ws"),
+        observed_window("w-b", "out", "ws"),
+    ];
+    let (active_dom, c1) = layout
+        .build_tiled_seed(
+            &crate::session::OutputDomain {
+                id: active_key.output.clone(),
+                workspace: active_key.workspace.clone(),
+                bounds,
+                gap: 0,
+                adjacent: std::collections::BTreeMap::new(),
+            },
+            0,
+            &active_obs,
+        )
+        .expect("active domain seeds");
+    layout.admission_seq_next = c1;
+    layout.domains.insert(active_key.clone(), active_dom);
+
+    let retiring_key = key("out-retire", "ws");
+    let retiring_obs = vec![
+        observed_window("w-r1", "out-retire", "ws"),
+        observed_window("w-r2", "out-retire", "ws"),
+    ];
+    let (retiring_dom, c2) = layout
+        .build_tiled_seed(
+            &crate::session::OutputDomain {
+                id: retiring_key.output.clone(),
+                workspace: retiring_key.workspace.clone(),
+                bounds,
+                gap: 0,
+                adjacent: std::collections::BTreeMap::new(),
+            },
+            0,
+            &retiring_obs,
+        )
+        .expect("retiring domain seeds");
+    layout.admission_seq_next = c2;
+    let retired_max_stamp = *retiring_dom
+        .admission_order
+        .values()
+        .max()
+        .expect("retiring domain has admission stamps");
+    layout.domains.insert(retiring_key.clone(), retiring_dom);
+    assert!(layout.admission_seq_next > retired_max_stamp);
+
+    // Retire the second domain via real close + empty gap update.
+    let closed = [window("w-r1"), window("w-r2")];
+    layout
+        .converge_retained_observation(&retiring_key, &[], &WindowId(String::new()), &closed)
+        .expect("converge close succeeds");
+    layout
+        .update_domain_gaps(&retiring_key, bounds, 0, 0, &WindowId(String::new()), &[])
+        .expect("retiring empty domain succeeds");
+    assert!(!layout.contains_domain(&retiring_key));
+    let highwater_after_retire = layout.admission_seq_next;
+    assert!(highwater_after_retire > retired_max_stamp);
+
+    // Skip hit on the surviving domain preserves the high-water mark.
+    assert!(layout.try_unchanged_reconcile(
+        &active_key,
+        bounds,
+        0,
+        0,
+        &window("w-b"),
+        &active_obs,
+        &[],
+    ));
+    assert_eq!(layout.admission_seq_next, highwater_after_retire);
+
+    // A subsequent admission on the surviving domain receives a strictly monotonic stamp.
+    let mut next_obs = active_obs;
+    next_obs.push(observed_window("w-c", "out", "ws"));
+    layout
+        .converge_retained_observation(&active_key, &next_obs, &window("w-c"), &[])
+        .expect("new admission succeeds");
+    let new_stamp = *layout
+        .domain(&active_key)
+        .expect("active domain retained")
+        .admission_order
+        .get(&window("w-c"))
+        .expect("new window stamped");
+    assert!(
+        new_stamp > retired_max_stamp,
+        "new stamp {new_stamp} must exceed retired max stamp {retired_max_stamp}"
+    );
+    assert!(layout.admission_seq_next > new_stamp);
+}

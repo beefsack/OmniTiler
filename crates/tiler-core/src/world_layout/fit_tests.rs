@@ -123,3 +123,125 @@ fn fit_declines_burn_without_install_or_highwater_advance() {
         assert!(layout.group_alloc.next_value() >= 1);
     }
 }
+
+#[test]
+fn shared_allocator_across_domains_and_discarded_clones_never_reissues() {
+    use std::collections::BTreeSet;
+
+    fn domain_for(output: &str, workspace: &str) -> crate::session::OutputDomain {
+        crate::session::OutputDomain {
+            id: OutputId(output.to_owned()),
+            workspace: WorkspaceId(workspace.to_owned()),
+            bounds: Rect {
+                x: 0,
+                y: 0,
+                w: 300,
+                h: 100,
+            },
+            gap: 0,
+            adjacent: BTreeMap::new(),
+        }
+    }
+
+    fn win_for(id: &str, output: &str, workspace: &str, x: i32, w: i32) -> EngineWindow {
+        EngineWindow {
+            window: WindowId(id.to_owned()),
+            output: OutputId(output.to_owned()),
+            workspace: WorkspaceId(workspace.to_owned()),
+            rect: Rect { x, y: 0, w, h: 100 },
+            floating: false,
+            fit_excluded: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: WindowSizeHints::none(),
+        }
+    }
+
+    fn group_ids(node: &crate::directional::Node, out: &mut BTreeSet<String>) {
+        if let crate::directional::Node::Group { id, children, .. } = node {
+            out.insert(id.0.clone());
+            for child in children {
+                group_ids(child, out);
+            }
+        }
+    }
+
+    let mut layout = WorldLayout::new();
+    let d_a = domain_for("out-a", "ws");
+    let d_b = domain_for("out-b", "ws");
+
+    // First domain mints grp-0.
+    layout
+        .try_fitted_admission(
+            &d_a,
+            0,
+            &WindowId("a1".to_owned()),
+            &[
+                win_for("a1", "out-a", "ws", 0, 150),
+                win_for("a2", "out-a", "ws", 150, 150),
+            ],
+        )
+        .expect("fit a succeeds");
+    // Second domain mints grp-1 on the same shared allocator.
+    layout
+        .try_fitted_admission(
+            &d_b,
+            0,
+            &WindowId("b1".to_owned()),
+            &[
+                win_for("b1", "out-b", "ws", 0, 150),
+                win_for("b2", "out-b", "ws", 150, 150),
+            ],
+        )
+        .expect("fit b succeeds");
+
+    let mut ids_a = BTreeSet::new();
+    group_ids(layout.tree(&d_a.key()).unwrap(), &mut ids_a);
+    let mut ids_b = BTreeSet::new();
+    group_ids(layout.tree(&d_b.key()).unwrap(), &mut ids_b);
+    assert_eq!(ids_a, BTreeSet::from(["grp-0".to_owned()]));
+    assert_eq!(ids_b, BTreeSet::from(["grp-1".to_owned()]));
+    assert_eq!(layout.group_alloc.next_value(), 2);
+
+    // Discarded clone trial burns grp-2 without mutating original domains.
+    let mut staged = layout.clone();
+    let d_c = domain_for("out-c", "ws");
+    staged
+        .try_fitted_admission(
+            &d_c,
+            0,
+            &WindowId("c1".to_owned()),
+            &[
+                win_for("c1", "out-c", "ws", 0, 150),
+                win_for("c2", "out-c", "ws", 150, 150),
+            ],
+        )
+        .expect("staged fit succeeds");
+    let mut ids_c = BTreeSet::new();
+    group_ids(staged.tree(&d_c.key()).unwrap(), &mut ids_c);
+    assert_eq!(ids_c, BTreeSet::from(["grp-2".to_owned()]));
+    drop(staged);
+    assert!(!layout.contains_domain(&d_c.key()));
+    assert_eq!(layout.group_alloc.next_value(), 3);
+
+    // Next fit on the original layout continues at grp-3, never reissuing grp-2.
+    let d_d = domain_for("out-d", "ws");
+    layout
+        .try_fitted_admission(
+            &d_d,
+            0,
+            &WindowId("d1".to_owned()),
+            &[
+                win_for("d1", "out-d", "ws", 0, 150),
+                win_for("d2", "out-d", "ws", 150, 150),
+            ],
+        )
+        .expect("fit d succeeds");
+    let mut ids_d = BTreeSet::new();
+    group_ids(layout.tree(&d_d.key()).unwrap(), &mut ids_d);
+    assert_eq!(ids_d, BTreeSet::from(["grp-3".to_owned()]));
+    assert_eq!(layout.group_alloc.next_value(), 4);
+}
