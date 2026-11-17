@@ -10,6 +10,9 @@
 //! public vocabulary snapshots derive their home from the owning map key.
 
 mod focus;
+mod orientation;
+mod outcome;
+mod projection;
 mod queries;
 mod state;
 mod topology;
@@ -17,4 +20,6 @@ mod topology;
 #[cfg(test)]
 mod query_focus_tests;
 
+pub(crate) use outcome::{OrientationFailure, OrientationOutcome};
+pub(crate) use projection::ProjectionFailure;
 pub(crate) use state::WorldLayout;

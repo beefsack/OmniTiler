@@ -242,3 +242,11 @@
   and restored distinct minimized-slot retention for fixed-size versus capacity
   provenance. Scoped formatting passes; a partial library check reports only
   unmigrated engine-field callers, not a successful crate build.
+- Hints-aware projection and typed synchronous orientation now operate on
+  per-domain storage and local candidates. Source review preserves separate
+  advisory/affected-geometry/admission-fit gates, affected-geometry ordering,
+  per-domain refusal scope, revision bounds and the shared focus-settle tail
+  even when observed focus does not resolve. Initial extraction conflated two
+  geometry gates and omitted that missed-focus tail; both are corrected.
+  Callers, convergence/seeding and the remaining operation families are still
+  unmigrated. Formatting is current; full build and test acceptance is pending.

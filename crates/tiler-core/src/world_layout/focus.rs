@@ -34,6 +34,15 @@ impl FocusPruneIndex {
     }
 }
 
+/// Leaf-only resolution scoped to a single retained domain. A leaf resolves
+/// only when it is a real tree leaf and has a reciprocal window binding.
+fn domain_focus_resolves(domain: &DomainLayout, leaf: &NodeId) -> bool {
+    let Some(tree) = &domain.tree else {
+        return false;
+    };
+    tree_has_leaf(tree, leaf) && domain.leaves.values().any(|bound| bound == leaf)
+}
+
 /// Drop leaves that no longer resolve from a recency vector, then append a
 /// focus leaf. The stack appends unconditionally (it is the removal-fallback
 /// MRU); accepted history appends only when the leaf resolves. Native
@@ -53,19 +62,60 @@ fn prune_then_append(
     }
 }
 
+/// Domain-level focus sync used by both ordinary activation and the local
+/// orientation candidate. Resolves `window` to its bound leaf in this domain,
+/// then sets focused leaf and demote/re-appends it on the MRU stack. Accepted
+/// focus history is not touched: observed focus never reorders it. Callers
+/// validate topology first. Returns the resolved leaf, or `None` when the
+/// window is not bound here (leaving the domain untouched).
+pub(super) fn sync_domain_focus_from_window(
+    domain: &mut DomainLayout,
+    window: &WindowId,
+) -> Option<NodeId> {
+    let leaf = domain.leaves.get(window)?.clone();
+    let index = FocusPruneIndex::new(domain);
+    let mut stack = domain.focus_stack.clone();
+    prune_then_append(&mut stack, Some(&leaf), &index, false);
+    domain.focused_leaf = Some(leaf.clone());
+    domain.focus_stack = stack;
+    Some(leaf)
+}
+
+/// Exact focus settle tail for one domain, callable on a local candidate.
+/// Prunes stale leaves from `stack_base`, then unconditionally demotes and
+/// re-appends `focused_leaf` on the MRU stack, prunes accepted history without
+/// appending observed focus, and advances last-active only for a resolving
+/// leaf (otherwise `current_last_active` is kept). No other domain is read.
+pub(super) fn settle_domain_focus_tail(
+    domain: &mut DomainLayout,
+    stack_base: &[NodeId],
+    focused_leaf: Option<NodeId>,
+    current_last_active: Option<&NodeId>,
+) {
+    let index = FocusPruneIndex::new(domain);
+    let mut stack = stack_base.to_vec();
+    prune_then_append(&mut stack, focused_leaf.as_ref(), &index, false);
+    domain.focus_history.retain(|leaf| index.resolves(leaf));
+    let last_active = if let Some(leaf) = focused_leaf.as_ref()
+        && index.resolves(leaf)
+    {
+        Some(leaf.clone())
+    } else {
+        current_last_active.cloned()
+    };
+    domain.focused_leaf = focused_leaf;
+    domain.focus_stack = stack;
+    domain.last_active = last_active;
+}
+
 impl WorldLayout {
     /// Whether a leaf resolves to a linked leaf in its domain. Leaf-only
     /// traversal keeps a malformed group id that repeats a leaf id from
     /// resolving as a leaf.
     #[must_use]
     pub(crate) fn focus_resolves(&self, domain: &DomainKey, leaf: &NodeId) -> bool {
-        let Some(layout) = self.domain(domain) else {
-            return false;
-        };
-        let Some(tree) = &layout.tree else {
-            return false;
-        };
-        tree_has_leaf(tree, leaf) && layout.leaves.values().any(|bound| bound == leaf)
+        self.domain(domain)
+            .is_some_and(|layout| domain_focus_resolves(layout, leaf))
     }
 
     /// Focus leaf eligible for directional descent: the domain's focused leaf
@@ -181,8 +231,9 @@ impl WorldLayout {
         next
     }
 
-    /// Last-active slot after an optional resolving focus leaf. Uses borrowed
-    /// leaf-only matching for the single candidate, no batch index.
+    /// Last-active slot after an optional resolving focus leaf: the leaf when
+    /// it resolves, otherwise the supplied `current`. Uses borrowed leaf-only
+    /// matching, no batch index.
     #[must_use]
     pub(super) fn updated_last_active_on(
         &self,
@@ -212,17 +263,8 @@ impl WorldLayout {
         if !topology::validate_domain_topology(domain, layout) {
             return false;
         }
-        let Some(leaf) = layout.leaves.get(window).cloned() else {
-            return false;
-        };
-        let mut stack = layout.focus_stack.clone();
-        let index = FocusPruneIndex::new(layout);
-        prune_then_append(&mut stack, Some(&leaf), &index, false);
-        if let Some(layout) = self.domains.get_mut(domain) {
-            layout.focused_leaf = Some(leaf);
-            layout.focus_stack = stack;
-        }
-        true
+        let layout = self.domains.get_mut(domain).expect("domain checked above");
+        sync_domain_focus_from_window(layout, window).is_some()
     }
 
     /// Remember `window` as the last-active focus of `domain`, recording
@@ -283,13 +325,18 @@ impl WorldLayout {
         true
     }
 
+    /// Domain-level accepted-history prune without appending observed focus.
+    pub(super) fn prune_domain_focus_history(domain: &mut DomainLayout) {
+        let index = FocusPruneIndex::new(domain);
+        domain.focus_history.retain(|leaf| index.resolves(leaf));
+    }
+
     /// Prune accepted focus history without appending observed focus.
     pub(super) fn prune_focus_history(&mut self, key: &DomainKey) {
         let Some(domain) = self.domains.get_mut(key) else {
             return;
         };
-        let index = FocusPruneIndex::new(domain);
-        domain.focus_history.retain(|leaf| index.resolves(leaf));
+        Self::prune_domain_focus_history(domain);
     }
 
     /// Apply the domain-scoped convergence focus tail: set the focused leaf,
@@ -303,29 +350,16 @@ impl WorldLayout {
         stack_base: &[NodeId],
         focused_leaf: Option<NodeId>,
     ) {
-        let Some(domain) = self.domain(key) else {
+        let Some(domain) = self.domains.get_mut(key) else {
             return;
         };
-        let index = FocusPruneIndex::new(domain);
-        let mut stack = stack_base.to_vec();
-        prune_then_append(&mut stack, focused_leaf.as_ref(), &index, false);
-        let history = {
-            let d = self.domain(key).expect("checked above");
-            let mut history = d.focus_history.clone();
-            history.retain(|leaf| index.resolves(leaf));
-            history
-        };
-        let last_active = self.updated_last_active_on(
-            key,
-            focused_leaf.as_ref(),
-            self.domain(key).and_then(|d| d.last_active.as_ref()),
+        let current_last_active = domain.last_active.clone();
+        settle_domain_focus_tail(
+            domain,
+            stack_base,
+            focused_leaf,
+            current_last_active.as_ref(),
         );
-        if let Some(domain) = self.domains.get_mut(key) {
-            domain.focused_leaf = focused_leaf;
-            domain.focus_stack = stack;
-            domain.focus_history = history;
-            domain.last_active = last_active;
-        }
     }
 
     /// Set or clear a domain's focused leaf (convergence/bookkeeping only,
@@ -339,10 +373,8 @@ impl WorldLayout {
     /// Drop automatic-fixed and explicit-tile overrides in this domain for
     /// windows no longer linked, excepted or restore-slotted. A reused id
     /// classifies again on next admission.
-    pub(super) fn prune_fixed_size_state(&mut self, key: &DomainKey) {
-        let Some(domain) = self.domains.get_mut(key) else {
-            return;
-        };
+    /// Domain-level fixed-size provenance prune for a local candidate.
+    pub(super) fn prune_domain_fixed_size_state(domain: &mut DomainLayout) {
         domain.automatic_fixed.retain(|id| {
             domain.leaves.contains_key(id)
                 || domain.exceptions.contains_key(id)
@@ -355,14 +387,21 @@ impl WorldLayout {
         });
     }
 
+    /// Drop fixed-size bookkeeping for windows no longer linked, excepted or
+    /// restore-slotted in the affected domain.
+    pub(super) fn prune_fixed_size_state(&mut self, key: &DomainKey) {
+        let Some(domain) = self.domains.get_mut(key) else {
+            return;
+        };
+        Self::prune_domain_fixed_size_state(domain);
+    }
+
     /// Drop capacity-float provenance for windows no longer linked or
     /// excepted (minimize slots do not carry capacity provenance), and
     /// admission order for windows no longer linked, excepted or
     /// restore-slotted. Domain-scoped, like the local operation that calls it.
-    pub(super) fn prune_capacity_state(&mut self, key: &DomainKey) {
-        let Some(domain) = self.domains.get_mut(key) else {
-            return;
-        };
+    /// Domain-level capacity provenance prune for a local candidate.
+    pub(super) fn prune_domain_capacity_state(domain: &mut DomainLayout) {
         domain
             .capacity_floats
             .retain(|id| domain.leaves.contains_key(id) || domain.exceptions.contains_key(id));
@@ -371,5 +410,14 @@ impl WorldLayout {
                 || domain.exceptions.contains_key(id)
                 || domain.minimized_slots.contains_key(id)
         });
+    }
+
+    /// Drop capacity provenance and stale admission order in the affected
+    /// domain.
+    pub(super) fn prune_capacity_state(&mut self, key: &DomainKey) {
+        let Some(domain) = self.domains.get_mut(key) else {
+            return;
+        };
+        Self::prune_domain_capacity_state(domain);
     }
 }
