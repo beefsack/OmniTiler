@@ -90,6 +90,17 @@ fn validate_domain_geometry(domain: &DomainLayout) -> bool {
 /// that resolves to a linked leaf or is empty. Node identity is scoped to
 /// the domain, so independently retained trees may reuse group ids.
 pub(super) fn validate_domain_topology(key: &DomainKey, domain: &DomainLayout) -> bool {
+    validate_domain_topology_with_focus(key, domain, domain.focused_leaf.as_ref())
+}
+
+/// Validate one domain against an explicit focus leaf instead of the stored
+/// `domain.focused_leaf`. Used by pair topology validation where focus is
+/// pair-global and per-domain embedded focus may be stale.
+pub(super) fn validate_domain_topology_with_focus(
+    key: &DomainKey,
+    domain: &DomainLayout,
+    focused_leaf: Option<&NodeId>,
+) -> bool {
     if key.output.0.is_empty() || key.workspace.0.is_empty() {
         return false;
     }
@@ -138,7 +149,7 @@ pub(super) fn validate_domain_topology(key: &DomainKey, domain: &DomainLayout) -
     {
         return false;
     }
-    match &domain.focused_leaf {
+    match focused_leaf {
         None => true,
         Some(leaf) => valid_leaves.contains(leaf) && bound_leaves.contains(leaf),
     }

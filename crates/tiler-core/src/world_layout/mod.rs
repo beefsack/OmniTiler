@@ -24,6 +24,7 @@ mod local_operation;
 mod observation;
 mod orientation;
 mod outcome;
+mod pair;
 mod projection;
 mod queries;
 mod relocation;
@@ -41,6 +42,8 @@ mod float_tests;
 mod local_directional_tests;
 #[cfg(test)]
 mod local_operation_tests;
+#[cfg(test)]
+mod pair_tests;
 #[cfg(test)]
 mod query_focus_tests;
 #[cfg(test)]

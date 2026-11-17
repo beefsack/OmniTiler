@@ -436,3 +436,13 @@
   restore slots. Post-sweep slot cleanup and three existing test accessors
   use the same owned layout. Source review and scoped formatting pass; no
   additional build or runtime acceptance is claimed.
+- Private canonical pair candidates now own only the two affected domain
+  candidates and ephemeral revision/focus/id-restoration metadata. Assembly and
+  non-consuming atomic installation preserve exact duplicate guards, target
+  identity restoration, source-priority orphan/provenance partitioning and
+  inherited gaps. Review restores pair-global focus validation and linked-leaf
+  uniqueness without over-pruning inactive domain focus or repeated group ids.
+  Ten direct tests cover these boundaries but remain unexecuted. Scoped
+  formatting passes; a library/tests diagnostic still fails on 54 library and
+  235 test-build errors in unmigrated consumers, with no pair/topology error.
+  Combined pair convergence and operation callers remain pending.
