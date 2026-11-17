@@ -61,6 +61,8 @@ mod float_tests;
 #[cfg(test)]
 mod gesture_tests;
 #[cfg(test)]
+mod keyboard_resize_tests;
+#[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
 mod local_directional_tests;
