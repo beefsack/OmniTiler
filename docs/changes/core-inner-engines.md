@@ -256,3 +256,8 @@
   it retains protected/override exclusions and native-then-retained geometry.
   Source review and scoped formatting are current; convergence and caller
   integration are still pending, with no new build or test acceptance.
+- Minimized-neighborhood rejoin now uses domain-local restore slots and leaf
+  bindings, retaining old-side/same-parent placement, live-survivor identity
+  guards, exact share fractions and overflow fallback. Four existing share
+  tests are ported unchanged in meaning. Source review and scoped formatting
+  pass; these tests are not yet executed during caller migration.

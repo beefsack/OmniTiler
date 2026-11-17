@@ -16,6 +16,7 @@ mod orientation;
 mod outcome;
 mod projection;
 mod queries;
+mod restore;
 mod state;
 mod topology;
 mod tree_edit;
