@@ -413,7 +413,7 @@ impl WorldEngine {
         if reply_upper_bound_v4(
             report,
             retained_len,
-            self.engine.domain_keys().len(),
+            self.layout.domain_keys().len(),
             created_len,
             staged_windows,
             self.retained_publish_footprint(),

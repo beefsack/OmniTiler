@@ -327,3 +327,8 @@
   vocabulary. Trees are borrowed instead of snapshot-cloned. Source review and
   scoped formatting pass; reported library diagnostics leave 112 errors in
   other unmigrated consumers. Existing behavioural tests remain unexecuted.
+- Observation classification, admission-size accounting and maximized-float
+  restore queries now use layout membership/provenance directly, preserving
+  the exception-only floating-geometry lookup and fixed-predicate setting.
+  Source review and scoped formatting pass; reported library diagnostics leave
+  101 errors in other unmigrated consumers. No test acceptance is claimed.

@@ -227,7 +227,7 @@ impl WorldEngine {
                 let scope = match &held.output {
                     Some(out) => Some(AuthorityScope::Output(out.clone())),
                     None => self
-                        .engine
+                        .layout
                         .retained_home_any(&held.window)
                         .or_else(|| prior_homing.get(&held.window).map(|key| key.output.clone()))
                         .map(AuthorityScope::Output),
@@ -337,7 +337,7 @@ impl WorldEngine {
         let own_process_id = self
             .application_identity()
             .and_then(|identity| identity.process_id.as_deref());
-        let fixed_predicate = self.engine.fixed_size_predicate();
+        let fixed_predicate = self.fixed_size_predicate_setting();
         let maximize_supported = crate::world_state::state_property_supported(
             self.capabilities(),
             StateProperty::Maximized,
@@ -362,23 +362,19 @@ impl WorldEngine {
             // `partial-observation`). The engine session is ground truth
             // for tile vs exception: never claim retained tile for a
             // window the session holds floated.
-            let engine_exception = self.engine.domain_keys().iter().any(|key| {
-                self.engine
-                    .session(key)
-                    .is_some_and(|session| session.is_exception(&fact.window))
-            });
+            let engine_exception = self.layout.is_exception_window_any(&fact.window);
             let retained_tiled = member_tiled && !engine_exception;
             // Same-lifetime safety-exclusion fallback: the sweep retires
             // the excluded slot (never a native close), so a lifted
             // lifetime would otherwise lose its approved intent. The
             // neutral ledger restores only what the session held when the
             // exclusion landed; explicit closes clear it, never reuse it.
-            let automatic_fixed = self.engine.is_automatic_fixed_float_any(&fact.window)
+            let automatic_fixed = self.layout.is_automatic_fixed_float_any(&fact.window)
                 || self
                     .excluded_intent
                     .get(&fact.window)
                     .is_some_and(|intent| intent.automatic_fixed);
-            let tile_override = self.engine.has_fixed_tile_override_any(&fact.window)
+            let tile_override = self.layout.has_fixed_tile_override_any(&fact.window)
                 || self
                     .excluded_intent
                     .get(&fact.window)
@@ -1174,20 +1170,7 @@ impl WorldEngine {
     /// lifetimes never join it, so map absence alone would mistake them
     /// for newcomers.
     pub(crate) fn engine_knows_window(&self, window: &WindowId) -> bool {
-        self.engine.domain_keys().iter().any(|key| {
-            self.engine.session(key).is_some_and(|session| {
-                session
-                    .snapshot()
-                    .windows
-                    .iter()
-                    .any(|link| &link.window == window)
-                    || session.is_exception(window)
-                    || session
-                        .minimized_entries()
-                        .iter()
-                        .any(|(id, _, _)| id == window)
-            })
-        })
+        self.layout.knows_window_any(window)
     }
 
     /// Cursor output for one report: the reported cursor position looked

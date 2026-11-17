@@ -394,13 +394,10 @@ impl WorldEngine {
             // restore. Tiled clear needs no token (the lane above carries
             // it Controlled).
             let session_base = self
-                .engine
-                .session(&home)
-                .and_then(|session| session.floating_geometry(window));
-            let is_float = self
-                .engine
-                .session(&home)
-                .is_some_and(|session| session.is_exception(window));
+                .layout
+                .exception_record(&home, window)
+                .and_then(|record| record.floating_geometry);
+            let is_float = self.layout.is_exception(&home, window);
             if is_float && session_base.is_none() {
                 return refused(KIND_OPERATION, MSG_OPERATION);
             }
