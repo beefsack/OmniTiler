@@ -36,7 +36,7 @@ impl FocusPruneIndex {
 
 /// Leaf-only resolution scoped to a single retained domain. A leaf resolves
 /// only when it is a real tree leaf and has a reciprocal window binding.
-fn domain_focus_resolves(domain: &DomainLayout, leaf: &NodeId) -> bool {
+pub(super) fn domain_focus_resolves(domain: &DomainLayout, leaf: &NodeId) -> bool {
     let Some(tree) = &domain.tree else {
         return false;
     };

@@ -9,6 +9,8 @@
 //! `WorldEngine`; a layout binding stores only a leaf association, and
 //! public vocabulary snapshots derive their home from the owning map key.
 
+mod admission;
+mod capacity;
 mod focus;
 mod orientation;
 mod outcome;
@@ -16,6 +18,7 @@ mod projection;
 mod queries;
 mod state;
 mod topology;
+mod tree_edit;
 
 #[cfg(test)]
 mod query_focus_tests;

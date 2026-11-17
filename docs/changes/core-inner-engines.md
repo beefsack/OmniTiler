@@ -250,3 +250,9 @@
   geometry gates and omitted that missed-focus tail; both are corrected.
   Callers, convergence/seeding and the remaining operation families are still
   unmigrated. Formatting is current; full build and test acceptance is pending.
+- Ordinary-first admission, fallback search, allocator-burning tree edits and
+  newest-first capacity repair now work on typed inputs and one disposable
+  domain candidate. Repair shares the local focus resolver and fit projector;
+  it retains protected/override exclusions and native-then-retained geometry.
+  Source review and scoped formatting are current; convergence and caller
+  integration are still pending, with no new build or test acceptance.
