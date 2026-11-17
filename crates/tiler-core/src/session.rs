@@ -2936,6 +2936,17 @@ fn collect_leaves_into(node: &Node, out: &mut Vec<NodeId>) {
     }
 }
 
+/// Leaf-only membership equivalent to `collect_leaves(node).contains(leaf)`
+/// without collecting. Recurses through every group child regardless of ids,
+/// so a malformed group whose id repeats a leaf id still matches only real
+/// leaves.
+fn tree_has_leaf(node: &Node, leaf: &NodeId) -> bool {
+    match node {
+        Node::Leaf { id } => id == leaf,
+        Node::Group { children, .. } => children.iter().any(|child| tree_has_leaf(child, leaf)),
+    }
+}
+
 /// Mint one fresh group id from the generation-shared allocator,
 /// reserving it in `existing`. Replaces the former per-window/revision
 /// spelling search: serials burn on trial and rollback and removed ids
@@ -3196,12 +3207,32 @@ fn validate_topology(
             return false;
         }
     }
+    // Per-domain leaf and reciprocal-link membership, each built once. The
+    // former validator cloned and walked a whole tree once per window and once
+    // per leaf, which was quadratic in the number of report windows.
+    let mut leaves_by_domain: BTreeMap<DomainKey, BTreeSet<NodeId>> = BTreeMap::new();
+    for (key, tree) in trees {
+        if let Some(tree) = tree {
+            leaves_by_domain.insert(key.clone(), collect_leaves(tree).into_iter().collect());
+        }
+    }
+    let mut linked_by_domain: BTreeMap<DomainKey, BTreeSet<NodeId>> = BTreeMap::new();
+    for link in windows.values() {
+        let key = DomainKey {
+            output: link.output.clone(),
+            workspace: link.workspace.clone(),
+        };
+        linked_by_domain
+            .entry(key)
+            .or_default()
+            .insert(link.leaf.clone());
+    }
     for domain in domains {
         // Node identity is meaningful only within its logical domain. Two
         // independently retained trees may use the same generated group id.
         let mut node_ids = BTreeSet::new();
-        if let Some(tree) = trees.get(&domain.key()).cloned().flatten()
-            && !validate_node_shares(&tree, &mut node_ids)
+        if let Some(tree) = trees.get(&domain.key()).and_then(|tree| tree.as_ref())
+            && !validate_node_shares(tree, &mut node_ids)
         {
             return false;
         }
@@ -3245,20 +3276,19 @@ fn validate_topology(
         if domains.iter().find(|d| d.key() == key).is_none() {
             return false;
         }
-        let Some(tree) = trees.get(&key).cloned().flatten() else {
-            return false;
-        };
-        if !collect_leaves(&tree).contains(&link.leaf) {
+        if !leaves_by_domain
+            .get(&key)
+            .is_some_and(|leaves| leaves.contains(&link.leaf))
+        {
             return false;
         }
     }
     // Every leaf needs exactly one link, scoped to its domain.
     for domain in domains {
-        if let Some(tree) = trees.get(&domain.key()).cloned().flatten() {
-            for leaf in collect_leaves(&tree) {
-                if !windows.values().any(|l| {
-                    l.leaf == leaf && l.output == domain.id && l.workspace == domain.workspace
-                }) {
+        if let Some(leaves) = leaves_by_domain.get(&domain.key()) {
+            let linked = linked_by_domain.get(&domain.key());
+            for leaf in leaves {
+                if !linked.is_some_and(|linked| linked.contains(leaf)) {
                     return false;
                 }
             }
@@ -3268,15 +3298,15 @@ fn validate_topology(
     match (focused_domain, focused_leaf) {
         (None, None) => true,
         (Some(key), Some(leaf)) => {
-            let Some(tree) = trees.get(key).cloned().flatten() else {
-                return false;
-            };
-            if !collect_leaves(&tree).contains(leaf) {
+            if !leaves_by_domain
+                .get(key)
+                .is_some_and(|leaves| leaves.contains(leaf))
+            {
                 return false;
             }
-            windows
-                .values()
-                .any(|l| &l.leaf == leaf && l.output == key.output && l.workspace == key.workspace)
+            linked_by_domain
+                .get(key)
+                .is_some_and(|linked| linked.contains(leaf))
         }
         _ => false,
     }
@@ -10054,6 +10084,438 @@ mod tests {
             session.focus_history.get(&key),
             Some(&history_before),
             "sync_focus_from_window must not update or reorder focus_history"
+        );
+    }
+
+    // ---- local-scan validation/pruning regression slice ----
+
+    fn dom_at(output: &str, workspace: &str) -> OutputDomain {
+        OutputDomain {
+            id: OutputId(output.to_owned()),
+            workspace: WorkspaceId(workspace.to_owned()),
+            bounds: Rect {
+                x: 0,
+                y: 0,
+                w: 120,
+                h: 80,
+            },
+            gap: 0,
+            adjacent: BTreeMap::new(),
+        }
+    }
+
+    fn dkey(output: &str, workspace: &str) -> DomainKey {
+        DomainKey {
+            output: OutputId(output.to_owned()),
+            workspace: WorkspaceId(workspace.to_owned()),
+        }
+    }
+
+    fn leaf_node(id: &str) -> Node {
+        Node::Leaf {
+            id: NodeId(id.to_owned()),
+        }
+    }
+
+    fn group_tree(group: &str, leaves: &[&str]) -> Node {
+        Node::Group {
+            id: NodeId(group.to_owned()),
+            axis: Axis::Horizontal,
+            children: leaves.iter().map(|id| leaf_node(id)).collect(),
+            shares: vec![1; leaves.len()],
+        }
+    }
+
+    fn link_at(window: &str, leaf: &str, output: &str, workspace: &str) -> (WindowId, WindowLink) {
+        let id = WindowId(window.to_owned());
+        (
+            id.clone(),
+            WindowLink {
+                window: id,
+                leaf: NodeId(leaf.to_owned()),
+                output: OutputId(output.to_owned()),
+                workspace: WorkspaceId(workspace.to_owned()),
+            },
+        )
+    }
+
+    type MultiDomainFixture = (
+        Vec<OutputDomain>,
+        BTreeMap<DomainKey, Option<Node>>,
+        BTreeMap<WindowId, WindowLink>,
+    );
+
+    /// Two domains: out-1/ws-1 is one leaf `a`; out-2/ws-1 is `g[b, c]`.
+    fn valid_multidomain() -> MultiDomainFixture {
+        let domains = vec![dom_at("out-1", "ws-1"), dom_at("out-2", "ws-1")];
+        let trees = BTreeMap::from([
+            (dkey("out-1", "ws-1"), Some(leaf_node("a"))),
+            (dkey("out-2", "ws-1"), Some(group_tree("g", &["b", "c"]))),
+        ]);
+        let windows = BTreeMap::from([
+            link_at("win-a", "a", "out-1", "ws-1"),
+            link_at("win-b", "b", "out-2", "ws-1"),
+            link_at("win-c", "c", "out-2", "ws-1"),
+        ]);
+        (domains, trees, windows)
+    }
+
+    #[test]
+    fn validate_topology_accepts_valid_multi_domain_and_focus_cases() {
+        let (domains, trees, windows) = valid_multidomain();
+        let exceptions = BTreeMap::new();
+        assert!(validate_topology(
+            &domains,
+            &trees,
+            &windows,
+            &exceptions,
+            &None,
+            &None,
+        ));
+        assert!(validate_topology(
+            &domains,
+            &trees,
+            &windows,
+            &exceptions,
+            &Some(dkey("out-1", "ws-1")),
+            &Some(NodeId("a".to_owned())),
+        ));
+        assert!(validate_topology(
+            &domains,
+            &trees,
+            &windows,
+            &exceptions,
+            &Some(dkey("out-2", "ws-1")),
+            &Some(NodeId("c".to_owned())),
+        ));
+        // Half-specified focus is never valid.
+        assert!(!validate_topology(
+            &domains,
+            &trees,
+            &windows,
+            &exceptions,
+            &Some(dkey("out-1", "ws-1")),
+            &None,
+        ));
+        assert!(!validate_topology(
+            &domains,
+            &trees,
+            &windows,
+            &exceptions,
+            &None,
+            &Some(NodeId("a".to_owned())),
+        ));
+    }
+
+    #[test]
+    fn validate_topology_rejects_duplicate_leaf_link_across_domains() {
+        let domains = vec![dom_at("out-1", "ws-1"), dom_at("out-2", "ws-1")];
+        let trees = BTreeMap::from([
+            (dkey("out-1", "ws-1"), Some(leaf_node("shared"))),
+            (dkey("out-2", "ws-1"), Some(leaf_node("shared"))),
+        ]);
+        let windows = BTreeMap::from([
+            link_at("win-1", "shared", "out-1", "ws-1"),
+            link_at("win-2", "shared", "out-2", "ws-1"),
+        ]);
+        assert!(!validate_topology(
+            &domains,
+            &trees,
+            &windows,
+            &BTreeMap::new(),
+            &None,
+            &None,
+        ));
+    }
+
+    #[test]
+    fn validate_topology_rejects_link_leaf_in_wrong_domain() {
+        let (domains, trees, _windows) = valid_multidomain();
+        // Link names leaf `a` in out-2, whose tree does not contain it.
+        let windows = BTreeMap::from([link_at("win-a", "a", "out-2", "ws-1")]);
+        assert!(!validate_topology(
+            &domains,
+            &trees,
+            &windows,
+            &BTreeMap::new(),
+            &None,
+            &None,
+        ));
+    }
+
+    #[test]
+    fn validate_topology_rejects_leaf_without_link() {
+        let (domains, trees, _windows) = valid_multidomain();
+        // Leaf `c` has no link in its domain.
+        let windows = BTreeMap::from([
+            link_at("win-a", "a", "out-1", "ws-1"),
+            link_at("win-b", "b", "out-2", "ws-1"),
+        ]);
+        assert!(!validate_topology(
+            &domains,
+            &trees,
+            &windows,
+            &BTreeMap::new(),
+            &None,
+            &None,
+        ));
+    }
+
+    #[test]
+    fn validate_topology_rejects_unknown_domain_and_empty_link_fields() {
+        let (domains, trees, _windows) = valid_multidomain();
+        let unknown = BTreeMap::from([
+            link_at("win-a", "a", "out-1", "ws-1"),
+            link_at("win-b", "b", "out-2", "ws-1"),
+            link_at("win-c", "c", "out-3", "ws-1"),
+        ]);
+        assert!(!validate_topology(
+            &domains,
+            &trees,
+            &unknown,
+            &BTreeMap::new(),
+            &None,
+            &None,
+        ));
+        let empty_leaf = BTreeMap::from([link_at("win-a", "", "out-1", "ws-1")]);
+        assert!(!validate_topology(
+            &domains,
+            &trees,
+            &empty_leaf,
+            &BTreeMap::new(),
+            &None,
+            &None,
+        ));
+    }
+
+    #[test]
+    fn validate_topology_rejects_window_exception_overlap() {
+        let (domains, trees, windows) = valid_multidomain();
+        let exceptions = BTreeMap::from([(
+            WindowId("win-a".to_owned()),
+            ExceptionRecord {
+                window: WindowId("win-a".to_owned()),
+                output: OutputId("out-1".to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+                flags: ExceptionFlags::none(),
+                floating_geometry: None,
+            },
+        )]);
+        assert!(!validate_topology(
+            &domains,
+            &trees,
+            &windows,
+            &exceptions,
+            &None,
+            &None,
+        ));
+    }
+
+    #[test]
+    fn validate_topology_rejects_malformed_tree() {
+        let domains = vec![dom_at("out-1", "ws-1")];
+        let windows = BTreeMap::from([
+            link_at("win-1", "dup", "out-1", "ws-1"),
+            link_at("win-2", "b", "out-1", "ws-1"),
+        ]);
+        // Group id repeats a leaf id: duplicate node id in one domain.
+        let duplicate = BTreeMap::from([(
+            dkey("out-1", "ws-1"),
+            Some(Node::Group {
+                id: NodeId("dup".to_owned()),
+                axis: Axis::Horizontal,
+                children: vec![leaf_node("dup"), leaf_node("b")],
+                shares: vec![1, 1],
+            }),
+        )]);
+        assert!(!validate_topology(
+            &domains,
+            &duplicate,
+            &windows,
+            &BTreeMap::new(),
+            &None,
+            &None,
+        ));
+        // A zero share is also rejected.
+        let zero_share = BTreeMap::from([(
+            dkey("out-1", "ws-1"),
+            Some(Node::Group {
+                id: NodeId("g".to_owned()),
+                axis: Axis::Horizontal,
+                children: vec![leaf_node("dup"), leaf_node("b")],
+                shares: vec![0, 1],
+            }),
+        )]);
+        assert!(!validate_topology(
+            &domains,
+            &zero_share,
+            &windows,
+            &BTreeMap::new(),
+            &None,
+            &None,
+        ));
+    }
+
+    #[test]
+    fn focus_resolves_matches_leaves_only_even_when_group_repeats_leaf_id() {
+        let session =
+            Session::new(owner(), generation(), 0, 7, vec![dom_at("out-1", "ws-1")]).expect("new");
+        let key = dkey("out-1", "ws-1");
+        // Malformed tree: the group id repeats the first leaf id. A
+        // find_node_by_id lookup would hit the group, but leaf-only membership
+        // must still match the real leaf.
+        let trees = BTreeMap::from([(
+            key.clone(),
+            Some(Node::Group {
+                id: NodeId("dup".to_owned()),
+                axis: Axis::Horizontal,
+                children: vec![leaf_node("dup"), leaf_node("real")],
+                shares: vec![1, 1],
+            }),
+        )]);
+        let dup_link = BTreeMap::from([link_at("w1", "dup", "out-1", "ws-1")]);
+        assert!(session.focus_resolves(
+            &Some(key.clone()),
+            &Some(NodeId("dup".to_owned())),
+            &trees,
+            &dup_link,
+        ));
+        let real_link = BTreeMap::from([link_at("w2", "real", "out-1", "ws-1")]);
+        assert!(session.focus_resolves(
+            &Some(key.clone()),
+            &Some(NodeId("real".to_owned())),
+            &trees,
+            &real_link,
+        ));
+        // An id that is only a group id (never a leaf) must not resolve.
+        let group_only =
+            BTreeMap::from([(key.clone(), Some(group_tree("only-group", &["a", "b"])))]);
+        let group_link = BTreeMap::from([link_at("w3", "only-group", "out-1", "ws-1")]);
+        assert!(!session.focus_resolves(
+            &Some(key.clone()),
+            &Some(NodeId("only-group".to_owned())),
+            &group_only,
+            &group_link,
+        ));
+        // (None, None) is the only non-Some pair that resolves.
+        assert!(session.focus_resolves(&None, &None, &group_only, &group_link));
+        assert!(!session.focus_resolves(&Some(key), &None, &group_only, &group_link));
+    }
+
+    #[test]
+    fn focus_pruning_drops_stale_and_domain_mismatched_keeping_order_and_duplicates() {
+        let session = Session::new(
+            owner(),
+            generation(),
+            0,
+            7,
+            vec![dom_at("out-1", "ws-1"), dom_at("out-2", "ws-1")],
+        )
+        .expect("new");
+        let trees = BTreeMap::from([
+            (dkey("out-1", "ws-1"), Some(group_tree("g1", &["a", "b"]))),
+            (dkey("out-2", "ws-1"), Some(leaf_node("c"))),
+        ]);
+        let windows = BTreeMap::from([
+            link_at("w-a", "a", "out-1", "ws-1"),
+            link_at("w-b", "b", "out-1", "ws-1"),
+            link_at("w-c", "c", "out-2", "ws-1"),
+        ]);
+        let base = BTreeMap::from([
+            (
+                dkey("out-1", "ws-1"),
+                vec![
+                    NodeId("a".to_owned()),
+                    NodeId("b".to_owned()),
+                    NodeId("a".to_owned()),
+                    NodeId("gone".to_owned()),
+                    NodeId("c".to_owned()),
+                ],
+            ),
+            (
+                dkey("out-2", "ws-1"),
+                vec![NodeId("c".to_owned()), NodeId("a".to_owned())],
+            ),
+            (dkey("out-3", "ws-1"), vec![NodeId("a".to_owned())]),
+        ]);
+        let expected = BTreeMap::from([
+            (
+                dkey("out-1", "ws-1"),
+                vec![
+                    NodeId("a".to_owned()),
+                    NodeId("b".to_owned()),
+                    NodeId("a".to_owned()),
+                ],
+            ),
+            (dkey("out-2", "ws-1"), vec![NodeId("c".to_owned())]),
+        ]);
+        let pruned = session.updated_focus_stack_on(&base, &None, &None, &trees, &windows);
+        assert_eq!(pruned, expected);
+        let pruned_history =
+            session.updated_focus_history_on(&base, &None, &None, &trees, &windows);
+        assert_eq!(pruned_history, expected);
+    }
+
+    #[test]
+    fn focus_stack_appends_unresolved_leaf_but_history_does_not() {
+        let session =
+            Session::new(owner(), generation(), 0, 7, vec![dom_at("out-1", "ws-1")]).expect("new");
+        let key = dkey("out-1", "ws-1");
+        let trees = BTreeMap::from([(key.clone(), Some(group_tree("g", &["a", "b"])))]);
+        let windows = BTreeMap::from([
+            link_at("w-a", "a", "out-1", "ws-1"),
+            link_at("w-b", "b", "out-1", "ws-1"),
+        ]);
+        let base = BTreeMap::from([(
+            key.clone(),
+            vec![NodeId("a".to_owned()), NodeId("b".to_owned())],
+        )]);
+
+        // A resolving leaf is deduped and moved to the end in both maps.
+        let resolving = Some(NodeId("a".to_owned()));
+        let stack =
+            session.updated_focus_stack_on(&base, &Some(key.clone()), &resolving, &trees, &windows);
+        assert_eq!(
+            stack.get(&key),
+            Some(&vec![NodeId("b".to_owned()), NodeId("a".to_owned())])
+        );
+        let history = session.updated_focus_history_on(
+            &base,
+            &Some(key.clone()),
+            &resolving,
+            &trees,
+            &windows,
+        );
+        assert_eq!(history, stack);
+
+        // An unresolved leaf is appended to the stack unconditionally, but
+        // never to history (which guards the append on resolves).
+        let missing = NodeId("gone".to_owned());
+        let stack = session.updated_focus_stack_on(
+            &base,
+            &Some(key.clone()),
+            &Some(missing.clone()),
+            &trees,
+            &windows,
+        );
+        assert_eq!(
+            stack.get(&key),
+            Some(&vec![
+                NodeId("a".to_owned()),
+                NodeId("b".to_owned()),
+                missing,
+            ])
+        );
+        let history = session.updated_focus_history_on(
+            &base,
+            &Some(key.clone()),
+            &Some(NodeId("gone".to_owned())),
+            &trees,
+            &windows,
+        );
+        assert_eq!(
+            history.get(&key),
+            Some(&vec![NodeId("a".to_owned()), NodeId("b".to_owned())])
         );
     }
 }

@@ -10,6 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::boundary::CoreEvent;
 use crate::contract::{DivergenceKind, Observation};
 use crate::directional::{
     Direction, Node, NodeId, OutputId, Snapshot, WindowId, WindowLink, WorkspaceId,
@@ -219,6 +220,51 @@ pub(crate) struct StickyFloatCarry {
     pub(crate) fixed_tile_override: bool,
     pub(crate) capacity_float: bool,
     pub(crate) admission_order: Option<u64>,
+}
+
+/// Leaf and reciprocal-link membership for one focus-pruning batch, built
+/// once instead of resolving every stack/history entry independently (the
+/// former path cloned and walked a whole tree and scanned every link per
+/// entry, quadratic in report windows).
+struct FocusPruneIndex {
+    leaves: BTreeMap<DomainKey, BTreeSet<NodeId>>,
+    linked: BTreeMap<DomainKey, BTreeSet<NodeId>>,
+}
+
+impl FocusPruneIndex {
+    fn new(
+        trees: &BTreeMap<DomainKey, Option<Node>>,
+        windows: &BTreeMap<WindowId, WindowLink>,
+    ) -> Self {
+        let mut leaves = BTreeMap::new();
+        for (key, tree) in trees {
+            if let Some(tree) = tree {
+                leaves.insert(
+                    key.clone(),
+                    super::collect_leaves(tree).into_iter().collect(),
+                );
+            }
+        }
+        let mut linked: BTreeMap<DomainKey, BTreeSet<NodeId>> = BTreeMap::new();
+        for link in windows.values() {
+            let key = DomainKey {
+                output: link.output.clone(),
+                workspace: link.workspace.clone(),
+            };
+            linked.entry(key).or_default().insert(link.leaf.clone());
+        }
+        Self { leaves, linked }
+    }
+
+    fn resolves(&self, domain: &DomainKey, leaf: &NodeId) -> bool {
+        self.leaves
+            .get(domain)
+            .is_some_and(|leaves| leaves.contains(leaf))
+            && self
+                .linked
+                .get(domain)
+                .is_some_and(|linked| linked.contains(leaf))
+    }
 }
 
 impl super::Session {
@@ -853,6 +899,135 @@ impl super::Session {
         self.fixed_tile_override.insert(window.clone());
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_mark_diverged(&mut self) {
+        self.reconciler.note_adapter_loss();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_mark_pending_desired(&mut self) {
+        self.pending_desired = Some(super::PendingDesired {
+            trees: self.trees.clone(),
+            windows: self.windows.clone(),
+            focused_domain: self.focused_domain.clone(),
+            focused_leaf: self.focused_leaf.clone(),
+            last_active: self.last_active.clone(),
+            exceptions: self.exceptions.clone(),
+            retained_float_geometry: self.retained_float_geometry.clone(),
+            automatic_fixed: self.automatic_fixed.clone(),
+            fixed_tile_override: self.fixed_tile_override.clone(),
+            capacity_floats: self.capacity_floats.clone(),
+            admission_order: self.admission_order.clone(),
+            admission_counter: self.admission_counter,
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_mark_drag(&mut self) {
+        let key = self.domains[0].key();
+        let (focused_domain, focused_leaf) =
+            (self.focused_domain.clone(), self.focused_leaf.clone());
+        self.drag = Some(super::DragState {
+            domain: key.clone(),
+            source_leaf: focused_leaf
+                .clone()
+                .unwrap_or_else(|| NodeId("probe".to_owned())),
+            source_window: focused_leaf
+                .as_ref()
+                .and_then(|leaf| self.focused_window_for(leaf, &key))
+                .unwrap_or_else(|| WindowId("probe".to_owned())),
+            revision: self.accepted_revision(),
+            generation: self.generation.clone(),
+            trees: self.trees.clone(),
+            windows: self.windows.clone(),
+            exceptions: self.exceptions.clone(),
+            focused_domain,
+            focused_leaf,
+            source_rect: Rect {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
+            work_area: self.domains[0].bounds,
+            prior: None,
+            prior_domain: key,
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_seed_exception(&mut self, window: WindowId) {
+        let domain = &self.domains[0];
+        self.exceptions.insert(
+            window.clone(),
+            floating_record(&window, &domain.id, &domain.workspace, None),
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_seed_minimized(&mut self, window: WindowId, leaf: NodeId, tree: Node) {
+        let key = self.domains[0].key();
+        self.minimized_slots.insert(
+            window.clone(),
+            MinimizedSlot {
+                window,
+                output: key.output,
+                workspace: key.workspace,
+                leaf,
+                tree,
+            },
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_seed_automatic(&mut self, window: WindowId) {
+        self.automatic_fixed.insert(window);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_seed_capacity(&mut self, window: WindowId) {
+        self.capacity_floats.insert(window);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_seed_stale_order(&mut self, window: WindowId) {
+        self.admission_order.insert(window, self.admission_counter);
+    }
+
+    /// Make focus bookkeeping deliberately not a fixed point without touching
+    /// the actual focus or topology: inject a stale unresolvable leaf into the
+    /// MRU stack and recency history, demote the live focus leaf from MRU, and
+    /// drop `last_active` for the domain. Convergence and the skip must both
+    /// normalize this identically through the shared tail.
+    #[cfg(test)]
+    pub(crate) fn test_scramble_focus_bookkeeping(&mut self, key: &DomainKey, stale_leaf: &NodeId) {
+        let stack = self.focus_stack.entry(key.clone()).or_default();
+        stack.insert(0, stale_leaf.clone());
+        if let Some(focused) = self.focused_leaf.clone()
+            && let Some(pos) = stack.iter().position(|leaf| leaf == &focused)
+        {
+            let live = stack.remove(pos);
+            stack.insert(0, live);
+        }
+        self.focus_history
+            .entry(key.clone())
+            .or_default()
+            .insert(0, stale_leaf.clone());
+        self.last_active.remove(key);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_focus_bookkeeping(
+        &self,
+        key: &DomainKey,
+    ) -> (Vec<NodeId>, Vec<NodeId>, Option<NodeId>) {
+        (
+            self.focus_stack.get(key).cloned().unwrap_or_default(),
+            self.focus_history.get(key).cloned().unwrap_or_default(),
+            self.last_active.get(key).cloned(),
+        )
+    }
+
     /// Production commit for a restored explicit tile (`float:false`)
     /// that just admitted tiled: records the durable override in the
     /// owning session so later hint changes and safety
@@ -1010,8 +1185,8 @@ impl super::Session {
             return None;
         }
         let focused = self.focused_leaf.clone()?;
-        let tree = self.trees.get(key).cloned().flatten()?;
-        if super::collect_leaves(&tree).contains(&focused) {
+        let tree = self.trees.get(key).and_then(|tree| tree.as_ref())?;
+        if super::tree_has_leaf(tree, &focused) {
             let link_holds = self.windows.values().any(|l| {
                 l.leaf == focused && l.output == key.output && l.workspace == key.workspace
             });
@@ -1032,10 +1207,10 @@ impl super::Session {
         let (Some(domain), Some(leaf)) = (domain, leaf) else {
             return domain.is_none() && leaf.is_none();
         };
-        let Some(tree) = trees.get(domain).cloned().flatten() else {
+        let Some(tree) = trees.get(domain).and_then(|tree| tree.as_ref()) else {
             return false;
         };
-        if !super::collect_leaves(&tree).contains(leaf) {
+        if !super::tree_has_leaf(tree, leaf) {
             return false;
         }
         windows.values().any(|l| {
@@ -1052,8 +1227,8 @@ impl super::Session {
 
     pub(crate) fn remembered_leaf(&self, target: &DomainKey) -> Option<NodeId> {
         let leaf = self.last_active.get(target)?.clone();
-        let tree = self.trees.get(target).cloned().flatten()?;
-        if !super::collect_leaves(&tree).contains(&leaf) {
+        let tree = self.trees.get(target).and_then(|tree| tree.as_ref())?;
+        if !super::tree_has_leaf(tree, &leaf) {
             return None;
         }
         self.windows
@@ -1283,11 +1458,10 @@ impl super::Session {
         trees: &BTreeMap<DomainKey, Option<Node>>,
         windows: &BTreeMap<WindowId, WindowLink>,
     ) -> BTreeMap<DomainKey, Vec<NodeId>> {
+        let index = FocusPruneIndex::new(trees, windows);
         let mut next = base.clone();
         next.retain(|domain, leaves| {
-            leaves.retain(|leaf| {
-                self.focus_resolves(&Some(domain.clone()), &Some(leaf.clone()), trees, windows)
-            });
+            leaves.retain(|leaf| index.resolves(domain, leaf));
             !leaves.is_empty()
         });
         if let (Some(domain), Some(leaf)) = (focus_domain, focus_leaf) {
@@ -1345,15 +1519,14 @@ impl super::Session {
         trees: &BTreeMap<DomainKey, Option<Node>>,
         windows: &BTreeMap<WindowId, WindowLink>,
     ) -> BTreeMap<DomainKey, Vec<NodeId>> {
+        let index = FocusPruneIndex::new(trees, windows);
         let mut next = base.clone();
         next.retain(|domain, leaves| {
-            leaves.retain(|leaf| {
-                self.focus_resolves(&Some(domain.clone()), &Some(leaf.clone()), trees, windows)
-            });
+            leaves.retain(|leaf| index.resolves(domain, leaf));
             !leaves.is_empty()
         });
         if let (Some(domain), Some(leaf)) = (focus_domain, focus_leaf)
-            && self.focus_resolves(&Some(domain.clone()), &Some(leaf.clone()), trees, windows)
+            && index.resolves(domain, leaf)
         {
             let leaves = next.entry(domain.clone()).or_default();
             leaves.retain(|known| known != leaf);
@@ -1371,8 +1544,8 @@ impl super::Session {
     ) -> BTreeMap<DomainKey, NodeId> {
         let mut next = self.last_active.clone();
         if let (Some(d), Some(l)) = (focus_domain, focus_leaf)
-            && let Some(tree) = trees.get(d).cloned().flatten()
-            && super::collect_leaves(&tree).contains(l)
+            && let Some(tree) = trees.get(d).and_then(|tree| tree.as_ref())
+            && super::tree_has_leaf(tree, l)
             && windows
                 .values()
                 .any(|w| &w.leaf == l && w.output == d.output && w.workspace == d.workspace)
@@ -1380,6 +1553,171 @@ impl super::Session {
             next.insert(d.clone(), l.clone());
         }
         next
+    }
+
+    /// Apply the exact focus bookkeeping tail that observation convergence
+    /// runs on every successful convergence (changed or exact). Extracted so
+    /// the live-state no-op skip performs byte-identical focus/MRU/history/
+    /// last-active updates without duplicating the logic.
+    fn settle_focus_bookkeeping(
+        &mut self,
+        stack_base: &BTreeMap<DomainKey, Vec<NodeId>>,
+        focus_domain: Option<DomainKey>,
+        focus_leaf: Option<NodeId>,
+    ) {
+        self.focused_domain = focus_domain;
+        self.focused_leaf = focus_leaf;
+        self.focus_stack = self.updated_focus_stack_on(
+            stack_base,
+            &self.focused_domain,
+            &self.focused_leaf,
+            &self.trees,
+            &self.windows,
+        );
+        self.prune_focus_history();
+        self.last_active = self.updated_last_active(
+            &self.focused_domain,
+            &self.focused_leaf,
+            &self.trees,
+            &self.windows,
+        );
+    }
+
+    /// Conservative live-state proof that one single-domain `Reconcile` event
+    /// is an exact no-op for this retained session. Every guard rejects a
+    /// false negative to the ordinary `Engine::handle` path; a hit runs the
+    /// same focus bookkeeping tail convergence would run. Only used by
+    /// `Engine::try_skip_unchanged_reconcile` from the world sweep.
+    pub(crate) fn try_unchanged_reconcile_noop(&mut self, event: &CoreEvent) -> bool {
+        if self.owner != event.owner
+            || self.generation != event.generation
+            || event.revision != self.accepted_revision()
+            || event.fingerprint != self.accepted_fingerprint
+            || self.divergence().is_some()
+            || self.has_pending()
+            || self.has_pending_desired()
+            || self.has_drag()
+        {
+            return false;
+        }
+        // Convergence repairs every domain in this session using only this
+        // observation's (empty) hints. A single-domain session bound to the
+        // swept key keeps that repair local and provably no-op.
+        if self.domains.len() != 1 || self.domains[0].key() != event.domain_key {
+            return false;
+        }
+        let retained = &self.domains[0];
+        if retained.bounds != event.domain.bounds || retained.gap != event.domain.gap {
+            return false;
+        }
+        // Deferred membership and fixed-size bookkeeping that convergence
+        // could adopt, mirror, or prune must all be absent.
+        if !self.exceptions.is_empty()
+            || !self.minimized_slots.is_empty()
+            || !self.automatic_fixed.is_empty()
+            || !self.fixed_tile_override.is_empty()
+            || !self.capacity_floats.is_empty()
+        {
+            return false;
+        }
+        // Known lifetimes may lack a sequence (convergence never inserts one
+        // for an already-known window), but stale ids would be pruned.
+        if self
+            .admission_order
+            .keys()
+            .any(|id| !self.windows.contains_key(id))
+        {
+            return false;
+        }
+        // One valid retained tree with exact leaf-to-link coverage.
+        let Some(tree) = self.trees.get(&event.domain_key).and_then(|t| t.as_ref()) else {
+            return false;
+        };
+        if !self.validate_current_topology() {
+            return false;
+        }
+        let leaves: BTreeSet<NodeId> = super::collect_leaves(tree).into_iter().collect();
+        if leaves.len() != self.windows.len()
+            || self.windows.values().any(|link| {
+                link.output != event.domain_key.output
+                    || link.workspace != event.domain_key.workspace
+                    || !leaves.contains(&link.leaf)
+            })
+        {
+            return false;
+        }
+        // Observation: exact unique ids/homing, every advisory flag clear and
+        // no size hints, each id bound to exactly the retained tiled link.
+        let mut seen: BTreeSet<&WindowId> = BTreeSet::new();
+        for entry in &event.windows {
+            if entry.window.0.is_empty()
+                || entry.output.0.is_empty()
+                || entry.workspace.0.is_empty()
+                || entry.output != event.domain_key.output
+                || entry.workspace != event.domain_key.workspace
+                || !seen.insert(&entry.window)
+            {
+                return false;
+            }
+            if entry.floating
+                || entry.fit_excluded
+                || entry.fullscreen
+                || entry.maximized
+                || entry.sticky
+                || entry.fixed_auto
+                || entry.fixed_suppress
+                || !entry.hints.is_empty()
+            {
+                return false;
+            }
+            let Some(link) = self.windows.get(&entry.window) else {
+                return false;
+            };
+            if link.output != entry.output || link.workspace != entry.workspace {
+                return false;
+            }
+        }
+        if seen.len() != self.windows.len() {
+            return false;
+        }
+        // Only a live, locally resolving tiled focus may skip. An empty event
+        // focus is allowed (convergence retains focus); a nonempty one must
+        // name that exact retained tiled window.
+        if self.focused_domain.as_ref() != Some(&event.domain_key) || self.focused_leaf.is_none() {
+            return false;
+        }
+        if !self.focus_resolves(
+            &self.focused_domain,
+            &self.focused_leaf,
+            &self.trees,
+            &self.windows,
+        ) {
+            return false;
+        }
+        let Some(focus_window) = self.focused_window_for(
+            self.focused_leaf.as_ref().expect("checked"),
+            &event.domain_key,
+        ) else {
+            return false;
+        };
+        if !event.focused_window.0.is_empty() && event.focused_window != focus_window {
+            return false;
+        }
+        // A single strict plain projection proves both the D7 repair
+        // early-return and the discarded reconcile projection succeed under
+        // the all-empty hint map assembled from this observation.
+        if crate::geometry::project(tree, retained.bounds, retained.gap).is_err() {
+            return false;
+        }
+        // No seeded admissions/restores happen on an exact match, so the
+        // original stack is the convergence `stack_base`.
+        let stack_base = self.focus_stack.clone();
+        self.settle_focus_bookkeeping(
+            &stack_base,
+            self.focused_domain.clone(),
+            self.focused_leaf.clone(),
+        );
+        true
     }
 
     /// Converge retained membership and floating state to one complete
@@ -2181,22 +2519,7 @@ impl super::Session {
             self.admission_counter = new_counter;
             self.accepted_fingerprint = fingerprint;
         }
-        self.focused_domain = next_focus_domain;
-        self.focused_leaf = next_focus_leaf;
-        self.focus_stack = self.updated_focus_stack_on(
-            &stack_base,
-            &self.focused_domain,
-            &self.focused_leaf,
-            &self.trees,
-            &self.windows,
-        );
-        self.prune_focus_history();
-        self.last_active = self.updated_last_active(
-            &self.focused_domain,
-            &self.focused_leaf,
-            &self.trees,
-            &self.windows,
-        );
+        self.settle_focus_bookkeeping(&stack_base, next_focus_domain, next_focus_leaf);
         debug_assert!(self.validate_current_topology());
         if changed {
             Ok(ObservationConvergence {

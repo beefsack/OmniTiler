@@ -1726,6 +1726,12 @@ impl WorldEngine {
             target_windows: Vec::new(),
             command,
         };
+        // Conservative live-state no-op: proven unchanged domains skip the
+        // cloned/projecting handle path entirely. Every other case (and every
+        // uncertainty) keeps the ordinary handle below.
+        if self.engine.try_skip_unchanged_reconcile(&event) {
+            return;
+        }
         match self.engine.handle(&event) {
             CoreReply::Projection(_) | CoreReply::Tiled(_) | CoreReply::Released => {
                 // Safety-exclusion focus hold: the retained focus converged
@@ -2263,5 +2269,133 @@ mod live_output_order_tests {
         second.held_screens[0].ordinal = 0;
         assert_ne!(first, second);
         assert_ne!(report_digest(&first), report_digest(&second));
+    }
+}
+
+#[cfg(test)]
+mod skip_witness_tests {
+    use super::*;
+    use crate::size_hints::WindowSizeHints;
+    use crate::world_report::ScopeAuthority;
+    use crate::world_v4_support_tests::{accepted, fact, report_full, screen};
+
+    #[test]
+    fn unchanged_second_report_takes_sweep_skip() {
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+        let screens = vec![screen("out-a", 0)];
+        let first = report_full(
+            1,
+            1,
+            screens.clone(),
+            vec![fact("w-a", "out-a", 0), fact("w-b", "out-a", 100)],
+            Vec::new(),
+            "w-b",
+            None,
+            None,
+        );
+        let first_reply = accepted(&mut engine, &first);
+        let before = engine.engine.skip_hits();
+        let second = report_full(
+            2,
+            2,
+            screens,
+            vec![fact("w-a", "out-a", 0), fact("w-b", "out-a", 100)],
+            Vec::new(),
+            "w-b",
+            None,
+            None,
+        );
+        let second_reply = accepted(&mut engine, &second);
+        assert!(
+            engine.engine.skip_hits() > before,
+            "unchanged second report must take the sweep skip"
+        );
+        assert!(
+            second_reply
+                .scopes
+                .iter()
+                .all(|scope| !matches!(scope.authority, ScopeAuthority::Hold(_))),
+            "unchanged skipped domain must not hold"
+        );
+        assert!(
+            second_reply.state_revision > first_reply.state_revision,
+            "fresh unchanged report still advances revision"
+        );
+    }
+
+    #[test]
+    fn changed_domain_miss_does_not_block_unrelated_domain_skip() {
+        let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+        let screens = vec![screen("out-a", 0), screen("out-b", 800)];
+        let facts = vec![
+            fact("a-1", "out-a", 0),
+            fact("a-2", "out-a", 100),
+            fact("b-1", "out-b", 800),
+            fact("b-2", "out-b", 900),
+        ];
+        // Fresh reports until both domains are warm and the admission floor
+        // is synchronized; a fully stable report skips exactly two domains.
+        let mut warm = None;
+        let mut seq = 1u64;
+        for _ in 0..4 {
+            let report = report_full(
+                seq,
+                seq,
+                screens.clone(),
+                facts.clone(),
+                Vec::new(),
+                "a-1",
+                None,
+                None,
+            );
+            let before = engine.engine.skip_hits();
+            let reply = accepted(&mut engine, &report);
+            let delta = engine.engine.skip_hits() - before;
+            warm = Some(reply);
+            seq += 1;
+            if delta == 2 {
+                break;
+            }
+        }
+        assert!(
+            engine.engine.skip_hits() >= 2,
+            "two domains must warm into stable skip hits within four fresh reports"
+        );
+        let warm = warm.expect("at least one reply");
+
+        // Meaningful hint on one output only: that domain misses, the other
+        // unchanged domain must still skip exactly once.
+        let mut changed = facts.clone();
+        changed[0].hints = Some(WindowSizeHints {
+            min_w: Some(1),
+            ..WindowSizeHints::none()
+        });
+        let report = report_full(seq, seq, screens, changed, Vec::new(), "a-1", None, None);
+        let before = engine.engine.skip_hits();
+        let reply = accepted(&mut engine, &report);
+        assert_eq!(
+            engine.engine.skip_hits() - before,
+            1,
+            "exactly the unchanged domain must skip"
+        );
+        assert!(
+            reply
+                .scopes
+                .iter()
+                .all(|scope| !matches!(scope.authority, ScopeAuthority::Hold(_))),
+            "changed hint must still converge without a hold"
+        );
+        assert!(
+            reply.state_revision > warm.state_revision,
+            "fresh changed report still advances revision"
+        );
+        assert_eq!(reply.windows.len(), 4, "membership retained across skip");
+        assert!(
+            reply
+                .windows
+                .iter()
+                .all(|w| !w.floating && w.allocation.is_some()),
+            "all four tiled allocations retained"
+        );
     }
 }

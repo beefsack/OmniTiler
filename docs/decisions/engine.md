@@ -35,6 +35,12 @@
 - Status: active, 2026-10-16
 - Evidence: [full-state replies](../changes/archive/core-full-state-replies.md).
 
+### Core per-report latency
+- Decision: User 2026-11-17: p95 per steady-state report in a release build on a developer machine targets 1 ms at 10 windows, 4 ms at 50 windows and 10 ms at 200 windows. Check latency manually with the existing `report_scale all 31 3 all` harness; first reports are separate. CI uses Callgrind instructions per report with generous, roughly 2x headroom over current counts and a window-count growth bound, not wall-clock assertions.
+- Why: detect returning superlinear work or large constant-factor regressions without shared-runner timing noise or routine feature-work failures.
+- Assumes / revisit if: keep the gate proportional: a few representative cases, around a minute or less, one script with thresholds in one place and a clear intentional-cost re-baselining message. Revisit if measurement or maintenance overhead outweighs the regressions caught.
+- Status: active, User 2026-11-17
+
 ### Classification and convergence ownership
 - Decision: platforms report normalized classification facts (type/role, owner/parent, modal, resizable/min/max size, fullscreen, cannot-be-controlled, app id/class/title). Core decides manage/float/ignore, user rules, automatic fixed-size floats and game handling. Core compares desired/observed state and decides reapply, adopt host value, refuse or float; core owns anti-fighting/completion. Platforms write/read back/report observations and retain host-mechanical correctness only: coordinate/DPI conversion, invisible-border insets, lifetime/replacement detection. Gesture producers report host gesture start, cursor updates, release/cancel; core owns drag session, target, overlay, release outcome and edge-drag share policy.
 - Why: not recorded.

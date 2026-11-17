@@ -451,35 +451,69 @@ pub fn enforce_minimums(sizes: &mut [i64], mins: &[i64]) -> bool {
     true
 }
 
-/// Minimum extent the subtree rooted at `node` needs along `axis`, including
-/// internal descendant gaps. Cross-axis groups need the maximum of their
-/// children (every child spans the full cross extent).
-fn subtree_min(
-    node: &Node,
-    axis: Axis,
-    gap: i64,
-    resolve: &dyn Fn(&NodeId) -> WindowSizeHints,
-) -> i64 {
-    match node {
-        Node::Leaf { id } => resolve(id).min_for_axis(axis).map_or(0, i64::from),
-        Node::Group {
-            axis: group_axis,
-            children,
-            ..
-        } => {
-            if *group_axis == axis {
-                let mut sum: i64 = 0;
-                for child in children {
-                    sum = sum.saturating_add(subtree_min(child, axis, gap, resolve));
+/// Bottom-up minimum extents of a subtree along both axes, computed once per
+/// projection (ephemeral, never retained). The structure mirrors the node tree
+/// so a parent can read each child's minimum in O(1). This replaces the old
+/// per-group recursive descendant walk, which revisited a leaf once per
+/// ancestor (quadratic on deep chains).
+struct SubtreeSummary {
+    min_w: i64,
+    min_h: i64,
+    children: Vec<SubtreeSummary>,
+}
+
+impl SubtreeSummary {
+    /// Build summaries for `node` and its descendants, resolving each leaf's
+    /// hints exactly once. Saturating sums and gap arithmetic mirror the old
+    /// recursive formula; cross-axis groups take the maximum of their children.
+    fn build(node: &Node, gap: i64, resolve: &dyn Fn(&NodeId) -> WindowSizeHints) -> Self {
+        match node {
+            Node::Leaf { id } => {
+                let hints = resolve(id);
+                Self {
+                    min_w: hints.meaningful_min_w().map_or(0, i64::from),
+                    min_h: hints.meaningful_min_h().map_or(0, i64::from),
+                    children: Vec::new(),
                 }
-                sum.saturating_add(gap.saturating_mul(children.len().saturating_sub(1) as i64))
-            } else {
-                children
-                    .iter()
-                    .map(|child| subtree_min(child, axis, gap, resolve))
-                    .max()
-                    .unwrap_or(0)
             }
+            Node::Group { axis, children, .. } => {
+                let built: Vec<Self> = children
+                    .iter()
+                    .map(|child| Self::build(child, gap, resolve))
+                    .collect();
+                let gaps = gap.saturating_mul(children.len().saturating_sub(1) as i64);
+                let mut min_w: i64 = 0;
+                let mut min_h: i64 = 0;
+                match axis {
+                    Axis::Horizontal => {
+                        for child in &built {
+                            min_w = min_w.saturating_add(child.min_w);
+                            min_h = min_h.max(child.min_h);
+                        }
+                        min_w = min_w.saturating_add(gaps);
+                    }
+                    Axis::Vertical => {
+                        for child in &built {
+                            min_w = min_w.max(child.min_w);
+                            min_h = min_h.saturating_add(child.min_h);
+                        }
+                        min_h = min_h.saturating_add(gaps);
+                    }
+                }
+                Self {
+                    min_w,
+                    min_h,
+                    children: built,
+                }
+            }
+        }
+    }
+
+    /// Minimum extent of this subtree along `axis`.
+    fn min_for_axis(&self, axis: Axis) -> i64 {
+        match axis {
+            Axis::Horizontal => self.min_w,
+            Axis::Vertical => self.min_h,
         }
     }
 }
@@ -547,11 +581,13 @@ pub fn project_with_hints(
     resolve: &dyn Fn(&NodeId) -> WindowSizeHints,
 ) -> Result<HintedProjection, HintProjectionError> {
     project(tree, bounds, gap).map_err(|error| hint_error(error.message()))?;
+    let summary = SubtreeSummary::build(tree, i64::from(gap), resolve);
     let mut leaves = Vec::new();
     let mut overconstrained = Vec::new();
     let mut seen_over = BTreeSet::new();
     layout_hinted(
         tree,
+        &summary,
         bounds,
         gap,
         resolve,
@@ -568,6 +604,7 @@ pub fn project_with_hints(
 #[allow(clippy::too_many_arguments)]
 fn layout_hinted(
     node: &Node,
+    summary: &SubtreeSummary,
     rect: Rect,
     gap: i32,
     resolve: &dyn Fn(&NodeId) -> WindowSizeHints,
@@ -615,10 +652,10 @@ fn layout_hinted(
             // Honor child minimums along the split axis only. Maximums never
             // reallocate (approved projection honors minimums; max feeds
             // clamp acceptance). Infeasible minimums keep the base sizes.
-            let gap64 = i64::from(gap);
-            let mins: Vec<i64> = children
+            let mins: Vec<i64> = summary
+                .children
                 .iter()
-                .map(|child| subtree_min(child, *axis, gap64, resolve))
+                .map(|child| child.min_for_axis(*axis))
                 .collect();
             let _ = enforce_minimums(&mut sizes, &mins);
             let mut cursor: i64 = match axis {
@@ -647,6 +684,7 @@ fn layout_hinted(
                 };
                 layout_hinted(
                     child,
+                    &summary.children[index],
                     child_rect,
                     gap,
                     resolve,
@@ -685,6 +723,252 @@ fn violates_minimum(rect: &Rect, hints: &WindowSizeHints) -> bool {
 mod tests {
     use super::*;
     use crate::directional::Axis;
+    use std::cell::Cell;
+
+    // Reference copy of the pre-optimization recursive descendant walk.
+    // Kept only under cfg(test) to check the bottom-up summary against the
+    // original formula for varied shapes, hints, gaps, and axes.
+    fn subtree_min_legacy(
+        node: &Node,
+        axis: Axis,
+        gap: i64,
+        resolve: &dyn Fn(&NodeId) -> WindowSizeHints,
+    ) -> i64 {
+        match node {
+            Node::Leaf { id } => resolve(id).min_for_axis(axis).map_or(0, i64::from),
+            Node::Group {
+                axis: group_axis,
+                children,
+                ..
+            } => {
+                if *group_axis == axis {
+                    let mut sum: i64 = 0;
+                    for child in children {
+                        sum = sum.saturating_add(subtree_min_legacy(child, axis, gap, resolve));
+                    }
+                    sum.saturating_add(gap.saturating_mul(children.len().saturating_sub(1) as i64))
+                } else {
+                    children
+                        .iter()
+                        .map(|child| subtree_min_legacy(child, axis, gap, resolve))
+                        .max()
+                        .unwrap_or(0)
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn subtree_summary_matches_legacy_recursive_formula() {
+        // Covers unset, zero, negative, sentinel, out-of-bound and boundary
+        // hints so leaf sanitization is exercised on both axes.
+        let variants = [
+            hints(None, None),
+            hints(Some(0), Some(-1)),
+            hints(Some(1), Some(2)),
+            hints(Some(GEOMETRY_BOUND), Some(i32::MAX)),
+            hints(Some(GEOMETRY_BOUND + 1), Some(7)),
+        ];
+        let resolve = |id: &NodeId| {
+            let key: usize = id.0.as_bytes().iter().map(|b| usize::from(*b)).sum();
+            variants[key % variants.len()]
+        };
+        let trees = vec![
+            leaf("a"),
+            group(
+                "g0",
+                Axis::Horizontal,
+                vec![leaf("a"), leaf("bb"), leaf("ccc")],
+                vec![1, 1, 1],
+            ),
+            group(
+                "g1",
+                Axis::Vertical,
+                vec![leaf("a"), leaf("bb"), leaf("ccc")],
+                vec![2, 1, 1],
+            ),
+            group(
+                "g2",
+                Axis::Horizontal,
+                vec![
+                    leaf("a"),
+                    group(
+                        "g3",
+                        Axis::Vertical,
+                        vec![leaf("bb"), leaf("ccc")],
+                        vec![1, 3],
+                    ),
+                    group(
+                        "g4",
+                        Axis::Horizontal,
+                        vec![leaf("dddd"), leaf("e")],
+                        vec![1, 1],
+                    ),
+                ],
+                vec![1, 2, 1],
+            ),
+            group("g5", Axis::Vertical, vec![], vec![]),
+        ];
+        for tree in &trees {
+            for gap in [0i64, 2, 8] {
+                let summary = SubtreeSummary::build(tree, gap, &resolve);
+                for axis in [Axis::Horizontal, Axis::Vertical] {
+                    assert_eq!(
+                        summary.min_for_axis(axis),
+                        subtree_min_legacy(tree, axis, gap, &resolve),
+                        "summary mismatch: tree={:?} gap={gap} axis={axis:?}",
+                        tree.id()
+                    );
+                }
+            }
+        }
+    }
+
+    // Skewed nesting: every level is a group with one leaf child and one
+    // deeper subgroup, on alternating axes. A leaf sits depth+1 ancestors
+    // deep, which made the old per-group descendant walk quadratic.
+    fn skewed_chain(depth: usize, axis: Axis) -> Node {
+        if depth == 0 {
+            return leaf("L0");
+        }
+        let child = skewed_chain(
+            depth - 1,
+            if axis == Axis::Horizontal {
+                Axis::Vertical
+            } else {
+                Axis::Horizontal
+            },
+        );
+        group(
+            &format!("G{depth}"),
+            axis,
+            vec![child, leaf(&format!("L{depth}"))],
+            vec![9, 1],
+        )
+    }
+
+    #[test]
+    fn project_with_hints_resolver_calls_are_linear_in_leaves() {
+        for depth in [1usize, 2, 4, 8, 16] {
+            let tree = skewed_chain(depth, Axis::Horizontal);
+            let bounds = Rect {
+                x: 0,
+                y: 0,
+                w: 16_000,
+                h: 16_000,
+            };
+            let calls = Cell::new(0usize);
+            let resolve = |_id: &NodeId| {
+                calls.set(calls.get() + 1);
+                hints(Some(1), Some(1))
+            };
+            project_with_hints(&tree, bounds, 2, &resolve).expect("valid");
+            let leaves = depth + 1;
+            // One call per leaf in the bottom-up summary build and one per
+            // leaf in the hinted layout: 2 per leaf, independent of depth.
+            assert!(
+                calls.get() <= 2 * leaves,
+                "depth={depth}: {} calls for {leaves} leaves",
+                calls.get()
+            );
+        }
+    }
+
+    #[test]
+    fn project_with_hints_rejects_malformed_tree_before_resolving() {
+        let tree = group(
+            "root",
+            Axis::Horizontal,
+            vec![leaf("A"), leaf("A")],
+            vec![1, 1],
+        );
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 100,
+        };
+        let plain = project(&tree, bounds, 0).expect_err("duplicate ids");
+        let calls = Cell::new(0usize);
+        let resolve = |_id: &NodeId| {
+            calls.set(calls.get() + 1);
+            WindowSizeHints::none()
+        };
+        let hinted = project_with_hints(&tree, bounds, 0, &resolve).expect_err("duplicate ids");
+        assert_eq!(hinted.message(), plain.message());
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn project_with_hints_alternating_axes_gaps_and_unequal_hints() {
+        // Root split is horizontal; inner group is vertical. Both use gap 4.
+        // A's satisfiable 600 minimum takes 102 of slack from the inner
+        // group; B/C vertical minimums 900 are unsatisfiable, and C also
+        // carries a cross-axis 100 minimum that is still satisfied.
+        let tree = group(
+            "root",
+            Axis::Horizontal,
+            vec![
+                leaf("A"),
+                group(
+                    "inner",
+                    Axis::Vertical,
+                    vec![leaf("B"), leaf("C")],
+                    vec![1, 1],
+                ),
+            ],
+            vec![1, 1],
+        );
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 1000,
+            h: 800,
+        };
+        let resolve = |id: &NodeId| match id.0.as_str() {
+            "A" => hints(Some(600), None),
+            "B" => hints(None, Some(900)),
+            "C" => hints(Some(100), Some(900)),
+            _ => WindowSizeHints::none(),
+        };
+        let hinted = project_with_hints(&tree, bounds, 4, &resolve).expect("valid");
+        assert_eq!(
+            hinted.leaves,
+            vec![
+                ProjectedLeaf {
+                    leaf: NodeId::from("A"),
+                    rect: Rect {
+                        x: 0,
+                        y: 0,
+                        w: 600,
+                        h: 800,
+                    },
+                },
+                ProjectedLeaf {
+                    leaf: NodeId::from("B"),
+                    rect: Rect {
+                        x: 604,
+                        y: 0,
+                        w: 396,
+                        h: 398,
+                    },
+                },
+                ProjectedLeaf {
+                    leaf: NodeId::from("C"),
+                    rect: Rect {
+                        x: 604,
+                        y: 402,
+                        w: 396,
+                        h: 398,
+                    },
+                },
+            ]
+        );
+        assert_eq!(
+            hinted.overconstrained,
+            vec![NodeId::from("B"), NodeId::from("C")]
+        );
+    }
 
     fn leaf(id: &str) -> Node {
         Node::Leaf {

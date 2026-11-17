@@ -157,6 +157,10 @@ pub(crate) struct Engine {
     /// vocabulary plus correlation only, never native identifiers; the
     /// [`CoreReply`] is unchanged (core has no logging sink).
     last_drag_preview_stage: Option<EngineDragPreviewStage>,
+    /// Test-only witness: number of sweeps that took the conservative
+    /// live-state no-op skip. Production builds have no such field.
+    #[cfg(test)]
+    skip_hits: u64,
 }
 
 /// Bounded correlated observation-convergence report for the protocol logging
@@ -449,6 +453,8 @@ impl Default for Engine {
             last_drag_preview_stage: None,
             admission_seq_next: 0,
             group_alloc: crate::session::GroupAllocator::new(),
+            #[cfg(test)]
+            skip_hits: 0,
         }
     }
 }
@@ -584,6 +590,51 @@ impl Engine {
     #[must_use]
     pub(crate) fn outer_gap_ref(&self, key: &DomainKey) -> Option<&i32> {
         self.outer_gaps.get(key)
+    }
+
+    /// Conservative live-state proof that a single-domain `Reconcile` event is
+    /// an exact no-op, so the world sweep can skip `Engine::handle` without
+    /// changing retained state or its externally visible outcome. Used only
+    /// by `sweep_domain`: `Engine::handle` and all other callers are untouched.
+    /// False negatives fall through to the ordinary full path.
+    pub(crate) fn try_skip_unchanged_reconcile(&mut self, event: &CoreEvent) -> bool {
+        if !matches!(event.command, CoreCommand::Reconcile) || !event.closed_windows.is_empty() {
+            return false;
+        }
+        let floor = self.admission_seq_floor();
+        let Some(session) = self.sessions.get(&event.domain_key) else {
+            return false;
+        };
+        let counter = session.admission_counter_value();
+        if self.outer_gap_ref(&event.domain_key).copied() != Some(event.outer_gap)
+            || counter < floor
+        {
+            return false;
+        }
+        // Reborrow mutably: the session helper revalidates the cheap fences and
+        // proves the deep no-op, then runs the shared focus bookkeeping tail.
+        let Some(session) = self.sessions.get_mut(&event.domain_key) else {
+            return false;
+        };
+        let hit = session.try_unchanged_reconcile_noop(event);
+        if hit {
+            // Convergence records the session counter into the engine-wide
+            // high-water mark on every successful op. `counter >= floor` only
+            // rules out the upward sync; it does NOT prove this max is a no-op
+            // (the floor includes the live counter itself). Retain the exact
+            // ordinary effect so later admissions keep monotonic sequences.
+            self.admission_seq_next = self.admission_seq_next.max(counter);
+            #[cfg(test)]
+            {
+                self.skip_hits += 1;
+            }
+        }
+        hit
+    }
+
+    #[cfg(test)]
+    pub(crate) fn skip_hits(&self) -> u64 {
+        self.skip_hits
     }
 
     /// Last single-domain convergence report for protocol logging, if the
@@ -2450,7 +2501,7 @@ impl Engine {
     /// before mutating, and any later rejection restores the pre-request
     /// world exactly.
     fn reconcile_request(&mut self, event: &CoreEvent) -> CoreReply {
-        let backup = self.clone();
+        let mut backup = None;
         let mut relocated_here = false;
         if !self.contains(&event.domain_key) {
             let outer_ok = match self.find_unique_source_for_target(&event.domain_key) {
@@ -2473,13 +2524,19 @@ impl Engine {
                 None => false,
             };
             if outer_ok {
+                // Only relocation can roll back the whole engine. A retained
+                // domain needs no engine-wide backup on every reconciliation.
+                backup = Some(self.clone());
                 relocated_here =
                     self.try_relocate_for_target(&event.domain_key, &event.domain, event.outer_gap);
             }
         }
-        let restore = |engine: &mut Self, backup: &Self, relocated: bool| {
+        let restore = |engine: &mut Self, backup: &Option<Self>, relocated: bool| {
             if relocated {
-                *engine = backup.clone();
+                *engine = backup
+                    .as_ref()
+                    .expect("relocation retains an engine backup")
+                    .clone();
             }
         };
         let Some(session) = self.session(&event.domain_key).cloned() else {
@@ -10298,5 +10355,356 @@ mod tests {
             std::collections::BTreeSet::from(["grp-1".to_owned()]),
             "burned grp-0 is never reissued after owner-only rebind"
         );
+    }
+
+    // Conservative live-state skip witnesses. The fixture admits two plain
+    // tiled windows into one domain, pins focus to the second, and builds the
+    // exact unhinted Reconcile event the world sweep would produce.
+    fn skip_fixture() -> (Engine, OutputDomain, crate::boundary::CoreEvent) {
+        use crate::boundary::{CoreCommand, CoreEvent};
+        use crate::ids::CorrelationId;
+        use crate::seed::EngineWindow;
+        let owner = OwnerId::parse("owner-a").expect("valid");
+        let gen_id = GenerationId::parse("gen-1").expect("valid");
+        let d = domain("out", "ws");
+        let key = d.key();
+        let seed_order: Vec<EngineWindow> = ["w-a", "w-b"]
+            .iter()
+            .map(|window| EngineWindow {
+                window: WindowId((*window).to_owned()),
+                output: OutputId("out".to_owned()),
+                workspace: WorkspaceId("ws".to_owned()),
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 100,
+                    h: 50,
+                },
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            })
+            .collect();
+        let mut session =
+            crate::seed::seed_session(&owner, &gen_id, 7, &d, &seed_order).expect("seed two");
+        assert!(session.sync_focus_from_window(&key, &WindowId("w-b".to_owned())));
+        let revision = session.accepted_revision();
+        let fingerprint = session.accepted_fingerprint();
+        let focus_leaf = session.focus().1.expect("focus leaf");
+        let focus_window = session
+            .focused_window_for(&focus_leaf, &key)
+            .expect("focus window");
+        let windows: Vec<EngineWindow> = session
+            .snapshot()
+            .windows
+            .into_iter()
+            .map(|link| EngineWindow {
+                window: link.window,
+                output: link.output,
+                workspace: link.workspace,
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 100,
+                    h: 50,
+                },
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            })
+            .collect();
+        let mut engine = Engine::new();
+        engine.store_committed(key.clone(), session, 0);
+        let event = CoreEvent {
+            owner,
+            generation: gen_id,
+            correlation: CorrelationId::parse("corr-skip").expect("valid"),
+            revision,
+            fingerprint,
+            domain: d.clone(),
+            domain_key: key,
+            outer_gap: 0,
+            focused_window: focus_window,
+            windows,
+            directional: None,
+            directional_target_outer_gap: None,
+            target_domain: None,
+            target_windows: Vec::new(),
+            closed_windows: Vec::new(),
+            command: CoreCommand::Reconcile,
+        };
+        (engine, d, event)
+    }
+
+    #[test]
+    fn skip_hit_matches_full_handle_state() {
+        use crate::boundary::CoreReply;
+        let (mut full, _d, event) = skip_fixture();
+        let mut skipped = full.clone();
+        let key = event.domain_key.clone();
+        assert!(matches!(
+            full.handle(&event),
+            CoreReply::Projection(_) | CoreReply::Tiled(_) | CoreReply::Released
+        ));
+        assert!(skipped.try_skip_unchanged_reconcile(&event));
+        assert_eq!(skipped.skip_hits(), 1);
+        let full = full.session(&key).expect("session");
+        let skipped = skipped.session(&key).expect("session");
+        assert_eq!(format!("{full:?}"), format!("{skipped:?}"));
+    }
+
+    #[test]
+    fn skip_hit_normalizes_non_fixed_point_focus_bookkeeping() {
+        use crate::boundary::CoreReply;
+        let (mut full, _d, event) = skip_fixture();
+        let mut skipped = full.clone();
+        let key = event.domain_key.clone();
+        let stale = NodeId("stale-leaf".to_owned());
+        let live_leaf = full
+            .session(&key)
+            .expect("session")
+            .focus()
+            .1
+            .expect("live focus leaf");
+        for engine in [&mut full, &mut skipped] {
+            engine
+                .sessions
+                .get_mut(&key)
+                .expect("session")
+                .test_scramble_focus_bookkeeping(&key, &stale);
+        }
+        // Precondition: focus/topology untouched, but MRU/order/last-active
+        // are not at the convergence fixed point.
+        let (stack, history, last_active) = full
+            .session(&key)
+            .expect("session")
+            .test_focus_bookkeeping(&key);
+        assert!(stack.contains(&stale) && history.contains(&stale));
+        assert!(last_active.is_none());
+        assert!(stack.last() != Some(&live_leaf));
+
+        assert!(matches!(
+            full.handle(&event),
+            CoreReply::Projection(_) | CoreReply::Tiled(_) | CoreReply::Released
+        ));
+        assert!(skipped.try_skip_unchanged_reconcile(&event));
+
+        let full_session = full.session(&key).expect("session");
+        let skipped_session = skipped.session(&key).expect("session");
+        assert_eq!(format!("{full_session:?}"), format!("{skipped_session:?}"));
+        // Both paths must normalize, not merely agree on a stale state.
+        let (stack, history, last_active) = full_session.test_focus_bookkeeping(&key);
+        assert_eq!(stack.last(), Some(&live_leaf));
+        assert!(!stack.contains(&stale) && !history.contains(&stale));
+        assert_eq!(last_active, Some(live_leaf));
+    }
+
+    #[test]
+    fn skip_retains_admission_highwater_after_retirement() {
+        use crate::boundary::CoreReply;
+        let (mut full, _d, event) = skip_fixture();
+        let mut skipped = full.clone();
+        let key = event.domain_key.clone();
+        // Advance the retained counter beyond the stored high-water mark
+        // without going through the Engine (so `admission_seq_next` stays
+        // behind). The floor still includes the live counter, so the skip
+        // remains admissible while the max write is a real effect.
+        for engine in [&mut full, &mut skipped] {
+            let session = engine.sessions.get_mut(&key).expect("session");
+            let advanced = session.admission_counter_value() + 5;
+            session.sync_admission_counter(advanced);
+        }
+        assert!(
+            full.session(&key)
+                .expect("session")
+                .admission_counter_value()
+                > full.admission_seq_next
+        );
+        assert!(matches!(
+            full.handle(&event),
+            CoreReply::Projection(_) | CoreReply::Tiled(_) | CoreReply::Released
+        ));
+        assert!(skipped.try_skip_unchanged_reconcile(&event));
+        assert_eq!(full.admission_seq_next, skipped.admission_seq_next);
+        full.remove(&key);
+        skipped.remove(&key);
+        assert_eq!(
+            full.admission_seq_next, skipped.admission_seq_next,
+            "retire must not drop the retained high-water difference"
+        );
+    }
+
+    #[test]
+    fn skip_hit_allows_empty_event_focus() {
+        let (mut engine, _d, mut event) = skip_fixture();
+        event.focused_window = WindowId(String::new());
+        assert!(engine.try_skip_unchanged_reconcile(&event));
+    }
+
+    #[test]
+    fn skip_misses_mismatched_nonempty_focus() {
+        let (mut engine, _d, mut event) = skip_fixture();
+        event.focused_window = WindowId("w-a".to_owned());
+        assert!(!engine.try_skip_unchanged_reconcile(&event));
+    }
+
+    #[test]
+    fn skip_misses_are_conservative() {
+        use crate::boundary::CoreCommand;
+        use crate::size_hints::WindowSizeHints;
+        let (engine, _d, event) = skip_fixture();
+        let key = event.domain_key.clone();
+        let miss = |mut e: Engine, ev: &crate::boundary::CoreEvent| {
+            assert!(
+                !e.try_skip_unchanged_reconcile(ev),
+                "expected conservative miss"
+            );
+        };
+
+        let mut ev = event.clone();
+        let mut extra = ev.windows[0].clone();
+        extra.window = WindowId("new".to_owned());
+        ev.windows.push(extra);
+        miss(engine.clone(), &ev);
+
+        let mut ev = event.clone();
+        ev.windows.pop();
+        miss(engine.clone(), &ev);
+
+        let mut ev = event.clone();
+        ev.windows[0].output = OutputId("other".to_owned());
+        miss(engine.clone(), &ev);
+
+        let mut ev = event.clone();
+        ev.windows[0].hints = WindowSizeHints {
+            min_w: Some(1),
+            ..WindowSizeHints::none()
+        };
+        miss(engine.clone(), &ev);
+
+        let mut ev = event.clone();
+        ev.windows[0].floating = true;
+        miss(engine.clone(), &ev);
+        let mut ev = event.clone();
+        ev.windows[0].fit_excluded = true;
+        miss(engine.clone(), &ev);
+        let mut ev = event.clone();
+        ev.windows[0].fullscreen = true;
+        miss(engine.clone(), &ev);
+        let mut ev = event.clone();
+        ev.windows[0].maximized = true;
+        miss(engine.clone(), &ev);
+        let mut ev = event.clone();
+        ev.windows[0].sticky = true;
+        miss(engine.clone(), &ev);
+        let mut ev = event.clone();
+        ev.windows[0].fixed_auto = true;
+        miss(engine.clone(), &ev);
+        let mut ev = event.clone();
+        ev.windows[0].fixed_suppress = true;
+        miss(engine.clone(), &ev);
+
+        let mut ev = event.clone();
+        ev.closed_windows.push(event.windows[0].window.clone());
+        miss(engine.clone(), &ev);
+
+        let mut ev = event.clone();
+        ev.domain.bounds.w += 1;
+        miss(engine.clone(), &ev);
+        let mut ev = event.clone();
+        ev.domain.gap += 1;
+        miss(engine.clone(), &ev);
+        let mut e = engine.clone();
+        e.set_outer_gap(key.clone(), 1);
+        miss(e, &event);
+
+        let mut ev = event.clone();
+        ev.owner = OwnerId::parse("owner-b").expect("valid");
+        miss(engine.clone(), &ev);
+        let mut ev = event.clone();
+        ev.generation = GenerationId::parse("gen-2").expect("valid");
+        miss(engine.clone(), &ev);
+        let mut ev = event.clone();
+        ev.revision += 1;
+        miss(engine.clone(), &ev);
+        let mut ev = event.clone();
+        ev.fingerprint += 1;
+        miss(engine.clone(), &ev);
+        let mut ev = event.clone();
+        ev.command = CoreCommand::UpdateGaps;
+        miss(engine.clone(), &ev);
+
+        let mut e = engine.clone();
+        let counter = e.session(&key).expect("session").admission_counter_value();
+        e.admission_seq_next = counter + 1;
+        miss(e, &event);
+
+        let mut e = engine.clone();
+        e.sessions
+            .get_mut(&key)
+            .expect("session")
+            .test_seed_exception(WindowId("x".to_owned()));
+        miss(e, &event);
+        let mut e = engine.clone();
+        e.sessions
+            .get_mut(&key)
+            .expect("session")
+            .test_seed_minimized(
+                WindowId("x".to_owned()),
+                NodeId("probe".to_owned()),
+                Node::Leaf {
+                    id: NodeId("probe".to_owned()),
+                },
+            );
+        miss(e, &event);
+        let mut e = engine.clone();
+        e.sessions
+            .get_mut(&key)
+            .expect("session")
+            .test_seed_automatic(WindowId("x".to_owned()));
+        miss(e, &event);
+        let mut e = engine.clone();
+        e.sessions
+            .get_mut(&key)
+            .expect("session")
+            .test_seed_capacity(WindowId("x".to_owned()));
+        miss(e, &event);
+        let mut e = engine.clone();
+        e.sessions
+            .get_mut(&key)
+            .expect("session")
+            .seed_fixed_tile_override(&WindowId("x".to_owned()));
+        miss(e, &event);
+        let mut e = engine.clone();
+        e.sessions
+            .get_mut(&key)
+            .expect("session")
+            .test_seed_stale_order(WindowId("x".to_owned()));
+        miss(e, &event);
+        let mut e = engine.clone();
+        e.sessions
+            .get_mut(&key)
+            .expect("session")
+            .test_mark_diverged();
+        miss(e, &event);
+        let mut e = engine.clone();
+        e.sessions
+            .get_mut(&key)
+            .expect("session")
+            .test_mark_pending_desired();
+        miss(e, &event);
+        let mut e = engine.clone();
+        e.sessions.get_mut(&key).expect("session").test_mark_drag();
+        miss(e, &event);
     }
 }
