@@ -2882,7 +2882,7 @@ mod effect_vocabulary_sizing_tests {
         let pre_bound = reply_upper_bound_v4(
             &input,
             engine.retained.len() + engine.retained_floats.len(),
-            engine.engine.domain_keys().len(),
+            engine.layout.domain_keys().len(),
             input.screens.len(),
             engine.staged.facts.len() + engine.staged.held_windows.len(),
             engine.retained_publish_footprint(),
@@ -2943,7 +2943,7 @@ mod effect_vocabulary_sizing_tests {
                 None,
             ),
         );
-        let logical = engine.engine.domain_keys().len();
+        let logical = engine.layout.domain_keys().len();
         let focus = || WorldCommand::Focus {
             window: WindowId("win-a".to_owned()),
             direction: "right".to_owned(),

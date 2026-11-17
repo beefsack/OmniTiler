@@ -1668,7 +1668,7 @@ fn reply_bound_state_term_rejected_without_mutation() {
             None,
         ),
     );
-    let logical = engine.engine.domain_keys().len();
+    let logical = engine.layout.domain_keys().len();
     let staged = engine.staged.facts.len() + engine.staged.held_windows.len();
     let retained = engine.retained_publish_footprint();
     let attempts = 400usize;

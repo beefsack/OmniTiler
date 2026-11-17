@@ -8,9 +8,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
+use crate::boundary::CoreCommand;
+use crate::contract::DivergenceKind;
 use crate::directional::{Direction, OutputId, WindowId};
-use crate::engine::Engine;
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
 use crate::workspace_scope::{
@@ -26,6 +26,7 @@ use crate::world_engine::{
     MSG_MIGRATION_TARGET_GEOMETRY, MSG_MIGRATION_TARGET_INCOMPLETE, MSG_OPERATION, MSG_SCOPE_HELD,
     MSG_SELECT_UNKNOWN, MSG_SEND_TARGET, MSG_SEND_WINDOW, RetainedTransfer, WorldEngine,
 };
+use crate::world_layout::{LayoutFailure, WorkspaceMigrationFailure};
 use crate::world_report::{
     CommandResult, OneShotEffect, SendSource, TransferKind, TransferTarget, WorldCommand,
 };
@@ -145,16 +146,8 @@ impl WorldEngine {
                     };
                 }
                 let known = by_id.contains_key(window)
-                    || self.engine.domain_keys().iter().any(|key| {
-                        self.engine.session(key).is_some_and(|session| {
-                            session
-                                .snapshot()
-                                .windows
-                                .iter()
-                                .any(|link| &link.window == window)
-                                || session.is_exception(window)
-                        })
-                    });
+                    || self.layout.is_tiled_window_any(window)
+                    || self.layout.is_exception_window_any(window);
                 if !known {
                     return CommandApplied::Rejected {
                         kind: KIND_FOCUS,
@@ -1130,15 +1123,14 @@ impl WorldEngine {
     }
 
     /// Whole-workspace migration through the logical rings plus the
-    /// retained Engine rekey (R-WS-12): refusal reasons stay in the fixed
+    /// retained layout rekey (R-WS-12): refusal reasons stay in the fixed
     /// vocabulary with no native writes. The moved logical workspace keeps
     /// its id, tree, order/shares, remembered focus and tiling mode; only
-    /// its owning screen changes. The Engine owns the transactional
-    /// tree/order/gaps/float-overlay relocation (`Engine::handle` with
-    /// `MigrateWorkspace`, D8 carry included); this path only scopes,
-    /// retains, and reports. Scope planning runs before the Engine commit
-    /// so a scope refusal never leaves a committed rekey behind; an Engine
-    /// refusal leaves scope, flights, and ordering exactly as before.
+    /// its owning screen changes. The layout owns the transactional
+    /// tree/order/gaps/float-overlay relocation (D8 carry included); this
+    /// path only scopes, retains, and reports. Scope planning runs before
+    /// the layout commit so a scope refusal never leaves a committed rekey;
+    /// a layout refusal leaves scope, flights, and ordering exactly as before.
     /// The commit is immediately authoritative: the target scope publishes
     /// Controlled membership desire before any arrival, and unchanged
     /// reports never flap the source. Member arrival, target view, and
@@ -1146,7 +1138,7 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_migration(
         &mut self,
-        issue: &crate::world_engine::EventIssue,
+        _issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         source_output: &OutputId,
         target_output: &OutputId,
@@ -1288,13 +1280,6 @@ impl WorldEngine {
                 message: MSG_MIGRATION_TARGET_GEOMETRY,
             };
         }
-        let owner = issue.owner.clone();
-        let correlation = issue.correlation.clone();
-        let accepted = self
-            .engine
-            .session(&source_key)
-            .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
-        let (revision, fingerprint) = accepted.unwrap_or((0, 0));
         // Unknown sticky never partially migrates: a source member
         // without proven sticky state refuses with no mutation, even on
         // the tiled session path below.
@@ -1359,32 +1344,15 @@ impl WorldEngine {
                 held_scopes,
             );
         }
-        let event = CoreEvent {
-            owner,
-            generation: self.core_generation.clone(),
-            correlation,
-            revision,
-            fingerprint,
-            domain: Engine::canonical_component_domain(&inset_source),
-            domain_key: source_key.clone(),
-            outer_gap: source_staged.outer_gap,
-            focused_window: source_staged.focused.clone(),
-            windows: self.shielded_windows(&source_key, &source_staged.windows),
-            closed_windows: source_staged.closed.clone(),
-            directional: None,
-            directional_target_outer_gap: None,
-            target_domain: Some((
-                Engine::canonical_component_domain(&target_domain),
-                target_key.clone(),
-            )),
-            target_windows: Vec::new(),
-            command: CoreCommand::MigrateWorkspace {
-                direction: direction_token.to_owned(),
-            },
-        };
-        match self.engine.handle(&event) {
-            CoreReply::MigrateWorkspace(plan) => {
-                let _ = plan;
+        let observed = self.shielded_windows(&source_key, &source_staged.windows);
+        match self.layout.migrate_workspace(
+            &inset_source,
+            source_staged.outer_gap,
+            &source_staged.focused,
+            &observed,
+            &target_domain,
+        ) {
+            Ok(outcome) => {
                 // Full relocated member set from the committed target slot
                 // (tiled links plus carried float exceptions) with stable
                 // window identities, plus non-sticky hidden-lane lifetimes
@@ -1393,24 +1361,7 @@ impl WorldEngine {
                 // stable transfer identity below, with truthful partial
                 // attempt reporting. Raw facts stay distinct; the derived
                 // lane decides hidden.
-                let mut members: Vec<WindowId> = self
-                    .engine
-                    .session(&target_key)
-                    .map(|session| {
-                        let mut members: Vec<WindowId> = session
-                            .snapshot()
-                            .windows
-                            .into_iter()
-                            .map(|link| link.window)
-                            .collect();
-                        for observed in session.exception_observed() {
-                            if !members.iter().any(|w| w == &observed.window) {
-                                members.push(observed.window.clone());
-                            }
-                        }
-                        members
-                    })
-                    .unwrap_or_default();
+                let mut members = outcome.members;
                 for (window, homed) in &self.staged.homing {
                     // Unknown sticky never silently includes or omits: a
                     // homed hidden-lane lifetime without proven sticky
@@ -1442,11 +1393,6 @@ impl WorldEngine {
                     }
                 }
                 members.sort();
-                let floats = self
-                    .engine
-                    .session(&target_key)
-                    .map(|session| session.exception_count())
-                    .unwrap_or_default();
                 self.commit_migration(
                     command_seq,
                     source_output,
@@ -1454,28 +1400,16 @@ impl WorldEngine {
                     workspace,
                     direction_token,
                     members,
-                    floats,
+                    outcome.floats,
                     held_scopes,
                 )
             }
-            CoreReply::Rejected { kind, message } => CommandApplied::Rejected { kind, message },
-            CoreReply::SnapshotInvalid { message, detail } => CommandApplied::Rejected {
-                kind: detail,
-                message,
-            },
-            CoreReply::Diverged(reason) => CommandApplied::Rejected {
-                kind: reason.as_str(),
-                message: reason.message(),
-            },
-            _ => CommandApplied::Rejected {
-                kind: KIND_MIGRATION,
-                message: MSG_MIGRATION,
-            },
+            Err(err) => reject_workspace_migration_failure(err),
         }
     }
 
-    /// Authoritative migration commit shared by the tiled (engine-relocated)
-    /// and floating (sessionless core-membership) paths: migration
+    /// Authoritative migration commit shared by the tiled (layout-relocated)
+    /// and floating (core-membership-only) paths: migration
     /// provenance, the logical-id ring move with its tiling mode, both
     /// view updates, source refill (or a fresh trailing), the retained
     /// refill-view plus migration transfers, and the single-owner
@@ -1778,4 +1712,33 @@ pub(crate) enum CommandApplied {
         kind: &'static str,
         message: &'static str,
     },
+}
+
+fn reject_workspace_migration_failure(err: WorkspaceMigrationFailure) -> CommandApplied {
+    match err {
+        WorkspaceMigrationFailure::Layout(LayoutFailure::Semantics(kind)) => {
+            CommandApplied::Rejected {
+                kind: kind.as_str(),
+                message: kind.message(),
+            }
+        }
+        WorkspaceMigrationFailure::Layout(LayoutFailure::RevisionLimit { .. }) => {
+            CommandApplied::Rejected {
+                kind: DivergenceKind::RevisionExhausted.as_str(),
+                message: DivergenceKind::RevisionExhausted.message(),
+            }
+        }
+        WorkspaceMigrationFailure::SameOutput => CommandApplied::Rejected {
+            kind: "cross-domain-mismatch",
+            message: "command target does not match the target domain",
+        },
+        WorkspaceMigrationFailure::OverlayPresent => CommandApplied::Rejected {
+            kind: "overlay-present",
+            message: "workspace contains an unexplained fit-excluded member",
+        },
+        WorkspaceMigrationFailure::DomainMismatch => CommandApplied::Rejected {
+            kind: "domain-mismatch",
+            message: "domain outer gap does not match retained state",
+        },
+    }
 }

@@ -1603,16 +1603,12 @@ fn hidden_focus_target_refuses_complete_and_incomplete() {
             "{hidden_kind} target leaves the carrier index (complete={inventory_complete})",
         );
         assert!(
-            engine.engine.domain_keys().iter().any(|key| {
-                engine.engine.session(key).is_some_and(|session| {
-                    session
-                        .snapshot()
-                        .windows
-                        .iter()
-                        .any(|link| link.window == WindowId("win-b".to_owned()))
-                        || session.is_exception(&WindowId("win-b".to_owned()))
-                })
-            }),
+            engine
+                .layout
+                .is_tiled_window_any(&WindowId("win-b".to_owned()))
+                || engine
+                    .layout
+                    .is_exception_window_any(&WindowId("win-b".to_owned())),
             "{hidden_kind} target keeps retained membership (complete={inventory_complete})",
         );
         let probe = contra_v4(90);

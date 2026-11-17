@@ -297,3 +297,36 @@ pub(crate) struct LocalFocusOutcome {
     /// `(output, workspace, leaf)`.
     pub(crate) geometry: Vec<DesiredGeometry>,
 }
+
+/// Typed result of an accepted whole-workspace migration from a source domain
+/// to an unoccupied target domain on another output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceMigrationOutcome {
+    /// Relocated target member identities (tiled links plus carried exceptions),
+    /// sorted by window id. Empty when the source was absent/retained-empty or
+    /// when every observed member stayed sticky on the source.
+    pub(crate) members: Vec<WindowId>,
+    /// Number of retained exceptions carried into the relocated target domain.
+    pub(crate) floats: usize,
+}
+
+/// Typed failure for whole-workspace migration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WorkspaceMigrationFailure {
+    /// Semantic or revision failure from layout validation or convergence.
+    Layout(LayoutFailure),
+    /// Source and target share the same output (`cross-domain-mismatch` with
+    /// the command-target message).
+    SameOutput,
+    /// Observation contains an unexplained `fit_excluded` window.
+    OverlayPresent,
+    /// Source outer gap is out of range or source bounds/gap/outer gap do
+    /// not match the retained domain.
+    DomainMismatch,
+}
+
+impl From<LayoutFailure> for WorkspaceMigrationFailure {
+    fn from(value: LayoutFailure) -> Self {
+        Self::Layout(value)
+    }
+}

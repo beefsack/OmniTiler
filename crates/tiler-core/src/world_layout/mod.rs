@@ -35,6 +35,7 @@ mod state;
 mod topology;
 mod tree_edit;
 mod unchanged;
+mod workspace_migration;
 
 #[cfg(test)]
 mod float_tests;
@@ -50,13 +51,16 @@ mod query_focus_tests;
 mod resize_tests;
 #[cfg(test)]
 mod unchanged_tests;
+#[cfg(test)]
+mod workspace_migration_tests;
 
 pub(crate) use local_operation::LocalOperationContext;
 pub(crate) use outcome::{
     AdmissionOutcome, FittedAdmissionDecline, FittedAdmissionReason, FloatOutcome,
     FreshDomainFailure, FreshDomainOutcome, FreshOutcomeKind, LayoutFailure, LocalFocusOutcome,
     LocalMoveOutcome, LocalOperationFailure, OrientationOutcome, PointerCornerResizeOutcome,
-    ResizeOutcome, RetainedProjectionOutcome, RetainedReconcileFailure,
+    ResizeOutcome, RetainedProjectionOutcome, RetainedReconcileFailure, WorkspaceMigrationFailure,
+    WorkspaceMigrationOutcome,
 };
 pub(crate) use projection::ProjectionFailure;
 pub(crate) use state::WorldLayout;

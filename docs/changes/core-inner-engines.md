@@ -446,3 +446,14 @@
   formatting passes; a library/tests diagnostic still fails on 54 library and
   235 test-build errors in unmigrated consumers, with no pair/topology error.
   Combined pair convergence and operation callers remain pending.
+- Whole-workspace migration now partitions and converges local candidates,
+  relocates and validates hinted client-clamp geometry, then installs both
+  affected domains atomically. Both partition trials retain the same original
+  admission-counter baseline, with their maximum committed only on success;
+  source-carried outer gaps and other-side restore slots remain unchanged.
+  World migration uses typed results without an event/acknowledgement path.
+  Five direct tests are added but unexecuted; four existing test accessors now
+  read layout domain counts or tiled/exception membership directly. Source
+  review and scoped formatting pass. A library/tests diagnostic still fails
+  on 48 library and 224 test-build errors in unmigrated consumers, with no
+  new migration-module/test error. Runtime acceptance remains pending.
