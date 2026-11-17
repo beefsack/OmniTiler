@@ -391,3 +391,86 @@ fn sticky_query_mutators_are_revision_neutral_and_validate_exceptions() {
     assert!(!layout.forget_minimized_slot(&domain_key, &w_min));
     assert_eq!(layout.accepted_revision(&domain_key), 7);
 }
+
+#[test]
+fn validate_topology_accepts_valid_and_rejects_invalid_domain_cases() {
+    use crate::session::ExceptionFlags;
+
+    use super::state::DomainException;
+
+    let k1 = key("out-1", "ws-1");
+    let k2 = key("out-2", "ws-1");
+
+    let valid_layout = || {
+        let mut layout = WorldLayout::new();
+        layout.domains.insert(
+            k1.clone(),
+            domain(Some(leaf("a")), &[("win-a", "a")], Vec::new()),
+        );
+        layout.domains.insert(
+            k2.clone(),
+            domain(
+                Some(group("g", &["b", "c"])),
+                &[("win-b", "b"), ("win-c", "c")],
+                Vec::new(),
+            ),
+        );
+        layout
+    };
+
+    let mut layout = valid_layout();
+    assert!(layout.validate_topology());
+    layout.domains.get_mut(&k1).unwrap().focused_leaf = Some(node("a"));
+    assert!(layout.validate_topology());
+    layout.domains.get_mut(&k1).unwrap().focused_leaf = None;
+    layout.domains.get_mut(&k2).unwrap().focused_leaf = Some(node("c"));
+    assert!(layout.validate_topology());
+
+    // Link leaf missing from domain's tree.
+    let mut wrong_tree = valid_layout();
+    wrong_tree
+        .domains
+        .get_mut(&k2)
+        .unwrap()
+        .leaves
+        .insert(window("win-a"), node("a"));
+    assert!(!wrong_tree.validate_topology());
+
+    // Leaf in tree without a window link.
+    let mut unlinked = valid_layout();
+    unlinked
+        .domains
+        .get_mut(&k2)
+        .unwrap()
+        .leaves
+        .remove(&window("win-c"));
+    assert!(!unlinked.validate_topology());
+
+    // Empty output/workspace key and empty window/leaf fields.
+    let mut empty_key = valid_layout();
+    empty_key.domains.insert(
+        key("", "ws-1"),
+        domain(Some(leaf("z")), &[("win-z", "z")], Vec::new()),
+    );
+    assert!(!empty_key.validate_topology());
+
+    let mut empty_leaf = valid_layout();
+    empty_leaf
+        .domains
+        .get_mut(&k1)
+        .unwrap()
+        .leaves
+        .insert(window("win-empty"), node(""));
+    assert!(!empty_leaf.validate_topology());
+
+    // Window/exception overlap in the same domain.
+    let mut overlap = valid_layout();
+    overlap.domains.get_mut(&k1).unwrap().exceptions.insert(
+        window("win-a"),
+        DomainException {
+            flags: ExceptionFlags::none(),
+            floating_geometry: None,
+        },
+    );
+    assert!(!overlap.validate_topology());
+}

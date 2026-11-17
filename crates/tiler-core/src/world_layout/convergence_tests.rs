@@ -271,3 +271,297 @@ fn converge_retained_observation_refusal_keeps_slots_and_state_atomic() {
     assert_eq!(domain.accepted_revision, MAX_REVISION);
     assert!(!domain.leaves.contains_key(&w2));
 }
+
+fn two_tile_layout() -> WorldLayout {
+    use crate::directional::Axis;
+    let mut layout = WorldLayout::new();
+    let mut domain = DomainLayout::new(
+        Rect {
+            x: 0,
+            y: 0,
+            w: 120,
+            h: 80,
+        },
+        0,
+        0,
+    );
+    domain.tree = Some(Node::Group {
+        id: NodeId("g-1".to_owned()),
+        axis: Axis::Horizontal,
+        children: vec![leaf_node("leaf-win-1"), leaf_node("leaf-win-2")],
+        shares: vec![1, 1],
+    });
+    domain.leaves.insert(
+        WindowId("win-1".to_owned()),
+        NodeId("leaf-win-1".to_owned()),
+    );
+    domain.leaves.insert(
+        WindowId("win-2".to_owned()),
+        NodeId("leaf-win-2".to_owned()),
+    );
+    domain.focused_leaf = Some(NodeId("leaf-win-2".to_owned()));
+    domain.focus_stack = vec![
+        NodeId("leaf-win-1".to_owned()),
+        NodeId("leaf-win-2".to_owned()),
+    ];
+    domain.focus_history = vec![
+        NodeId("leaf-win-1".to_owned()),
+        NodeId("leaf-win-2".to_owned()),
+    ];
+    domain.last_active = Some(NodeId("leaf-win-2".to_owned()));
+    layout.domains.insert(key(), domain);
+    layout
+}
+
+fn anonymize_tree(node: &Node) -> Node {
+    match node {
+        Node::Leaf { id } => Node::Leaf { id: id.clone() },
+        Node::Group {
+            axis,
+            children,
+            shares,
+            ..
+        } => Node::Group {
+            id: NodeId("g".to_owned()),
+            axis: *axis,
+            children: children.iter().map(anonymize_tree).collect(),
+            shares: shares.clone(),
+        },
+    }
+}
+
+#[test]
+fn converge_observation_skew_missing_new_and_exact() {
+    let k = key();
+    let mut layout = two_tile_layout();
+    let w1 = WindowId("win-1".to_owned());
+    let w2 = WindowId("win-2".to_owned());
+
+    // Floating skew: retained tiled win-1 observed floating.
+    let base = layout.domain(&k).unwrap().accepted_revision;
+    let summary = layout
+        .converge_domain(
+            &k,
+            &[
+                observed_window("win-1", true),
+                observed_window("win-2", false),
+            ],
+            Some(&w2),
+            &BTreeSet::new(),
+        )
+        .expect("skew converges");
+    assert_eq!(
+        (summary.removed, summary.admitted, summary.flags_adopted),
+        (0, 0, 1)
+    );
+    let domain = layout.domain(&k).unwrap();
+    assert_eq!(domain.accepted_revision, base + 1);
+    assert!(domain.exceptions.contains_key(&w1));
+    assert!(!domain.leaves.contains_key(&w1));
+    assert!(domain.leaves.contains_key(&w2));
+    assert_eq!(domain.focused_leaf, Some(NodeId("leaf-win-2".to_owned())));
+
+    // Missing exception (win-1) plus brand-new normal (win-3) in one observation.
+    let base = domain.accepted_revision;
+    let summary = layout
+        .converge_domain(
+            &k,
+            &[
+                observed_window("win-2", false),
+                observed_window("win-3", false),
+            ],
+            Some(&w2),
+            &BTreeSet::new(),
+        )
+        .expect("missing/new converges");
+    assert_eq!(
+        (summary.removed, summary.admitted, summary.flags_adopted),
+        (1, 1, 0)
+    );
+    let domain = layout.domain(&k).unwrap();
+    assert_eq!(domain.accepted_revision, base + 1);
+    assert!(!domain.exceptions.contains_key(&w1));
+    assert!(domain.leaves.contains_key(&w2));
+    assert!(domain.leaves.contains_key(&WindowId("win-3".to_owned())));
+    assert_eq!(domain.focused_leaf, Some(NodeId("leaf-win-2".to_owned())));
+
+    // Exact match advances nothing.
+    let base = domain.accepted_revision;
+    let summary = layout
+        .converge_domain(
+            &k,
+            &[
+                observed_window("win-2", false),
+                observed_window("win-3", false),
+            ],
+            Some(&w2),
+            &BTreeSet::new(),
+        )
+        .expect("exact converges");
+    assert_eq!(
+        (summary.removed, summary.admitted, summary.flags_adopted),
+        (0, 0, 0)
+    );
+    assert_eq!(layout.domain(&k).unwrap().accepted_revision, base);
+}
+
+#[test]
+fn converge_newcomers_match_sequential_seed_admits() {
+    use crate::session::OutputDomain;
+
+    let k = key();
+    let mut converged = two_tile_layout();
+    let base = converged.domain(&k).unwrap().accepted_revision;
+    let obs_four = vec![
+        observed_window("win-1", false),
+        observed_window("win-2", false),
+        observed_window("win-3", false),
+        observed_window("win-4", false),
+    ];
+    let w4 = WindowId("win-4".to_owned());
+    let summary = converged
+        .converge_domain(&k, &obs_four, Some(&w4), &BTreeSet::new())
+        .expect("newcomers converge");
+    assert_eq!(
+        (summary.removed, summary.admitted, summary.flags_adopted),
+        (0, 2, 0)
+    );
+    assert_eq!(converged.domain(&k).unwrap().accepted_revision, base + 1);
+
+    let mut sequential = two_tile_layout();
+    let mut seq_obs = vec![
+        observed_window("win-1", false),
+        observed_window("win-2", false),
+    ];
+    for name in ["win-3", "win-4"] {
+        seq_obs.push(observed_window(name, false));
+        let dom = sequential.domain(&k).unwrap();
+        let focused = dom.focused_leaf.clone();
+        let bounds = focused
+            .and_then(|leaf_id| {
+                sequential
+                    .project_domain_geometry(&k, &Default::default())
+                    .and_then(|proj| proj.into_iter().find(|g| g.leaf == leaf_id).map(|g| g.rect))
+            })
+            .unwrap_or(dom.bounds);
+        sequential
+            .admit_window(
+                &k,
+                &WindowId(name.to_owned()),
+                ExceptionFlags::none(),
+                None,
+                bounds,
+                false,
+                false,
+                &seq_obs,
+            )
+            .expect("sequential admit");
+    }
+
+    let c_dom = converged.domain(&k).unwrap();
+    let s_dom = sequential.domain(&k).unwrap();
+    assert_eq!(c_dom.leaves, s_dom.leaves);
+    assert_eq!(
+        anonymize_tree(c_dom.tree.as_ref().unwrap()),
+        anonymize_tree(s_dom.tree.as_ref().unwrap())
+    );
+    assert_eq!(c_dom.focused_leaf, s_dom.focused_leaf);
+
+    // Focus naming a removed window falls back to surviving MRU focus.
+    let mut fallback = two_tile_layout();
+    let w2 = WindowId("win-2".to_owned());
+    let summary = fallback
+        .converge_domain(
+            &k,
+            &[observed_window("win-1", false)],
+            Some(&w2),
+            &BTreeSet::new(),
+        )
+        .expect("removed focus converges");
+    assert_eq!(
+        (summary.removed, summary.admitted, summary.flags_adopted),
+        (1, 0, 0)
+    );
+    assert_eq!(
+        fallback.domain(&k).unwrap().focused_leaf,
+        Some(NodeId("leaf-win-1".to_owned()))
+    );
+
+    // Empty fresh domain plus empty observation is an exact no-op.
+    let mut empty_layout = WorldLayout::new();
+    let fresh_domain = OutputDomain {
+        id: k.output.clone(),
+        workspace: k.workspace.clone(),
+        bounds: Rect {
+            x: 0,
+            y: 0,
+            w: 120,
+            h: 80,
+        },
+        gap: 0,
+        adjacent: Default::default(),
+    };
+    let empty_summary = empty_layout
+        .converge_fresh_domain(&fresh_domain, 0, &[], None)
+        .expect("empty exact");
+    assert_eq!(
+        (
+            empty_summary.removed,
+            empty_summary.admitted,
+            empty_summary.flags_adopted
+        ),
+        (0, 0, 0)
+    );
+    assert!(empty_layout.domains.is_empty());
+}
+
+#[test]
+fn converge_refuses_cross_homing() {
+    let k1 = key();
+    let k2 = DomainKey {
+        output: OutputId("out-2".to_owned()),
+        workspace: WorkspaceId("ws".to_owned()),
+    };
+    let mut layout = WorldLayout::new();
+    let mut d1 = DomainLayout::new(
+        Rect {
+            x: 0,
+            y: 0,
+            w: 120,
+            h: 80,
+        },
+        0,
+        0,
+    );
+    d1.tree = Some(leaf_node("leaf-a"));
+    d1.leaves
+        .insert(WindowId("win-a".to_owned()), NodeId("leaf-a".to_owned()));
+    d1.focused_leaf = Some(NodeId("leaf-a".to_owned()));
+    layout.domains.insert(k1.clone(), d1);
+    layout.domains.insert(
+        k2.clone(),
+        DomainLayout::new(
+            Rect {
+                x: 120,
+                y: 0,
+                w: 120,
+                h: 80,
+            },
+            0,
+            0,
+        ),
+    );
+
+    let mut moved = observed_window("win-a", false);
+    moved.output = k2.output.clone();
+    let err = layout
+        .converge_domain(&k1, &[moved], None, &BTreeSet::new())
+        .unwrap_err();
+    assert_eq!(
+        err,
+        LayoutFailure::Semantics(RefusalKind::CrossDomainMismatch)
+    );
+    let d1_after = layout.domain(&k1).unwrap();
+    assert_eq!(d1_after.accepted_revision, 0);
+    assert!(d1_after.leaves.contains_key(&WindowId("win-a".to_owned())));
+}

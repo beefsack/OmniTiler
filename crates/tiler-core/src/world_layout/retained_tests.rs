@@ -711,3 +711,55 @@ fn reconcile_retained_changed_bounds_updates_bounds_only() {
     assert_eq!(updated.leaves, leaves_before);
     assert_eq!(updated.accepted_revision, 5);
 }
+
+#[test]
+fn relocate_domain_is_atomic_on_validation_failure() {
+    let mut layout = WorldLayout::new();
+    let source_key = key_for("out-1", "ws-1");
+    let other_key = key_for("out-2", "ws-1");
+    let target = key_for("out-9", "ws-1");
+    let bounds = rect(0, 0, 120, 80);
+
+    layout
+        .domains
+        .insert(source_key.clone(), seeded_domain(bounds, 0, 0, &["win-1"]));
+    layout
+        .domains
+        .insert(other_key.clone(), seeded_domain(bounds, 0, 0, &["win-2"]));
+    let before_rev = layout.domain(&source_key).unwrap().accepted_revision;
+    let before_focus = layout.domain(&source_key).unwrap().focused_leaf.clone();
+
+    // Same output with a different workspace refuses: relocation crosses outputs.
+    assert!(!layout.relocate_domain(&source_key, &key_for("out-1", "ws-other"), bounds, 0, 0,));
+    // Existing target collision.
+    assert!(!layout.relocate_domain(&source_key, &other_key, bounds, 0, 0));
+    // Invalid gap, outer_gap, and bounds.
+    assert!(!layout.relocate_domain(&source_key, &target, bounds, -1, 0));
+    assert!(!layout.relocate_domain(&source_key, &target, bounds, 0, -1));
+    assert!(!layout.relocate_domain(&source_key, &target, rect(0, 0, 0, 80), 0, 0));
+    // Unknown source.
+    assert!(!layout.relocate_domain(&target, &source_key, bounds, 0, 0));
+
+    assert!(layout.contains_domain(&source_key));
+    assert!(!layout.contains_domain(&target));
+    assert_eq!(
+        layout.domain(&source_key).unwrap().accepted_revision,
+        before_rev
+    );
+    assert_eq!(
+        layout.domain(&source_key).unwrap().focused_leaf,
+        before_focus
+    );
+
+    // Cross-output and cross-workspace relocation preserves revision and moves as a unit.
+    assert!(layout.relocate_domain(&source_key, &target, bounds, 0, 0));
+    assert!(!layout.contains_domain(&source_key));
+    assert_eq!(
+        layout.domain(&target).unwrap().accepted_revision,
+        before_rev
+    );
+    let cross = key_for("out-8", "ws-other");
+    assert!(layout.relocate_domain(&target, &cross, bounds, 0, 0));
+    assert!(!layout.contains_domain(&target));
+    assert_eq!(layout.domain(&cross).unwrap().accepted_revision, before_rev);
+}

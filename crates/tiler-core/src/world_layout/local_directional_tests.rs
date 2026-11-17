@@ -510,3 +510,178 @@ fn atomic_refusal_and_revision_bound_preserves_allocator_burns() {
     );
     assert!(layout.group_alloc.next_value() > alloc_before);
 }
+
+#[test]
+fn rmov09_flat_swap_and_wrap_shares_preserve_traveling_shares() {
+    let k = key();
+
+    // R-MOV-09 both directions: H[A, B*, C, D] shares [1, 2, 3, 4].
+    // Move B right -> H[A, C, B, D] shares [1, 3, 2, 4]; move C left -> same.
+    for (focused_win, focused_leaf, direction) in
+        [("w2", "B", Direction::Right), ("w3", "C", Direction::Left)]
+    {
+        let mut layout = WorldLayout::new();
+        let tree = Node::Group {
+            id: nid("root"),
+            axis: Axis::Horizontal,
+            children: vec![leaf("A"), leaf("B"), leaf("C"), leaf("D")],
+            shares: vec![1, 2, 3, 4],
+        };
+        layout.domains.insert(
+            k.clone(),
+            base_domain(
+                tree,
+                &[("w1", "A"), ("w2", "B"), ("w3", "C"), ("w4", "D")],
+                focused_leaf,
+            ),
+        );
+        let observed = vec![obs("w1"), obs("w2"), obs("w3"), obs("w4")];
+        let out = layout
+            .local_move(
+                &k,
+                &win(focused_win),
+                direction,
+                SameAxisMove::SwapWithNeighbor,
+                &win(focused_win),
+                &observed,
+            )
+            .expect("flat swap applies");
+        assert_eq!(out.rule, Rule::R2c);
+        assert_eq!(out.capability, Capability::SwapNeighbor);
+        assert_eq!(out.focus_leaf, nid(focused_leaf));
+        match layout.tree(&k).expect("tree") {
+            Node::Group {
+                children, shares, ..
+            } => {
+                let ids: Vec<&str> = children.iter().map(|c| c.id().0.as_str()).collect();
+                assert_eq!(ids, vec!["A", "C", "B", "D"]);
+                assert_eq!(shares, &[1, 3, 2, 4]);
+            }
+            other => panic!("expected root group, got {other:?}"),
+        }
+    }
+
+    // Same world under GroupWithNeighbor nests B+C with summed pair share [1, 2, 1].
+    let mut layout = WorldLayout::new();
+    let tree = Node::Group {
+        id: nid("root"),
+        axis: Axis::Horizontal,
+        children: vec![leaf("A"), leaf("B"), leaf("C"), leaf("D")],
+        shares: vec![1, 1, 1, 1],
+    };
+    layout.domains.insert(
+        k.clone(),
+        base_domain(
+            tree,
+            &[("w1", "A"), ("w2", "B"), ("w3", "C"), ("w4", "D")],
+            "B",
+        ),
+    );
+    let observed = vec![obs("w1"), obs("w2"), obs("w3"), obs("w4")];
+    let out = layout
+        .local_move(
+            &k,
+            &win("w2"),
+            Direction::Right,
+            SameAxisMove::GroupWithNeighbor,
+            &win("w2"),
+            &observed,
+        )
+        .expect("wrap applies");
+    assert_eq!(out.rule, Rule::R2c);
+    assert_eq!(out.capability, Capability::WrapSiblings);
+    match layout.tree(&k).expect("tree") {
+        Node::Group {
+            children, shares, ..
+        } => {
+            assert_eq!(children.len(), 3);
+            assert_eq!(shares, &[1, 2, 1]);
+        }
+        other => panic!("expected root group, got {other:?}"),
+    }
+}
+
+#[test]
+fn rmov10_group_neighbor_wrap_shares_under_both_modes() {
+    let k = key();
+    let make_tree = || Node::Group {
+        id: nid("root"),
+        axis: Axis::Horizontal,
+        children: vec![
+            leaf("A"),
+            leaf("B"),
+            Node::Group {
+                id: nid("V"),
+                axis: Axis::Vertical,
+                children: vec![leaf("C"), leaf("D")],
+                shares: vec![1, 1],
+            },
+            leaf("E"),
+        ],
+        shares: vec![1, 2, 3, 4],
+    };
+    let leaves = [
+        ("w1", "A"),
+        ("w2", "B"),
+        ("w3", "C"),
+        ("w4", "D"),
+        ("w5", "E"),
+    ];
+    let observed = vec![obs("w1"), obs("w2"), obs("w3"), obs("w4"), obs("w5")];
+
+    for mode in [
+        SameAxisMove::GroupWithNeighbor,
+        SameAxisMove::SwapWithNeighbor,
+    ] {
+        let mut layout = WorldLayout::new();
+        layout
+            .domains
+            .insert(k.clone(), base_domain(make_tree(), &leaves, "B"));
+        let out = layout
+            .local_move(
+                &k,
+                &win("w2"),
+                Direction::Right,
+                mode,
+                &win("w2"),
+                &observed,
+            )
+            .expect("group-neighbor wrap applies under both modes");
+        assert_eq!(out.focus_leaf, nid("B"));
+        match layout.tree(&k).expect("tree") {
+            Node::Group {
+                children, shares, ..
+            } => {
+                assert_eq!(shares, &[1, 5, 4]);
+                assert_eq!(children.len(), 3);
+                assert_eq!(children[0].id().0, "A");
+                assert_eq!(children[2].id().0, "E");
+                match &children[1] {
+                    Node::Group {
+                        children, shares, ..
+                    } => {
+                        assert_eq!(shares, &[1, 1]);
+                        assert_eq!(children[0].id().0, "B");
+                        match &children[1] {
+                            Node::Group {
+                                id,
+                                children,
+                                shares,
+                                ..
+                            } => {
+                                assert_eq!(id.0, "V");
+                                assert_eq!(shares, &[1, 1]);
+                                let v_ids: Vec<&str> =
+                                    children.iter().map(|c| c.id().0.as_str()).collect();
+                                assert_eq!(v_ids, vec!["C", "D"]);
+                            }
+                            other => panic!("expected V group, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected wrapper group, got {other:?}"),
+                }
+            }
+            other => panic!("expected root group, got {other:?}"),
+        }
+    }
+}

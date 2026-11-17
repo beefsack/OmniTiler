@@ -740,3 +740,43 @@ fn duplicate_linked_leaf_across_domains_rejects_while_duplicate_group_id_is_allo
         PairAssemblyFailure::TargetUnusable
     );
 }
+
+#[test]
+fn same_output_round_trip_and_absent_target_splits_none() {
+    let s_desc = domain_desc("out-1", "ws-1", BTreeMap::new());
+    let t_desc = domain_desc("out-1", "ws-2", BTreeMap::new());
+    let s_key = s_desc.key();
+    let t_key = t_desc.key();
+
+    let s_orig = two_leaf_domain("g-0", ("s1", "l-1"), ("s2", "l-2"), [2, 3], 4, 0);
+    let t_orig = single_leaf_domain("t1", "l-1", 6, 0);
+
+    // Same-output occupied target round-trips topology, membership, and focus.
+    let mut world = WorldLayout::new();
+    world.domains.insert(s_key, s_orig.clone());
+    world.domains.insert(t_key, t_orig.clone());
+    let pair = world
+        .assemble_send_pair(&s_desc, &t_desc)
+        .expect("same-output send pair assembles");
+    let (split_s, split_t) = pair.split().expect("same-output pair splits");
+    let split_t = split_t.expect("occupied target retained");
+    assert_eq!(split_s.tree, s_orig.tree);
+    assert_eq!(split_s.leaves, s_orig.leaves);
+    assert_eq!(split_s.focused_leaf, s_orig.focused_leaf);
+    assert_eq!(split_t.tree, t_orig.tree);
+    assert_eq!(split_t.leaves, t_orig.leaves);
+    assert_eq!(split_t.focused_leaf, t_orig.focused_leaf);
+
+    // Absent target (both same-output and cross-output) splits to None with source preserved.
+    let mut absent_world = WorldLayout::new();
+    absent_world.domains.insert(s_desc.key(), s_orig.clone());
+    let empty_pair = absent_world
+        .assemble_send_pair(&s_desc, &t_desc)
+        .expect("absent target pair assembles");
+    assert!(empty_pair.target.tree.is_none());
+    let (empty_s, empty_t) = empty_pair.split().expect("absent target pair splits");
+    assert!(empty_t.is_none());
+    assert_eq!(empty_s.tree, s_orig.tree);
+    assert_eq!(empty_s.leaves, s_orig.leaves);
+    assert_eq!(empty_s.focused_leaf, s_orig.focused_leaf);
+}
