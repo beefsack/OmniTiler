@@ -657,9 +657,10 @@ fn fixed_tile_override_newcomer_still_mints_once() {
             None,
         ),
     );
-    engine
-        .engine
-        .seed_fixed_tile_override_any(&WindowId("wt".to_owned()));
+    engine.pending_intent.insert(
+        WindowId("wt".to_owned()),
+        crate::intent_data::IntentData::new(Some(false), None),
+    );
     let wt = fixed_fact("wt", "out-a", 200);
     let arrival = accepted(
         &mut engine,
@@ -2435,7 +2436,7 @@ fn floating_source_migration_carries_without_engine_tree() {
         workspace: crate::directional::WorkspaceId(view_a.clone()),
     };
     assert!(
-        engine.engine().session(&target_key).is_none(),
+        !engine.layout().contains_domain(&target_key),
         "sessionless carry builds no tree"
     );
     // Unchanged membership stays stable with no replay: one migration
@@ -4695,7 +4696,7 @@ fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
     assert!(!row_of(&untiled, "wf").floating);
     assert!(
         engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("wf".to_owned())),
         "live command records override"
     );
@@ -4733,7 +4734,7 @@ fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
     );
     assert!(
         engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("wf".to_owned())),
         "override survives hide"
     );
@@ -4756,7 +4757,7 @@ fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
     assert!(!row_of(&shown, "wf").floating, "override survives show");
     assert!(
         engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("wf".to_owned()))
     );
     let view_a = view_of(&shown, "out-a");
@@ -4807,7 +4808,7 @@ fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
     );
     assert!(
         engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("wf".to_owned()))
     );
     assert!(

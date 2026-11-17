@@ -645,12 +645,8 @@ fn sole_toggle_float_publishes_controlled_exception_row() {
         "{row:?}"
     );
     // No tree is invented by publishing: the session stays exception-only.
-    let session = engine
-        .engine()
-        .session(&domain_key(&view))
-        .expect("retained session");
     assert!(
-        session.tree_for(&domain_key(&view)).is_none(),
+        engine.layout().tree(&domain_key(&view)).is_none(),
         "exception-only session keeps no tree"
     );
 }

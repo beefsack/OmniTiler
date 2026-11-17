@@ -8069,12 +8069,12 @@ fn v4_staging_drives_convergence_homing_and_resweep() {
     let spare = key.clone();
     was_floating.insert(spare.clone());
     assert!(
-        !engine.engine.contains(&spare),
+        !engine.layout.contains_domain(&spare),
         "sessionless before resweep"
     );
     engine.resweep_retiled(&owner, &correlation, &mut held_scopes, &was_floating);
     assert!(
-        engine.engine.contains(&spare),
+        engine.layout.contains_domain(&spare),
         "resweep converges the retiled domain"
     );
     assert!(held_scopes.is_empty(), "resweep holds nothing");
@@ -8089,25 +8089,28 @@ fn admission_known_before(engine: &WorldEngine) -> BTreeMap<DomainKey, BTreeSet<
         if !domain.readable {
             continue;
         }
-        let Some(session) = engine.engine.session(&domain.key) else {
+        if !engine.layout.contains_domain(&domain.key) {
             continue;
-        };
+        }
         let mut known = BTreeSet::new();
-        for link in session.snapshot().windows {
-            if link.output == domain.key.output && link.workspace == domain.key.workspace {
-                known.insert(link.window.0.clone());
-            }
-        }
-        for observed in session.exception_observed() {
-            if observed.output == domain.key.output && observed.workspace == domain.key.workspace {
-                known.insert(observed.window.0.clone());
-            }
-        }
-        for (window, output, workspace) in session.minimized_entries() {
-            if output == domain.key.output && workspace == domain.key.workspace {
-                known.insert(window.0.clone());
-            }
-        }
+        known.extend(
+            engine
+                .layout
+                .tiled_windows(&domain.key)
+                .map(|window| window.0.clone()),
+        );
+        known.extend(
+            engine
+                .layout
+                .exception_windows(&domain.key)
+                .map(|window| window.0.clone()),
+        );
+        known.extend(
+            engine
+                .layout
+                .minimized_windows(&domain.key)
+                .map(|window| window.0.clone()),
+        );
         known_before.insert(domain.key.clone(), known);
     }
     known_before

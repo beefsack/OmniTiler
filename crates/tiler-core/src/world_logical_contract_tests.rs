@@ -3201,16 +3201,10 @@ fn valid_migration_holds_target_without_suppression_then_retires_on_arrival() {
         output: OutputId("out-b".to_owned()),
         workspace: crate::directional::WorkspaceId(view_a.clone()),
     };
-    let session = engine
-        .engine()
-        .session(&target_key)
-        .expect("retained target session");
     assert!(
-        session
-            .snapshot()
-            .windows
-            .iter()
-            .any(|link| link.window.0 == "win-a")
+        engine
+            .layout()
+            .is_tiled_window(&target_key, &WindowId("win-a".to_owned()))
     );
     // An unchanged report does not flap the source: same held scope, same
     // single flight, same mapping, same frozen binding.
@@ -3837,15 +3831,10 @@ fn multi_member_migration_preserves_tree_and_focus() {
         output: OutputId("out-b".to_owned()),
         workspace: crate::directional::WorkspaceId(view_a.clone()),
     };
-    let session = engine
-        .engine()
-        .session(&target_key)
-        .expect("target session");
-    let mut homed: Vec<String> = session
-        .snapshot()
-        .windows
-        .iter()
-        .map(|link| link.window.0.clone())
+    let mut homed: Vec<String> = engine
+        .layout()
+        .tiled_windows(&target_key)
+        .map(|window| window.0.clone())
         .collect();
     homed.sort();
     assert_eq!(homed, vec!["win-a".to_owned(), "win-b".to_owned()]);
@@ -4175,16 +4164,10 @@ fn tiled_to_float_output_crossing_leaves_source_state_unchanged() {
         output: OutputId("out-a".to_owned()),
         workspace: crate::directional::WorkspaceId(output_view(&first, "out-a").expect("view a")),
     };
-    let session = engine
-        .engine()
-        .session(&source_key)
-        .expect("source session intact");
     assert!(
-        session
-            .snapshot()
-            .windows
-            .iter()
-            .any(|link| link.window.0 == "win-a")
+        engine
+            .layout()
+            .is_tiled_window(&source_key, &WindowId("win-a".to_owned()))
     );
     // The mover rides membership at the target with no frame authority
     // and no diagnostic float origin on the boundary row.
@@ -6182,7 +6165,7 @@ fn floating_migration_rekeys_floating_scope_and_migrates_back_sessionless() {
         workspace: crate::directional::WorkspaceId(view_a.clone()),
     };
     assert!(
-        engine.engine().session(&home).is_none(),
+        !engine.layout().contains_domain(&home),
         "floating inverse stays sessionless"
     );
 }

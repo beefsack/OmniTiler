@@ -252,10 +252,7 @@ fn seed_pair(generation: &str) -> (WorldEngine, String, String, u64, u64) {
 /// Live group ids in one domain's committed Engine session tree.
 fn group_ids(engine: &WorldEngine, output: &str, workspace: &str) -> Vec<NodeId> {
     let key = domain_key(output, workspace);
-    let Some(session) = engine.engine.session(&key) else {
-        return Vec::new();
-    };
-    let Some(tree) = session.tree_for(&key) else {
+    let Some(tree) = engine.layout.tree(&key) else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -282,16 +279,7 @@ fn collect_groups(tree: &Node, out: &mut Vec<NodeId>) {
 /// Exact member lifetime set committed in one domain's Engine session.
 fn domain_members(engine: &WorldEngine, output: &str, workspace: &str) -> BTreeSet<WindowId> {
     let key = domain_key(output, workspace);
-    let Some(session) = engine.engine.session(&key) else {
-        return BTreeSet::new();
-    };
-    session
-        .snapshot()
-        .windows
-        .into_iter()
-        .filter(|link| link.output == key.output && link.workspace == key.workspace)
-        .map(|link| link.window)
-        .collect()
+    engine.layout.tiled_windows(&key).cloned().collect()
 }
 
 /// Pager workspace row for one id on one output, from an accepted reply.
@@ -1012,9 +1000,8 @@ fn group_member_set_change_accepts_surviving_group() {
     // the exact member lifetime set changed (not just frame payload).
     let key = domain_key("out-a", &view_a);
     let root_id = engine
-        .engine
-        .session(&key)
-        .and_then(|session| session.tree_for(&key))
+        .layout
+        .tree(&key)
         .map(|tree| tree.id().clone())
         .expect("domain tree");
     assert_eq!(

@@ -1709,7 +1709,7 @@ fn predicate_ingress_selects_admission_without_reclassification() {
         &width_fixed_report(FixedSizePredicate::EitherAxis, 1),
     );
     assert_eq!(
-        engine.engine().fixed_size_predicate(),
+        engine.layout().fixed_size_predicate(),
         FixedSizePredicate::EitherAxis
     );
     let row = row_of(&reply, "win-f");
@@ -2133,14 +2133,14 @@ fn pair_keys(view_a: &str, view_b: &str) -> (DomainKey, DomainKey) {
 }
 
 fn assert_pair_gaps(engine: &WorldEngine, key_a: &DomainKey, key_b: &DomainKey) {
-    let keys = engine.engine().domain_keys();
+    let keys = engine.layout().domain_keys();
     assert_eq!(
-        engine.engine().outer_gap(key_a),
+        engine.layout().domain_outer_gap(key_a),
         Some(8),
         "source outer gap retained; keys={keys:?} want={key_a:?}/{key_b:?}"
     );
     assert_eq!(
-        engine.engine().outer_gap(key_b),
+        engine.layout().domain_outer_gap(key_b),
         Some(8),
         "configured outer gap is shared across outputs"
     );
@@ -2483,7 +2483,7 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
                 output: key_a.output.clone(),
                 workspace: WorkspaceId(ring[1].clone()),
             };
-            assert_eq!(engine.engine().outer_gap(&workspace_target), Some(8));
+            assert_eq!(engine.layout().domain_outer_gap(&workspace_target), Some(8));
         }
         for row in &reply.windows {
             if let Some(allocation) = row.allocation {

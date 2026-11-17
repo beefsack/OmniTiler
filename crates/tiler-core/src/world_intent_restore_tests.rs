@@ -54,22 +54,12 @@ fn tile_false() -> String {
 
 fn is_tiled(engine: &WorldEngine, win: &str) -> bool {
     let id = WindowId(win.to_owned());
-    engine.engine.domain_keys().iter().any(|key| {
-        engine
-            .engine
-            .session(key)
-            .is_some_and(|s| s.snapshot().windows.iter().any(|l| l.window == id))
-    })
+    engine.layout.is_tiled_window_any(&id)
 }
 
 fn is_floated(engine: &WorldEngine, win: &str) -> bool {
     let id = WindowId(win.to_owned());
-    engine.engine.domain_keys().iter().any(|key| {
-        engine
-            .engine
-            .session(key)
-            .is_some_and(|s| s.is_exception(&id))
-    })
+    engine.layout.is_exception_window_any(&id)
 }
 
 fn row_for<'a>(
@@ -145,7 +135,7 @@ fn restore_tile_false_nonfixed_survives_hints_and_exclusion() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned())),
         "explicit tile must commit a real override"
     );
@@ -438,7 +428,7 @@ fn conflicting_duplicates_confer_no_winner() {
     assert!(is_floated(&engine, "win-a"));
     assert!(
         !engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
     // A later valid record must not resurrect a winner.
@@ -461,7 +451,7 @@ fn conflicting_duplicates_confer_no_winner() {
     assert!(reply.intent_desired.is_empty());
     assert!(
         !engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
 }
@@ -1023,7 +1013,7 @@ fn restored_false_then_user_float_clears_override_and_survives_exclusion() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
 
@@ -1053,7 +1043,7 @@ fn restored_false_then_user_float_clears_override_and_survives_exclusion() {
     assert!(is_floated(&engine, "win-a"));
     assert!(
         !engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
     assert!(
@@ -1100,7 +1090,7 @@ fn restored_false_then_user_float_clears_override_and_survives_exclusion() {
     assert!(is_floated(&engine, "win-a"));
     assert!(
         !engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
 }
@@ -1158,7 +1148,7 @@ fn restored_false_minimized_then_fixed_stays_tiled() {
     );
     assert!(
         !engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
 
@@ -1185,7 +1175,7 @@ fn restored_false_minimized_then_fixed_stays_tiled() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
 
@@ -1227,7 +1217,7 @@ fn restored_false_minimized_then_fixed_stays_tiled() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
 }
@@ -1328,7 +1318,7 @@ fn own_process_prunes_pending_and_conflict_clears_on_admission() {
     assert!(engine.intent_conflicts.is_empty());
     assert!(
         !engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-c".to_owned()))
     );
     // Late valid record after admission confers nothing.
@@ -1351,7 +1341,7 @@ fn own_process_prunes_pending_and_conflict_clears_on_admission() {
     assert!(reply.intent_desired.is_empty());
     assert!(
         !engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-c".to_owned()))
     );
 }
@@ -1664,7 +1654,7 @@ fn floating_pending_false_survives_tiling_enable_as_explicit_tile() {
     );
     assert!(
         !engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-n".to_owned()))
     );
     let row = row_for(&reply, "win-n").expect("floating row");
@@ -1698,7 +1688,7 @@ fn floating_pending_false_survives_tiling_enable_as_explicit_tile() {
     assert!(is_tiled(&engine, "win-n"));
     assert!(
         engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-n".to_owned()))
     );
     assert!(
@@ -1927,7 +1917,7 @@ fn hints_null_twice_without_record_then_first_admissible_imports() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
     assert!(
@@ -2040,7 +2030,7 @@ fn floating_workspace_first_admission_ignores_late_record() {
     );
     assert!(
         !engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-new".to_owned()))
     );
 }
@@ -2100,7 +2090,7 @@ fn pending_false_exclusion_gains_fixed_hints_then_recovers_tiled() {
     );
     assert!(
         !engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
 
@@ -2134,7 +2124,7 @@ fn pending_false_exclusion_gains_fixed_hints_then_recovers_tiled() {
     );
     assert!(
         !engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
 
@@ -2161,7 +2151,7 @@ fn pending_false_exclusion_gains_fixed_hints_then_recovers_tiled() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
     assert!(
@@ -2197,7 +2187,7 @@ fn pending_false_hints_null_and_omission_then_success() {
     );
     assert!(
         !engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
 
@@ -2222,7 +2212,7 @@ fn pending_false_hints_null_and_omission_then_success() {
     );
     assert!(
         !engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
 
@@ -2256,7 +2246,7 @@ fn pending_false_hints_null_and_omission_then_success() {
     );
     assert!(
         !engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
 
@@ -2283,7 +2273,7 @@ fn pending_false_hints_null_and_omission_then_success() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
     assert!(

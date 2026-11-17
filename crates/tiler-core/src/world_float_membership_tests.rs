@@ -229,7 +229,7 @@ fn floating_toggle_keeps_membership_across_view_switch_and_unchanged_report() {
         workspace: crate::directional::WorkspaceId(view_a.clone()),
     };
     assert!(
-        engine.engine().session(&float_key).is_none(),
+        !engine.layout().contains_domain(&float_key),
         "toggle releases the layout session (old homing source is empty)"
     );
     let scope = toggled

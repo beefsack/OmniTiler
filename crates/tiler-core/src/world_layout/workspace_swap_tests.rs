@@ -469,3 +469,46 @@ fn target_collision_and_invalid_geometry_refuse_atomically() {
     assert!(layout.contains_domain(&key("out-a", "ws-1")));
     assert!(!layout.contains_domain(&key("out-b", "ws-1")));
 }
+
+#[test]
+fn malformed_source_with_sticky_refuses_atomically() {
+    let mut layout = WorldLayout::new();
+    let bounds_a = rect(0, 0, 800, 600);
+    let bounds_b = rect(800, 0, 1000, 700);
+
+    let mut dom_a = make_tiled_domain(bounds_a, 4, 8, "a", 6);
+    let sticky_a = window("sticky-a");
+    let float_rect = rect(30, 30, 220, 160);
+    dom_a.exceptions.insert(
+        sticky_a.clone(),
+        DomainException {
+            flags: ExceptionFlags {
+                floating: true,
+                ..ExceptionFlags::none()
+            },
+            floating_geometry: Some(float_rect),
+        },
+    );
+    // Corrupt topology: leaf binding points to an absent node id so side-A
+    // preparation fails atomically even with an empty opposite side.
+    dom_a
+        .leaves
+        .insert(window("ghost-win"), node("missing-node"));
+    layout.domains.insert(key("out-a", "ws-1"), dom_a);
+
+    let sticky = BTreeSet::from([sticky_a]);
+    let leg_a = side("out-a", "out-b", "ws-1", bounds_b, 8, 12);
+    let leg_b = side("out-b", "out-a", "ws-2", bounds_a, 4, 8);
+
+    assert_eq!(
+        layout.swap_workspaces(&leg_a, &leg_b, &sticky),
+        Err(WorkspaceSwapFailure::MalformedTopology)
+    );
+    assert!(layout.contains_domain(&key("out-a", "ws-1")));
+    assert!(!layout.contains_domain(&key("out-b", "ws-1")));
+    assert!(!layout.contains_domain(&key("out-a", "ws-2")));
+    assert!(!layout.contains_domain(&key("out-b", "ws-2")));
+    let kept = layout.domain(&key("out-a", "ws-1")).expect("source kept");
+    assert_eq!(kept.accepted_revision, 6);
+    assert!(kept.exceptions.contains_key(&window("sticky-a")));
+}

@@ -114,22 +114,12 @@ fn toggle_float_rect(window: &str, rect: Rect) -> WorldCommand {
 
 fn is_floated(engine: &WorldEngine, win: &str) -> bool {
     let id = WindowId(win.to_owned());
-    engine.engine.domain_keys().iter().any(|key| {
-        engine
-            .engine
-            .session(key)
-            .is_some_and(|s| s.is_exception(&id))
-    })
+    engine.layout.is_exception_window_any(&id)
 }
 
 fn is_tiled(engine: &WorldEngine, win: &str) -> bool {
     let id = WindowId(win.to_owned());
-    engine.engine.domain_keys().iter().any(|key| {
-        engine
-            .engine
-            .session(key)
-            .is_some_and(|s| s.snapshot().windows.iter().any(|l| l.window == id))
-    })
+    engine.layout.is_tiled_window_any(&id)
 }
 
 fn staged_save(engine: &WorldEngine, win: &str) -> IntentData {
@@ -282,14 +272,19 @@ fn sticky_on_from_tiled_takes_centered_sixty_percent_placement() {
     );
     let id = WindowId("win-a".to_owned());
     let key = engine
-        .engine
+        .layout
         .domain_keys()
         .into_iter()
         .next()
         .expect("domain");
-    let session = engine.engine.session(&key).expect("session");
-    assert_eq!(session.floating_geometry(&id), Some(expected));
-    assert_eq!(session.retained_float_geometry(&id), Some(expected));
+    assert_eq!(
+        engine.layout.exception_float_geometry(&key, &id),
+        Some(expected)
+    );
+    assert_eq!(
+        engine.layout.retained_float_geometry(&key, &id),
+        Some(expected)
+    );
 }
 
 #[test]
@@ -347,17 +342,13 @@ fn sticky_on_from_tiled_reuses_retained_float_placement() {
     assert!(!desire(&unplaced, "win-a").floating, "unfloat retiles");
     let id = WindowId("win-a".to_owned());
     let key = engine
-        .engine
+        .layout
         .domain_keys()
         .into_iter()
         .next()
         .expect("domain");
     assert_eq!(
-        engine
-            .engine
-            .session(&key)
-            .expect("session")
-            .retained_float_geometry(&id),
+        engine.layout.retained_float_geometry(&key, &id),
         Some(user),
         "unfloat keeps the durable user placement"
     );
@@ -904,7 +895,7 @@ fn sticky_off_into_a_floating_workspace_lands_float_without_a_session() {
     let dest = engine
         .staged_homing(&WindowId("win-a".to_owned()))
         .expect("homing");
-    assert!(engine.engine.session(&dest).is_none(), "no forced session");
+    assert!(!engine.layout.contains_domain(&dest), "no forced session");
     // Retiling restores the saved tile base.
     accepted(
         &mut engine,
@@ -1924,7 +1915,7 @@ fn sticky_reply_bound_rejects_before_mutation_and_small_retry_wins() {
     };
     let mut engine = composed_engine();
     accepted(&mut engine, &bootstrap(vec![sup_fact("win-a", "out-a", 0)]));
-    let logical = engine.engine.domain_keys().len();
+    let logical = engine.layout.domain_keys().len();
     let staged = engine.staged.facts.len() + engine.staged.held_windows.len();
     let retained = engine.retained_publish_footprint();
     let save_bound = max_intent_save_bound_v4(&cmd(2, 1, Vec::new(), set_sticky("win-a", true)));
@@ -2278,7 +2269,7 @@ fn toggle_float_into_a_floating_destination_lands_float_with_tile_base() {
         "base tile intent is saved under the float landing"
     );
     let dest = engine.staged_homing(&id).expect("homing");
-    assert!(engine.engine.session(&dest).is_none(), "no forced session");
+    assert!(!engine.layout.contains_domain(&dest), "no forced session");
     // Retiling restores the saved tile base.
     accepted(
         &mut engine,

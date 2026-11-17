@@ -695,14 +695,9 @@ fn native_false_null_toggle_float_save_preserved() {
             None,
         ),
     );
-    let tiled = engine.engine.domain_keys().iter().any(|key| {
-        engine.engine.session(key).is_some_and(|s| {
-            s.snapshot()
-                .windows
-                .iter()
-                .any(|l| l.window == WindowId("win-a".to_owned()))
-        })
-    });
+    let tiled = engine
+        .layout
+        .is_tiled_window_any(&WindowId("win-a".to_owned()));
     assert!(tiled, "composed-null win-a tiles before toggle");
     let toggled = report_full(
         2,
@@ -730,12 +725,9 @@ fn native_false_null_toggle_float_save_preserved() {
         "{:?}",
         reply.intent_desired
     );
-    let floated = engine.engine.domain_keys().iter().any(|key| {
-        engine
-            .engine
-            .session(key)
-            .is_some_and(|s| s.is_exception(&WindowId("win-a".to_owned())))
-    });
+    let floated = engine
+        .layout
+        .is_exception_window_any(&WindowId("win-a".to_owned()));
     assert!(floated, "toggle floats the composed-null window");
     match settlements.first().and_then(|s| s.result.as_ref()) {
         Some(crate::world_report::CommandResult::Float {

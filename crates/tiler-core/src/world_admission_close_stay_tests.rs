@@ -168,18 +168,11 @@ fn committed_focus(engine: &WorldEngine, output: &str, workspace: &str) -> Optio
         output: OutputId(output.to_owned()),
         workspace: crate::directional::WorkspaceId(workspace.to_owned()),
     };
-    let session = engine.engine().session(&key)?;
-    let (domain, leaf) = session.focus();
-    let (domain, leaf) = (domain?, leaf?);
-    if domain != key {
-        return None;
-    }
-    session
-        .snapshot()
-        .windows
-        .iter()
-        .find(|link| link.leaf == leaf)
-        .map(|link| link.window.0.clone())
+    let leaf = engine.layout().focus_leaf(&key)?;
+    engine
+        .layout()
+        .window_for_leaf(&key, leaf)
+        .map(|window| window.0.clone())
 }
 
 #[test]
@@ -2364,17 +2357,14 @@ fn first_leaf_window(engine: &WorldEngine, output: &str, workspace: &str) -> Opt
         output: OutputId(output.to_owned()),
         workspace: crate::directional::WorkspaceId(workspace.to_owned()),
     };
-    let session = engine.engine().session(&key)?;
-    let mut node = session.tree_for(&key)?;
+    let mut node = engine.layout().tree(&key)?;
     loop {
         match node {
             crate::directional::Node::Leaf { id } => {
-                return session
-                    .snapshot()
-                    .windows
-                    .iter()
-                    .find(|link| &link.leaf == id)
-                    .map(|link| link.window.0.clone());
+                return engine
+                    .layout()
+                    .window_for_leaf(&key, id)
+                    .map(|window| window.0.clone());
             }
             crate::directional::Node::Group { children, .. } => {
                 node = children.first()?;
@@ -3213,17 +3203,19 @@ fn inactive_workspace_birth_anchors_remembered_without_focus_or_switch_and_never
         Some("win-a")
     );
     {
-        let session = engine.engine().session(&w2_key).expect("W2 session");
-        let remembered = session
+        let remembered = engine
+            .layout()
             .remembered_leaf(&w2_key)
             .expect("W2 remembered leaf");
-        let snapshot = session.snapshot();
-        let remembered_win = snapshot
-            .windows
-            .iter()
-            .find(|link| link.leaf == remembered)
-            .map(|link| link.window.0.as_str());
-        assert_eq!(remembered_win, Some("win-c"), "W2 remembers win-c");
+        let remembered_win = engine
+            .layout()
+            .window_for_leaf(&w2_key, &remembered)
+            .map(|window| window.0);
+        assert_eq!(
+            remembered_win.as_deref(),
+            Some("win-c"),
+            "W2 remembers win-c"
+        );
     }
 
     // 3. Newcomer win-d observed on inactive W2 (n2) while W1 (n1) stays

@@ -9,6 +9,12 @@ use super::state::WorldLayout;
 use super::topology::collect_leaves;
 
 impl WorldLayout {
+    /// Retained fixed-size admission predicate, read directly for tests.
+    #[must_use]
+    pub(crate) fn fixed_size_predicate(&self) -> crate::size_hints::FixedSizePredicate {
+        self.config.fixed_size_predicate
+    }
+
     /// Whether a domain slot is retained.
     #[must_use]
     pub(crate) fn contains_domain(&self, key: &DomainKey) -> bool {

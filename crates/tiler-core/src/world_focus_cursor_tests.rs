@@ -2285,19 +2285,9 @@ fn admit_h_vab_c(engine: &mut WorldEngine) -> u64 {
     engine
         .handle_report_v4_for_test(&observe(3, vec![wa, wb, wc], "win-a"))
         .expect("admit B under A");
-    let key = engine.engine.domain_keys()[0].clone();
-    let tree = engine
-        .engine
-        .session(&key)
-        .and_then(|s| {
-            s.snapshot()
-                .domains
-                .into_iter()
-                .find(|d| d.output == key.output && d.workspace == key.workspace)
-                .and_then(|d| d.tree)
-        })
-        .expect("tree");
-    match &tree {
+    let key = engine.layout.domain_keys()[0].clone();
+    let tree = engine.layout.tree(&key).expect("tree");
+    match tree {
         crate::directional::Node::Group { axis, children, .. } => {
             assert_eq!(*axis, crate::directional::Axis::Horizontal);
             assert_eq!(children.len(), 2);

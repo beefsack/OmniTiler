@@ -281,32 +281,22 @@ fn global_unique_swap_preserves_nonempty_units() {
         output: OutputId("out-b".to_owned()),
         workspace: crate::directional::WorkspaceId(view_b.clone()),
     };
-    let snap_a = engine
-        .engine()
-        .session(&src_a)
-        .expect("source session a")
-        .snapshot();
-    let snap_b = engine
-        .engine()
-        .session(&src_b)
-        .expect("source session b")
-        .snapshot();
-    assert!(snap_a.windows.len() >= 2, "source a tiled: {snap_a:?}");
-    assert!(snap_b.windows.len() >= 2, "source b tiled: {snap_b:?}");
-    let tree_a = engine
-        .engine()
-        .session(&src_a)
-        .unwrap()
-        .tree_for(&src_a)
-        .cloned();
-    let tree_b = engine
-        .engine()
-        .session(&src_b)
-        .unwrap()
-        .tree_for(&src_b)
-        .cloned();
-    let focus_a = engine.engine().session(&src_a).unwrap().focus();
-    let focus_b = engine.engine().session(&src_b).unwrap().focus();
+    let snap_a: Vec<String> = engine
+        .layout()
+        .tiled_windows(&src_a)
+        .map(|window| window.0.clone())
+        .collect();
+    let snap_b: Vec<String> = engine
+        .layout()
+        .tiled_windows(&src_b)
+        .map(|window| window.0.clone())
+        .collect();
+    assert!(snap_a.len() >= 2, "source a tiled: {snap_a:?}");
+    assert!(snap_b.len() >= 2, "source b tiled: {snap_b:?}");
+    let tree_a = engine.layout().tree(&src_a).cloned();
+    let tree_b = engine.layout().tree(&src_b).cloned();
+    let focus_a = engine.layout().focus_leaf(&src_a).cloned();
+    let focus_b = engine.layout().focus_leaf(&src_b).cloned();
 
     // Swap: select out-b's workspace on out-a.
     let swapped = accepted(
@@ -441,46 +431,42 @@ fn global_unique_swap_preserves_nonempty_units() {
         output: OutputId("out-a".to_owned()),
         workspace: crate::directional::WorkspaceId(view_b.clone()),
     };
-    let moved_a = engine.engine().session(&tgt_a).expect("moved session a");
-    let moved_b = engine.engine().session(&tgt_b).expect("moved session b");
-    let mut pre_a: Vec<String> = snap_a.windows.iter().map(|l| l.window.0.clone()).collect();
-    let mut post_a: Vec<String> = moved_a
-        .snapshot()
-        .windows
-        .iter()
-        .map(|l| l.window.0.clone())
+    let mut pre_a: Vec<String> = snap_a;
+    let mut post_a: Vec<String> = engine
+        .layout()
+        .tiled_windows(&tgt_a)
+        .map(|window| window.0.clone())
         .collect();
     pre_a.sort();
     post_a.sort();
     assert_eq!(pre_a, post_a, "tiled membership preserved");
-    let mut pre_b: Vec<String> = snap_b.windows.iter().map(|l| l.window.0.clone()).collect();
-    let mut post_b: Vec<String> = moved_b
-        .snapshot()
-        .windows
-        .iter()
-        .map(|l| l.window.0.clone())
+    let mut pre_b: Vec<String> = snap_b;
+    let mut post_b: Vec<String> = engine
+        .layout()
+        .tiled_windows(&tgt_b)
+        .map(|window| window.0.clone())
         .collect();
     pre_b.sort();
     post_b.sort();
     assert_eq!(pre_b, post_b, "tiled membership preserved");
     assert_eq!(
-        moved_a.tree_for(&tgt_a),
+        engine.layout().tree(&tgt_a),
         tree_a.as_ref(),
         "tree/shares preserved"
     );
     assert_eq!(
-        moved_b.tree_for(&tgt_b),
+        engine.layout().tree(&tgt_b),
         tree_b.as_ref(),
         "tree/shares preserved"
     );
     assert_eq!(
-        moved_a.focus().1,
-        focus_a.1,
+        engine.layout().focus_leaf(&tgt_a),
+        focus_a.as_ref(),
         "remembered focus leaf preserved"
     );
     assert_eq!(
-        moved_b.focus().1,
-        focus_b.1,
+        engine.layout().focus_leaf(&tgt_b),
+        focus_b.as_ref(),
         "remembered focus leaf preserved"
     );
     // Previous-toggle stays parked: swapped-out ids left their scopes.
@@ -924,15 +910,13 @@ fn global_unique_swap_carries_floating_side_mode_and_flights() {
 
 #[test]
 fn global_unique_swap_failed_stay_keeps_world_unchanged() {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeSet;
 
-    use crate::ids::{GenerationId, OwnerId};
-    use crate::session::{OutputDomain, Session};
     use crate::world_commands::CommandApplied;
     use crate::world_engine::{KIND_MIGRATION, MSG_MIGRATION};
 
     // A carries tiled plus a sticky float; B is genuinely empty (no
-    // session), so the B-side sticky stay derives from the A source.
+    // domain), so the B-side sticky stay derives from the A source.
     let mut engine = global_unique_engine();
     let first = accepted(
         &mut engine,
@@ -948,9 +932,22 @@ fn global_unique_swap_failed_stay_keeps_world_unchanged() {
         &mut engine,
         &report(2, 2, two_screens(), windows.clone(), vec![], "", None, None),
     );
+    // Stage an unknown-sticky fact on win-a1 so the swap refuses atomically
+    // before any world/layout commit.
+    let mut unknown_sticky = fact("win-a1", "out-a", 0);
+    unknown_sticky.sticky = None;
     accepted(
         &mut engine,
-        &report(3, 3, two_screens(), windows.clone(), vec![], "", None, None),
+        &report(
+            3,
+            3,
+            two_screens(),
+            vec![unknown_sticky, sticky_float("win-as", "out-a", 300)],
+            vec![],
+            "",
+            None,
+            None,
+        ),
     );
     let src_a = crate::session::DomainKey {
         output: OutputId("out-a".to_owned()),
@@ -968,87 +965,15 @@ fn global_unique_swap_failed_stay_keeps_world_unchanged() {
         output: OutputId("out-a".to_owned()),
         workspace: crate::directional::WorkspaceId(view_b.clone()),
     };
-    assert!(engine.engine().session(&src_b).is_none());
-    let live = engine
-        .engine()
-        .session(&src_a)
-        .expect("source session")
-        .clone();
-    let outer_a = engine.engine().outer_gap(&src_a).unwrap_or(0);
-
-    // Plant a two-domain session at the A source carrying the live sticky
-    // float: cross-output relocation ignores the extra domain, but the
-    // same-output stay derivation refuses it, exercising the fallible
-    // side-B preparation.
-    let domain_a = OutputDomain {
-        id: OutputId("out-a".to_owned()),
-        workspace: crate::directional::WorkspaceId(view_a.clone()),
-        bounds: rect(0, 0, 800, 560),
-        gap: 0,
-        adjacent: BTreeMap::new(),
-    };
-    let domain_ghost = OutputDomain {
-        id: OutputId("out-ghost".to_owned()),
-        workspace: crate::directional::WorkspaceId("ws-ghost".to_owned()),
-        bounds: rect(0, 0, 800, 560),
-        gap: 0,
-        adjacent: BTreeMap::new(),
-    };
-    let mut crafted = Session::new(
-        OwnerId::parse("owner-a").expect("owner"),
-        GenerationId::parse("gen-1").expect("generation"),
-        0,
-        0,
-        vec![domain_a, domain_ghost],
-    )
-    .expect("crafted session");
-    let mut probe = live.clone();
-    let sticky_ids: BTreeSet<WindowId> = probe
-        .exception_observed()
-        .iter()
-        .map(|observed| observed.window.clone())
+    assert!(!engine.layout().contains_domain(&src_b));
+    let before_tiled: Vec<_> = engine.layout().tiled_windows(&src_a).cloned().collect();
+    let before_exceptions: Vec<_> = engine
+        .layout()
+        .exception_windows_with_flags(&src_a)
         .collect();
-    let carries = probe.extract_exception_floats(&sticky_ids);
-    assert!(!carries.is_empty(), "live session carries the sticky float");
-    crafted.insert_exception_floats(carries, &src_a);
-    engine.engine.insert_raw(src_a.clone(), crafted, outer_a);
-    let crafted_snapshot = engine
-        .engine()
-        .session(&src_a)
-        .expect("crafted session")
-        .snapshot();
-
-    // Precondition proof: the planted session passes cross-output
-    // relocation on a stripped clone (so side-A preparation succeeds)
-    // while its same-output stay derivation refuses (so side-B
-    // preparation fails). The swap refusal below must come from the
-    // stay step, not an earlier fence.
-    {
-        let planted = engine
-            .engine()
-            .session(&src_a)
-            .expect("planted session")
-            .clone();
-        let probe_ids: BTreeSet<WindowId> = planted
-            .exception_observed()
-            .iter()
-            .map(|observed| observed.window.clone())
-            .collect();
-        assert!(!probe_ids.is_empty(), "planted sticky ids");
-        let mut stripped = planted.clone();
-        let extracted = stripped.extract_exception_floats(&probe_ids);
-        assert!(!extracted.is_empty(), "planted sticky carries");
-        assert!(
-            stripped.relocate_domain(&src_a, &tgt_a, rect(800, 0, 800, 560), 0),
-            "planted side-A relocation validates"
-        );
-        assert!(
-            planted
-                .split_sticky_stay(&probe_ids, &tgt_b, rect(0, 0, 800, 560), 0)
-                .is_none(),
-            "planted side-B stay refuses"
-        );
-    }
+    let before_tree = engine.layout().tree(&src_a).cloned();
+    let before_focus = engine.layout().focus_leaf(&src_a).cloned();
+    let before_rev = engine.layout().accepted_revision(&src_a);
 
     // Snapshot world state before the refused swap.
     let mapping = engine.mapping.clone();
@@ -1059,8 +984,6 @@ fn global_unique_swap_failed_stay_keeps_world_unchanged() {
     let floating = engine.floating_scopes.clone();
     let retained = engine.retained.clone();
 
-    // Drive the swap without the sweep so the planted session reaches the
-    // commit section exactly as stored.
     let swap_report = report(
         4,
         4,
@@ -1088,10 +1011,10 @@ fn global_unique_swap_failed_stay_keeps_world_unchanged() {
             assert_eq!(message, MSG_MIGRATION);
         }
         CommandApplied::Effect(_) | CommandApplied::NoEffect => {
-            panic!("failed stay preparation must refuse");
+            panic!("refused swap must reject");
         }
     }
-    // The refusal leaves mapping/views/history, sessions, members, and
+    // The refusal leaves mapping/views/history, layout domains, members, and
     // retained flights exactly as before: no partial commit.
     assert_eq!(engine.mapping, mapping);
     assert_eq!(engine.views, views);
@@ -1100,26 +1023,39 @@ fn global_unique_swap_failed_stay_keeps_world_unchanged() {
     assert_eq!(engine.tiling, tiling);
     assert_eq!(engine.floating_scopes, floating);
     assert_eq!(engine.retained, retained);
-    assert!(engine.engine().session(&tgt_a).is_none());
-    assert!(engine.engine().session(&tgt_b).is_none());
-    assert!(engine.engine().session(&src_b).is_none());
+    assert!(!engine.layout().contains_domain(&tgt_a));
+    assert!(!engine.layout().contains_domain(&tgt_b));
+    assert!(!engine.layout().contains_domain(&src_b));
     assert_eq!(
         engine
-            .engine()
-            .session(&src_a)
-            .expect("source kept")
-            .snapshot(),
-        crafted_snapshot
+            .layout()
+            .tiled_windows(&src_a)
+            .cloned()
+            .collect::<Vec<_>>(),
+        before_tiled
     );
+    assert_eq!(
+        engine
+            .layout()
+            .exception_windows_with_flags(&src_a)
+            .collect::<Vec<_>>(),
+        before_exceptions
+    );
+    assert_eq!(engine.layout().tree(&src_a).cloned(), before_tree);
+    assert_eq!(engine.layout().focus_leaf(&src_a).cloned(), before_focus);
+    assert_eq!(engine.layout().accepted_revision(&src_a), before_rev);
 
-    // Restore the live session: the successful sessionless-B stay path
-    // still works through the public boundary.
-    engine.engine.insert_raw(src_a.clone(), live, outer_a);
+    // Restore proven sticky=false on win-a1: the successful sessionless-B
+    // stay path works through the public boundary.
+    accepted(
+        &mut engine,
+        &report(4, 4, two_screens(), windows.clone(), vec![], "", None, None),
+    );
     let swapped = accepted(
         &mut engine,
         &report(
-            4,
-            4,
+            5,
+            5,
             two_screens(),
             windows.clone(),
             vec![],
@@ -1152,8 +1088,8 @@ fn global_unique_swap_failed_stay_keeps_world_unchanged() {
     let arrived = accepted(
         &mut engine,
         &report(
-            5,
-            5,
+            6,
+            6,
             two_screens(),
             vec![
                 fact("win-a1", "out-b", 800),

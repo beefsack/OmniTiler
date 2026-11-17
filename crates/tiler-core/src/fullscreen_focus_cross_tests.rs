@@ -863,14 +863,8 @@ fn expect_explicit_focus(
 }
 
 fn home_of(engine: &WorldEngine, window: &WindowId) -> Option<DomainKey> {
-    for key in engine.engine.domain_keys() {
-        if let Some(session) = engine.engine.session(&key)
-            && session
-                .snapshot()
-                .windows
-                .iter()
-                .any(|l| &l.window == window)
-        {
+    for key in engine.layout.domain_keys() {
+        if engine.layout.is_tiled_window(&key, window) {
             return Some(key);
         }
     }
@@ -878,10 +872,8 @@ fn home_of(engine: &WorldEngine, window: &WindowId) -> Option<DomainKey> {
 }
 
 fn session_focused(engine: &WorldEngine, key: &DomainKey) -> Option<WindowId> {
-    let session = engine.engine.session(key)?;
-    let (_, leaf) = session.focus();
-    let leaf = leaf?;
-    session.focused_window_for(&leaf, key)
+    let leaf = engine.layout.focus_leaf(key)?;
+    engine.layout.window_for_leaf(key, leaf)
 }
 
 #[test]

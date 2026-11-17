@@ -176,14 +176,8 @@ fn focus_targets(reply: &WorldReplyV4) -> Vec<WindowId> {
 
 /// Home domain of a linked window: the single session whose snapshot links it.
 fn home_of(engine: &WorldEngine, window: &WindowId) -> Option<DomainKey> {
-    for key in engine.engine.domain_keys() {
-        if let Some(session) = engine.engine.session(&key)
-            && session
-                .snapshot()
-                .windows
-                .iter()
-                .any(|l| &l.window == window)
-        {
+    for key in engine.layout.domain_keys() {
+        if engine.layout.is_tiled_window(&key, window) {
             return Some(key);
         }
     }
@@ -192,16 +186,13 @@ fn home_of(engine: &WorldEngine, window: &WindowId) -> Option<DomainKey> {
 
 /// Window currently named by session memory (`remembered_leaf` -> window).
 fn remembered_window(engine: &WorldEngine, key: &DomainKey) -> Option<WindowId> {
-    let session = engine.engine.session(key)?;
-    let leaf = session.remembered_leaf(key)?;
-    session.focused_window_for(&leaf, key)
+    let leaf = engine.layout.remembered_leaf(key)?;
+    engine.layout.window_for_leaf(key, &leaf)
 }
 
 fn focused_window(engine: &WorldEngine, key: &DomainKey) -> Option<WindowId> {
-    let session = engine.engine.session(key)?;
-    let (_, leaf) = session.focus();
-    let leaf = leaf?;
-    session.focused_window_for(&leaf, key)
+    let leaf = engine.layout.focus_leaf(key)?;
+    engine.layout.window_for_leaf(key, leaf)
 }
 
 fn bootstrap_two_tiled() -> (WorldEngine, DomainKey) {
@@ -661,10 +652,8 @@ fn exception_focus_effect_leaves_memory_unchanged() {
     let before = remembered_window(&engine, &key);
     assert!(
         engine
-            .engine
-            .session(&key)
-            .expect("session")
-            .is_exception(&WindowId("win-f".to_owned())),
+            .layout
+            .is_exception(&key, &WindowId("win-f".to_owned())),
         "win-f is an exception lifetime"
     );
     let reply = accepted(
@@ -725,52 +714,12 @@ fn held_scope_blocks_recording_but_keeps_contract() {
     );
 }
 
-/// Observation matching the live session state: tiled links plus
-/// exception lifetimes, keyed to the session's own owner/generation/
-/// revision so proposal gates validate instead of failing input.
-fn session_observation_for(
-    engine: &WorldEngine,
-    key: &DomainKey,
-) -> crate::session::SessionObservation {
-    use crate::contract::Observation;
-    use crate::ids::{GenerationId, OwnerId};
-    let session = engine.engine.session(key).expect("session");
-    let mut windows: Vec<crate::session::ObservedWindow> = session
-        .snapshot()
-        .windows
-        .iter()
-        .map(|link| crate::session::ObservedWindow {
-            window: link.window.clone(),
-            output: link.output.clone(),
-            workspace: link.workspace.clone(),
-            floating: false,
-            fullscreen: false,
-            maximized: false,
-            sticky: false,
-            fixed_auto: false,
-            fixed_suppress: false,
-            hints: crate::size_hints::WindowSizeHints::none(),
-        })
-        .collect();
-    windows.extend(session.exception_observed());
-    windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
-    crate::session::SessionObservation {
-        observation: Observation::new(
-            OwnerId::parse("adapter-1").expect("owner"),
-            GenerationId::parse("gen-1").expect("generation"),
-            session.accepted_revision(),
-            100 + session.accepted_revision(),
-        ),
-        windows,
-    }
-}
-
 fn staged_focus_of(
     engine: &WorldEngine,
     key: &DomainKey,
 ) -> (Option<DomainKey>, Option<crate::directional::NodeId>) {
-    let session = engine.engine.session(key).expect("session");
-    session.focus()
+    let leaf = engine.layout().focus_leaf(key).cloned();
+    (leaf.as_ref().map(|_| key.clone()), leaf)
 }
 
 fn report_global_unique(
@@ -900,107 +849,6 @@ fn global_swap_records_effect_target_in_moved_domain() {
         remembered_window(&engine, &home),
         Some(WindowId("win-b2".to_owned())),
         "swap fallback records the effect target before native writes"
-    );
-}
-
-#[test]
-fn pending_plan_refusal_leaves_staged_focus_uncorrupted() {
-    // A staged but unverified focus plan owns focus: the seam must report
-    // unrecorded with no staged-focus or memory mutation, never pretending
-    // the accepted target was recorded.
-    use crate::contract::FocusCapabilities;
-    use crate::directional::Direction;
-    use crate::ids::CorrelationId;
-    let (mut engine, key) = bootstrap_two_tiled();
-    let obs = session_observation_for(&engine, &key);
-    let before_mem = remembered_window(&engine, &key);
-    let before_focus = staged_focus_of(&engine, &key);
-    {
-        let session = engine.engine.session_mut(&key).expect("session");
-        session
-            .propose_focus(
-                &key,
-                &WindowId("win-a".to_owned()),
-                Direction::Left,
-                &obs,
-                &CorrelationId::parse("c-focus-1").expect("correlation"),
-                &FocusCapabilities::full(),
-            )
-            .expect("pending focus plan stages");
-        assert!(session.has_pending_desired(), "pending owns focus");
-    }
-    assert!(
-        !engine.record_command_focus(&WindowId("win-b".to_owned()), &BTreeSet::new()),
-        "pending plan reports unrecorded"
-    );
-    assert_eq!(
-        remembered_window(&engine, &key),
-        before_mem,
-        "pending refusal records no memory"
-    );
-    assert_eq!(
-        staged_focus_of(&engine, &key),
-        before_focus,
-        "pending refusal corrupts no staged focus"
-    );
-}
-
-#[test]
-fn drag_capture_refusal_leaves_staged_focus_uncorrupted() {
-    // An active drag capture owns focus the same way: fail-closed skip
-    // with no mutation and a false outcome, never a pretended record.
-    let (mut engine, key) = bootstrap_two_tiled();
-    let obs = session_observation_for(&engine, &key);
-    let before_mem = remembered_window(&engine, &key);
-    let before_focus = staged_focus_of(&engine, &key);
-    {
-        let session = engine.engine.session_mut(&key).expect("session");
-        session
-            .begin_drag(&WindowId("win-a".to_owned()), &obs)
-            .expect("drag captures the focused window");
-        assert!(session.has_drag(), "drag owns focus");
-    }
-    assert!(
-        !engine.record_command_focus(&WindowId("win-b".to_owned()), &BTreeSet::new()),
-        "drag capture reports unrecorded"
-    );
-    assert_eq!(
-        remembered_window(&engine, &key),
-        before_mem,
-        "drag refusal records no memory"
-    );
-    assert_eq!(
-        staged_focus_of(&engine, &key),
-        before_focus,
-        "drag refusal corrupts no staged focus"
-    );
-}
-
-#[test]
-fn divergence_refusal_leaves_staged_focus_uncorrupted() {
-    // Terminal divergence fails every rebind closed: no mutation, false
-    // outcome, staged focus untouched.
-    let (mut engine, key) = bootstrap_two_tiled();
-    let before_mem = remembered_window(&engine, &key);
-    let before_focus = staged_focus_of(&engine, &key);
-    engine
-        .engine
-        .session_mut(&key)
-        .expect("session")
-        .note_adapter_loss();
-    assert!(
-        !engine.record_command_focus(&WindowId("win-b".to_owned()), &BTreeSet::new()),
-        "divergence reports unrecorded"
-    );
-    assert_eq!(
-        remembered_window(&engine, &key),
-        before_mem,
-        "divergence records no memory"
-    );
-    assert_eq!(
-        staged_focus_of(&engine, &key),
-        before_focus,
-        "divergence corrupts no staged focus"
     );
 }
 
@@ -1286,10 +1134,8 @@ fn float_lane_focus_leaves_memory_unchanged() {
     let key = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
     assert!(
         engine
-            .engine
-            .session(&key)
-            .expect("session")
-            .is_exception(&WindowId("win-f2".to_owned())),
+            .layout
+            .is_exception(&key, &WindowId("win-f2".to_owned())),
         "float candidate is an exception lifetime"
     );
     let reply = accepted(

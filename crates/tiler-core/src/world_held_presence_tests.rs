@@ -679,7 +679,7 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
     assert!(arrival_row.floating);
     assert!(
         !engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("wf".to_owned()))
     );
 
@@ -728,7 +728,7 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
     );
     assert!(
         engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("wf".to_owned()))
     );
 
@@ -826,7 +826,7 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
     assert_eq!(row.frame_authority, ScopeAuthority::Controlled);
     assert!(
         engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("wf".to_owned()))
     );
     assert!(engine.members.contains_key(&WindowId("wf".to_owned())));
@@ -876,7 +876,7 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
     assert!(row.floating);
     assert!(
         !engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("wf".to_owned()))
     );
 }

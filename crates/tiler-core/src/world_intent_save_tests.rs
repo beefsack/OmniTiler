@@ -116,22 +116,12 @@ fn assert_save(reply: &crate::world_report::WorldReplyV4, win: &str, data: &str)
 
 fn is_tiled(engine: &WorldEngine, win: &str) -> bool {
     let id = WindowId(win.to_owned());
-    engine.engine.domain_keys().iter().any(|key| {
-        engine
-            .engine
-            .session(key)
-            .is_some_and(|s| s.snapshot().windows.iter().any(|l| l.window == id))
-    })
+    engine.layout.is_tiled_window_any(&id)
 }
 
 fn is_floated(engine: &WorldEngine, win: &str) -> bool {
     let id = WindowId(win.to_owned());
-    engine.engine.domain_keys().iter().any(|key| {
-        engine
-            .engine
-            .session(key)
-            .is_some_and(|s| s.is_exception(&id))
-    })
+    engine.layout.is_exception_window_any(&id)
 }
 
 fn row_for<'a>(
@@ -737,7 +727,7 @@ fn rehandshake_tile_save_restores_without_resave() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
 }
@@ -2082,7 +2072,7 @@ fn actual_one_save_reply_fits_estimate_with_exact_row() {
     let pre_bound = reply_upper_bound(
         &input,
         engine.retained.len() + engine.retained_floats.len(),
-        engine.engine.domain_keys().len(),
+        engine.layout.domain_keys().len(),
         input.screens.len(),
         engine.staged.facts.len() + engine.staged.held_windows.len(),
         engine.retained_publish_footprint(),
@@ -2198,7 +2188,7 @@ fn reply_bound_toggle_report_rejected_without_mutation() {
     );
     let save_bound = max_intent_save_bound(&toggle_report(2, Vec::new()));
     assert_eq!(save_bound, 72);
-    let logical = engine.engine.domain_keys().len();
+    let logical = engine.layout.domain_keys().len();
     let bound_of = |windows: &[crate::world_report::WindowFact]| {
         let report = report_full(
             2,
@@ -2324,7 +2314,7 @@ fn reply_bound_target_lanes_rejected_without_mutation() {
             None,
         ),
     );
-    let logical = engine.engine.domain_keys().len();
+    let logical = engine.layout.domain_keys().len();
     let staged = engine.staged.facts.len() + engine.staged.held_windows.len();
     let retained = engine.retained_publish_footprint();
     let lanes_of = |windows_len: usize, held_len: usize| {

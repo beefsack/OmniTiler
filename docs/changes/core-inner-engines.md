@@ -517,3 +517,15 @@
   passes with 71 warnings from retained obsolete code and unused helpers; a
   reported library/tests check still fails on 174 old test accessors. Machine
   removal, test migration and full runtime acceptance remain pending.
+- World tests now inspect layout bindings, focus, revisions, restore slots and
+  float provenance directly. Three tests solely planting removed inner pending,
+  drag-capture or divergence states are removed; surviving world refusal tests
+  retain their product invariants. Raw multi-domain swap planting is replaced
+  by real world refusal/recovery and one direct malformed-candidate atomicity
+  test. Fresh fixed-window override coverage uses pending intent rather than a
+  no-op committed-tile marker. This unit removes three tests and adds one.
+  Library/tests compilation passes. Reported core execution has 2,418 passes
+  and nine failures (seven in new layout tests, two in world command tests);
+  these require source-based triage, not assumed baseline failures. A direct
+  swap-test spot check passes all nine tests. Runtime acceptance, old-machine
+  removal and final gates remain pending.

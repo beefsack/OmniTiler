@@ -153,18 +153,11 @@ fn committed_focus(engine: &WorldEngine, output: &str, workspace: &str) -> Optio
         output: OutputId(output.to_owned()),
         workspace: WorkspaceId(workspace.to_owned()),
     };
-    let session = engine.engine().session(&key)?;
-    let (domain, leaf) = session.focus();
-    let (domain, leaf) = (domain?, leaf?);
-    if domain != key {
-        return None;
-    }
-    session
-        .snapshot()
-        .windows
-        .iter()
-        .find(|link| link.leaf == leaf)
-        .map(|link| link.window.0.clone())
+    let leaf = engine.layout().focus_leaf(&key)?;
+    engine
+        .layout()
+        .window_for_leaf(&key, leaf)
+        .map(|window| window.0.clone())
 }
 
 #[test]

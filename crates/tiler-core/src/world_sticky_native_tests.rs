@@ -176,14 +176,19 @@ fn native_sticky_on_from_tile_takes_centered_sixty_percent_placement() {
     );
     let id = WindowId("win-a".to_owned());
     let key = engine
-        .engine
+        .layout
         .domain_keys()
         .into_iter()
         .next()
         .expect("domain");
-    let session = engine.engine.session(&key).expect("session");
-    assert_eq!(session.floating_geometry(&id), Some(expected));
-    assert_eq!(session.retained_float_geometry(&id), Some(expected));
+    assert_eq!(
+        engine.layout.exception_float_geometry(&key, &id),
+        Some(expected)
+    );
+    assert_eq!(
+        engine.layout.retained_float_geometry(&key, &id),
+        Some(expected)
+    );
 }
 
 #[test]
@@ -1089,7 +1094,7 @@ fn native_off_floating_dest_lands_floated_with_tile_base() {
         .expect("member");
     assert_eq!(member.home, dest);
     assert!(
-        engine.engine.session(&dest).is_none(),
+        !engine.layout.contains_domain(&dest),
         "floating dest forces no session"
     );
     assert!(
@@ -2331,7 +2336,7 @@ fn native_rollback_reserve_rejects_before_mutation_and_small_retry_rolls_back() 
     assert!(empty.state_attempts.is_empty());
     assert_eq!(engine.intent_desired.len(), 1);
     assert_eq!(max_intent_desired_bound(1), 196);
-    let logical = engine.engine.domain_keys().len();
+    let logical = engine.layout.domain_keys().len();
     let staged = engine.staged.facts.len() + engine.staged.held_windows.len();
     let retained = engine.retained_publish_footprint();
     let proof_of = |windows: Vec<crate::world_report::WindowFact>| {

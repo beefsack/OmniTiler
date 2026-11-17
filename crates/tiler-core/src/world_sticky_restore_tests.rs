@@ -90,22 +90,12 @@ fn with_records(mut report: WorldReportV4, records: Vec<IntentRecord>) -> WorldR
 
 fn is_tiled(engine: &WorldEngine, win: &str) -> bool {
     let id = WindowId(win.to_owned());
-    engine.engine.domain_keys().iter().any(|key| {
-        engine
-            .engine
-            .session(key)
-            .is_some_and(|s| s.snapshot().windows.iter().any(|l| l.window == id))
-    })
+    engine.layout.is_tiled_window_any(&id)
 }
 
 fn is_floated(engine: &WorldEngine, win: &str) -> bool {
     let id = WindowId(win.to_owned());
-    engine.engine.domain_keys().iter().any(|key| {
-        engine
-            .engine
-            .session(key)
-            .is_some_and(|s| s.is_exception(&id))
-    })
+    engine.layout.is_exception_window_any(&id)
 }
 
 /// Fresh restart admission of one saved sticky import through the record
@@ -273,7 +263,7 @@ fn sticky_dominates_float_lane_and_commits_exact_prior_without_ops() {
     assert!(engine.restored_floats.is_empty(), "never ordinary float");
     assert!(
         !engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned())),
         "sticky float:false must never commit a tile override"
     );
@@ -426,7 +416,7 @@ fn all_six_sticky_priors_admit_as_semantic_float_with_exact_prior() {
         );
         assert!(
             !engine
-                .engine
+                .layout
                 .has_fixed_tile_override_any(&WindowId("win-a".to_owned())),
             "float={float:?} prior={prior}"
         );
@@ -509,7 +499,7 @@ fn native_false_composed_null_tiles_but_sticky_record_forces_float() {
     assert!(engine.restored_floats.is_empty());
     assert!(
         !engine
-            .engine
+            .layout
             .has_fixed_tile_override_any(&WindowId("win-c".to_owned()))
     );
 }

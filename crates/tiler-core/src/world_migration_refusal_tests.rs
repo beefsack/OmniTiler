@@ -447,22 +447,14 @@ fn wholly_unarrived_refusal_restores_unit_and_focus() {
         output: OutputId("out-a".to_owned()),
         workspace: crate::directional::WorkspaceId(view_a.clone()),
     };
-    let pre_snapshot = engine
-        .engine()
-        .session(&src_key)
-        .expect("pre session")
-        .snapshot();
-    assert!(
-        pre_snapshot.windows.len() >= 3,
-        "three members: {pre_snapshot:?}"
-    );
-    let pre_tree = engine
-        .engine()
-        .session(&src_key)
-        .unwrap()
-        .tree_for(&src_key)
-        .cloned();
-    let pre_focus = engine.engine().session(&src_key).unwrap().focus();
+    let pre_snapshot: Vec<String> = engine
+        .layout()
+        .tiled_windows(&src_key)
+        .map(|window| window.0.clone())
+        .collect();
+    assert!(pre_snapshot.len() >= 3, "three members: {pre_snapshot:?}");
+    let pre_tree = engine.layout().tree(&src_key).cloned();
+    let pre_focus = engine.layout().focus_leaf(&src_key).cloned();
     let pre_ring: Vec<String> = first
         .workspaces
         .iter()
@@ -606,27 +598,25 @@ fn wholly_unarrived_refusal_restores_unit_and_focus() {
     );
     // The retained unit survives modulo homing: same window set, same tree,
     // same remembered focus leaf.
-    let restored = engine.engine().session(&src_key).expect("rolled back");
-    let mut pre_ids: Vec<String> = pre_snapshot
-        .windows
-        .iter()
-        .map(|link| link.window.0.clone())
-        .collect();
-    let mut post_ids: Vec<String> = restored
-        .snapshot()
-        .windows
-        .iter()
-        .map(|link| link.window.0.clone())
+    let mut pre_ids: Vec<String> = pre_snapshot;
+    let mut post_ids: Vec<String> = engine
+        .layout()
+        .tiled_windows(&src_key)
+        .map(|window| window.0.clone())
         .collect();
     pre_ids.sort();
     post_ids.sort();
     assert_eq!(pre_ids, post_ids, "membership preserved");
     assert_eq!(
-        restored.tree_for(&src_key),
+        engine.layout().tree(&src_key),
         pre_tree.as_ref(),
         "tree/shares preserved"
     );
-    assert_eq!(restored.focus().1, pre_focus.1, "focus leaf preserved");
+    assert_eq!(
+        engine.layout().focus_leaf(&src_key),
+        pre_focus.as_ref(),
+        "focus leaf preserved"
+    );
     let _ = view_b;
 }
 
@@ -953,13 +943,8 @@ fn gap_refusal_holds_then_proven_rollback_preserves_unit() {
         output: OutputId("out-a".to_owned()),
         workspace: crate::directional::WorkspaceId(view_a.clone()),
     };
-    let pre_tree = engine
-        .engine()
-        .session(&src_key)
-        .unwrap()
-        .tree_for(&src_key)
-        .cloned();
-    let pre_focus = engine.engine().session(&src_key).unwrap().focus();
+    let pre_tree = engine.layout().tree(&src_key).cloned();
+    let pre_focus = engine.layout().focus_leaf(&src_key).cloned();
     let pre_ring: Vec<String> = first
         .workspaces
         .iter()
@@ -1071,13 +1056,16 @@ fn gap_refusal_holds_then_proven_rollback_preserves_unit() {
         .map(|row| row.id.clone())
         .collect();
     assert_eq!(pre_ring, post_ring, "ring position restored");
-    let restored = engine.engine().session(&src_key).expect("rolled back");
     assert_eq!(
-        restored.tree_for(&src_key),
+        engine.layout().tree(&src_key),
         pre_tree.as_ref(),
         "tree/shares preserved"
     );
-    assert_eq!(restored.focus().1, pre_focus.1, "focus leaf preserved");
+    assert_eq!(
+        engine.layout().focus_leaf(&src_key),
+        pre_focus.as_ref(),
+        "focus leaf preserved"
+    );
 }
 
 #[test]
@@ -1196,13 +1184,8 @@ fn refusal_without_hostable_source_holds_without_destruction() {
         output: OutputId("out-a".to_owned()),
         workspace: crate::directional::WorkspaceId(view_a.clone()),
     };
-    let pre_tree = engine
-        .engine()
-        .session(&src_key)
-        .unwrap()
-        .tree_for(&src_key)
-        .cloned();
-    let pre_focus = engine.engine().session(&src_key).unwrap().focus();
+    let pre_tree = engine.layout().tree(&src_key).cloned();
+    let pre_focus = engine.layout().focus_leaf(&src_key).cloned();
     accepted(
         &mut engine,
         &report(
@@ -1295,13 +1278,16 @@ fn refusal_without_hostable_source_holds_without_destruction() {
         .find(|row| row.id == view_a)
         .expect("mapping restored");
     assert_eq!(row.output.0, "out-a");
-    let restored = engine.engine().session(&src_key).expect("rolled back");
     assert_eq!(
-        restored.tree_for(&src_key),
+        engine.layout().tree(&src_key),
         pre_tree.as_ref(),
         "tree preserved through gap"
     );
-    assert_eq!(restored.focus().1, pre_focus.1, "focus preserved");
+    assert_eq!(
+        engine.layout().focus_leaf(&src_key),
+        pre_focus.as_ref(),
+        "focus preserved"
+    );
 }
 
 #[test]
@@ -1351,13 +1337,8 @@ fn acknowledged_refusal_recovers_without_attempt_replay() {
         output: OutputId("out-a".to_owned()),
         workspace: crate::directional::WorkspaceId(view_a.clone()),
     };
-    let pre_tree = engine
-        .engine()
-        .session(&src_key)
-        .unwrap()
-        .tree_for(&src_key)
-        .cloned();
-    let pre_focus = engine.engine().session(&src_key).unwrap().focus();
+    let pre_tree = engine.layout().tree(&src_key).cloned();
+    let pre_focus = engine.layout().focus_leaf(&src_key).cloned();
     let pre_ring: Vec<String> = first
         .workspaces
         .iter()
@@ -1507,13 +1488,16 @@ fn acknowledged_refusal_recovers_without_attempt_replay() {
         Some(view_a.as_str()),
         "source view restored"
     );
-    let restored = engine.engine().session(&src_key).expect("rolled back");
     assert_eq!(
-        restored.tree_for(&src_key),
+        engine.layout().tree(&src_key),
         pre_tree.as_ref(),
         "tree/shares preserved"
     );
-    assert_eq!(restored.focus().1, pre_focus.1, "focus leaf preserved");
+    assert_eq!(
+        engine.layout().focus_leaf(&src_key),
+        pre_focus.as_ref(),
+        "focus leaf preserved"
+    );
 }
 
 #[test]

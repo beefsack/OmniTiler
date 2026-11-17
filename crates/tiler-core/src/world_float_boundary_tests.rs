@@ -619,12 +619,7 @@ fn three_output_displacement_preserves_unit_and_returns() {
         output: OutputId("out-c".to_owned()),
         workspace: crate::directional::WorkspaceId(view_c.clone()),
     };
-    let pre_tree = engine
-        .engine()
-        .session(&src_key)
-        .unwrap()
-        .tree_for(&src_key)
-        .cloned();
+    let pre_tree = engine.layout().tree(&src_key).cloned();
     // Disconnect out-c: nearest survivor is out-b (1600 nearer 800 than 0).
     // Members observed on the survivor screen stay homed via the rehome.
     let two = vec![screen("out-a", 0), screen("out-b", 800)];
@@ -657,11 +652,7 @@ fn three_output_displacement_preserves_unit_and_returns() {
         workspace: crate::directional::WorkspaceId(view_c.clone()),
     };
     assert_eq!(
-        engine
-            .engine()
-            .session(&moved_key)
-            .unwrap()
-            .tree_for(&moved_key),
+        engine.layout().tree(&moved_key),
         pre_tree.as_ref(),
         "tree/shares ride displacement"
     );
@@ -688,11 +679,7 @@ fn three_output_displacement_preserves_unit_and_returns() {
         .expect("returned unit");
     assert_eq!(row.output.0, "out-c");
     assert_eq!(
-        engine
-            .engine()
-            .session(&src_key)
-            .unwrap()
-            .tree_for(&src_key),
+        engine.layout().tree(&src_key),
         pre_tree.as_ref(),
         "tree/shares ride the return"
     );

@@ -5447,7 +5447,7 @@ fn switch_pre_mutation_reserve_rejects_before_mutation_with_retry() {
     let reserve = engine.switch_settle_reserve();
     assert!(reserve > 4000 * 100, "reserve inflates: {reserve}");
     let mut windows = vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)];
-    let logical = engine.engine.domain_keys().len();
+    let logical = engine.layout.domain_keys().len();
     let staged = engine.staged.facts.len() + engine.staged.held_windows.len();
     let retained = engine.retained_publish_footprint();
     let mut big = report(
@@ -12536,46 +12536,24 @@ fn d23_group_leaves(tree: &Node, leaf: &NodeId) -> Option<Vec<String>> {
 }
 
 fn d23_home_tree(engine: &WorldEngine, key: &DomainKey) -> Node {
-    engine
-        .engine
-        .session(key)
-        .expect("home retained")
-        .snapshot()
-        .domains
-        .iter()
-        .find(|domain| domain.output == key.output && domain.workspace == key.workspace)
-        .expect("home domain")
-        .tree
-        .clone()
-        .expect("home tree")
+    engine.layout.tree(key).cloned().expect("home tree")
 }
 
 fn d23_link_leaf(engine: &WorldEngine, key: &DomainKey, window: &WindowId) -> NodeId {
     engine
-        .engine
-        .session(key)
-        .expect("home retained")
-        .snapshot()
-        .windows
-        .iter()
-        .find(|link| link.window == *window)
+        .layout
+        .bindings(key)
+        .find(|(bound, _)| *bound == window)
+        .map(|(_, leaf)| leaf.clone())
         .expect("window linked")
-        .leaf
-        .clone()
 }
 
 fn d23_focused_window(engine: &WorldEngine, key: &DomainKey) -> Option<String> {
-    let session = engine.engine.session(key).expect("home retained");
-    let (domain, leaf) = session.focus();
-    let (domain, leaf) = (domain?, leaf?);
-    session
-        .snapshot()
-        .windows
-        .iter()
-        .find(|link| {
-            link.leaf == leaf && link.output == domain.output && link.workspace == domain.workspace
-        })
-        .map(|link| link.window.0.clone())
+    let leaf = engine.layout.focus_leaf(key)?;
+    engine
+        .layout
+        .window_for_leaf(key, leaf)
+        .map(|window| window.0.clone())
 }
 
 #[test]
@@ -12677,12 +12655,9 @@ fn d23_minimized_native_rehome_forgets_source_slot() {
     staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let old_slot = engine
-        .engine
-        .session(&home_key)
-        .expect("home retained")
-        .minimized_slot(&win_b)
-        .expect("minimize stores the source restore slot")
-        .clone();
+        .layout
+        .restore_slot_snapshot(&home_key, &win_b)
+        .expect("minimize stores the source restore slot");
     assert_eq!(
         old_slot.tree, pre_tree,
         "slot preserves the pre-minimize C-group tree"
@@ -12713,12 +12688,7 @@ fn d23_minimized_native_rehome_forgets_source_slot() {
         .map(|row| row.workspace.clone());
     let homing = engine.adapter_homing(&win_b);
     assert!(
-        engine
-            .engine
-            .session(&home_key)
-            .expect("home retained")
-            .minimized_slot(&win_b)
-            .is_none(),
+        !engine.layout.has_minimized_slot(&home_key, &win_b),
         "first confirmed minimized rehome forgets the source slot; row_ws={row_ws:?} homing={homing:?}"
     );
     // Return leg: B back to n0 while still minimized. No slot exists to
@@ -12738,19 +12708,11 @@ fn d23_minimized_native_rehome_forgets_source_slot() {
         ),
     );
     assert!(
-        engine
-            .engine
-            .session(&home_key)
-            .expect("home retained")
-            .minimized_slot(&win_b)
-            .is_none(),
+        !engine.layout.has_minimized_slot(&home_key, &win_b),
         "return leg resurrects no slot"
     );
     assert!(
-        engine
-            .engine
-            .session(&away_key)
-            .is_none_or(|session| session.minimized_slot(&win_b).is_none()),
+        !engine.layout.has_minimized_slot(&away_key, &win_b),
         "away home holds no slot either"
     );
     // Focus-settle leg: B still minimized while observed focus moves to
@@ -12776,12 +12738,7 @@ fn d23_minimized_native_rehome_forgets_source_slot() {
         "settled session focus is A before the restore"
     );
     assert!(
-        engine
-            .engine
-            .session(&home_key)
-            .expect("home retained")
-            .minimized_slot(&win_b)
-            .is_none(),
+        !engine.layout.has_minimized_slot(&home_key, &win_b),
         "focus move resurrects no slot"
     );
     // Restore leg: B unminimizes on n0 with settled focus on A. No slot
@@ -12805,15 +12762,12 @@ fn d23_minimized_native_rehome_forgets_source_slot() {
         reply9.transfers.is_empty(),
         "restore performs no rehoming move: {reply9:?}"
     );
-    let home_session = engine.engine.session(&home_key).expect("home retained");
-    let new_b_leaf = home_session
-        .snapshot()
-        .windows
-        .iter()
-        .find(|link| link.window == win_b)
-        .expect("restored B linked")
-        .leaf
-        .clone();
+    let new_b_leaf = engine
+        .layout
+        .bindings(&home_key)
+        .find(|(window, _)| *window == &win_b)
+        .map(|(_, leaf)| leaf.clone())
+        .expect("restored B linked");
     let new_tree = d23_home_tree(&engine, &home_key);
     assert_ne!(
         new_tree, pre_tree,
@@ -12829,7 +12783,7 @@ fn d23_minimized_native_rehome_forgets_source_slot() {
         "fresh admit groups B with settled-focus A, never the old C group: {new_tree:?}"
     );
     assert!(
-        home_session.minimized_slot(&win_b).is_none(),
+        !engine.layout.has_minimized_slot(&home_key, &win_b),
         "no slot survives the restore"
     );
     assert_eq!(
@@ -12899,12 +12853,7 @@ fn d23_minimized_cross_output_rehome_forgets_first_slot() {
         ),
     );
     assert!(
-        engine
-            .engine
-            .session(&home_key)
-            .expect("home retained")
-            .minimized_slot(&win_b)
-            .is_some(),
+        engine.layout.has_minimized_slot(&home_key, &win_b),
         "minimize stores the source slot"
     );
     let mut b_ob = b_min.clone();
@@ -12921,12 +12870,7 @@ fn d23_minimized_cross_output_rehome_forgets_first_slot() {
         ),
     );
     assert!(
-        engine
-            .engine
-            .session(&home_key)
-            .expect("home retained")
-            .minimized_slot(&win_b)
-            .is_none(),
+        !engine.layout.has_minimized_slot(&home_key, &win_b),
         "cross-output minimized rehome forgets the first source slot"
     );
     assert_eq!(
@@ -12949,19 +12893,11 @@ fn d23_minimized_cross_output_rehome_forgets_first_slot() {
     );
     let _ = d23_link_leaf(&engine, &ob_key, &win_b);
     assert!(
-        engine
-            .engine
-            .session(&home_key)
-            .expect("home retained")
-            .minimized_slot(&win_b)
-            .is_none(),
+        !engine.layout.has_minimized_slot(&home_key, &win_b),
         "no slot resurrects at the source"
     );
     assert!(
-        engine
-            .engine
-            .session(&ob_key)
-            .is_none_or(|session| session.minimized_slot(&win_b).is_none()),
+        !engine.layout.has_minimized_slot(&ob_key, &win_b),
         "no slot lingers at the destination"
     );
     assert_eq!(
@@ -13064,12 +13000,7 @@ fn d23_minimized_stable_native_retains_slot_and_restores() {
             ),
         );
         assert!(
-            engine
-                .engine
-                .session(&home_key)
-                .expect("home retained")
-                .minimized_slot(&win_b)
-                .is_some(),
+            engine.layout.has_minimized_slot(&home_key, &win_b),
             "stable minimized receipt retains the slot (seq {seq})"
         );
     }
@@ -13087,17 +13018,12 @@ fn d23_minimized_stable_native_retains_slot_and_restores() {
             None,
         ),
     );
-    let home_session = engine.engine.session(&home_key).expect("home retained");
     assert!(
-        home_session
-            .snapshot()
-            .windows
-            .iter()
-            .any(|link| link.window == win_b),
+        engine.layout.is_tiled_window(&home_key, &win_b),
         "restored B tiles again"
     );
     assert!(
-        home_session.minimized_slot(&win_b).is_none(),
+        !engine.layout.has_minimized_slot(&home_key, &win_b),
         "restore consumes the slot"
     );
 }
@@ -13163,12 +13089,7 @@ fn d23_minimized_unknown_native_never_confirms_departure() {
             ),
         );
         assert!(
-            engine
-                .engine
-                .session(&home_key)
-                .expect("home retained")
-                .minimized_slot(&win_b)
-                .is_some(),
+            engine.layout.has_minimized_slot(&home_key, &win_b),
             "unknown native read retains the slot (seq {seq})"
         );
     }
@@ -13252,12 +13173,7 @@ fn d23_minimized_incomplete_inventory_retains_slot() {
         ),
     );
     assert!(
-        engine
-            .engine
-            .session(&home_key)
-            .expect("home retained")
-            .minimized_slot(&win_b)
-            .is_some(),
+        engine.layout.has_minimized_slot(&home_key, &win_b),
         "minimize stores the source slot"
     );
     let mut b_away = b_min.clone();
@@ -13272,12 +13188,7 @@ fn d23_minimized_incomplete_inventory_retains_slot() {
     staged.inventory_complete = false;
     let _ = accepted(&mut engine, &staged);
     assert!(
-        engine
-            .engine
-            .session(&home_key)
-            .expect("home retained")
-            .minimized_slot(&win_b)
-            .is_some(),
+        engine.layout.has_minimized_slot(&home_key, &win_b),
         "gapped inventory never confirms the departure"
     );
 }
@@ -13363,12 +13274,7 @@ fn d23_minimized_unsettled_transfer_retains_slot() {
         minimizing.transfers
     );
     assert!(
-        engine
-            .engine
-            .session(&home_key)
-            .expect("home retained")
-            .minimized_slot(&win_b)
-            .is_none(),
+        !engine.layout.has_minimized_slot(&home_key, &win_b),
         "outstanding flight holds the sweep: no slot is stored mid-flight"
     );
     let mut b_third = b_min.clone();
@@ -13386,12 +13292,7 @@ fn d23_minimized_unsettled_transfer_retains_slot() {
         held.transfers
     );
     assert!(
-        engine
-            .engine
-            .session(&home_key)
-            .expect("home retained")
-            .minimized_slot(&win_b)
-            .is_none(),
+        !engine.layout.has_minimized_slot(&home_key, &win_b),
         "unsettled transfer never confirms a departure"
     );
     // Arrival settles the flight normally: B tiles at the target.
@@ -13491,12 +13392,7 @@ fn d23_minimized_refused_command_still_forgets() {
         "unknown workspace refuses: {refused_settlements:?}"
     );
     assert!(
-        engine
-            .engine
-            .session(&home_key)
-            .expect("home retained")
-            .minimized_slot(&win_b)
-            .is_none(),
+        !engine.layout.has_minimized_slot(&home_key, &win_b),
         "refused command never fences a confirmed departure"
     );
 }
@@ -13550,12 +13446,7 @@ fn d23_minimized_unreadable_receipt_retains_slot() {
         ),
     );
     assert!(
-        engine
-            .engine
-            .session(&home_key)
-            .expect("home retained")
-            .minimized_slot(&win_b)
-            .is_some(),
+        engine.layout.has_minimized_slot(&home_key, &win_b),
         "minimize stores the source slot"
     );
     let mut b_unreadable = hfact("win-b", "n1", 100, false);
@@ -13572,12 +13463,7 @@ fn d23_minimized_unreadable_receipt_retains_slot() {
         ),
     );
     assert!(
-        engine
-            .engine
-            .session(&home_key)
-            .expect("home retained")
-            .minimized_slot(&win_b)
-            .is_some(),
+        engine.layout.has_minimized_slot(&home_key, &win_b),
         "unreadable frames never confirm a departure"
     );
 }
@@ -13654,10 +13540,7 @@ fn d23_minimized_workspace_migration_retains_relocated_slot() {
         migrated.transfers
     );
     assert!(
-        engine
-            .engine
-            .session(&new_home_key)
-            .is_some_and(|session| session.minimized_slot(&win_b).is_some()),
+        engine.layout.has_minimized_slot(&new_home_key, &win_b),
         "migration relocates the slot with the workspace, never forgets it"
     );
 }
@@ -13710,12 +13593,7 @@ fn d23_minimized_close_wins_over_rehome() {
         ),
     );
     assert!(
-        engine
-            .engine
-            .session(&home_key)
-            .expect("home retained")
-            .minimized_slot(&win_b)
-            .is_some(),
+        engine.layout.has_minimized_slot(&home_key, &win_b),
         "minimize stores the source slot"
     );
     // A native close of the minimized lifetime arrives as omission plus
@@ -13729,10 +13607,7 @@ fn d23_minimized_close_wins_over_rehome() {
         "closed lifetime drops membership"
     );
     assert!(
-        engine
-            .engine
-            .session(&home_key)
-            .is_none_or(|session| session.minimized_slot(&win_b).is_none()),
+        !engine.layout.has_minimized_slot(&home_key, &win_b),
         "close leaves no slot behind"
     );
 }
@@ -13791,12 +13666,7 @@ fn d23_minimized_same_turn_rehome_forgets_slot() {
         ),
     );
     assert!(
-        engine
-            .engine
-            .session(&home_key)
-            .expect("home retained")
-            .minimized_slot(&win_b)
-            .is_none(),
+        !engine.layout.has_minimized_slot(&home_key, &win_b),
         "same-turn minimize+rehome leaves no source slot"
     );
 }
