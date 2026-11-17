@@ -18,6 +18,8 @@ mod convergence;
 mod fit;
 mod float;
 mod focus;
+mod local_focus;
+mod local_move;
 mod observation;
 mod orientation;
 mod outcome;
@@ -35,6 +37,8 @@ mod unchanged;
 #[cfg(test)]
 mod float_tests;
 #[cfg(test)]
+mod local_directional_tests;
+#[cfg(test)]
 mod query_focus_tests;
 #[cfg(test)]
 mod resize_tests;
@@ -43,8 +47,9 @@ mod unchanged_tests;
 
 pub(crate) use outcome::{
     AdmissionOutcome, FittedAdmissionDecline, FittedAdmissionReason, FloatOutcome,
-    FreshDomainFailure, FreshDomainOutcome, FreshOutcomeKind, LayoutFailure, OrientationOutcome,
-    PointerCornerResizeOutcome, ResizeOutcome, RetainedProjectionOutcome, RetainedReconcileFailure,
+    FreshDomainFailure, FreshDomainOutcome, FreshOutcomeKind, LayoutFailure, LocalFocusOutcome,
+    LocalMoveOutcome, OrientationOutcome, PointerCornerResizeOutcome, ResizeOutcome,
+    RetainedProjectionOutcome, RetainedReconcileFailure,
 };
 pub(crate) use projection::ProjectionFailure;
 pub(crate) use state::WorldLayout;

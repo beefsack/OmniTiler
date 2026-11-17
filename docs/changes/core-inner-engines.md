@@ -380,3 +380,14 @@
   shape validation. Scoped formatting passes; a library-and-tests diagnostic
   still fails on 83 library and 268 test-build errors in unmigrated consumers,
   with no layout-module error. Integration and executed tests remain pending.
+- Local directional move and focus now use domain candidates and the existing
+  pure planners without inner dispatch. Move preserves R1-R3 tree/share edits
+  and no adjacent-output fallback; focus retains accepted-history descent and
+  the maximized/fullscreen sibling-skip rule. Separate commit tails preserve
+  accepted focus history versus movement pruning. Four direct tests cover
+  rule families, same-axis modes, focus/provenance differences, refusal order
+  and revision-bound allocation burns. Source review restores the geometry
+  leak guard and replaces an ineffective allocator assertion with a direct
+  counter check. Scoped formatting passes; reported diagnostics find no new
+  directional-module errors. Caller integration and executed tests remain
+  pending.

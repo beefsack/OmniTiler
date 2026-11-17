@@ -1,7 +1,7 @@
 //! Compact typed outcomes and failures for direct-endpoint layout operations.
 
 use crate::contract::ResizeOperation;
-use crate::directional::{Direction, NodeId, OutputId, WindowId, WorkspaceId};
+use crate::directional::{Capability, Direction, NodeId, OutputId, Rule, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::seed::FitDeclineReason;
 use crate::session::{DesiredGeometry, RefusalKind};
@@ -235,4 +235,50 @@ pub(crate) struct FloatOutcome {
     /// Effective float placement for tiled-to-float; `None` on unfloat or
     /// capacity no-space re-float.
     pub(crate) float_rect: Option<Rect>,
+}
+
+/// Typed result of an accepted single-domain directional move (R1-R3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LocalMoveOutcome {
+    /// Accepted revision before the operation.
+    pub(crate) base_revision: u64,
+    /// Accepted revision after the operation (`base_revision + 1`).
+    pub(crate) revision: u64,
+    /// Planned movement rule (R1, R2a, R2b, R2c or R3; never R4).
+    pub(crate) rule: Rule,
+    /// Required planner capability for the applied rule.
+    pub(crate) capability: Capability,
+    /// Requested movement direction.
+    pub(crate) direction: Direction,
+    /// Subject window (equal to the focused tiled window).
+    pub(crate) window: WindowId,
+    /// Focused leaf retained in the domain after the move.
+    pub(crate) focus_leaf: NodeId,
+    /// Complete hinted geometry reprojected from the moved tree, sorted by
+    /// `(output, workspace, leaf)`.
+    pub(crate) geometry: Vec<DesiredGeometry>,
+}
+
+/// Typed result of an accepted single-domain directional focus change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LocalFocusOutcome {
+    /// Accepted revision before the operation.
+    pub(crate) base_revision: u64,
+    /// Accepted revision after the operation (`base_revision + 1`).
+    pub(crate) revision: u64,
+    /// Requested focus direction.
+    pub(crate) direction: Direction,
+    /// Previously focused tiled window.
+    pub(crate) from_window: WindowId,
+    /// Previously focused leaf.
+    pub(crate) from_leaf: NodeId,
+    /// Newly focused target tiled window.
+    pub(crate) to_window: WindowId,
+    /// Newly focused target leaf.
+    pub(crate) to_leaf: NodeId,
+    /// Deterministic group-to-leaf descent route from the planner.
+    pub(crate) route: Vec<NodeId>,
+    /// Complete hinted geometry for the unmodified domain, sorted by
+    /// `(output, workspace, leaf)`.
+    pub(crate) geometry: Vec<DesiredGeometry>,
 }

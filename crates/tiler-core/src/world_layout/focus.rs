@@ -108,6 +108,34 @@ pub(super) fn settle_domain_focus_tail(
     domain.last_active = last_active;
 }
 
+/// Exact accepted-focus commit tail for one domain: prunes stale leaves from
+/// `stack_base` and unconditionally demotes/re-appends `focused_leaf` on the
+/// MRU stack, prunes accepted history while demoting/re-appending a resolving
+/// `focused_leaf`, and advances last-active when `focused_leaf` resolves.
+pub(super) fn settle_domain_accepted_focus_tail(
+    domain: &mut DomainLayout,
+    stack_base: &[NodeId],
+    focused_leaf: Option<NodeId>,
+    current_last_active: Option<&NodeId>,
+) {
+    let index = FocusPruneIndex::new(domain);
+    let mut stack = stack_base.to_vec();
+    prune_then_append(&mut stack, focused_leaf.as_ref(), &index, false);
+    let mut history = domain.focus_history.clone();
+    prune_then_append(&mut history, focused_leaf.as_ref(), &index, true);
+    let last_active = if let Some(leaf) = focused_leaf.as_ref()
+        && index.resolves(leaf)
+    {
+        Some(leaf.clone())
+    } else {
+        current_last_active.cloned()
+    };
+    domain.focused_leaf = focused_leaf;
+    domain.focus_stack = stack;
+    domain.focus_history = history;
+    domain.last_active = last_active;
+}
+
 impl WorldLayout {
     /// Whether a leaf resolves to a linked leaf in its domain. Leaf-only
     /// traversal keeps a malformed group id that repeats a leaf id from
