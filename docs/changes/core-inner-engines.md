@@ -305,3 +305,11 @@
   Two direct tests cover the focus/sequence tail and discarded-fit burns.
   Scoped formatting passes; a library-and-tests check still fails on unmigrated
   engine consumers, with no fitted-admission diagnostic. Tests remain unexecuted.
+- The conservative unchanged-domain proof now checks retained geometry,
+  membership, provenance, unhinted observation and resolving focus directly,
+  then runs the shared focus-settle tail without cloning a domain candidate.
+  The sole admission high-water needs no per-domain counter synchronization.
+  Direct tests retain non-fixed-point focus normalization, domain isolation and
+  conservative misses. Source review corrects the observation-shape check to
+  inspect carried entries directly. Scoped formatting passes; library/tests
+  still fail on unmigrated consumers, with no unchanged-proof diagnostic.

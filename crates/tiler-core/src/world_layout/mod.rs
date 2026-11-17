@@ -27,9 +27,12 @@ mod retained;
 mod state;
 mod topology;
 mod tree_edit;
+mod unchanged;
 
 #[cfg(test)]
 mod query_focus_tests;
+#[cfg(test)]
+mod unchanged_tests;
 
 pub(crate) use outcome::{
     AdmissionOutcome, FittedAdmissionDecline, FittedAdmissionReason, LayoutFailure,
