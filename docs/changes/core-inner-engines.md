@@ -397,3 +397,11 @@
   can remain uninstalled until successful completion. Existing retained entry
   points preserve their validation order and commit tails. Source review and
   scoped formatting pass; global compilation and executed tests remain pending.
+- Typed local entry points now compose retained, unique-source relocation and
+  legacy-seed candidates without temporary map installation. Converged refusal
+  fences, fresh-floating convergence persistence, legacy default admission
+  policy and discarded-trial allocation burns remain distinct. Six direct tests
+  cover routing and typed delegation. Review restores unconditional storage of
+  scaled outer gaps and makes seed-policy and ambiguous-order tests
+  discriminating. Scoped formatting passes; global compilation and runtime
+  acceptance remain pending.

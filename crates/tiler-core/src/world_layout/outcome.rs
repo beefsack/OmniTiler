@@ -158,6 +158,21 @@ impl From<LayoutFailure> for FreshDomainFailure {
     }
 }
 
+/// Typed failure for a composed local operation (retained, relocated, or
+/// legacy tiled-seed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LocalOperationFailure {
+    Layout(LayoutFailure),
+    AmbiguousPlacement,
+    SeedFailed,
+}
+
+impl From<LayoutFailure> for LocalOperationFailure {
+    fn from(value: LayoutFailure) -> Self {
+        Self::Layout(value)
+    }
+}
+
 /// Typed failure for a layout operation: a semantic refusal with a stable
 /// `RefusalKind`, or the per-domain accepted revision bound reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

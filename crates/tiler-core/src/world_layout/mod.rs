@@ -20,6 +20,7 @@ mod float;
 mod focus;
 mod local_focus;
 mod local_move;
+mod local_operation;
 mod observation;
 mod orientation;
 mod outcome;
@@ -39,17 +40,20 @@ mod float_tests;
 #[cfg(test)]
 mod local_directional_tests;
 #[cfg(test)]
+mod local_operation_tests;
+#[cfg(test)]
 mod query_focus_tests;
 #[cfg(test)]
 mod resize_tests;
 #[cfg(test)]
 mod unchanged_tests;
 
+pub(crate) use local_operation::LocalOperationContext;
 pub(crate) use outcome::{
     AdmissionOutcome, FittedAdmissionDecline, FittedAdmissionReason, FloatOutcome,
     FreshDomainFailure, FreshDomainOutcome, FreshOutcomeKind, LayoutFailure, LocalFocusOutcome,
-    LocalMoveOutcome, OrientationOutcome, PointerCornerResizeOutcome, ResizeOutcome,
-    RetainedProjectionOutcome, RetainedReconcileFailure,
+    LocalMoveOutcome, LocalOperationFailure, OrientationOutcome, PointerCornerResizeOutcome,
+    ResizeOutcome, RetainedProjectionOutcome, RetainedReconcileFailure,
 };
 pub(crate) use projection::ProjectionFailure;
 pub(crate) use state::WorldLayout;

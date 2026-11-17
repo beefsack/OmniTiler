@@ -529,7 +529,7 @@ impl WorldLayout {
     /// Single unique same-workspace, other-output source key. More than one
     /// candidate is ambiguous and behaves as no source, matching the old
     /// `find_unique_source_for_target` gate.
-    fn unique_source_key(&self, key: &DomainKey) -> Option<DomainKey> {
+    pub(super) fn unique_source_key(&self, key: &DomainKey) -> Option<DomainKey> {
         let mut source: Option<DomainKey> = None;
         for candidate in self.domains.keys() {
             if candidate.workspace == key.workspace && candidate.output != key.output {
@@ -547,7 +547,7 @@ impl WorldLayout {
     /// geometry validates at the target. Unlike `reconcile_retained`'s
     /// relocation precheck this has no observed intersection or source
     /// outer-gap match, matching `try_relocate_for_target` exactly.
-    fn direct_relocation_candidate(
+    pub(super) fn direct_relocation_candidate(
         &self,
         key: &DomainKey,
         domain: &OutputDomain,
@@ -600,7 +600,7 @@ fn fresh_hints(observed: &[EngineWindow]) -> BTreeMap<WindowId, WindowSizeHints>
         .collect()
 }
 
-fn domain_is_empty(domain: &DomainLayout) -> bool {
+pub(super) fn domain_is_empty(domain: &DomainLayout) -> bool {
     domain.leaves.is_empty() && domain.exceptions.is_empty() && domain.minimized_slots.is_empty()
 }
 
