@@ -239,7 +239,7 @@ impl WorldEngine {
         if let Some(home) = self.core_homing(window) {
             return Some(home.output);
         }
-        self.engine.retained_home_any(window)
+        self.layout.retained_home_any(window)
     }
 
     /// Shared typed diagnostic for one unsupported state attempt: `None` when

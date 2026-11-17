@@ -54,7 +54,7 @@ impl WorldEngine {
         } else {
             self.floating_scopes.insert(key.clone());
             // Release retained state: the adapter owns floating geometry.
-            self.engine.remove(&key);
+            self.layout.drop_domain(&key);
             // Newer input wins: window transfers touching the scope settle.
             self.retained.retain(|r| match &r.target.kind {
                 TransferKind::Window(_) => {
@@ -437,9 +437,11 @@ impl WorldEngine {
                 return Some(window);
             }
         }
-        let session = self.engine.session(target)?;
-        for leaf in session.view_return_candidates(target) {
-            let Some(window) = session.focused_window_for(&leaf, target) else {
+        if !self.layout.contains_domain(target) {
+            return None;
+        }
+        for leaf in self.layout.view_return_candidates(target) {
+            let Some(window) = self.layout.window_for_leaf(target, &leaf) else {
                 continue;
             };
             let Some(row) = by_id.get(&window) else {

@@ -286,13 +286,12 @@ impl WorldEngine {
         // Existing tiled MRU/removal fallback, excluding the entire close
         // cohort: newest-first history, then deterministic layout order.
         // Tiled links only, never float/sticky/fullscreen broadening.
-        let survivor = self.engine.session(&source).and_then(|session| {
-            session
-                .view_return_candidates(&source)
-                .into_iter()
-                .filter_map(|leaf| session.focused_window_for(&leaf, &source))
-                .find(|window| !cohort.contains(window))
-        });
+        let survivor = self
+            .layout
+            .view_return_candidates(&source)
+            .into_iter()
+            .filter_map(|leaf| self.layout.window_for_leaf(&source, &leaf))
+            .find(|window| !cohort.contains(window));
         let survivor = match survivor {
             Some(survivor) => survivor,
             // Sole close: the shown empty workspace stays unfocused with no
@@ -365,13 +364,7 @@ impl WorldEngine {
         if self.core_homing(&fallback).as_ref() != Some(source) {
             return false;
         }
-        let tiled = self.engine.session(source).is_some_and(|session| {
-            session.snapshot().windows.iter().any(|link| {
-                link.window == fallback
-                    && link.output == source.output
-                    && link.workspace == source.workspace
-            })
-        });
+        let tiled = self.layout.is_tiled_window(source, &fallback);
         if !tiled {
             return false;
         }

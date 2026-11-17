@@ -320,3 +320,10 @@
   One direct relocation test is added but unexecuted. Source review and scoped
   formatting pass; reported diagnostic checks now leave 120 library errors in
   other unmigrated consumers, not a successful build.
+- Positive-close focus, view-return focus, off-route state diagnostics and v4
+  group presentation now read per-domain layout bindings, focus, geometry and
+  revisions directly. Presentation retains world holds and transfer fences;
+  obsolete inner pending/divergence checks are removed without changing public
+  vocabulary. Trees are borrowed instead of snapshot-cloned. Source review and
+  scoped formatting pass; reported library diagnostics leave 112 errors in
+  other unmigrated consumers. Existing behavioural tests remain unexecuted.

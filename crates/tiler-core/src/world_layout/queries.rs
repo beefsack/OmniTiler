@@ -1,4 +1,5 @@
-use crate::directional::{NodeId, WindowId};
+use crate::directional::{NodeId, OutputId, WindowId};
+use crate::geometry::Rect;
 use crate::session::{DomainKey, ExceptionFlags};
 
 use super::state::WorldLayout;
@@ -223,6 +224,34 @@ impl WorldLayout {
         self.domain(key)
             .and_then(|domain| domain.admission_order.get(window))
             .copied()
+    }
+
+    /// Retained output home for a window from live tiled membership: the
+    /// first retained domain (in key order) linking the window names its
+    /// output. Port of `Engine::retained_home_any`; the key is the sole home
+    /// of every tiled link. `None` means unhomed with no authority.
+    #[must_use]
+    pub(crate) fn retained_home_any(&self, window: &WindowId) -> Option<OutputId> {
+        self.domains
+            .iter()
+            .find(|(_, domain)| domain.leaves.contains_key(window))
+            .map(|(key, _)| key.output.clone())
+    }
+
+    /// Tiled window/leaf bindings in one domain, in window-id order. The
+    /// inverse leaf-to-window map is derived by callers; no mutable view or
+    /// map is exposed.
+    #[must_use]
+    pub(crate) fn bindings(&self, key: &DomainKey) -> impl Iterator<Item = (&WindowId, &NodeId)> {
+        self.domain(key)
+            .into_iter()
+            .flat_map(|domain| domain.leaves.iter())
+    }
+
+    /// Retained bounds and inner gap for one domain, if it exists.
+    #[must_use]
+    pub(crate) fn domain_geometry(&self, key: &DomainKey) -> Option<(Rect, i32)> {
+        self.domain(key).map(|domain| (domain.bounds, domain.gap))
     }
 
     /// Production commit for a restored explicit tile. Records the override

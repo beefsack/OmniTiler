@@ -373,23 +373,17 @@ impl WorldEngine {
                 reason: GroupHideReason::Floating,
             };
         }
-        let Some(session) = self.engine.session(&home) else {
+        if !self.layout.contains_domain(&home) {
             return PresentationUnderlay::Hidden {
                 base_revision: None,
                 reason: GroupHideReason::NoGroup,
             };
-        };
-        let base = session.accepted_revision();
+        }
+        let base = self.layout.accepted_revision(&home);
         let hidden = |reason| PresentationUnderlay::Hidden {
             base_revision: Some(base),
             reason,
         };
-        if session.divergence().is_some() {
-            return hidden(GroupHideReason::Diverged);
-        }
-        if session.has_pending() || session.has_pending_desired() || session.has_drag() {
-            return hidden(GroupHideReason::Pending);
-        }
         if self.hold_reasons.contains_key(&home) {
             return hidden(GroupHideReason::Pending);
         }
@@ -404,27 +398,16 @@ impl WorldEngine {
         {
             return hidden(GroupHideReason::Pending);
         }
-        let (focus_domain, focus_leaf) = session.focus();
-        let (Some(focus_domain), Some(focus_leaf)) = (focus_domain, focus_leaf) else {
+        let Some(focus_leaf) = self.layout.focus_leaf(&home).cloned() else {
             return hidden(GroupHideReason::FocusChanged);
         };
-        if focus_domain != home {
-            return hidden(GroupHideReason::FocusChanged);
-        }
-        let snapshot = session.snapshot();
-        let Some(tree) = snapshot
-            .domains
-            .into_iter()
-            .find(|domain| domain.output == home.output && domain.workspace == home.workspace)
-            .and_then(|domain| domain.tree)
-        else {
+        let Some(tree) = self.layout.tree(&home) else {
             return hidden(GroupHideReason::NoGroup);
         };
-        let leaf_to_window: BTreeMap<NodeId, WindowId> = snapshot
-            .windows
-            .into_iter()
-            .filter(|link| link.output == home.output && link.workspace == home.workspace)
-            .map(|link| (link.leaf, link.window))
+        let leaf_to_window: BTreeMap<NodeId, WindowId> = self
+            .layout
+            .bindings(&home)
+            .map(|(window, leaf)| (leaf.clone(), window.clone()))
             .collect();
         match leaf_to_window.get(&focus_leaf) {
             Some(window) if *window == foreground => {}
@@ -448,22 +431,17 @@ impl WorldEngine {
                 .copied()
                 .unwrap_or_else(WindowSizeHints::none)
         };
-        let Some(group) = (|| {
-            let retained = self
-                .engine
-                .session(&home)?
-                .domains()
-                .iter()
-                .find(|domain| domain.key() == home)?;
-            describe_active_group_with_hints(
-                &tree,
-                retained.bounds,
-                retained.gap,
-                &focus_leaf,
-                &leaf_to_window,
-                &resolve,
-            )
-        })() else {
+        let Some((bounds, gap)) = self.layout.domain_geometry(&home) else {
+            return hidden(GroupHideReason::RootLeaf);
+        };
+        let Some(group) = describe_active_group_with_hints(
+            tree,
+            bounds,
+            gap,
+            &focus_leaf,
+            &leaf_to_window,
+            &resolve,
+        ) else {
             return hidden(GroupHideReason::RootLeaf);
         };
         let scale = self
@@ -752,9 +730,8 @@ impl WorldEngine {
                     output: out.clone(),
                     workspace: ws.clone(),
                 };
-                self.engine
-                    .session(&key)
-                    .and_then(|session| session.tree_for(&key))
+                self.layout
+                    .tree(&key)
                     .is_some_and(|tree| Self::tree_has_group_v4(tree, group))
             }
         };
