@@ -221,3 +221,14 @@
   add the minimal discriminating sequence to
   [reference outcomes](../spec/reference-outcomes.md); unsupported outcomes
   remain TBD for a user decision rather than being changed by the refactor.
+
+## Implementation evidence
+
+- `WorldEngine` now owns `WorldLayout` instead of `Engine`. Private per-domain
+  storage retains leaf associations and layout history without stored homing
+  rows; policy, allocator, admission high-water and configuration are owned once.
+  Exception and restore-slot snapshots derive their home from the domain key.
+- Storage ownership is installed; algorithm and caller migration is pending.
+  Old engine/session modules remain to supply algorithms during replacement,
+  not as a working compatibility route. Compilation and behavioural acceptance
+  are not yet established; only scoped formatting and source review are current.

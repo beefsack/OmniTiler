@@ -48,7 +48,6 @@ use crate::connection::{
     SettingsReply, SettingsRequest,
 };
 use crate::directional::{OutputId, WindowId, WorkspaceId};
-use crate::engine::Engine;
 use crate::geometry::Rect;
 use crate::gesture::GestureSettled;
 use crate::ids::{CorrelationId, GenerationId, OwnerId};
@@ -56,6 +55,7 @@ use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
 use crate::workspace_scope::ScopeHistory;
 use crate::world_gesture::RetainedGesture;
+use crate::world_layout::WorldLayout;
 use crate::world_report::{
     AuthorityScope, CommandRejectKind, CommandResult, HoldReason, ScopeAuthority, ScopeStatus,
     TilingMode, TransferKind, TransferTarget, WindowDesire, WorkspaceDesire, WorldCommand,
@@ -690,16 +690,15 @@ impl WorldEngine {
             .unwrap_or_else(|| "-".to_owned());
         let (focus_leaf, tree_token) = homing
             .as_ref()
-            .and_then(|key| self.engine.session(key).map(|session| (key, session)))
-            .map(|(key, session)| {
-                let (_, leaf) = session.focus();
+            .map(|key| {
+                let leaf = self.layout.focus_leaf(key);
                 let leaf_token = leaf
-                    .as_ref()
                     .map(|id| diag_id(&id.0).to_owned())
                     .unwrap_or_else(|| "-".to_owned());
-                let tree = session
-                    .tree_for(key)
-                    .map(|node| diag_tree(node, leaf.as_ref()))
+                let tree = self
+                    .layout
+                    .tree(key)
+                    .map(|node| diag_tree(node, leaf))
                     .unwrap_or_else(|| "-".to_owned());
                 (leaf_token, tree)
             })
@@ -1338,10 +1337,10 @@ impl PriorAcceptedContext {
     }
 }
 
-/// Stateful world boundary around the retained [`Engine`].
+/// Stateful world boundary owning its layout storage.
 #[derive(Debug, Clone)]
 pub struct WorldEngine {
-    pub(crate) engine: Engine,
+    pub(crate) layout: WorldLayout,
     pub(crate) core_generation: GenerationId,
     pub(crate) core_generation_str: String,
     generation_seed: String,
@@ -2057,11 +2056,11 @@ impl WorldEngine {
     #[must_use]
     pub fn new(core_generation: &str) -> Option<Self> {
         let parsed = GenerationId::parse(core_generation)?;
-        let mut engine = Engine::new();
+        let mut layout = WorldLayout::new();
         // Fixed-size admission stays enabled for every world carrier.
-        engine.set_fixed_size_admission(true);
+        layout.set_fixed_size_admission(true);
         Some(Self {
-            engine,
+            layout,
             core_generation: parsed,
             core_generation_str: core_generation.to_owned(),
             generation_seed: core_generation.to_owned(),
@@ -2263,10 +2262,8 @@ impl WorldEngine {
         fresh.connection_number = next_number;
         fresh.adapter = Some(request.adapter.clone());
         fresh.connection_owner = Some(owner);
-        fresh.engine.sync_binding(
-            fresh.connection_owner.as_ref().expect("connection owner"),
-            &fresh.core_generation,
-        );
+        // A new world generation starts with empty layout storage and a fresh
+        // group allocator.
         fresh.application_identity = Some(request.application_identity.clone());
         fresh.capabilities = Some(request.capabilities.clone());
         *self = fresh;
@@ -2292,9 +2289,9 @@ impl WorldEngine {
         let reply = self.settings.process(request, caps);
         if reply.status == crate::connection::SettingsStatus::Accepted {
             self.initial_settings_accepted = true;
-            self.engine
+            self.layout
                 .set_fixed_size_predicate(self.settings.fixed_size_predicate);
-            self.engine
+            self.layout
                 .set_fresh_placement(self.settings.fresh_placement);
             self.switch_target = self.settings.switch_target;
             self.fresh_placement = self.settings.fresh_placement;
@@ -2513,11 +2510,11 @@ impl WorldEngine {
         id <= self.consumed_gesture_seq
     }
 
-    /// Borrow the retained engine (read-only inspection for in-crate callers).
+    /// Borrow the owned layout storage (read-only inspection for in-crate
+    /// callers).
     #[must_use]
-    #[allow(dead_code)]
-    pub(crate) fn engine(&self) -> &Engine {
-        &self.engine
+    pub(crate) fn layout(&self) -> &WorldLayout {
+        &self.layout
     }
 
     /// Fresh-placement bootstrap gate: policy routing applies only for a
@@ -2630,7 +2627,7 @@ impl WorldEngine {
             TransferKind::Window(window) => window.clone(),
             TransferKind::View | TransferKind::Migration => return StaySourceFocus::Unknown,
         };
-        let Some(session) = self.engine.session(source) else {
+        let Some(session) = self.layout.session(source) else {
             // No committed session for a retained stay source means the send
             // emptied and retired it: proven-empty, never unknown. (A
             // mismatched source already refused above, and a floating-only
@@ -3048,8 +3045,8 @@ impl WorldEngine {
         if self.members.contains_key(window) {
             return true;
         }
-        for key in self.engine.domain_keys() {
-            let Some(session) = self.engine.session(&key) else {
+        for key in self.layout.domain_keys() {
+            let Some(session) = self.layout.session(&key) else {
                 continue;
             };
             if session
@@ -3071,8 +3068,8 @@ impl WorldEngine {
     }
 
     pub(crate) fn is_tiled_window_any(&self, window: &WindowId) -> bool {
-        self.engine.domain_keys().iter().any(|key| {
-            self.engine.session(key).is_some_and(|session| {
+        self.layout.domain_keys().iter().any(|key| {
+            self.layout.session(key).is_some_and(|session| {
                 session
                     .snapshot()
                     .windows
@@ -3083,8 +3080,8 @@ impl WorldEngine {
     }
 
     pub(crate) fn is_exception_window_any(&self, window: &WindowId) -> bool {
-        self.engine.domain_keys().iter().any(|key| {
-            self.engine
+        self.layout.domain_keys().iter().any(|key| {
+            self.layout
                 .session(key)
                 .is_some_and(|session| session.is_exception(window))
         })
@@ -3099,8 +3096,8 @@ impl WorldEngine {
     /// lifetimes counted twice still fit.
     pub(crate) fn retained_publish_footprint(&self) -> usize {
         let mut total = 0usize;
-        for key in self.engine.domain_keys() {
-            let Some(session) = self.engine.session(&key) else {
+        for key in self.layout.domain_keys() {
+            let Some(session) = self.layout.session(&key) else {
                 continue;
             };
             total = total
@@ -3260,8 +3257,8 @@ impl WorldEngine {
         // even when held, so members latch only on staged health.
         // Pending-only latching would miss record-free first admissions.
         let mut known: Vec<WindowId> = Vec::new();
-        for key in self.engine.domain_keys() {
-            let Some(session) = self.engine.session(&key) else {
+        for key in self.layout.domain_keys() {
+            let Some(session) = self.layout.session(&key) else {
                 continue;
             };
             for link in &session.snapshot().windows {
@@ -3340,7 +3337,7 @@ impl WorldEngine {
                     continue;
                 }
                 if !self.is_exception_window_any(&win)
-                    || self.engine.is_automatic_fixed_float_any(&win)
+                    || self.layout.is_automatic_fixed_float_any(&win)
                 {
                     continue;
                 }
@@ -3363,14 +3360,14 @@ impl WorldEngine {
                 if !self.is_tiled_window_any(&win) {
                     continue;
                 }
-                self.engine.commit_fixed_tile_override(&win);
+                self.layout.commit_fixed_tile_override(&win);
                 self.pending_intent.remove(&win);
             } else if data.float == Some(true) {
                 // Real float success is a non-automatic exception: retain
                 // pending through minimized placeholders, and never
                 // promote automatic floats to explicit.
                 if !self.is_exception_window_any(&win)
-                    || self.engine.is_automatic_fixed_float_any(&win)
+                    || self.layout.is_automatic_fixed_float_any(&win)
                 {
                     continue;
                 }
@@ -3383,8 +3380,8 @@ impl WorldEngine {
         // float clears a restored tile win), while exclusion gaps with no
         // live session preserve continuity untouched.
         let mut live: Vec<WindowId> = Vec::new();
-        for key in self.engine.domain_keys() {
-            let Some(session) = self.engine.session(&key) else {
+        for key in self.layout.domain_keys() {
+            let Some(session) = self.layout.session(&key) else {
                 continue;
             };
             for link in &session.snapshot().windows {
@@ -3400,8 +3397,8 @@ impl WorldEngine {
         live.sort();
         live.dedup();
         for win in live {
-            let tile = self.engine.has_fixed_tile_override_any(&win);
-            let automatic = self.engine.is_automatic_fixed_float_any(&win);
+            let tile = self.layout.has_fixed_tile_override_any(&win);
+            let automatic = self.layout.is_automatic_fixed_float_any(&win);
             if tile || automatic {
                 self.excluded_intent.insert(
                     win,
@@ -3530,7 +3527,7 @@ impl WorldEngine {
         if self.is_tiled_window_any(&window) {
             self.restored_floats.remove(&window);
         } else if self.is_exception_window_any(&window)
-            && !self.engine.is_automatic_fixed_float_any(&window)
+            && !self.layout.is_automatic_fixed_float_any(&window)
         {
             self.restored_floats.insert(window);
         }
@@ -3543,8 +3540,8 @@ impl WorldEngine {
         // same-lifetime gap. Only records proven intent: never
         // overwrites a retained win with a retired-session false.
         for id in self.staged.excluded.clone() {
-            let tile = self.engine.has_fixed_tile_override_any(&id);
-            let automatic = self.engine.is_automatic_fixed_float_any(&id);
+            let tile = self.layout.has_fixed_tile_override_any(&id);
+            let automatic = self.layout.is_automatic_fixed_float_any(&id);
             if tile || automatic {
                 self.excluded_intent.insert(
                     id,

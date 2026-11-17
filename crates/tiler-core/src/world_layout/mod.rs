@@ -1,0 +1,14 @@
+//! Owned layout storage for the sole world engine.
+//!
+//! [`WorldLayout`] is the single retained home for per-domain layout data,
+//! the one layout policy, the generation-shared group allocator, the single
+//! admission high-water and the layout configuration. It deliberately owns
+//! no owner, generation, fingerprint, reconciler, pending-operation or
+//! native-settlement state: those belong to the world transition or are
+//! obsolete. Members remain the sole homing/lifetime authority in
+//! `WorldEngine`; a layout binding stores only a leaf association, and
+//! public vocabulary snapshots derive their home from the owning map key.
+
+mod state;
+
+pub(crate) use state::WorldLayout;
