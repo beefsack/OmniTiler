@@ -23,8 +23,12 @@ use super::focus::{domain_focus_resolves, settle_domain_focus_tail};
 use super::observation::{domain_observed_known_match, valid_observed_shapes};
 use super::outcome::{AdmissionOutcome, LayoutFailure};
 use super::projection::project_borrowed_geometry;
-use super::state::{DomainException, WorldLayout};
+use super::state::{DomainException, DomainLayout, WorldLayout};
 use super::topology::{collect_node_ids, validate_domain_topology};
+
+#[cfg(test)]
+#[path = "admit_tests.rs"]
+mod tests;
 
 impl WorldLayout {
     /// Admit `window` into the converged domain `key` from a complete
@@ -50,12 +54,52 @@ impl WorldLayout {
         allow_fullscreen_subject: bool,
         observed: &[ObservedWindow],
     ) -> Result<AdmissionOutcome, LayoutFailure> {
+        let (candidate, new_counter, outcome) = self.build_admission_candidate(
+            key,
+            self.domain(key),
+            self.admission_seq_next,
+            window,
+            exceptions,
+            exception_behavior,
+            placement_bounds,
+            suppress_fixed_float,
+            allow_fullscreen_subject,
+            observed,
+        )?;
+
+        *self.domains.get_mut(key).expect("domain validated above") = candidate;
+        if outcome.admitted_leaf.is_some() {
+            self.admission_seq_next = new_counter;
+        }
+
+        Ok(outcome)
+    }
+
+    /// Build a staged admission candidate without installing it. The caller
+    /// supplies the `original` domain view (absent for a missing target) and a
+    /// local `admission_counter` seed, which may differ from the retained
+    /// high-water for paired or freshly seeded admission paths. All validation,
+    /// geometry, allocator burns and the focus/provenance commit tail run here;
+    /// only the caller installs the returned candidate and counter.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn build_admission_candidate(
+        &self,
+        key: &DomainKey,
+        original: Option<&DomainLayout>,
+        admission_counter: u64,
+        window: &WindowId,
+        exceptions: ExceptionFlags,
+        exception_behavior: Option<ExceptionBehavior>,
+        placement_bounds: Rect,
+        suppress_fixed_float: bool,
+        allow_fullscreen_subject: bool,
+        observed: &[ObservedWindow],
+    ) -> Result<(DomainLayout, u64, AdmissionOutcome), LayoutFailure> {
         let refuse = LayoutFailure::Semantics;
 
         // Affected-domain pretopology is checked first only when a domain is
         // already retained; no other domain is read. The lookup stays optional
         // so a missing domain cannot jump ahead of the shape gates below.
-        let original = self.domain(key);
         if let Some(existing) = original
             && !validate_domain_topology(key, existing)
         {
@@ -166,7 +210,7 @@ impl WorldLayout {
 
         let mut admitted_leaf: Option<NodeId> = None;
         let mut geometry: Vec<DesiredGeometry> = Vec::new();
-        let mut new_counter = self.admission_seq_next;
+        let mut new_counter = admission_counter;
 
         if exceptions.any() {
             // Deferred explicit exception: exactly the requested flags, no
@@ -336,17 +380,16 @@ impl WorldLayout {
         WorldLayout::prune_domain_capacity_state(&mut candidate);
         candidate.accepted_revision = revision;
 
-        *self.domains.get_mut(key).expect("domain validated above") = candidate;
-        if admitted_leaf.is_some() {
-            self.admission_seq_next = new_counter;
-        }
-
-        Ok(AdmissionOutcome {
-            base_revision: base,
-            revision,
-            admitted_leaf,
-            geometry,
-        })
+        Ok((
+            candidate,
+            new_counter,
+            AdmissionOutcome {
+                base_revision: base,
+                revision,
+                admitted_leaf,
+                geometry,
+            },
+        ))
     }
 }
 

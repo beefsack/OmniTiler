@@ -332,3 +332,10 @@
   the exception-only floating-geometry lookup and fixed-predicate setting.
   Source review and scoped formatting pass; reported library diagnostics leave
   101 errors in other unmigrated consumers. No test acceptance is claimed.
+- Admission now shares a pure local candidate builder with explicit working
+  admission-counter input, so fresh seeds and transfers need not install a
+  temporary domain to plan admission. The retained method installs its result
+  only after success. Two direct tests cover uninstalled candidates and
+  revision-bound allocation burns; source review and scoped formatting pass.
+  Reported diagnostic checks find no admission-module errors, but global
+  compilation and executed behavioural acceptance remain pending.
