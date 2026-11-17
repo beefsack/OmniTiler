@@ -13,7 +13,6 @@ use crate::geometry::Rect;
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
 use crate::world_engine::{StagedDomain, StagedObservation, StagedReport, WorldEngine};
-use crate::world_operations::parse_direction_token;
 use crate::world_report::{
     AuthorityScope, HeldScreenRow, HeldWindowRow, HoldReason, PresentationRowV4, RowDiagnostic,
     RowDiagnosticKind, RowDiagnosticLane, StateProperty, TransferKind, WindowFact, WorldReportV4,
@@ -1433,10 +1432,9 @@ impl WorldEngine {
     pub(crate) fn directional_pair_for(
         &self,
         source_key: &DomainKey,
-        direction: &str,
+        direction: Direction,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> Option<DirectionalPair> {
-        let direction = parse_direction_token(direction)?;
         let source = self
             .staged
             .domains

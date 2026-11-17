@@ -291,7 +291,7 @@ pub(super) fn geometry_covers_domain(
     true
 }
 
-fn step_for_direction(direction: Direction) -> i32 {
+pub(super) fn step_for_direction(direction: Direction) -> i32 {
     match direction {
         Direction::Right | Direction::Down => 1,
         Direction::Left | Direction::Up => -1,
@@ -299,7 +299,7 @@ fn step_for_direction(direction: Direction) -> i32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn apply_local_move_operation(
+pub(super) fn apply_local_move_operation(
     policy: &dyn LayoutPolicy,
     alloc: &GroupAllocator,
     tree: Node,

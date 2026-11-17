@@ -357,3 +357,83 @@ pub(crate) enum WorkspaceSwapFailure {
     /// Deriving a same-output sticky stay domain failed.
     StayFailed,
 }
+
+use super::pair::PairAssemblyFailure;
+
+/// Typed failure for a composed two-domain pair operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PairOperationFailure {
+    /// Canonical pair assembly, split, or install failed.
+    Assembly(PairAssemblyFailure),
+    /// Semantic or revision failure from layout validation, convergence, or command.
+    Layout(LayoutFailure),
+}
+
+impl From<PairAssemblyFailure> for PairOperationFailure {
+    fn from(value: PairAssemblyFailure) -> Self {
+        Self::Assembly(value)
+    }
+}
+
+impl From<LayoutFailure> for PairOperationFailure {
+    fn from(value: LayoutFailure) -> Self {
+        Self::Layout(value)
+    }
+}
+
+/// Typed result of an accepted directional pair focus change (local or cross-output).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PairFocusOutcome {
+    pub(crate) base_revision: u64,
+    pub(crate) revision: u64,
+    pub(crate) direction: Direction,
+    pub(crate) from_window: WindowId,
+    pub(crate) from_leaf: Option<NodeId>,
+    pub(crate) to_window: WindowId,
+    pub(crate) to_leaf: NodeId,
+    pub(crate) crossed: bool,
+    pub(crate) cross_source_output: Option<OutputId>,
+    pub(crate) cross_source_workspace: Option<WorkspaceId>,
+    pub(crate) target_output: OutputId,
+    pub(crate) target_workspace: WorkspaceId,
+    pub(crate) route: Vec<NodeId>,
+    pub(crate) geometry: Vec<DesiredGeometry>,
+}
+
+/// Cross-output transfer metadata for an accepted R4 directional pair move.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PairMoveCross {
+    pub(crate) intent_window: WindowId,
+    pub(crate) source_output: OutputId,
+    pub(crate) source_workspace: WorkspaceId,
+    pub(crate) target_output: OutputId,
+    pub(crate) target_workspace: WorkspaceId,
+}
+
+/// Typed result of an accepted directional pair move (R1-R4 or R4 capacity-float fallback).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PairMoveOutcome {
+    Moved {
+        base_revision: u64,
+        revision: u64,
+        rule: Rule,
+        capability: Capability,
+        direction: Direction,
+        window: WindowId,
+        focus_leaf: NodeId,
+        geometry: Vec<DesiredGeometry>,
+        cross: Option<PairMoveCross>,
+    },
+    CapacityFloat {
+        base_revision: u64,
+        revision: u64,
+        window: WindowId,
+        leaf: NodeId,
+        source_output: OutputId,
+        source_workspace: WorkspaceId,
+        target_output: OutputId,
+        target_workspace: WorkspaceId,
+        follow: bool,
+        geometry: Vec<DesiredGeometry>,
+    },
+}

@@ -20,22 +20,24 @@ use super::topology::{
 
 /// Typed pre-state failure for canonical pair assembly, split, and install.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PairAssemblyFailure {
+pub(crate) enum PairAssemblyFailure {
     SourceUnavailable,
     TargetUnusable,
     DomainMismatch,
     DuplicateState,
+    CommitRejected,
 }
 
 impl PairAssemblyFailure {
     /// Stable diagnostic token matching the legacy engine seam.
     #[must_use]
-    pub(super) const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::SourceUnavailable => "canonical-source-unavailable",
             Self::TargetUnusable => "canonical-pair-unusable",
             Self::DomainMismatch => "canonical-pair-domain-mismatch",
             Self::DuplicateState => "canonical-pair-duplicate-state",
+            Self::CommitRejected => "commit-rejected",
         }
     }
 }

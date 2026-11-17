@@ -475,3 +475,13 @@
   diagnostic still fails on 36 library and 212 test-build errors in unmigrated
   consumers, with no pair-convergence or shared-phase error. Pair callers and
   runtime acceptance remain pending.
+- Directional pair focus and R1-R4 movement now compose typed layout operations,
+  reusing local tree edits and installing combined convergence before later
+  command refusals. Cross-output capacity fallback preserves untouched frames,
+  source-priority provenance and first admission order. Review restores global
+  pair pruning and world refusal precedence, removes direction string roundtrips,
+  and uses closed assembly failures. Nine direct tests cover these paths;
+  initial minimum-hint fixtures are corrected to actual geometric exhaustion.
+  Scoped formatting passes; a library/tests diagnostic still fails on 35
+  library and 211 test-build errors in unmigrated consumers, with no new pair
+  operation/test error. All nine tests and end-to-end acceptance remain pending.

@@ -27,6 +27,9 @@ mod orientation;
 mod outcome;
 mod pair;
 mod pair_convergence;
+mod pair_focus;
+mod pair_move;
+mod pair_operation;
 mod projection;
 mod queries;
 mod relocation;
@@ -49,6 +52,8 @@ mod local_operation_tests;
 #[cfg(test)]
 mod pair_convergence_tests;
 #[cfg(test)]
+mod pair_directional_tests;
+#[cfg(test)]
 mod pair_tests;
 #[cfg(test)]
 mod query_focus_tests;
@@ -65,10 +70,13 @@ pub(crate) use local_operation::LocalOperationContext;
 pub(crate) use outcome::{
     AdmissionOutcome, FittedAdmissionDecline, FittedAdmissionReason, FloatOutcome,
     FreshDomainFailure, FreshDomainOutcome, FreshOutcomeKind, LayoutFailure, LocalFocusOutcome,
-    LocalMoveOutcome, LocalOperationFailure, OrientationOutcome, PointerCornerResizeOutcome,
-    ResizeOutcome, RetainedProjectionOutcome, RetainedReconcileFailure, WorkspaceMigrationFailure,
+    LocalMoveOutcome, LocalOperationFailure, OrientationOutcome, PairFocusOutcome, PairMoveCross,
+    PairMoveOutcome, PairOperationFailure, PointerCornerResizeOutcome, ResizeOutcome,
+    RetainedProjectionOutcome, RetainedReconcileFailure, WorkspaceMigrationFailure,
     WorkspaceMigrationOutcome, WorkspaceSwapFailure, WorkspaceSwapOutcome,
 };
+pub(crate) use pair::PairAssemblyFailure;
+pub(crate) use pair_operation::PairOperationContext;
 pub(crate) use projection::ProjectionFailure;
 pub(crate) use state::WorldLayout;
 pub(crate) use workspace_swap::WorkspaceSwapSide;

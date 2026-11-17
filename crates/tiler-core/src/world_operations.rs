@@ -21,7 +21,10 @@ use crate::world_engine::{
     KIND_SEND_WINDOW, MSG_DIRECTION, MSG_MIGRATION_TOPOLOGY, MSG_MIGRATION_TOPOLOGY_UNREADABLE,
     MSG_OPERATION, MSG_SCOPE_HELD, MSG_SEND_TARGET, MSG_SEND_WINDOW, RetainedTransfer, WorldEngine,
 };
-use crate::world_layout::{LayoutFailure, LocalOperationContext, LocalOperationFailure};
+use crate::world_layout::{
+    LayoutFailure, LocalOperationContext, LocalOperationFailure, PairMoveOutcome,
+    PairOperationContext, PairOperationFailure,
+};
 use crate::world_report::{
     CommandResult, OneShotEffect, TransferKind, TransferTarget, WorldCommand,
 };
@@ -238,7 +241,7 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn operation_directional(
         &mut self,
-        issue: &crate::world_engine::EventIssue,
+        _issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         command: &CoreCommand,
         window: &str,
@@ -264,68 +267,133 @@ impl WorldEngine {
                 message: MSG_SCOPE_HELD,
             };
         }
-        let is_move = matches!(command, CoreCommand::Move { .. });
-        let pair = if is_move {
-            let Some(direction_parsed) = parse_direction_token(direction) else {
-                return CommandApplied::Rejected {
-                    kind: KIND_OPERATION,
-                    message: MSG_OPERATION,
-                };
+        let Some(direction_parsed) = parse_direction_token(direction) else {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
             };
+        };
+        match command {
+            CoreCommand::Move {
+                cross_output_transfer,
+                same_axis_move,
+                ..
+            } => self.run_pair_move_typed(
+                command_seq,
+                &window_id,
+                direction_parsed,
+                *cross_output_transfer,
+                *same_axis_move,
+                pinned_target,
+                by_id,
+                held_scopes,
+            ),
+            CoreCommand::Focus { float_subject, .. } => {
+                if pinned_target.is_some() {
+                    return CommandApplied::Rejected {
+                        kind: KIND_OPERATION,
+                        message: MSG_OPERATION,
+                    };
+                }
+                self.run_pair_focus_typed(
+                    command_seq,
+                    &window_id,
+                    direction_parsed,
+                    *float_subject,
+                    by_id,
+                    held_scopes,
+                )
+            }
+            _ => CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            },
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_pair_operation(
+        &mut self,
+        window: &WindowId,
+        direction: Direction,
+        is_move: bool,
+        pinned_target: Option<&OutputId>,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> Result<
+        (
+            OutputDomain,
+            OutputDomain,
+            i32,
+            i32,
+            WindowId,
+            Vec<EngineWindow>,
+            Vec<WindowId>,
+        ),
+        CommandApplied,
+    > {
+        let Some(source_row) = by_id.get(window) else {
+            return Err(CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            });
+        };
+        let source_key = DomainKey {
+            output: source_row.output.clone(),
+            workspace: source_row.workspace.clone(),
+        };
+        if held_scopes.contains(&source_key) {
+            return Err(CommandApplied::Rejected {
+                kind: KIND_SCOPE_HELD,
+                message: MSG_SCOPE_HELD,
+            });
+        }
+        let pair = if is_move {
             if let Some(pinned) = pinned_target {
-                // Dispatch-pinned target: validate forward/reverse touch on
-                // fresh topology (reverse uniqueness not required); the
-                // relocated mover frame is never consulted.
                 let Some(source_report) = self
                     .staged
                     .domains
                     .iter()
                     .find(|d| d.readable && d.key == source_key)
                 else {
-                    return CommandApplied::Rejected {
+                    return Err(CommandApplied::Rejected {
                         kind: KIND_OPERATION,
                         message: MSG_OPERATION,
-                    };
+                    });
                 };
                 self.directional_pair_for_target(
                     &source_key,
                     source_report,
-                    direction_parsed,
+                    direction,
                     pinned,
                     held_scopes,
                 )
             } else {
                 match self.directional_pair_for_window(
                     &source_key,
-                    direction_parsed,
+                    direction,
                     &source_row.rect,
                     held_scopes,
                 ) {
                     Ok(pair) => pair,
                     Err(_) => {
-                        return CommandApplied::Rejected {
+                        return Err(CommandApplied::Rejected {
                             kind: KIND_OPERATION,
                             message: MSG_OPERATION,
-                        };
+                        });
                     }
                 }
             }
         } else {
-            if pinned_target.is_some() {
-                return CommandApplied::Rejected {
-                    kind: KIND_OPERATION,
-                    message: MSG_OPERATION,
-                };
-            }
             self.directional_pair_for(&source_key, direction, held_scopes)
         };
         let Some(((source_domain, source_key), (target_domain, target_key), target_outer, _)) =
             pair
         else {
-            return CommandApplied::Rejected {
+            return Err(CommandApplied::Rejected {
                 kind: KIND_OPERATION,
                 message: MSG_OPERATION,
-            };
+            });
         };
         let Some(source_report) = self
             .staged
@@ -333,32 +401,21 @@ impl WorldEngine {
             .iter()
             .find(|d| d.readable && d.key == source_key)
         else {
-            return CommandApplied::Rejected {
+            return Err(CommandApplied::Rejected {
                 kind: KIND_OPERATION,
                 message: MSG_OPERATION,
-            };
+            });
         };
-        let owner = issue.owner.clone();
-        let correlation = issue.correlation.clone();
-        let accepted = self
-            .engine
-            .session(&source_key)
-            .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
-        let (revision, fingerprint) = accepted.unwrap_or((0, 0));
-        // Pair convergence builds its observation from the combined
-        // both-domain rows (source first), exactly like the legacy
-        // directional route: source-only rows would starve the target side
-        // and refuse as unchanged.
         let Some(target_report) = self
             .staged
             .domains
             .iter()
             .find(|d| d.readable && d.key == target_key)
         else {
-            return CommandApplied::Rejected {
+            return Err(CommandApplied::Rejected {
                 kind: KIND_OPERATION,
                 message: MSG_OPERATION,
-            };
+            });
         };
         let mut combined = self.shielded_windows(&source_key, &source_report.windows);
         combined.extend(self.shielded_windows(&target_key, &target_report.windows));
@@ -382,33 +439,202 @@ impl WorldEngine {
             crate::world_engine::inset_world_domain(&source_output_domain, source_report.outer_gap),
             crate::world_engine::inset_world_domain(&target_output_domain, target_outer),
         ) else {
-            return CommandApplied::Rejected {
+            return Err(CommandApplied::Rejected {
                 kind: KIND_SCOPE_HELD,
                 message: MSG_SCOPE_HELD,
+            });
+        };
+        let observed_focus = self.effective_operation_focus(&source_key, &source_report.focused);
+        Ok((
+            inset_source,
+            inset_target,
+            source_report.outer_gap,
+            target_outer,
+            observed_focus,
+            combined,
+            closed,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_pair_focus_typed(
+        &mut self,
+        command_seq: u64,
+        window: &WindowId,
+        direction: Direction,
+        float_subject: bool,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        let (
+            inset_source,
+            inset_target,
+            source_outer_gap,
+            target_outer_gap,
+            observed_focus,
+            combined,
+            closed,
+        ) = match self.prepare_pair_operation(window, direction, false, None, by_id, held_scopes) {
+            Ok(prepared) => prepared,
+            Err(rejected) => return rejected,
+        };
+        if !is_opaque_id(&window.0) {
+            return CommandApplied::Rejected {
+                kind: "focus-window-invalid",
+                message: OPAQUE_ID_MESSAGE,
             };
+        }
+        let ctx = PairOperationContext {
+            source_domain: &inset_source,
+            target_domain: &inset_target,
+            source_outer_gap,
+            target_outer_gap: Some(target_outer_gap),
+            observed_focus: &observed_focus,
+            observed: &combined,
+            closed: &closed,
         };
-        let event = CoreEvent {
-            owner,
-            generation: self.core_generation.clone(),
-            correlation,
-            revision,
-            fingerprint,
-            domain: Engine::canonical_component_domain(&inset_source),
-            domain_key: source_key.clone(),
-            outer_gap: source_report.outer_gap,
-            focused_window: self.effective_operation_focus(&source_key, &source_report.focused),
-            windows: combined,
-            closed_windows: closed,
-            directional: Some(vec![
-                (inset_source, source_key.clone()),
-                (inset_target, target_key),
-            ]),
-            directional_target_outer_gap: Some(target_outer),
-            target_domain: None,
-            target_windows: Vec::new(),
-            command: command.clone(),
+        match self
+            .layout
+            .run_directional_pair_focus(&ctx, window, direction, float_subject)
+        {
+            Ok(outcome) => {
+                self.note_command(command_seq);
+                let _ = self.record_command_focus(&outcome.to_window, held_scopes);
+                CommandApplied::Effect(OneShotEffect::explicit_focus(
+                    command_seq,
+                    outcome.to_window,
+                    self.state_revision + 1,
+                ))
+            }
+            Err(err) => reject_pair_operation_failure(err),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_pair_move_typed(
+        &mut self,
+        command_seq: u64,
+        window: &WindowId,
+        direction: Direction,
+        cross_output_transfer: bool,
+        same_axis_move: SameAxisMove,
+        pinned_target: Option<&OutputId>,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        let (
+            inset_source,
+            inset_target,
+            source_outer_gap,
+            target_outer_gap,
+            observed_focus,
+            combined,
+            closed,
+        ) = match self.prepare_pair_operation(
+            window,
+            direction,
+            true,
+            pinned_target,
+            by_id,
+            held_scopes,
+        ) {
+            Ok(prepared) => prepared,
+            Err(rejected) => return rejected,
         };
-        self.finish_operation_event(command_seq, &event, held_scopes)
+        if !is_opaque_id(&window.0) {
+            return CommandApplied::Rejected {
+                kind: "move-window-invalid",
+                message: OPAQUE_ID_MESSAGE,
+            };
+        }
+        let ctx = PairOperationContext {
+            source_domain: &inset_source,
+            target_domain: &inset_target,
+            source_outer_gap,
+            target_outer_gap: Some(target_outer_gap),
+            observed_focus: &observed_focus,
+            observed: &combined,
+            closed: &closed,
+        };
+        match self.layout.run_directional_pair_move(
+            &ctx,
+            window,
+            direction,
+            cross_output_transfer,
+            same_axis_move,
+        ) {
+            Ok(PairMoveOutcome::Moved { cross, .. }) => {
+                if let Some(cross) = cross {
+                    self.retain_latest_window_transfer(RetainedTransfer {
+                        target: TransferTarget {
+                            operation_id: format!("op-{command_seq}"),
+                            kind: TransferKind::Window(cross.intent_window),
+                            target_output: cross.target_output,
+                            target_workspace: cross.target_workspace.0,
+                            follow: true,
+                            held: false,
+                        },
+                        policy: false,
+                        command_seq: Some(command_seq),
+                        source_output: cross.source_output,
+                        source_workspace: cross.source_workspace.0,
+                        members: Vec::new(),
+                        migration_refill: None,
+                        migration_initial_empty: false,
+                        migration_source_index: None,
+                        migration_source_view: None,
+                        migration_target_view: None,
+                        migration_terminal: None,
+                        migration_selection_rev: None,
+                        pending_member: None,
+                        member_predecessors: Vec::new(),
+                        pending_members: BTreeMap::new(),
+                        pending_view: None,
+                    });
+                }
+                self.note_command(command_seq);
+                CommandApplied::NoEffect
+            }
+            Ok(PairMoveOutcome::CapacityFloat {
+                window,
+                source_output,
+                source_workspace,
+                target_output,
+                target_workspace,
+                follow,
+                ..
+            }) => {
+                self.retain_latest_window_transfer(RetainedTransfer {
+                    target: TransferTarget {
+                        operation_id: format!("op-{command_seq}"),
+                        kind: TransferKind::Window(window),
+                        target_output,
+                        target_workspace: target_workspace.0,
+                        follow,
+                        held: false,
+                    },
+                    policy: false,
+                    command_seq: Some(command_seq),
+                    source_output,
+                    source_workspace: source_workspace.0,
+                    members: Vec::new(),
+                    migration_refill: None,
+                    migration_initial_empty: false,
+                    migration_source_index: None,
+                    migration_source_view: None,
+                    migration_target_view: None,
+                    migration_terminal: None,
+                    migration_selection_rev: None,
+                    pending_member: None,
+                    member_predecessors: Vec::new(),
+                    pending_members: BTreeMap::new(),
+                    pending_view: None,
+                });
+                self.note_command(command_seq);
+                CommandApplied::NoEffect
+            }
+            Err(err) => reject_pair_operation_failure(err),
+        }
     }
 
     /// Direction-only focus (core-owned topology): strict parity with the
@@ -695,22 +921,14 @@ impl WorldEngine {
             ));
         }
         if cross_target.is_some() {
-            // The cross command carries the float origin exactly when the
+            // The cross path carries the float origin exactly when the
             // subject floats (only fullscreen/maximized floats reach here;
             // the lattice above returns for every other float).
-            let command = CoreCommand::Focus {
-                window: window.0.clone(),
-                direction: direction.to_owned(),
-                cross_output_transfer: true,
-                float_subject,
-            };
-            return self.operation_directional(
-                issue,
+            return self.run_pair_focus_typed(
                 command_seq,
-                &command,
-                &window.0,
-                direction,
-                None,
+                window,
+                direction_parsed,
+                float_subject,
                 by_id,
                 held_scopes,
             );
@@ -1181,18 +1399,12 @@ impl WorldEngine {
         // adapter only verifies the foreground for its snap chain and never
         // actuates a second time. Refusals pass through untouched.
         let applied = if let Some(target) = pinned {
-            let command = CoreCommand::Move {
-                window: window.0.clone(),
-                direction: direction.to_owned(),
-                cross_output_transfer: true,
-                same_axis_move: same_axis,
-            };
-            self.operation_directional(
-                issue,
+            self.run_pair_move_typed(
                 command_seq,
-                &command,
-                &window.0,
-                direction,
+                window,
+                direction_parsed,
+                true,
+                same_axis,
                 Some(&target),
                 by_id,
                 held_scopes,
@@ -2707,6 +2919,16 @@ fn reject_local_operation_failure(err: LocalOperationFailure) -> CommandApplied 
             kind: "seed-failed",
             message: OBSERVATION_MESSAGE,
         },
+    }
+}
+
+fn reject_pair_operation_failure(err: PairOperationFailure) -> CommandApplied {
+    match err {
+        PairOperationFailure::Assembly(failure) => CommandApplied::Rejected {
+            kind: failure.as_str(),
+            message: OBSERVATION_MESSAGE,
+        },
+        PairOperationFailure::Layout(err) => reject_layout_failure(err),
     }
 }
 
