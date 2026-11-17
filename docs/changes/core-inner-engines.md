@@ -313,3 +313,10 @@
   conservative misses. Source review corrects the observation-shape check to
   inspect carried entries directly. Scoped formatting passes; library/tests
   still fail on unmigrated consumers, with no unchanged-proof diagnostic.
+- World member restore-slot queries and explicit move relocation now use the
+  owned layout directly. Hostability and commit share candidate validation,
+  preserve key-derived exception/slot homes and install only after success;
+  empty-source and absent-source handling remain at the world boundary.
+  One direct relocation test is added but unexecuted. Source review and scoped
+  formatting pass; reported diagnostic checks now leave 120 library errors in
+  other unmigrated consumers, not a successful build.

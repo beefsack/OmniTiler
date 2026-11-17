@@ -101,6 +101,108 @@ impl WorldLayout {
     }
 }
 
+impl WorldLayout {
+    /// Read-only hostability probe for the exact-source move relocation:
+    /// whether [`Self::relocate_domain`] would accept the same source, target
+    /// and geometry. The caller already validated screen/inset/collision and
+    /// handles absent or empty sources; this only checks that `source` is a
+    /// valid exact source and that the candidate validates at the target.
+    /// Leaves this layout untouched on either answer.
+    #[must_use]
+    pub(crate) fn can_relocate_domain(
+        &self,
+        source: &DomainKey,
+        target: &DomainKey,
+        bounds: Rect,
+        gap: i32,
+    ) -> bool {
+        let outer_gap = self.domain(source).map_or(0, |domain| domain.outer_gap);
+        explicit_relocation_candidate(self, source, target, bounds, gap, outer_gap).is_some()
+    }
+
+    /// Move one retained domain from `source` to `target` with the requested
+    /// geometry, preserving tree, focus, focus history, exceptions, restore
+    /// slots, admission provenance and accepted revision. The map key is the
+    /// sole home, so exceptions and slots derive their output/workspace from
+    /// `target`; no other field moves. Refuses without mutation on an equal or
+    /// same-output key, an occupied target, invalid bounds/gap, or an invalid
+    /// source/candidate topology. `outer_gap` is the caller's already-scaled
+    /// work-area inset, not a new admission range rule.
+    pub(crate) fn relocate_domain(
+        &mut self,
+        source: &DomainKey,
+        target: &DomainKey,
+        bounds: Rect,
+        gap: i32,
+        outer_gap: i32,
+    ) -> bool {
+        let Some(candidate) =
+            explicit_relocation_candidate(self, source, target, bounds, gap, outer_gap)
+        else {
+            return false;
+        };
+        // Atomic commit: the only map mutations, after every gate passed.
+        self.domains.remove(source);
+        self.domains.insert(target.clone(), candidate);
+        true
+    }
+
+    /// Drop an empty retained domain slot: the move-away commit for a source
+    /// with no tiled links, exceptions or restore slots.
+    pub(crate) fn drop_domain(&mut self, key: &DomainKey) {
+        self.domains.remove(key);
+    }
+}
+
+/// Build the relocated candidate for `key` from `source` with the requested
+/// geometry, validating the resulting topology. Geometry-only: a domain stores
+/// no independent home, so moving the map key derives every home and no other
+/// field (tree, focus, history, exceptions, slots, provenance, revision) moves.
+/// No map mutation and no whole-world clone.
+fn build_relocated_candidate(
+    source: &DomainLayout,
+    key: &DomainKey,
+    bounds: Rect,
+    gap: i32,
+    outer_gap: i32,
+) -> Option<DomainLayout> {
+    let mut moved = source.clone();
+    moved.bounds = bounds;
+    moved.gap = gap;
+    moved.outer_gap = outer_gap;
+    validate_domain_topology(key, &moved).then_some(moved)
+}
+
+/// Shared validation for the explicit (exact-source) move relocation. Refuses
+/// an equal or same-output key, an occupied target, non-positive bounds, an
+/// out-of-range inner gap, an unknown or malformed source, or a candidate that
+/// fails topology at the target. Unlike the unique-source reconcile selector
+/// this admits an empty source (the outer layer handles emptiness) and has no
+/// outer-gap range guard (outer gap is the caller's scaled work-area inset).
+fn explicit_relocation_candidate(
+    layout: &WorldLayout,
+    source: &DomainKey,
+    target: &DomainKey,
+    bounds: Rect,
+    gap: i32,
+    outer_gap: i32,
+) -> Option<DomainLayout> {
+    if source == target || source.output == target.output {
+        return None;
+    }
+    if layout.contains_domain(target) {
+        return None;
+    }
+    if bounds.w <= 0 || bounds.h <= 0 || !(0..=64).contains(&gap) {
+        return None;
+    }
+    let source_domain = layout.domain(source)?;
+    if !validate_domain_topology(source, source_domain) {
+        return None;
+    }
+    build_relocated_candidate(source_domain, target, bounds, gap, outer_gap)
+}
+
 /// Build the relocated target candidate without inserting it. The unique
 /// source shares the workspace on a different output; its outer gap must
 /// match the request and at least one observed id must intersect a tiled or
@@ -149,15 +251,7 @@ fn relocation_candidate(
     if !(0..=64).contains(&gap) || bounds.w <= 0 || bounds.h <= 0 {
         return None;
     }
-    // Moving the map key derives every home automatically: retained layout
-    // data stores no independent output/workspace, so only geometry moves.
-    let mut moved = source.clone();
-    moved.bounds = bounds;
-    moved.gap = gap;
-    moved.outer_gap = outer_gap;
-    if !validate_domain_topology(key, &moved) {
-        return None;
-    }
+    let moved = build_relocated_candidate(source, key, bounds, gap, outer_gap)?;
     if moved.leaves.is_empty() && moved.exceptions.is_empty() && moved.minimized_slots.is_empty() {
         return None;
     }

@@ -9,7 +9,7 @@ use crate::directional::{Axis, Node, NodeId, OutputId, WorkspaceId};
 use crate::session::{DesiredGeometry, ExceptionFlags, RefusalKind};
 use crate::world_layout::RetainedReconcileFailure;
 
-use super::super::state::DomainException;
+use super::super::state::{DomainException, DomainRestoreSlot};
 use super::*;
 
 fn key() -> DomainKey {
@@ -418,4 +418,64 @@ fn reconcile_retained_gap_mismatch_precedes_outer_gap_mismatch() {
     assert_eq!(retained.gap, 8);
     assert_eq!(retained.outer_gap, 2);
     assert_eq!(retained.accepted_revision, 4);
+}
+
+/// Direct exact-source relocation: the can-probe leaves the layout untouched,
+/// a commit preserves revision/focus/history and rehomes a minimize slot by map
+/// key, and a collision refusal keeps both domains unchanged.
+#[test]
+fn relocate_domain_probe_nonmutating_commit_preserves_state_collision_keeps_both() {
+    let source_key = key_for("out", "ws");
+    let target_key = key_for("out-2", "other-ws");
+    let bounds = rect(0, 0, 800, 600);
+    let mut layout = WorldLayout::new();
+    let mut source = seeded_domain(rect(0, 0, 400, 300), 0, 2, &["win-1"]);
+    source.accepted_revision = 13;
+    source.minimized_slots.insert(
+        window("min-1"),
+        DomainRestoreSlot {
+            leaf: leaf("min-leaf"),
+            tree: Node::Leaf {
+                id: leaf("min-leaf"),
+            },
+        },
+    );
+    let history = source.focus_history.clone();
+    let focus = source.focused_leaf.clone();
+    layout.domains.insert(source_key.clone(), source);
+
+    // Probe is read-only.
+    assert!(layout.can_relocate_domain(&source_key, &target_key, bounds, 0));
+    assert!(layout.domain(&source_key).is_some());
+    assert!(layout.domain(&target_key).is_none());
+
+    // Commit preserves accepted state and homes the slot by the new key.
+    assert!(layout.relocate_domain(&source_key, &target_key, bounds, 0, 2));
+    assert!(layout.domain(&source_key).is_none());
+    let moved = layout.domain(&target_key).expect("target present");
+    assert_eq!(moved.accepted_revision, 13);
+    assert_eq!(moved.focused_leaf, focus);
+    assert_eq!(moved.focus_history, history);
+    assert_eq!(moved.outer_gap, 2);
+    assert_eq!(
+        layout
+            .restore_slot_snapshot(&target_key, &window("min-1"))
+            .expect("slot homed on target")
+            .workspace,
+        WorkspaceId("other-ws".to_owned())
+    );
+
+    // A collision refusal keeps both domains exactly as they were.
+    let occupied = key_for("out-3", "ws");
+    layout.domains.insert(
+        occupied.clone(),
+        DomainLayout::new(rect(0, 0, 100, 100), 0, 0),
+    );
+    let before = layout.domain(&target_key).unwrap().clone();
+    assert!(!layout.relocate_domain(&target_key, &occupied, bounds, 0, 0));
+    assert_eq!(
+        layout.domain(&target_key).unwrap().accepted_revision,
+        before.accepted_revision
+    );
+    assert!(layout.domain(&occupied).is_some());
 }

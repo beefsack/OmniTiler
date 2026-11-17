@@ -305,18 +305,14 @@ impl WorldEngine {
             ) {
                 continue;
             }
-            for key in self.engine.domain_keys() {
+            for key in self.layout.domain_keys() {
                 if key == *dest {
                     continue;
                 }
                 if self.displaced.contains_key(&key.output.0) {
                     continue;
                 }
-                let slot_here = self
-                    .engine
-                    .session(&key)
-                    .is_some_and(|session| session.minimized_slot(window).is_some());
-                if !slot_here {
+                if !self.layout.has_minimized_slot(&key, window) {
                     continue;
                 }
                 if self.retained.iter().any(|retained| {
@@ -335,10 +331,11 @@ impl WorldEngine {
     }
 
     /// Read-only hostability probe for [`WorldEngine::relocate_session_for_move`]:
-    /// whether the relocate would succeed without mutating. Empty or absent
-    /// sources always host (nothing stateful to carry); otherwise the target
-    /// screen must exist with a valid work area/inset, the destination slot
-    /// must be free, and the domain relocate must validate on a clone.
+    /// whether the move relocation would succeed without mutating the layout.
+    /// Absent or empty sources always host (nothing stateful to carry);
+    /// otherwise the target screen must exist with a valid work area/inset,
+    /// the destination must be unoccupied, and the retained domain must
+    /// validate at the requested geometry.
     pub(crate) fn can_relocate_session_for_move(
         &self,
         source: &DomainKey,
@@ -347,12 +344,12 @@ impl WorldEngine {
         if source == target {
             return true;
         }
-        let Some(session) = self.engine.session(source) else {
+        if !self.layout.contains_domain(source) {
             return true;
-        };
-        let nonempty = !session.snapshot().windows.is_empty()
-            || session.exception_count() > 0
-            || !session.minimized_entries().is_empty();
+        }
+        let nonempty = self.layout.tiled_count(source) > 0
+            || self.layout.exception_count(source) > 0
+            || self.layout.minimized_count(source) > 0;
         if !nonempty {
             return true;
         }
@@ -373,21 +370,21 @@ impl WorldEngine {
         let Ok(bounds) = crate::geometry::inset_bounds(area, outer_gap) else {
             return false;
         };
-        if self.engine.session(target).is_some() {
+        if self.layout.contains_domain(target) {
             return false;
         }
-        let mut moved = session.clone();
         let Some(gap) = Self::scale_once(self.gap_setting(), screen.scale) else {
             return false;
         };
-        moved.relocate_domain(source, target, bounds, gap)
+        self.layout.can_relocate_domain(source, target, bounds, gap)
     }
 
-    /// Relocate one retained Engine session across outputs, preserving
-    /// tree/shares/focus/exceptions/minimized slots (hotplug displacement,
-    /// return, and migration-refusal rollback share this path). Returns
-    /// false without mutation when there is nothing stateful to carry or
-    /// the target geometry cannot host it.
+    /// Move one retained layout domain across outputs, preserving its tree,
+    /// shares, focus, focus history, exceptions, restore slots and accepted
+    /// revision (hotplug displacement, return, and migration-refusal rollback
+    /// share this path). Returns false without mutation when the target
+    /// geometry cannot host the source or the exact-domain relocation refuses.
+    /// An empty source is simply dropped; an absent source is a no-op success.
     pub(crate) fn relocate_session_for_move(
         &mut self,
         source: &DomainKey,
@@ -396,14 +393,14 @@ impl WorldEngine {
         if source == target {
             return true;
         }
-        let Some(session) = self.engine.session(source).cloned() else {
+        if !self.layout.contains_domain(source) {
             return true;
-        };
-        let nonempty = !session.snapshot().windows.is_empty()
-            || session.exception_count() > 0
-            || !session.minimized_entries().is_empty();
+        }
+        let nonempty = self.layout.tiled_count(source) > 0
+            || self.layout.exception_count(source) > 0
+            || self.layout.minimized_count(source) > 0;
         if !nonempty {
-            self.engine.remove(source);
+            self.layout.drop_domain(source);
             return true;
         }
         let Some(screen) = self
@@ -423,18 +420,13 @@ impl WorldEngine {
         let Ok(bounds) = crate::geometry::inset_bounds(area, outer_gap) else {
             return false;
         };
-        if self.engine.session(target).is_some() {
+        if self.layout.contains_domain(target) {
             return false;
         }
-        let mut moved = session;
         let Some(gap) = Self::scale_once(self.gap_setting(), screen.scale) else {
             return false;
         };
-        if !moved.relocate_domain(source, target, bounds, gap) {
-            return false;
-        }
-        self.engine.remove(source);
-        self.engine.insert_raw(target.clone(), moved, outer_gap);
-        true
+        self.layout
+            .relocate_domain(source, target, bounds, gap, outer_gap)
     }
 }
