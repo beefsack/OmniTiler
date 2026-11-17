@@ -507,3 +507,13 @@
   library/tests diagnostic still fails on remaining consumers (183 test-build
   errors), with no gesture-module/test error. Public drag-command consumers and
   executed acceptance remain pending.
+- Remaining production operation consumers now use typed layout queries,
+  reconcile/gap updates and local or occupied-pair drag operations. Obsolete
+  event completion and reply interpretation are removed. Public cross-source
+  singleton drag fallback retains mixed exception rosters and fresh installation
+  without an extra revision. Review corrects unchanged-resolution fallback and
+  preserves live exception geometry separately from durable float memory.
+  Four focused tests are added but unexecuted. A direct core library check
+  passes with 71 warnings from retained obsolete code and unused helpers; a
+  reported library/tests check still fails on 174 old test accessors. Machine
+  removal, test migration and full runtime acceptance remain pending.

@@ -1,18 +1,17 @@
-//! World operation bridge (D2/D3): the operation route and its settlement.
+//! World operation bridge: typed command execution and settlement.
 //!
 //! Split from [`crate::world_commands`]: same `impl WorldEngine` ownership,
-//! only relocated for source size. Owns the operation route through the
-//! full event, directional pairs and drag sources, and the shared reply
-//! settlement. Transition entry points stay on the engine; this module
-//! only extends its `impl`. No behavior change.
+//! only relocated for source size. Owns the typed operation routes through
+//! [`crate::world_layout::WorldLayout`], directional pairs, drag sources, and
+//! transfer/focus settlement. Transition entry points stay on the engine; this
+//! module only extends its `impl`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::boundary::{CoreCommand, CoreEvent, CoreReply, TiledKind};
+use crate::boundary::CoreCommand;
 use crate::bounds::is_opaque_id;
 use crate::contract::{DivergenceKind, ResizeMode};
 use crate::directional::{Axis, Direction, OutputId, SameAxisMove, WindowId, WorkspaceId};
-use crate::engine::Engine;
 use crate::geometry::Rect;
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain, RefusalKind};
@@ -22,8 +21,8 @@ use crate::world_engine::{
     MSG_OPERATION, MSG_SCOPE_HELD, MSG_SEND_TARGET, MSG_SEND_WINDOW, RetainedTransfer, WorldEngine,
 };
 use crate::world_layout::{
-    LayoutFailure, LocalOperationContext, LocalOperationFailure, PairMoveOutcome,
-    PairOperationContext, PairOperationFailure,
+    FreshDomainFailure, LayoutFailure, LocalOperationContext, LocalOperationFailure,
+    PairMoveOutcome, PairOperationContext, PairOperationFailure, RetainedReconcileFailure,
 };
 use crate::world_report::{
     CommandResult, OneShotEffect, TransferKind, TransferTarget, WorldCommand,
@@ -120,18 +119,17 @@ impl WorldEngine {
         self.batch_base_focus = base;
     }
 
-    /// Existing operation route through the full [`CoreEvent`] (D2/D3
-    /// migration path for KDE): the homing (or first readable) domain
-    /// supplies the observation envelope. Send operations retain a window
-    /// transfer exactly like [`WorldCommand::Send`]; directional focus
-    /// emits one at-most-once effect; read-only queries reconcile only.
-    /// Cross-output move/focus carry the core-topology-derived directional
-    /// pair (strict unique-reciprocal, never carried adjacency, never
-    /// silently local); cross-output drag
-    /// sources carry the source-first pair with combined rows; directional
-    /// migration resolves through the world migration path; domain release
-    /// drops the retained session. Anything unresolvable refuses without
-    /// mutation, never silently degrades.
+    /// Typed operation route: dispatches explicit sends, migrations, domain
+    /// releases, cross-output directional/drag pair operations, and local
+    /// layout operations directly against [`crate::world_layout::WorldLayout`].
+    /// Send operations retain a window transfer like [`WorldCommand::Send`];
+    /// directional focus emits one at-most-once effect; read-only queries
+    /// reconcile only. Cross-output move/focus carry the core-topology-derived
+    /// directional pair (strict unique-reciprocal, never carried adjacency,
+    /// never silently local); cross-output drag sources carry the source-first
+    /// pair with combined rows; directional migration resolves through the
+    /// world migration path; domain release drops the retained domain. Anything
+    /// unresolvable refuses without mutation, never silently degrades.
     pub(crate) fn execute_operation(
         &mut self,
         issue: &crate::world_engine::EventIssue,
@@ -865,37 +863,35 @@ impl WorldEngine {
                     message: MSG_OPERATION,
                 };
             };
-            let selected = self
-                .engine
-                .session(&target_key)
-                .and_then(|session| {
-                    let leaf = if float_subject {
-                        session.remembered_leaf(&target_key)?
-                    } else {
-                        let usable = crate::geometry::inset_bounds(
-                            source_staged.bounds,
-                            source_staged.outer_gap,
-                        )
-                        .ok()?;
-                        let source_perp = match direction_parsed {
-                            Direction::Left | Direction::Right => {
-                                (usable.y, usable.y.checked_add(usable.h)?)
-                            }
-                            Direction::Up | Direction::Down => {
-                                (usable.x, usable.x.checked_add(usable.w)?)
-                            }
-                        };
-                        session.select_cross_output_edge_target(
-                            &target_key,
-                            direction_parsed,
-                            source_perp,
-                        )?
-                    };
-                    session.focused_window_for(&leaf, &target_key)
-                })
-                .filter(|window| self.staged.homing.get(window).as_ref() == Some(&&target_key))
-                .filter(|window| by_id.get(window).is_some_and(|row| !row.floating))
-                .filter(|window| !self.is_exception_window_any(window));
+            let selected = if self.layout.contains_domain(&target_key) {
+                let leaf = if float_subject {
+                    self.layout.remembered_leaf(&target_key)
+                } else {
+                    crate::geometry::inset_bounds(source_staged.bounds, source_staged.outer_gap)
+                        .ok()
+                        .and_then(|usable| {
+                            let source_perp = match direction_parsed {
+                                Direction::Left | Direction::Right => {
+                                    (usable.y, usable.y.checked_add(usable.h)?)
+                                }
+                                Direction::Up | Direction::Down => {
+                                    (usable.x, usable.x.checked_add(usable.w)?)
+                                }
+                            };
+                            self.layout.select_cross_output_edge_target(
+                                &target_key,
+                                direction_parsed,
+                                source_perp,
+                            )
+                        })
+                };
+                leaf.and_then(|leaf| self.layout.window_for_leaf(&target_key, &leaf))
+            } else {
+                None
+            }
+            .filter(|window| self.staged.homing.get(window).as_ref() == Some(&&target_key))
+            .filter(|window| by_id.get(window).is_some_and(|row| !row.floating))
+            .filter(|window| !self.is_exception_window_any(window));
             let Some(target_window) = selected else {
                 if float_subject {
                     self.command_result = Some(CommandResult::Directional {
@@ -1034,28 +1030,33 @@ impl WorldEngine {
                 message: MSG_OPERATION,
             };
         };
-        let selected = self
-            .engine
-            .session(&target_key)
-            .and_then(|session| {
-                // No focused subject exists, so the perpendicular span is
-                // the source output usable area (canonical staged bounds,
-                // never an observed native frame).
-                let usable =
-                    crate::geometry::inset_bounds(source_staged.bounds, source_staged.outer_gap)
-                        .ok()?;
-                let source_perp = match direction {
-                    Direction::Left | Direction::Right => {
-                        (usable.y, usable.y.checked_add(usable.h)?)
-                    }
-                    Direction::Up | Direction::Down => (usable.x, usable.x.checked_add(usable.w)?),
-                };
-                let leaf =
-                    session.select_cross_output_edge_target(&target_key, direction, source_perp)?;
-                session.focused_window_for(&leaf, &target_key)
-            })
-            .filter(|window| self.staged.homing.get(window).as_ref() == Some(&&target_key))
-            .filter(|window| by_id.get(window).is_some_and(|row| !row.floating));
+        let selected = if self.layout.contains_domain(&target_key) {
+            // No focused subject exists, so the perpendicular span is
+            // the source output usable area (canonical staged bounds,
+            // never an observed native frame).
+            crate::geometry::inset_bounds(source_staged.bounds, source_staged.outer_gap)
+                .ok()
+                .and_then(|usable| {
+                    let source_perp = match direction {
+                        Direction::Left | Direction::Right => {
+                            (usable.y, usable.y.checked_add(usable.h)?)
+                        }
+                        Direction::Up | Direction::Down => {
+                            (usable.x, usable.x.checked_add(usable.w)?)
+                        }
+                    };
+                    let leaf = self.layout.select_cross_output_edge_target(
+                        &target_key,
+                        direction,
+                        source_perp,
+                    )?;
+                    self.layout.window_for_leaf(&target_key, &leaf)
+                })
+        } else {
+            None
+        }
+        .filter(|window| self.staged.homing.get(window).as_ref() == Some(&&target_key))
+        .filter(|window| by_id.get(window).is_some_and(|row| !row.floating));
         let Some(target_window) = selected else {
             return self.note_unfocused_retained(command_seq, "no-target");
         };
@@ -1311,11 +1312,7 @@ impl WorldEngine {
                     // a completed native clear, so the refusal returns to
                     // the retained session base through the existing
                     // one-shot placement lane (never a bare echo).
-                    if let Some(base) = self
-                        .engine
-                        .session(&home)
-                        .and_then(|session| session.floating_geometry(window))
-                    {
+                    if let Some(base) = self.layout.exception_float_geometry(&home, window) {
                         let operation_id = format!("op-{command_seq}");
                         self.retained_floats.retain(|held| held.window != *window);
                         self.retained_floats
@@ -1632,7 +1629,7 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn operation_drag_pair(
         &mut self,
-        issue: &crate::world_engine::EventIssue,
+        _issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         command: &CoreCommand,
         source_key: &DomainKey,
@@ -1642,6 +1639,28 @@ impl WorldEngine {
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
         let _ = by_id;
+        let (window, x, y, hover_prior, is_drop) = match command {
+            CoreCommand::DragDrop {
+                window,
+                x,
+                y,
+                hover_prior,
+                ..
+            } => (window, *x, *y, hover_prior.as_ref(), true),
+            CoreCommand::DragPreview {
+                window,
+                x,
+                y,
+                hover_prior,
+                ..
+            } => (window, *x, *y, hover_prior.as_ref(), false),
+            _ => {
+                return CommandApplied::Rejected {
+                    kind: KIND_OPERATION,
+                    message: MSG_OPERATION,
+                };
+            }
+        };
         let source_key = source_key.clone();
         let domain_key = domain_key.clone();
         let Some(source_report) = self
@@ -1661,13 +1680,6 @@ impl WorldEngine {
                 message: MSG_SCOPE_HELD,
             };
         }
-        let owner = issue.owner.clone();
-        let correlation = issue.correlation.clone();
-        let accepted = self
-            .engine
-            .session(&domain_key)
-            .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
-        let (revision, fingerprint) = accepted.unwrap_or((0, 0));
         let mut combined = self.shielded_windows(&source_key, &source_report.windows);
         combined.extend(self.shielded_windows(&domain_key, &domain_report.windows));
         let source_output_domain = OutputDomain {
@@ -1693,99 +1705,72 @@ impl WorldEngine {
                 message: MSG_SCOPE_HELD,
             };
         };
-        let event = CoreEvent {
-            owner,
-            generation: self.core_generation.clone(),
-            correlation,
-            revision,
-            fingerprint,
-            domain: Engine::canonical_component_domain(&inset_target),
-            domain_key: domain_key.clone(),
-            outer_gap: source_report.outer_gap,
-            focused_window: domain_report.focused.clone(),
-            windows: combined,
-            closed_windows: domain_report.closed.clone(),
-            directional: Some(vec![
-                (inset_source, source_key),
-                (inset_target, domain_key.clone()),
-            ]),
-            directional_target_outer_gap: Some(domain_report.outer_gap),
-            target_domain: None,
-            target_windows: Vec::new(),
-            command: command.clone(),
+        if !is_opaque_id(window) {
+            return CommandApplied::Rejected {
+                kind: "drag-drop-window-invalid",
+                message: OPAQUE_ID_MESSAGE,
+            };
+        }
+        let mover = WindowId(window.clone());
+        let ctx = PairOperationContext {
+            source_domain: &inset_source,
+            target_domain: &inset_target,
+            source_outer_gap: source_report.outer_gap,
+            target_outer_gap: Some(domain_report.outer_gap),
+            observed_focus: &domain_report.focused,
+            observed: &combined,
+            closed: &domain_report.closed,
         };
-        match self.engine.handle(&event) {
-            CoreReply::Tiled(plan) => {
-                // Cross-output drop arrival needs native actuation: retain
-                // one window transfer under the stable operation identity so
-                // the adapter moves the member (and follows the views)
-                // exactly once. Read-only previews never retain.
-                self.command_result = Self::command_result_from_reply(
-                    &event.command,
-                    &CoreReply::Tiled(plan.clone()),
-                );
-                let is_drop = matches!(command, CoreCommand::DragDrop { .. });
-                if is_drop && let CoreCommand::DragDrop { window, .. } = command {
-                    let window_id = WindowId(window.clone());
-                    let target_key = domain_key.clone();
-                    if let Some(pair) = event.directional.as_ref().and_then(|pair| pair.first()) {
-                        let source_key = pair.1.clone();
-                        self.note_command(command_seq);
-                        self.retained.push(RetainedTransfer {
-                            target: TransferTarget {
-                                operation_id: format!("op-{command_seq}"),
-                                kind: TransferKind::Window(window_id),
-                                target_output: target_key.output,
-                                target_workspace: target_key.workspace.0,
-                                follow: false,
-                                held: false,
-                            },
-                            policy: false,
-                            command_seq: Some(command_seq),
-                            source_output: source_key.output,
-                            source_workspace: source_key.workspace.0,
-                            members: Vec::new(),
-                            migration_refill: None,
-                            migration_initial_empty: false,
-                            migration_source_index: None,
-                            migration_source_view: None,
-                            migration_target_view: None,
-                            migration_terminal: None,
-                            migration_selection_rev: None,
-                            pending_member: None,
-                            member_predecessors: Vec::new(),
-                            pending_members: BTreeMap::new(),
-                            pending_view: None,
-                        });
-                        return CommandApplied::NoEffect;
-                    }
+        if is_drop {
+            match self
+                .layout
+                .run_pair_drag_drop(&ctx, &mover, x, y, hover_prior)
+            {
+                Ok(_) => {
+                    self.command_result = None;
+                    self.note_command(command_seq);
+                    self.retained.push(RetainedTransfer {
+                        target: TransferTarget {
+                            operation_id: format!("op-{command_seq}"),
+                            kind: TransferKind::Window(mover),
+                            target_output: domain_key.output,
+                            target_workspace: domain_key.workspace.0,
+                            follow: false,
+                            held: false,
+                        },
+                        policy: false,
+                        command_seq: Some(command_seq),
+                        source_output: source_key.output,
+                        source_workspace: source_key.workspace.0,
+                        members: Vec::new(),
+                        migration_refill: None,
+                        migration_initial_empty: false,
+                        migration_source_index: None,
+                        migration_source_view: None,
+                        migration_target_view: None,
+                        migration_terminal: None,
+                        migration_selection_rev: None,
+                        pending_member: None,
+                        member_predecessors: Vec::new(),
+                        pending_members: BTreeMap::new(),
+                        pending_view: None,
+                    });
+                    CommandApplied::NoEffect
                 }
-                self.note_command(command_seq);
-                CommandApplied::NoEffect
+                Err(err) => reject_pair_operation_failure(err),
             }
-            CoreReply::DragPreview(plan) => {
-                self.command_result =
-                    Self::command_result_from_reply(&event.command, &CoreReply::DragPreview(plan));
-                self.note_command(command_seq);
-                CommandApplied::NoEffect
+        } else {
+            match self
+                .layout
+                .run_pair_drag_preview(&ctx, &mover, x, y, hover_prior)
+            {
+                Ok(_) => {
+                    self.command_result = None;
+                    self.note_command(command_seq);
+                    CommandApplied::NoEffect
+                }
+                Err(err) => reject_pair_operation_failure(err),
             }
-            CoreReply::MigrateWorkspace(_) | CoreReply::Released => {
-                self.note_command(command_seq);
-                CommandApplied::NoEffect
-            }
-            CoreReply::Rejected { kind, message } => CommandApplied::Rejected { kind, message },
-            CoreReply::SnapshotInvalid { message, detail } => CommandApplied::Rejected {
-                kind: detail,
-                message,
-            },
-            CoreReply::Diverged(reason) => CommandApplied::Rejected {
-                kind: reason.as_str(),
-                message: reason.message(),
-            },
-            _ => CommandApplied::Rejected {
-                kind: KIND_OPERATION,
-                message: MSG_OPERATION,
-            },
         }
     }
 
@@ -1864,9 +1849,9 @@ impl WorldEngine {
         CommandApplied::NoEffect
     }
 
-    /// Legacy local operation envelope: homing (or first readable) domain,
-    /// no directional pair. Shared by local move/focus, read-only queries,
-    /// resizes, float toggles, and same-domain drag preview/drop.
+    /// Typed local operation route: homing (or first readable) domain, no
+    /// directional pair. Shared by local move/focus, read-only queries,
+    /// resizes, float toggles, and local/singleton drag preview/drop.
     pub(crate) fn run_local_operation(
         &mut self,
         issue: &crate::world_engine::EventIssue,
@@ -1982,8 +1967,143 @@ impl WorldEngine {
         if composed_should_clear && let CoreCommand::ToggleFloat { window, .. } = command {
             composed_cleared = self.composed_maximized.remove(&WindowId(window.clone()));
         }
-        let applied = if is_local_typed_command(command) {
-            match self.converge_local_observation(&domain_key, &domain_report) {
+        let applied = match command {
+            CoreCommand::DragPreview {
+                window,
+                x,
+                y,
+                hover_prior,
+                source,
+            } => {
+                if !is_opaque_id(window) {
+                    CommandApplied::Rejected {
+                        kind: "drag-drop-window-invalid",
+                        message: OPAQUE_ID_MESSAGE,
+                    }
+                } else {
+                    let focused_window =
+                        self.effective_operation_focus(&domain_key, &domain_report.focused);
+                    let windows = self.shielded_windows(&domain_key, &domain_report.windows);
+                    self.command_result = None;
+                    match self.layout.run_local_drag_preview_with_source(
+                        &inset,
+                        domain_report.outer_gap,
+                        &WindowId(window.clone()),
+                        &focused_window,
+                        &windows,
+                        *x,
+                        *y,
+                        hover_prior.as_ref(),
+                        source.as_ref(),
+                    ) {
+                        Ok(_) => {
+                            self.note_command(command_seq);
+                            CommandApplied::NoEffect
+                        }
+                        Err(err) => reject_layout_failure(err),
+                    }
+                }
+            }
+            CoreCommand::DragDrop {
+                window,
+                x,
+                y,
+                hover_prior,
+                source,
+            } => match self.converge_local_observation(&domain_key, &domain_report) {
+                Err(rejected) => rejected,
+                Ok((focused_window, windows, _)) => {
+                    if !is_opaque_id(window) {
+                        CommandApplied::Rejected {
+                            kind: "drag-drop-window-invalid",
+                            message: OPAQUE_ID_MESSAGE,
+                        }
+                    } else {
+                        match self.layout.run_local_drag_drop_with_source(
+                            &inset,
+                            domain_report.outer_gap,
+                            &WindowId(window.clone()),
+                            &focused_window,
+                            &windows,
+                            *x,
+                            *y,
+                            hover_prior.as_ref(),
+                            source.as_ref(),
+                        ) {
+                            Ok(_) => {
+                                self.note_command(command_seq);
+                                CommandApplied::NoEffect
+                            }
+                            Err(err) => reject_layout_failure(err),
+                        }
+                    }
+                }
+            },
+            CoreCommand::Reconcile => {
+                let windows = self.shielded_windows(&domain_key, &domain_report.windows);
+                let disjoint = !windows.is_empty()
+                    && self.layout.contains_domain(&domain_key)
+                    && !windows.iter().any(|w| {
+                        self.layout.is_tiled_window(&domain_key, &w.window)
+                            || self.layout.is_exception(&domain_key, &w.window)
+                            || self.layout.has_minimized_slot(&domain_key, &w.window)
+                    });
+                if disjoint {
+                    self.layout.drop_domain(&domain_key);
+                }
+                match self.converge_local_observation(&domain_key, &domain_report) {
+                    Err(rejected) => rejected,
+                    Ok((focused_window, windows, _)) => match self.layout.reconcile_retained(
+                        &domain_key,
+                        inset.bounds,
+                        inset.gap,
+                        domain_report.outer_gap,
+                        &focused_window,
+                        &windows,
+                        &domain_report.closed,
+                    ) {
+                        Ok(Some(_)) => {
+                            self.note_command(command_seq);
+                            CommandApplied::NoEffect
+                        }
+                        Ok(None) => match self.layout.reconcile_fresh(
+                            &inset,
+                            domain_report.outer_gap,
+                            &focused_window,
+                            &windows,
+                        ) {
+                            Ok(_) => {
+                                self.note_command(command_seq);
+                                CommandApplied::NoEffect
+                            }
+                            Err(err) => reject_fresh_domain_failure(err),
+                        },
+                        Err(err) => reject_retained_reconcile_failure(err),
+                    },
+                }
+            }
+            CoreCommand::UpdateGaps => {
+                match self.converge_local_observation(&domain_key, &domain_report) {
+                    Err(rejected) => rejected,
+                    Ok((focused_window, windows, _)) => {
+                        match self.layout.update_domain_gaps(
+                            &domain_key,
+                            inset.bounds,
+                            inset.gap,
+                            domain_report.outer_gap,
+                            &focused_window,
+                            &windows,
+                        ) {
+                            Ok(_) => {
+                                self.note_command(command_seq);
+                                CommandApplied::NoEffect
+                            }
+                            Err(err) => reject_layout_failure(err),
+                        }
+                    }
+                }
+            }
+            _ => match self.converge_local_observation(&domain_key, &domain_report) {
                 Err(rejected) => rejected,
                 Ok((focused_window, windows, preconverged)) => {
                     let ctx = LocalOperationContext {
@@ -2175,37 +2295,13 @@ impl WorldEngine {
                                 }
                             }
                         }
-                        _ => unreachable!("guarded by is_local_typed_command"),
+                        _ => CommandApplied::Rejected {
+                            kind: KIND_OPERATION,
+                            message: MSG_OPERATION,
+                        },
                     }
                 }
-            }
-        } else {
-            let owner = issue.owner.clone();
-            let correlation = issue.correlation.clone();
-            let accepted = self
-                .engine
-                .session(&domain_key)
-                .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
-            let (revision, fingerprint) = accepted.unwrap_or((0, 0));
-            let event = CoreEvent {
-                owner,
-                generation: self.core_generation.clone(),
-                correlation,
-                revision,
-                fingerprint,
-                domain: Engine::canonical_component_domain(&inset),
-                domain_key: domain_key.clone(),
-                outer_gap: domain_report.outer_gap,
-                focused_window: self.effective_operation_focus(&domain_key, &domain_report.focused),
-                windows: self.shielded_windows(&domain_key, &domain_report.windows),
-                closed_windows: domain_report.closed.clone(),
-                directional: None,
-                directional_target_outer_gap: None,
-                target_domain: None,
-                target_windows: Vec::new(),
-                command: command.clone(),
-            };
-            self.finish_operation_event(command_seq, &event, held_scopes)
+            },
         };
         if composed_cleared
             && matches!(applied, CommandApplied::Rejected { .. })
@@ -2214,55 +2310,6 @@ impl WorldEngine {
             self.composed_maximized.insert(WindowId(window.clone()));
         }
         applied
-    }
-
-    /// Correlated per-command outcome from one [`CoreReply`]: `Some` only for
-    /// plans the snapshot cannot express (preview/float/group/migration).
-    /// Move/resize/tiled-admit/focus/send geometry rides the snapshot,
-    /// transfers, and effects, so those map to `None`: the snapshot IS the
-    /// result, never a silent discard.
-    pub(crate) fn command_result_from_reply(
-        command: &CoreCommand,
-        reply: &CoreReply,
-    ) -> Option<CommandResult> {
-        match reply {
-            CoreReply::Tiled(plan) if plan.kind == TiledKind::ToggleFloat => {
-                // A capacity re-float (D5 explicit-tile no-space retry)
-                // carries the float window with no rect: the window stays
-                // floated and the adapter must record no tile override.
-                let no_space = plan.float_window.is_some() && plan.float_rect.is_none();
-                if plan.float_window.is_some() || plan.float_rect.is_some() {
-                    let window = plan.float_window.clone().unwrap_or_else(|| match command {
-                        CoreCommand::ToggleFloat { window, .. } => WindowId(window.clone()),
-                        _ => WindowId(String::new()),
-                    });
-                    Some(CommandResult::Float {
-                        window,
-                        rect: plan.float_rect,
-                        no_space,
-                    })
-                } else {
-                    // Unfloat-to-tile names the command window with no rect:
-                    // the tiled placement rides the snapshot.
-                    match command {
-                        CoreCommand::ToggleFloat { window, .. } => Some(CommandResult::Float {
-                            window: WindowId(window.clone()),
-                            rect: None,
-                            no_space: false,
-                        }),
-                        _ => None,
-                    }
-                }
-            }
-            CoreReply::MigrateWorkspace(plan) => Some(CommandResult::Migration {
-                direction: plan.direction,
-                source: plan.source.clone(),
-                target: plan.target.clone(),
-                members: plan.geometry.iter().map(|g| g.window.clone()).collect(),
-                floats: plan.floats,
-            }),
-            _ => None,
-        }
     }
 
     fn retain_latest_window_transfer(&mut self, mut next: RetainedTransfer) {
@@ -2301,190 +2348,6 @@ impl WorldEngine {
             false
         });
         self.retained.push(next);
-    }
-
-    /// Shared reply settlement for operation events: stages the correlated
-    /// command result (preview/float only; move/resize/tiled geometry
-    /// rides the snapshot), at-most-once focus effects, sequence
-    /// consumption on success, verbatim refusal passthrough. Never mutates
-    /// on refusal.
-    pub(crate) fn finish_operation_event(
-        &mut self,
-        command_seq: u64,
-        event: &CoreEvent,
-        held_scopes: &BTreeSet<DomainKey>,
-    ) -> CommandApplied {
-        let reply = self.engine.handle(event);
-        self.command_result = Self::command_result_from_reply(&event.command, &reply);
-        // Explicit float placement retains its target under the stable
-        // command operation identity (`op-<cmdSeq>`) so a lost one-shot
-        // result reply never loses the placement: later unrelated replies
-        // still carry the row token until native observation confirms it,
-        // operation-correlated raw write facts prove refusal, or a newer
-        // intent replaces it. Unfloat (no rect) withdraws any outstanding
-        // target for the window. Refusals retain nothing. A no-space retry
-        // (still floated) neither retains a new target nor withdraws: the
-        // window never left float, so there is nothing to place or clear.
-        if let Some(CommandResult::Float {
-            window,
-            rect,
-            no_space,
-        }) = self.command_result.clone()
-        {
-            self.settle_float_retention(
-                command_seq,
-                &event.domain_key,
-                &event.windows,
-                window,
-                rect,
-                no_space,
-            );
-        }
-        match reply {
-            CoreReply::Tiled(_)
-            | CoreReply::Projection(_)
-            | CoreReply::Resize(_)
-            | CoreReply::DragPreview(_) => {
-                self.note_command(command_seq);
-                CommandApplied::NoEffect
-            }
-            CoreReply::MoveDirectional(plan) => {
-                // Exhausted R4 cross-output moves retain one identity-pinned
-                // window transfer under the stable command identity so the
-                // adapter relocates natively (output + membership, arrival
-                // gate defers foreign geometry, focus stays on the mover).
-                // Local R1-R3 plans (no cross) retain nothing: focus
-                // unchanged, no transfer. Uses the existing send transfer
-                // contract (Window kind, follow to the target view). The
-                // latest transfer supersedes older same-window transfers.
-                if let Some(cross) = &plan.cross {
-                    let window = cross.intent_window.clone();
-                    self.retain_latest_window_transfer(RetainedTransfer {
-                        target: TransferTarget {
-                            operation_id: format!("op-{command_seq}"),
-                            kind: TransferKind::Window(window),
-                            target_output: cross.target_output.clone(),
-                            target_workspace: cross.target_workspace.0.clone(),
-                            follow: true,
-                            held: false,
-                        },
-                        policy: false,
-                        command_seq: Some(command_seq),
-                        source_output: cross.source_output.clone(),
-                        source_workspace: cross.source_workspace.0.clone(),
-                        members: Vec::new(),
-                        migration_refill: None,
-                        migration_initial_empty: false,
-                        migration_source_index: None,
-                        migration_source_view: None,
-                        migration_target_view: None,
-                        migration_terminal: None,
-                        migration_selection_rev: None,
-                        pending_member: None,
-                        member_predecessors: Vec::new(),
-                        pending_members: BTreeMap::new(),
-                        pending_view: None,
-                    });
-                }
-                self.note_command(command_seq);
-                CommandApplied::NoEffect
-            }
-            CoreReply::FocusDirectional(plan) => {
-                self.note_command(command_seq);
-                let _ = self.record_command_focus(&plan.to_window, held_scopes);
-                CommandApplied::Effect(OneShotEffect::explicit_focus(
-                    command_seq,
-                    plan.to_window.clone(),
-                    self.state_revision + 1,
-                ))
-            }
-            CoreReply::SendWorkspace(plan) | CoreReply::SendOutput(plan) => {
-                // Pair-route sends that surface here (R4 capacity-float
-                // fallback under a Move command) retain exactly like an
-                // explicit send: one identity-pinned window transfer. The
-                // latest transfer supersedes older same-window transfers.
-                let (window, source_output, source_workspace, target_output, target_workspace) =
-                    match &plan.operation {
-                        crate::contract::LifecycleOperation::MoveTiled {
-                            window,
-                            source_output,
-                            source_workspace,
-                            target_output,
-                            target_workspace,
-                            ..
-                        }
-                        | crate::contract::LifecycleOperation::MoveDeferred {
-                            window,
-                            source_output,
-                            source_workspace,
-                            target_output,
-                            target_workspace,
-                        }
-                        | crate::contract::LifecycleOperation::MoveToFloat {
-                            window,
-                            source_output,
-                            source_workspace,
-                            target_output,
-                            target_workspace,
-                            ..
-                        } => (
-                            window.clone(),
-                            source_output.clone(),
-                            source_workspace.clone(),
-                            target_output.clone(),
-                            target_workspace.clone(),
-                        ),
-                        _ => {
-                            self.note_command(command_seq);
-                            return CommandApplied::NoEffect;
-                        }
-                    };
-                self.retain_latest_window_transfer(RetainedTransfer {
-                    target: TransferTarget {
-                        operation_id: format!("op-{command_seq}"),
-                        kind: TransferKind::Window(window),
-                        target_output,
-                        target_workspace: target_workspace.0.clone(),
-                        follow: plan.follow,
-                        held: false,
-                    },
-                    policy: false,
-                    command_seq: Some(command_seq),
-                    source_output,
-                    source_workspace: source_workspace.0.clone(),
-                    members: Vec::new(),
-                    migration_refill: None,
-                    migration_initial_empty: false,
-                    migration_source_index: None,
-                    migration_source_view: None,
-                    migration_target_view: None,
-                    migration_terminal: None,
-                    migration_selection_rev: None,
-                    pending_member: None,
-                    member_predecessors: Vec::new(),
-                    pending_members: BTreeMap::new(),
-                    pending_view: None,
-                });
-                self.note_command(command_seq);
-                CommandApplied::NoEffect
-            }
-            // Unreachable through the local subset (migration and
-            // release take dedicated routes above): consume the
-            // sequence without mutating further.
-            CoreReply::MigrateWorkspace(_) | CoreReply::Released => {
-                self.note_command(command_seq);
-                CommandApplied::NoEffect
-            }
-            CoreReply::Rejected { kind, message } => CommandApplied::Rejected { kind, message },
-            CoreReply::SnapshotInvalid { message, detail } => CommandApplied::Rejected {
-                kind: detail,
-                message,
-            },
-            CoreReply::Diverged(reason) => CommandApplied::Rejected {
-                kind: reason.as_str(),
-                message: reason.message(),
-            },
-        }
     }
 
     fn settle_float_retention(
@@ -2875,16 +2738,32 @@ const OBSERVATION_MESSAGE: &str = "observation does not cover the known window s
 const UNKNOWN_VALUE_KIND: &str = "unknown-value";
 const UNKNOWN_VALUE_MESSAGE: &str = "request contains an unknown value";
 
-fn is_local_typed_command(command: &CoreCommand) -> bool {
-    matches!(
-        command,
-        CoreCommand::ToggleFloat { .. }
-            | CoreCommand::ToggleOrientation { .. }
-            | CoreCommand::Move { .. }
-            | CoreCommand::Focus { .. }
-            | CoreCommand::Resize { .. }
-            | CoreCommand::PointerResize { .. }
-    )
+fn reject_retained_reconcile_failure(err: RetainedReconcileFailure) -> CommandApplied {
+    match err {
+        RetainedReconcileFailure::Layout(err) => reject_layout_failure(err),
+        RetainedReconcileFailure::InnerGapMismatch => CommandApplied::Rejected {
+            kind: "domain-mismatch",
+            message: "domain inner gap does not match retained state",
+        },
+        RetainedReconcileFailure::OuterGapMismatch => CommandApplied::Rejected {
+            kind: "domain-mismatch",
+            message: "domain outer gap does not match retained state",
+        },
+    }
+}
+
+fn reject_fresh_domain_failure(err: FreshDomainFailure) -> CommandApplied {
+    match err {
+        FreshDomainFailure::Layout(err) => reject_layout_failure(err),
+        FreshDomainFailure::SeedFailed => CommandApplied::Rejected {
+            kind: "seed-failed",
+            message: OBSERVATION_MESSAGE,
+        },
+        FreshDomainFailure::AmbiguousPlacement => CommandApplied::Rejected {
+            kind: "missing-seed-order",
+            message: OBSERVATION_MESSAGE,
+        },
+    }
 }
 
 fn parse_resize_mode(mode: &str) -> Option<ResizeMode> {

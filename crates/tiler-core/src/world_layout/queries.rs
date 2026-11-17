@@ -1,8 +1,12 @@
-use crate::directional::{NodeId, OutputId, WindowId};
+use std::collections::BTreeMap;
+
+use crate::directional::{Direction, NodeId, OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::session::{DomainKey, ExceptionFlags};
 
+use super::projection::project_borrowed_geometry;
 use super::state::WorldLayout;
+use super::topology::collect_leaves;
 
 impl WorldLayout {
     /// Whether a domain slot is retained.
@@ -428,5 +432,137 @@ impl WorldLayout {
             target_mut.admission_order.insert(window.clone(), order);
         }
         true
+    }
+
+    /// Live floating geometry from a retained exception record only.
+    /// Does not read the durable `retained_float_geometry` map, which can
+    /// survive while tiled or differ from the live exception frame.
+    #[must_use]
+    pub(crate) fn exception_float_geometry(
+        &self,
+        key: &DomainKey,
+        window: &WindowId,
+    ) -> Option<Rect> {
+        self.domain(key)
+            .and_then(|domain| domain.exceptions.get(window))
+            .and_then(|record| record.floating_geometry)
+    }
+
+    /// Select the cross-output entry-edge target leaf in `target` for a
+    /// directional focus crossing in `direction` with source perpendicular
+    /// span `source_perp`.
+    #[must_use]
+    pub(crate) fn select_cross_output_edge_target(
+        &self,
+        target: &DomainKey,
+        direction: Direction,
+        source_perp: (i32, i32),
+    ) -> Option<NodeId> {
+        let domain = self.domains.get(target)?;
+        let tree = domain.tree.as_ref()?;
+        let projected = project_borrowed_geometry(
+            target,
+            tree,
+            &domain.leaves,
+            domain.bounds,
+            domain.gap,
+            &BTreeMap::new(),
+        )?;
+        let rects: BTreeMap<&NodeId, Rect> = projected
+            .iter()
+            .map(|entry| (&entry.leaf, entry.rect))
+            .collect();
+        let mut rects_dfs: Vec<(NodeId, Rect)> = Vec::new();
+        for leaf in collect_leaves(tree) {
+            if !domain.leaves.values().any(|bound| bound == &leaf) {
+                continue;
+            }
+            if let Some(rect) = rects.get(&leaf) {
+                rects_dfs.push((leaf, *rect));
+            }
+        }
+        let history = self.cross_output_history_newest_first(target);
+        crate::session::rank_cross_output_edge_candidates(
+            &rects_dfs,
+            direction,
+            &history,
+            source_perp,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::directional::{OutputId, WindowId, WorkspaceId};
+    use crate::geometry::Rect;
+    use crate::session::{DomainKey, ExceptionFlags};
+
+    use super::super::state::{DomainException, DomainLayout, WorldLayout};
+
+    #[test]
+    fn exception_float_geometry_discriminates_live_exception_from_durable_retained() {
+        let mut layout = WorldLayout::new();
+        let key = DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+        };
+        let win_a = WindowId("win-a".to_owned());
+        let win_b = WindowId("win-b".to_owned());
+        let live_rect = Rect {
+            x: 10,
+            y: 20,
+            w: 300,
+            h: 200,
+        };
+        let durable_rect = Rect {
+            x: 50,
+            y: 60,
+            w: 400,
+            h: 300,
+        };
+
+        let mut domain = DomainLayout::new(
+            Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+            0,
+            0,
+        );
+        domain.exceptions.insert(
+            win_a.clone(),
+            DomainException {
+                flags: ExceptionFlags {
+                    floating: true,
+                    sticky: false,
+                    fullscreen: false,
+                    maximized: false,
+                },
+                floating_geometry: Some(live_rect),
+            },
+        );
+        domain
+            .retained_float_geometry
+            .insert(win_a.clone(), durable_rect);
+        domain
+            .retained_float_geometry
+            .insert(win_b.clone(), durable_rect);
+        layout.domains.insert(key.clone(), domain);
+
+        assert_eq!(
+            layout.exception_float_geometry(&key, &win_a),
+            Some(live_rect)
+        );
+        assert_eq!(
+            layout.retained_float_geometry(&key, &win_a),
+            Some(durable_rect)
+        );
+        assert_eq!(layout.exception_float_geometry(&key, &win_b), None);
+        assert_eq!(
+            layout.retained_float_geometry(&key, &win_b),
+            Some(durable_rect)
+        );
     }
 }

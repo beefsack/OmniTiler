@@ -366,11 +366,8 @@ mod tests {
     }
 
     fn session_base(engine: &WorldEngine, home: &DomainKey) -> u64 {
-        engine
-            .engine()
-            .session(home)
-            .map(|session| session.accepted_revision())
-            .expect("session exists")
+        assert!(engine.layout().contains_domain(home), "session exists");
+        engine.layout().accepted_revision(home)
     }
 
     #[test]
@@ -1120,7 +1117,7 @@ mod tests {
                 ingress("win-a"),
             ),
         );
-        assert!(engine.engine().session(&home).is_none());
+        assert!(!engine.layout().contains_domain(&home));
         let reply = accepted(
             &mut engine,
             &report(

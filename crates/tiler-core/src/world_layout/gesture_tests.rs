@@ -575,3 +575,158 @@ fn pair_drag_refuses_missing_target_and_preserves_unusable_vs_absent_priority() 
         PairOperationFailure::Assembly(PairAssemblyFailure::TargetUnusable)
     );
 }
+
+#[test]
+fn fresh_empty_cross_source_singleton_preview_and_drop_preserve_ordinary_projection() {
+    let mut layout = WorldLayout::new();
+    let key_a = ws_key("out-a", "ws-1");
+    let key_b = ws_key("out-b", "ws-1");
+    let bounds_b = Rect {
+        x: 800,
+        y: 0,
+        w: 800,
+        h: 400,
+    };
+    let desc_b = domain_desc(&key_b, bounds_b, 0);
+    let obs = vec![eng("w1", &key_b, 810, 300)];
+
+    let preview = layout
+        .run_local_drag_preview_with_source(
+            &desc_b,
+            0,
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            900,
+            200,
+            None,
+            Some(&key_a),
+        )
+        .expect("fresh cross-output singleton preview succeeds");
+    assert_eq!(preview.domain, key_b);
+    assert_eq!(preview.source_domain, key_a);
+    assert_eq!(preview.proposed_rect, bounds_b);
+    assert_eq!(preview.hover.prior, None);
+    assert!(!layout.contains_domain(&key_b));
+
+    let drop = layout
+        .run_local_drag_drop_with_source(
+            &desc_b,
+            0,
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            900,
+            200,
+            None,
+            Some(&key_a),
+        )
+        .expect("fresh cross-output singleton drop commits");
+    assert_eq!(drop.base_revision, 1);
+    assert_eq!(drop.revision, 1);
+    assert!(layout.contains_domain(&key_b));
+    assert!(layout.is_tiled_window(&key_b, &win("w1")));
+    assert_eq!(layout.accepted_revision(&key_b), 1);
+}
+
+#[test]
+fn same_output_singleton_drag_with_source_refuses_unchanged() {
+    let mut layout = WorldLayout::new();
+    let key_b = ws_key("out-b", "ws-1");
+    let bounds_b = Rect {
+        x: 800,
+        y: 0,
+        w: 800,
+        h: 400,
+    };
+    let desc_b = domain_desc(&key_b, bounds_b, 0);
+    let obs = vec![eng("w1", &key_b, 810, 300)];
+
+    let preview_err = layout
+        .run_local_drag_preview_with_source(
+            &desc_b,
+            0,
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            900,
+            200,
+            None,
+            Some(&key_b),
+        )
+        .unwrap_err();
+    assert_eq!(
+        preview_err,
+        LayoutFailure::Semantics(RefusalKind::Unchanged)
+    );
+
+    let drop_err = layout
+        .run_local_drag_drop_with_source(
+            &desc_b,
+            0,
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            900,
+            200,
+            None,
+            Some(&key_b),
+        )
+        .unwrap_err();
+    assert_eq!(drop_err, LayoutFailure::Semantics(RefusalKind::Unchanged));
+    assert!(!layout.contains_domain(&key_b));
+}
+
+#[test]
+fn fresh_mixed_one_tile_plus_float_exception_cross_source_singleton_preview_and_drop_succeed() {
+    let mut layout = WorldLayout::new();
+    let key_a = ws_key("out-a", "ws-1");
+    let key_b = ws_key("out-b", "ws-1");
+    let bounds_b = Rect {
+        x: 800,
+        y: 0,
+        w: 800,
+        h: 400,
+    };
+    let desc_b = domain_desc(&key_b, bounds_b, 0);
+    let mut float_win = eng("w-float", &key_b, 850, 200);
+    float_win.floating = true;
+    let obs = vec![eng("w1", &key_b, 810, 300), float_win];
+
+    let preview = layout
+        .run_local_drag_preview_with_source(
+            &desc_b,
+            0,
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            900,
+            200,
+            None,
+            Some(&key_a),
+        )
+        .expect("mixed one-tile + float-exception singleton preview succeeds");
+    assert_eq!(preview.domain, key_b);
+    assert_eq!(preview.source_domain, key_a);
+    assert_eq!(preview.proposed_rect, bounds_b);
+    assert!(!layout.contains_domain(&key_b));
+
+    let drop = layout
+        .run_local_drag_drop_with_source(
+            &desc_b,
+            0,
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            900,
+            200,
+            None,
+            Some(&key_a),
+        )
+        .expect("mixed one-tile + float-exception singleton drop commits");
+    assert_eq!(drop.base_revision, 1);
+    assert_eq!(drop.revision, 1);
+    assert!(layout.contains_domain(&key_b));
+    assert!(layout.is_tiled_window(&key_b, &win("w1")));
+    assert!(layout.is_exception(&key_b, &win("w-float")));
+}

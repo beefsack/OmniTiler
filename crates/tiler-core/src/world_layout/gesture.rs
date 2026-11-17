@@ -8,9 +8,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::bounds::is_opaque_id;
 use crate::contract::MAX_REVISION;
 use crate::cursor_targeting::FreshPlacement;
 use crate::directional::{Node, NodeId, WindowId};
+use crate::geometry::Rect;
 use crate::policy::PriorGroupEdge;
 use crate::seed::{EngineWindow, observed_window_from_engine};
 use crate::session::{DomainKey, DragHoverPrior, ObservedWindow, OutputDomain, RefusalKind};
@@ -49,6 +51,34 @@ impl WorldLayout {
         x: i32,
         y: i32,
         hover_prior: Option<&DragHoverPrior>,
+    ) -> Result<DragPreviewOutcome, LayoutFailure> {
+        self.run_local_drag_preview_with_source(
+            domain,
+            outer_gap,
+            mover,
+            observed_focus,
+            observed,
+            x,
+            y,
+            hover_prior,
+            None,
+        )
+    }
+
+    /// Resolve one read-only local drag preview, optionally carrying an
+    /// explicit cross-output `source` for public singleton fallback projection.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn run_local_drag_preview_with_source(
+        &self,
+        domain: &OutputDomain,
+        outer_gap: i32,
+        mover: &WindowId,
+        observed_focus: &WindowId,
+        observed: &[EngineWindow],
+        x: i32,
+        y: i32,
+        hover_prior: Option<&DragHoverPrior>,
+        source: Option<&DomainKey>,
     ) -> Result<DragPreviewOutcome, LayoutFailure> {
         let key = domain.key();
         let observed_windows: Vec<ObservedWindow> =
@@ -91,7 +121,7 @@ impl WorldLayout {
             .as_ref()
             .ok_or(LayoutFailure::Semantics(RefusalKind::MalformedTopology))?;
 
-        let resolved = resolve_drag_shared(
+        let resolved = match resolve_drag_shared(
             &DragResolveInput {
                 policy: self.policy.as_ref(),
                 alloc: &self.group_alloc,
@@ -107,12 +137,32 @@ impl WorldLayout {
             },
             x,
             y,
-        )
-        .map_err(LayoutFailure::Semantics)?;
-
-        if &resolved.placement.tree == current {
-            return Err(LayoutFailure::Semantics(RefusalKind::Unchanged));
-        }
+        ) {
+            Ok(resolved) if &resolved.placement.tree != current => resolved,
+            Ok(_) | Err(RefusalKind::Unchanged) => {
+                let Some((leaf, rect)) =
+                    drag_singleton_project(&key, &working, mover, source, &hints)
+                else {
+                    return Err(LayoutFailure::Semantics(RefusalKind::Unchanged));
+                };
+                return Ok(DragPreviewOutcome {
+                    base_revision: base,
+                    domain: key.clone(),
+                    source_domain: source.cloned().unwrap_or_else(|| key.clone()),
+                    target_window: mover.clone(),
+                    proposed_rect: rect,
+                    hover: DragHoverPrior {
+                        domain: key.clone(),
+                        source_leaf: leaf,
+                        source_window: mover.clone(),
+                        revision: base,
+                        prior: None,
+                        prior_domain: key,
+                    },
+                });
+            }
+            Err(kind) => return Err(LayoutFailure::Semantics(kind)),
+        };
 
         let desired_geometry = project_borrowed_geometry(
             &key,
@@ -161,6 +211,34 @@ impl WorldLayout {
         y: i32,
         hover_prior: Option<&DragHoverPrior>,
     ) -> Result<DragDropOutcome, LayoutFailure> {
+        self.run_local_drag_drop_with_source(
+            domain,
+            outer_gap,
+            mover,
+            observed_focus,
+            observed,
+            x,
+            y,
+            hover_prior,
+            None,
+        )
+    }
+
+    /// Commit one local drag drop synchronously, optionally carrying an
+    /// explicit cross-output `source` for public singleton fallback.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn run_local_drag_drop_with_source(
+        &mut self,
+        domain: &OutputDomain,
+        outer_gap: i32,
+        mover: &WindowId,
+        observed_focus: &WindowId,
+        observed: &[EngineWindow],
+        x: i32,
+        y: i32,
+        hover_prior: Option<&DragHoverPrior>,
+        source: Option<&DomainKey>,
+    ) -> Result<DragDropOutcome, LayoutFailure> {
         let key = domain.key();
         let observed_windows: Vec<ObservedWindow> =
             observed.iter().map(observed_window_from_engine).collect();
@@ -202,7 +280,7 @@ impl WorldLayout {
             .as_ref()
             .ok_or(LayoutFailure::Semantics(RefusalKind::MalformedTopology))?;
 
-        let resolved = resolve_drag_shared(
+        let resolved = match resolve_drag_shared(
             &DragResolveInput {
                 policy: self.policy.as_ref(),
                 alloc: &self.group_alloc,
@@ -218,12 +296,25 @@ impl WorldLayout {
             },
             x,
             y,
-        )
-        .map_err(LayoutFailure::Semantics)?;
-
-        if &resolved.placement.tree == current {
-            return Err(LayoutFailure::Semantics(RefusalKind::Unchanged));
-        }
+        ) {
+            Ok(resolved) if &resolved.placement.tree != current => resolved,
+            Ok(_) | Err(RefusalKind::Unchanged) => {
+                let Some((_, _)) = drag_singleton_project(&key, &working, mover, source, &hints)
+                else {
+                    return Err(LayoutFailure::Semantics(RefusalKind::Unchanged));
+                };
+                let settled_revision = working.accepted_revision;
+                if is_fresh {
+                    self.domains.insert(key, working);
+                    self.admission_seq_next = self.admission_seq_next.max(counter);
+                }
+                return Ok(DragDropOutcome {
+                    base_revision: settled_revision,
+                    revision: settled_revision,
+                });
+            }
+            Err(kind) => return Err(LayoutFailure::Semantics(kind)),
+        };
 
         working.tree = Some(resolved.placement.tree);
         if !validate_domain_topology_with_focus(&key, &working, Some(&source_leaf)) {
@@ -662,4 +753,35 @@ fn cross_target_tree<'a>(pair: &'a PairCandidate, source_leaf: &NodeId) -> Optio
         return None;
     }
     Some(target_tree)
+}
+
+fn drag_singleton_project(
+    key: &DomainKey,
+    working: &DomainLayout,
+    mover: &WindowId,
+    source: Option<&DomainKey>,
+    hints: &BTreeMap<WindowId, WindowSizeHints>,
+) -> Option<(NodeId, Rect)> {
+    let binding = source?;
+    if !is_opaque_id(binding.output.0.as_str())
+        || !is_opaque_id(binding.workspace.0.as_str())
+        || binding.output == key.output
+    {
+        return None;
+    }
+    if working.leaves.len() != 1 {
+        return None;
+    }
+    let leaf = working.leaves.get(mover)?.clone();
+    let tree = working.tree.as_ref()?;
+    let geometry = project_borrowed_geometry(
+        key,
+        tree,
+        &working.leaves,
+        working.bounds,
+        working.gap,
+        hints,
+    )?;
+    let rect = geometry.iter().find(|g| g.window == *mover)?.rect;
+    Some((leaf, rect))
 }
