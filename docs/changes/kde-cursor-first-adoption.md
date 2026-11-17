@@ -101,8 +101,8 @@
   204 checks. The tested source is committed as `732af3ae`; checks used the
   scoped Cargo commands, KWin `npm run typecheck` / `npm test`,
   `scripts/dev-loop-split.test.sh` and `scripts/dev-native-effect.test.sh`.
-  Frozen fixtures were unchanged. Fixture-only no-focus navigation
-  remains unverified pending native reruns.
+  Frozen fixtures were unchanged. The later fixture-only no-focus reruns below
+  establish the desktop-foreground no-neighbor and adjacent-edge cases.
 
 ### Focused live helpers
 
@@ -174,7 +174,82 @@
   returns unknown on unreadable/out-of-bound input; it does not synthesize
   `(0,0)`. Motion observation uses `cursorPosChanged` only after accepted
   enabled-hover settings. The earlier independent native helpers also read
-  `workspace.cursorPos`; relative injection remains the missing discriminator.
+  `workspace.cursorPos`; the later relative discriminator below establishes
+  native motion, not agreement with the active adapter's sample.
+  Active construction retains the live workspace object, not its initial
+  cursor value (`kwin/src/world-entry.ts:418-432,2232-2233`).
+
+- Relative discriminator after `96ad5635`: **PASS for native motion only**.
+  `px-final-live.mjs --live` imported the reviewed helpers; bundle
+  `px-followup-xSMnS5` retains the executed script and source revision.
+  Independent native positions changed from `(372,997)` to `(584,1103)`
+  (`relative-before.json:1`, `relative-after.json:1`, `events.jsonl:298`).
+  The procedure stopped at the planned adapter-comparison boundary
+  (`events.jsonl:299`); this is not stationary injection or hover acceptance.
+  The physical single-key control reached callback/queue/capture
+  (`0174-control-journal.stdout:1-15`). Raw adapter coordinate equality was
+  not logged; the later hover legs below discriminate behavior instead.
+- That discriminator's cleanup completed: key releases/unlocked state
+  (`events.jsonl:301-307`), helper absence and runtime logs copied before stop
+  (`events.jsonl:310-312`), unloaded controller/unowned Planner
+  (`0222-just.stdout:1-9`), fixture exit and daemon exit
+  (`events.jsonl:319-335`). `outcome.json:1` has no cleanup errors.
+
+- No-focus reruns after `96ad5635`: `px-final-live.mjs --live` with the
+  imported `px-followup-procedures.mjs`; bundle `px-no-focus-rTxFy3` preserves
+  both executed sources and the source revision. Fixture joins and native
+  before/after state support both **PASS** verdicts:
+
+| Follow-up leg | Accepted result | Raw evidence within `px-no-focus-rTxFy3` |
+| --- | --- | --- |
+| No-focus no-neighbor | Desktop-type shell foreground admitted the empty subject. Physical left reached capture, found no adjacent output and minted no focus request or setter. A remained minimized; native fixture state and managed home/allocation were unchanged. | `sole-minimized-state.json:1`, `no-neighbor-after-state.json:1`; `0285-no-neighbor-after-journal.stdout:1-15,25-26` |
+| No-focus adjacent edge versus MRU | Native frames and tuple allocations established `H[B,C]` on the adjacent output, with C most recently focused. After A minimized to desktop foreground, physical right submitted the empty subject and selected edge B, not C; the native setter was proven and native foreground became B. | `adjacent-staged-state.json:1`, `adjacent-mru-c-state.json:1`, `adjacent-no-focus-precondition-state.json:1`, `adjacent-after-state.json:1`; `0521-adjacent-after-journal.stdout:1-22` |
+
+- No-focus teardown completed: key releases/unlocked state
+  (`events.jsonl:693-700`), helper absence and logs copied before stop
+  (`events.jsonl:703-705`), unloaded controller/unowned Planner
+  (`0526-just.stdout:1-9`), fixture exit and owned daemon exit
+  (`events.jsonl:712-728`). All 24 helper receipts recorded successful runs
+  and unloads; `outcome.json:1` has no cleanup errors.
+
+- Disabled cross-output hover after `96ad5635`: **PASS**. The imported
+  `px-hover-procedures.mjs` driven by `px-final-live.mjs --live` used damped
+  relative motion and fresh topmost-hit guards. In bundle `px-hover-OUhSUf`,
+  `disabled-before-state.json:1` joins active/hit A on the left;
+  `disabled-after-state.json:1` joins hit B on the right while A retains
+  native focus. `0365-disabled-hover-journal.stdout:1-5` contains no native
+  focus-setter attempt; `events.jsonl:492` records the bounded pass.
+- The first undamped routing approach overshot into shell hits and was
+  **BLOCKED**, not a hover-policy failure (`px-hover-L4JTFg/events.jsonl:429-535`).
+  Damped motion resolved routing. The later enabled setup stopped before
+  motion because a command was unavailable
+  (`px-hover-OUhSUf/0454-arm-skip.stderr:1`); no enabled verdict follows from
+  that pre-effect tooling failure. Both runs completed owned teardown without
+  cleanup errors (`px-hover-L4JTFg/events.jsonl:536-571`,
+  `px-hover-OUhSUf/events.jsonl:613-648`, each `outcome.json:1`).
+
+- Enabled cross-output hover and retained request after `96ad5635`:
+  **PASS**. `px-final-live.mjs --live` imported the same damped procedure
+  for enabled-only collection; bundle `px-enabled-hover-j0zR5H` preserves
+  both sources, the revision and isolated enabled settings.
+  The existing skip hook was invoked through `busctl`, with no new dependency.
+  `enabled-before-state.json:1` joins active/hit A on the left.
+  A real cross-output motion put the pointer over B; the correlated skipped
+  reply issued `focus-9` for B at revision 9
+  (`0343-enabled-first-journal-0.stdout:5-16`). A stayed natively focused
+  while hit B was observed (`enabled-after-skipped.json:1`).
+  A second real motion republished the same `focus-9` and B target at revision
+  10, retained `issuingRev=9`, and called the `focus-follows-cursor` setter with
+  `proven=true` (`0388-enabled-hover-journal.stdout:18-34`).
+  `enabled-after-state.json:1` independently joins active/hit B.
+- Enabled teardown completed: full releases/unlocked state
+  (`px-enabled-hover-j0zR5H/events.jsonl:521-528`), helper absence and logs
+  copied before stop (`events.jsonl:531-533`), unloaded controller/unowned
+  Planner (`0393-just.stdout:1-9`), fixture exit and daemon exit
+  (`events.jsonl:540-556`). All 18 helper receipts passed; `outcome.json:1`
+  has no cleanup errors. No stale/zero adapter bug was reproduced, so no
+  production correction was needed. Exact raw coordinate equality is not
+  claimed; the correlated hover behavior and native target are established.
 
 - Tested after `f690409e`, with two adjacent outputs, joined XWayland fixtures
   and isolated default-off hover settings. Bundle
@@ -183,8 +258,9 @@
   joins the physical focus-left callback, queue and capture. The edge result
   was `operation-refused` with zero effects and unchanged native focus
   (`:13-16`); this is not no-focus navigation evidence.
-- Cross-output hover is **BLOCKED**, not a policy failure. Both injected mouse
-  commands returned success, but native cursor samples remained `(0,0)` and
+- In that earlier run, cross-output hover was **BLOCKED**, not a policy failure.
+  Both injected mouse commands returned success, but native cursor samples
+  remained `(0,0)` and
   the topmost hit never reached the target fixture
   (`125-disabled-before-native.json:1`, `149-single-control-after-native.json:1`,
   `171-disabled-after-native.json:1`, `events.jsonl:211`).
@@ -227,8 +303,7 @@
   (`events.jsonl:893-895`, `0741-lock-final.stdout:1`), fixture exit/socket absence,
   helper absence/current-view restoration and daemon exit
   (`events.jsonl:900-942`, `outcome.json:1`).
-- PX remains **PARTIAL**: cross-output pointer routing/hover retention,
-  genuinely absent-foreground navigation, exact explicit-current-target
-  sampling, compositor hide/reveal and human/native-control acceptance remain
+- PX remains **PARTIAL**: exact explicit-current-target sampling,
+  compositor hide/reveal and human/native-control acceptance remain
   open. No production code, protocol, frozen fixture or stored user tiler
   setting was changed by these live legs.
