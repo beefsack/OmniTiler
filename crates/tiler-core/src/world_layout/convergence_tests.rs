@@ -114,7 +114,7 @@ fn revision_limit_refusal_keeps_state_but_burns_allocator() {
     let observed = vec![observed_window("w1", false), observed_window("w2", false)];
     assert_eq!(
         layout.converge_domain(&key, &observed, None, &BTreeSet::new()),
-        Err(ConvergenceFailure::RevisionLimit {
+        Err(LayoutFailure::RevisionLimit {
             base: MAX_REVISION,
             limit: MAX_REVISION,
         })

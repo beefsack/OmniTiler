@@ -10,9 +10,11 @@
 //! public vocabulary snapshots derive their home from the owning map key.
 
 mod admission;
+mod admit;
 mod capacity;
 mod convergence;
 mod focus;
+mod observation;
 mod orientation;
 mod outcome;
 mod projection;
@@ -25,6 +27,6 @@ mod tree_edit;
 #[cfg(test)]
 mod query_focus_tests;
 
-pub(crate) use outcome::{OrientationFailure, OrientationOutcome};
+pub(crate) use outcome::{AdmissionOutcome, LayoutFailure, OrientationOutcome};
 pub(crate) use projection::ProjectionFailure;
 pub(crate) use state::WorldLayout;

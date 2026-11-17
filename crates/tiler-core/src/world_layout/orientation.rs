@@ -12,9 +12,10 @@ use crate::session::{DomainKey, ObservedWindow, RefusalKind};
 use crate::size_hints::WindowSizeHints;
 
 use super::focus::{settle_domain_focus_tail, sync_domain_focus_from_window};
-use super::outcome::{OrientationFailure, OrientationOutcome};
+use super::observation::{domain_observed_known_match, valid_observed_shapes};
+use super::outcome::{LayoutFailure, OrientationOutcome};
 use super::projection::{project_borrowed_geometry, sort_geometry};
-use super::state::{DomainLayout, WorldLayout};
+use super::state::WorldLayout;
 use super::topology::validate_domain_topology;
 
 impl WorldLayout {
@@ -34,8 +35,8 @@ impl WorldLayout {
         subject: &WindowId,
         observed_focus: &WindowId,
         observed: &[ObservedWindow],
-    ) -> Result<OrientationOutcome, OrientationFailure> {
-        let refuse = OrientationFailure::Semantics;
+    ) -> Result<OrientationOutcome, LayoutFailure> {
+        let refuse = LayoutFailure::Semantics;
 
         let Some(original) = self.domain(key) else {
             return Err(refuse(RefusalKind::UnknownDomain));
@@ -135,17 +136,15 @@ impl WorldLayout {
 
         let base = original.accepted_revision;
         if base >= MAX_REVISION {
-            return Err(OrientationFailure::RevisionLimit {
+            return Err(LayoutFailure::RevisionLimit {
                 base,
                 limit: MAX_REVISION,
             });
         }
-        let revision = base
-            .checked_add(1)
-            .ok_or(OrientationFailure::RevisionLimit {
-                base,
-                limit: MAX_REVISION,
-            })?;
+        let revision = base.checked_add(1).ok_or(LayoutFailure::RevisionLimit {
+            base,
+            limit: MAX_REVISION,
+        })?;
 
         // Commit focus bookkeeping always normalizes the MRU/history/last-active
         // tail from the selected focus, even when the focus sync above missed.
@@ -174,63 +173,6 @@ impl WorldLayout {
             geometry,
         })
     }
-}
-
-fn valid_observed_shapes(observed: &[ObservedWindow]) -> bool {
-    let mut seen = BTreeSet::new();
-    for entry in observed {
-        if entry.window.0.is_empty() || entry.output.0.is_empty() || entry.workspace.0.is_empty() {
-            return false;
-        }
-        if !seen.insert(entry.window.clone()) {
-            return false;
-        }
-    }
-    true
-}
-
-/// Domain-scoped observed/known binding with no admission: exact homing and
-/// either strict exception flags or, with fixed-size admission enabled, only
-/// the portable floating flag.
-fn domain_observed_known_match(
-    key: &DomainKey,
-    domain: &DomainLayout,
-    observed: &[ObservedWindow],
-    fixed_admission: bool,
-) -> bool {
-    let by_id: BTreeMap<&WindowId, &ObservedWindow> =
-        observed.iter().map(|w| (&w.window, w)).collect();
-    for id in domain.leaves.keys() {
-        let Some(entry) = by_id.get(id) else {
-            return false;
-        };
-        if entry.output != key.output || entry.workspace != key.workspace {
-            return false;
-        }
-        if fixed_admission {
-            if entry.floating {
-                return false;
-            }
-        } else if entry.flags().any() {
-            return false;
-        }
-    }
-    for (id, exception) in &domain.exceptions {
-        let Some(entry) = by_id.get(id) else {
-            return false;
-        };
-        if entry.output != key.output || entry.workspace != key.workspace {
-            return false;
-        }
-        if fixed_admission {
-            if entry.floating != exception.flags.floating {
-                return false;
-            }
-        } else if entry.flags() != exception.flags {
-            return false;
-        }
-    }
-    true
 }
 
 /// Direct parent group id of a leaf, if the leaf is a direct child.

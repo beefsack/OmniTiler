@@ -23,6 +23,8 @@ use crate::size_hints::{WindowSizeHints, is_fixed_size_with};
 use super::admission::plan_admission_leg;
 use super::capacity::repair_domain_candidate;
 use super::focus::{domain_focus_resolves, settle_domain_focus_tail};
+use super::observation::valid_observed_shapes;
+use super::outcome::LayoutFailure;
 use super::restore::best_effort_rejoin;
 use super::state::{DomainException, DomainLayout, DomainRestoreSlot, WorldLayout};
 use super::topology::{collect_node_ids, validate_domain_topology};
@@ -31,13 +33,6 @@ use super::tree_edit::{admission_placement_for, remove_leaf_from_tree};
 #[cfg(test)]
 #[path = "convergence_tests.rs"]
 mod tests;
-
-/// Bounded failure vocabulary for domain convergence.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ConvergenceFailure {
-    Semantics(RefusalKind),
-    RevisionLimit { base: u64, limit: u64 },
-}
 
 impl WorldLayout {
     /// Converge one retained domain against a complete observation.
@@ -51,8 +46,8 @@ impl WorldLayout {
         observed: &[ObservedWindow],
         observed_focus: Option<&WindowId>,
         hidden: &BTreeSet<WindowId>,
-    ) -> Result<ObservationConvergence, ConvergenceFailure> {
-        let refuse = ConvergenceFailure::Semantics;
+    ) -> Result<ObservationConvergence, LayoutFailure> {
+        let refuse = LayoutFailure::Semantics;
 
         // Pre-candidate validation: known domain, retained topology, observed
         // id shape and exact single-domain homing, before any candidate work.
@@ -523,7 +518,7 @@ impl WorldLayout {
         if changed && base_revision >= MAX_REVISION {
             // Refuse without install or high-water mutation; allocator burns
             // from admitted candidates survive. No terminal divergence.
-            return Err(ConvergenceFailure::RevisionLimit {
+            return Err(LayoutFailure::RevisionLimit {
                 base: base_revision,
                 limit: MAX_REVISION,
             });
@@ -569,19 +564,6 @@ fn floating_exception(geometry: Option<Rect>) -> DomainException {
         },
         floating_geometry: geometry,
     }
-}
-
-fn valid_observed_shapes(observed: &[ObservedWindow]) -> bool {
-    let mut seen = BTreeSet::new();
-    for entry in observed {
-        if entry.window.0.is_empty() || entry.output.0.is_empty() || entry.workspace.0.is_empty() {
-            return false;
-        }
-        if !seen.insert(entry.window.clone()) {
-            return false;
-        }
-    }
-    true
 }
 
 /// Newest resolving leaf from a candidate's MRU base.

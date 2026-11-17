@@ -269,3 +269,10 @@
   Review removes redundant copied membership indexes. Scoped formatting passes;
   a library check still fails on 129 unmigrated engine-field callers, with no
   convergence-module diagnostic. Tests and end-to-end integration remain pending.
+- Typed single-window admission now installs deferred, automatic-fixed, tiled
+  or capacity-float candidates without acknowledgement scaffolding, retaining
+  sequence/provenance lifetimes and focus-settle rules. Observation gates and
+  semantic/revision-bound failures are shared with orientation and convergence.
+  Review restores command-shape validation, including placement rectangles,
+  before scope/duplicate/completeness checks. Scoped formatting passes; caller
+  integration and executed behavioural acceptance remain pending.

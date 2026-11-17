@@ -23,10 +23,26 @@ pub(crate) struct OrientationOutcome {
     pub(crate) geometry: Vec<DesiredGeometry>,
 }
 
+/// Typed result of an accepted single-domain window admission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AdmissionOutcome {
+    /// Accepted revision before the operation.
+    pub(crate) base_revision: u64,
+    /// Accepted revision after the operation (`base_revision + 1`).
+    pub(crate) revision: u64,
+    /// Bound leaf for a successful tiled admission; `None` for a deferred
+    /// exception, automatic fixed membership float or capacity float.
+    pub(crate) admitted_leaf: Option<NodeId>,
+    /// Complete hinted geometry in child order; empty for every exception
+    /// branch. A tolerated fullscreen-only subject is stripped from this
+    /// vector before it is returned.
+    pub(crate) geometry: Vec<DesiredGeometry>,
+}
+
 /// Typed failure for a layout operation: a semantic refusal with a stable
 /// `RefusalKind`, or the per-domain accepted revision bound reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OrientationFailure {
+pub(crate) enum LayoutFailure {
     Semantics(RefusalKind),
     /// The base revision has reached the bound. The outer operation boundary
     /// must map this to `DivergenceKind::RevisionExhausted`'s existing kind
