@@ -21,6 +21,7 @@ mod outcome;
 mod projection;
 mod queries;
 mod restore;
+mod retained;
 mod state;
 mod topology;
 mod tree_edit;
@@ -28,6 +29,8 @@ mod tree_edit;
 #[cfg(test)]
 mod query_focus_tests;
 
-pub(crate) use outcome::{AdmissionOutcome, LayoutFailure, OrientationOutcome};
+pub(crate) use outcome::{
+    AdmissionOutcome, LayoutFailure, OrientationOutcome, RetainedProjectionOutcome,
+};
 pub(crate) use projection::ProjectionFailure;
 pub(crate) use state::WorldLayout;

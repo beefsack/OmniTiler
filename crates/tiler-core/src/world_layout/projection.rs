@@ -15,10 +15,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::directional::{Node, NodeId, WindowId};
 use crate::geometry::Rect;
+use crate::seed::EngineWindow;
 use crate::session::{DesiredGeometry, DomainKey};
 use crate::size_hints::WindowSizeHints;
 
-use super::state::WorldLayout;
+use super::state::{DomainLayout, WorldLayout};
 use super::topology::collect_leaves;
 
 /// Typed advisory projection failure. An unknown domain or a domain with no
@@ -140,6 +141,55 @@ pub(super) fn sort_geometry(geometry: &mut [DesiredGeometry]) {
             .then(a.workspace.0.cmp(&b.workspace.0))
             .then(a.leaf.0.cmp(&b.leaf.0))
     });
+}
+
+/// Hinted projection of one retained candidate domain at caller-supplied
+/// bounds/gap, reusing the advisory `project_borrowed` implementation for all
+/// hint/positive/unbound/overconstraint geometry. Only the update-gaps-specific
+/// observed client-clamp flags are layered on, then the geometry is ordered by
+/// `(output, workspace, leaf)` and gated on complete window-binding coverage.
+/// No `Session` is read and no world is cloned. `None` means no tree, a failed
+/// borrowed projection, or incomplete coverage.
+pub(super) fn project_retained_candidate(
+    key: &DomainKey,
+    domain: &DomainLayout,
+    bounds: Rect,
+    gap: i32,
+    hints: &BTreeMap<WindowId, WindowSizeHints>,
+    observed: &[EngineWindow],
+) -> Option<Vec<DesiredGeometry>> {
+    let tree = domain.tree.as_ref()?;
+    let mut geometry = project_borrowed(key, tree, &domain.leaves, bounds, gap, hints).ok()?;
+    let mut observed_rects: BTreeMap<&str, &Rect> = BTreeMap::new();
+    for entry in observed {
+        if entry.floating || entry.fit_excluded {
+            continue;
+        }
+        observed_rects.insert(entry.window.0.as_str(), &entry.rect);
+    }
+    for entry in &mut geometry {
+        let client_clamped = !entry.overconstrained
+            && observed_rects
+                .get(entry.window.0.as_str())
+                .is_some_and(|rect| {
+                    **rect != entry.rect
+                        && crate::size_hints::assess_window_clamp(
+                            rect,
+                            &entry.rect,
+                            &hints
+                                .get(&entry.window)
+                                .copied()
+                                .unwrap_or_else(WindowSizeHints::none),
+                        )
+                        .accepted
+                });
+        entry.client_clamped = client_clamped;
+    }
+    sort_geometry(&mut geometry);
+    if geometry.len() != domain.leaves.len() {
+        return None;
+    }
+    Some(geometry)
 }
 
 impl WorldLayout {

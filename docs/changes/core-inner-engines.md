@@ -283,4 +283,11 @@
   focus recency, capacity exceptions and discarded-trial allocation burns
   without synthesized observations. Source review and scoped formatting pass;
   two direct tests are added but not executed. Fit/adoption routing, relocation
-  and world caller integration remain pending.
+   and world caller integration remain pending.
+- Retained gap updates now validate one local candidate, project with client
+  clamp assessment and perform revision-neutral capacity repair when projection
+  fails. Empty retirement, exception-only adoption, focus settling and capacity
+  provenance pruning retain their source order. The retained projector reuses
+  hinted geometry construction rather than duplicating it. Source review and
+  scoped formatting pass; three direct tests are present but unexecuted.
+  Retained reconcile, fresh routing and world caller integration remain pending.

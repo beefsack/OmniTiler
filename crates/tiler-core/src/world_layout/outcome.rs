@@ -39,6 +39,27 @@ pub(crate) struct AdmissionOutcome {
     pub(crate) geometry: Vec<DesiredGeometry>,
 }
 
+/// Typed result of an atomic single-domain retained gap update. The domain is
+/// the caller's input key and is not echoed back. `base_revision` is the
+/// accepted revision observed before and after the update: gap adoption,
+/// outer-gap adoption and D7 repair are all revision-neutral. `geometry` is
+/// the complete hinted, clamp-marked projection at the requested bounds/gap;
+/// it is empty for a retired empty domain, an exception-only/float-only slot,
+/// or a repair that emptied the tiled set with floats remaining. `focus_leaf`
+/// is the retained tiled focus binding projected with the update (only ever
+/// `Some` when geometry is non-empty); an ordinary-float observed focus is
+/// allowed as no focus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetainedProjectionOutcome {
+    /// Accepted revision before and after the update (never advanced here).
+    pub(crate) base_revision: u64,
+    /// Complete hinted geometry at the requested bounds/gap, ordered by
+    /// `(output, workspace, leaf)`.
+    pub(crate) geometry: Vec<DesiredGeometry>,
+    /// Retained focus leaf carried with the successful projection.
+    pub(crate) focus_leaf: Option<NodeId>,
+}
+
 /// Typed failure for a layout operation: a semantic refusal with a stable
 /// `RefusalKind`, or the per-domain accepted revision bound reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
