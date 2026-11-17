@@ -83,6 +83,8 @@ mod pair_send_tests;
 #[cfg(test)]
 mod pair_tests;
 #[cfg(test)]
+mod pointer_resize_tests;
+#[cfg(test)]
 mod query_focus_tests;
 #[cfg(test)]
 mod resize_tests;
