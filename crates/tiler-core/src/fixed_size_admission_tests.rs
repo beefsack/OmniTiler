@@ -1,41 +1,22 @@
 #![forbid(unsafe_code)]
 //! Q2 fixed-size float admission rows (D1-D8, authorized batch).
 //!
-//! Real `Session`/`Engine` fixtures (no flag mocks): the shared
+//! Real `WorldLayout` fixtures (no flag mocks): the shared
 //! `is_fixed_size` predicate floats newly admitted fixed windows as
 //! membership-only automatic exceptions, honors explicit user tile wins
 //! (retained set, command origin, or observed suppress signal) for the
 //! same live client, bypasses born fullscreen, floats born maximized
 //! without a reserved tile, retiles automatic (never intentional) floats,
-//! and emits bounded diagnostics without identifiers. Failed proposals
-//! and divergences stage nothing; the opt-out path keeps original
-//! refusals byte-identical.
+//! and keeps opt-out refusals intact. Failed admissions stage nothing.
 
-use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
-use crate::contract::{
-    AckOutcome, AdapterAck, LifecycleCapabilities, LifecycleOperation, Observation,
-};
 use crate::directional::{Node, OutputId, WindowId, WorkspaceId};
-use crate::engine::Engine;
 use crate::geometry::Rect;
-use crate::ids::{CorrelationId, GenerationId, OwnerId};
 use crate::seed::EngineWindow;
-use crate::session::{
-    DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, ProposeError, RefusalKind, Session,
-    SessionCommand, SessionObservation,
-};
+use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, RefusalKind};
 use crate::size_hints::WindowSizeHints;
-use std::collections::BTreeMap;
+use crate::world_layout::{LayoutFailure, PairOperationContext, PairSendKind, WorldLayout};
+use std::collections::{BTreeMap, BTreeSet};
 
-fn owner() -> OwnerId {
-    OwnerId::parse("owner-1").expect("valid")
-}
-fn generation() -> GenerationId {
-    GenerationId::parse("gen-1").expect("valid")
-}
-fn correlation(value: &str) -> CorrelationId {
-    CorrelationId::parse(value).unwrap_or_else(|| panic!("valid correlation {value}"))
-}
 fn domain() -> OutputDomain {
     OutputDomain {
         id: OutputId("out-1".to_owned()),
@@ -112,90 +93,107 @@ fn fixed(window: &str) -> ObservedWindow {
         fixed_hints(),
     )
 }
-fn observation(base: u64, windows: Vec<ObservedWindow>) -> SessionObservation {
-    SessionObservation {
-        observation: Observation::new(owner(), generation(), base, 100 + base),
-        windows,
+fn fixed_layout() -> WorldLayout {
+    let mut layout = WorldLayout::new();
+    layout.set_fixed_size_admission(true);
+    layout
+}
+fn current_observed(layout: &WorldLayout, k: &DomainKey) -> Vec<ObservedWindow> {
+    let mut windows: Vec<ObservedWindow> = layout
+        .tiled_windows(k)
+        .map(|w| ObservedWindow {
+            window: w.clone(),
+            output: k.output.clone(),
+            workspace: k.workspace.clone(),
+            floating: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: WindowSizeHints::none(),
+        })
+        .collect();
+    for (w, flags) in layout.exception_windows_with_flags(k) {
+        windows.push(ObservedWindow {
+            window: w,
+            output: k.output.clone(),
+            workspace: k.workspace.clone(),
+            floating: flags.floating,
+            fullscreen: flags.fullscreen,
+            maximized: flags.maximized,
+            sticky: flags.sticky,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: WindowSizeHints::none(),
+        });
+    }
+    windows
+}
+fn converge_at(
+    layout: &mut WorldLayout,
+    dom: &OutputDomain,
+    windows: Vec<ObservedWindow>,
+) -> Result<crate::session::ObservationConvergence, LayoutFailure> {
+    let k = dom.key();
+    if layout.contains_domain(&k) {
+        layout.converge_domain(&k, &windows, None, &BTreeSet::new())
+    } else {
+        layout.converge_fresh_domain(dom, 0, &windows, None)
     }
 }
-fn fixed_session() -> Session {
-    let mut session = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("session");
-    session.set_fixed_size_admission(true);
-    session
+fn converge(
+    layout: &mut WorldLayout,
+    windows: Vec<ObservedWindow>,
+) -> Result<crate::session::ObservationConvergence, LayoutFailure> {
+    converge_at(layout, &domain(), windows)
 }
-fn admit_plain(session: &mut Session, window: &str, corr: &str) {
-    admit_with(session, window, corr, false, WindowSizeHints::none());
+fn admit_plain(layout: &mut WorldLayout, window: &str) {
+    admit_with(layout, window, false, WindowSizeHints::none());
 }
-fn admit_with(
-    session: &mut Session,
-    window: &str,
-    corr: &str,
-    suppress: bool,
-    hints: WindowSizeHints,
-) {
-    let mut windows: Vec<ObservedWindow> = session
-        .snapshot()
-        .windows
-        .iter()
-        .map(|l| plain(&l.window.0))
-        .collect();
-    windows.extend(session.exception_observed());
+fn admit_with(layout: &mut WorldLayout, window: &str, suppress: bool, hints: WindowSizeHints) {
+    let dom = domain();
+    let k = dom.key();
+    let mut windows = current_observed(layout, &k);
     let mut admitted = plain(window);
     admitted.hints = hints;
     windows.push(admitted);
     windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
-    let base = session.accepted_revision();
-    let plan = session
-        .propose(
-            &SessionCommand::Admit {
-                window: WindowId(window.to_owned()),
-                output: OutputId("out-1".to_owned()),
-                workspace: WorkspaceId("ws-1".to_owned()),
-                exceptions: ExceptionFlags::none(),
-                exception_behavior: None,
-                placement_bounds: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 120,
-                    h: 80,
-                },
-                suppress_fixed_float: suppress,
+    if !layout.contains_domain(&k) {
+        if suppress {
+            if let Some(entry) = windows.iter_mut().find(|e| e.window.0 == window) {
+                entry.fixed_suppress = true;
+            }
+        }
+        layout
+            .converge_fresh_domain(&dom, 0, &windows, None)
+            .unwrap_or_else(|e| panic!("seed admit {window}: {e:?}"));
+        return;
+    }
+    layout
+        .admit_window(
+            &k,
+            &WindowId(window.to_owned()),
+            ExceptionFlags::none(),
+            None,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 120,
+                h: 80,
             },
-            &observation(base, windows),
-            &correlation(corr),
-            &LifecycleCapabilities::full(),
+            suppress,
+            false,
+            &windows,
         )
         .unwrap_or_else(|e| panic!("seed admit {window}: {e:?}"));
-    session
-        .acknowledge(&AdapterAck::new(
-            correlation(corr),
-            owner(),
-            generation(),
-            base,
-            AckOutcome::Accepted,
-        ))
-        .expect("seed ack");
-    session
-        .verify_lifecycle(&crate::contract::LifecyclePostObservation::new(
-            Observation::new(owner(), generation(), base, 200 + base),
-            correlation(corr),
-            true,
-            plan.dispatch.preconditions.clone(),
-            plan.dispatch.operation.clone(),
-        ))
-        .expect("seed verify");
 }
-fn tiled_ids(session: &Session) -> Vec<String> {
-    let mut ids: Vec<String> = session
-        .snapshot()
-        .windows
-        .iter()
-        .map(|l| l.window.0.clone())
-        .collect();
+fn tiled_ids(layout: &WorldLayout) -> Vec<String> {
+    let mut ids: Vec<String> = layout.tiled_windows(&key()).map(|w| w.0.clone()).collect();
     ids.sort();
     ids
 }
-fn tree_leaf_count(session: &Session) -> usize {
+fn tree_leaf_count(layout: &WorldLayout) -> usize {
     fn collect(node: &Node, out: &mut usize) {
         match node {
             Node::Leaf { .. } => *out += 1,
@@ -206,17 +204,11 @@ fn tree_leaf_count(session: &Session) -> usize {
             }
         }
     }
-    let view = session
-        .snapshot()
-        .domains
-        .into_iter()
-        .find(|d| d.output.0 == "out-1")
-        .expect("domain");
-    match view.tree {
+    match layout.tree(&key()) {
         None => 0,
         Some(tree) => {
             let mut count = 0;
-            collect(&tree, &mut count);
+            collect(tree, &mut count);
             count
         }
     }
@@ -224,35 +216,29 @@ fn tree_leaf_count(session: &Session) -> usize {
 
 #[test]
 fn fixed_brand_new_floats_without_tile_focus_or_geometry() {
-    let mut session = fixed_session();
-    admit_plain(&mut session, "win-a", "c-a");
-    let focus_before = session.focus();
-    let base = session.accepted_revision();
-    let result = session
-        .converge_observation(
-            &observation(base, vec![plain("win-a"), fixed("win-f")]),
-            None,
-        )
-        .expect("converge");
+    let mut layout = fixed_layout();
+    admit_plain(&mut layout, "win-a");
+    let focus_before = layout.focus_leaf(&key()).cloned();
+    let result = converge(&mut layout, vec![plain("win-a"), fixed("win-f")]).expect("converge");
     assert_eq!(result.flags_adopted, 1, "fixed admission adopts flags");
     assert_eq!(result.admitted, 0, "fixed admission takes no tiled slot");
     assert_eq!(result.removed, 0);
     assert!(
-        session.is_exception(&WindowId("win-f".to_owned())),
+        layout.is_exception(&key(), &WindowId("win-f".to_owned())),
         "fixed is exception"
     );
     assert!(
-        session.is_automatic_fixed_float(&WindowId("win-f".to_owned())),
+        layout.is_automatic_fixed_float(&key(), &WindowId("win-f".to_owned())),
         "automatic marker"
     );
     assert_eq!(
-        tiled_ids(&session),
+        tiled_ids(&layout),
         vec!["win-a".to_owned()],
         "tree excludes fixed"
     );
-    assert_eq!(tree_leaf_count(&session), 1, "no leaf reserved for fixed");
+    assert_eq!(tree_leaf_count(&layout), 1, "no leaf reserved for fixed");
     assert_eq!(
-        session.focus(),
+        layout.focus_leaf(&key()).cloned(),
         focus_before,
         "admission never refocuses to fixed"
     );
@@ -336,30 +322,25 @@ fn nonfixed_hint_variants_tile() {
         ),
     ];
     for (name, hints) in variants {
-        let mut session = fixed_session();
-        let base = session.accepted_revision();
-        let result = session
-            .converge_observation(
-                &observation(
-                    base,
-                    vec![obs(
-                        "win-v", false, false, false, false, false, false, hints,
-                    )],
-                ),
-                None,
-            )
-            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let mut layout = fixed_layout();
+        let result = converge(
+            &mut layout,
+            vec![obs(
+                "win-v", false, false, false, false, false, false, hints,
+            )],
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e:?}"));
         assert_eq!(result.admitted, 1, "{name} tiles");
         assert!(
-            !session.is_exception(&WindowId("win-v".to_owned())),
+            !layout.is_exception(&key(), &WindowId("win-v".to_owned())),
             "{name} not exception"
         );
         assert!(
-            !session.is_automatic_fixed_float(&WindowId("win-v".to_owned())),
+            !layout.is_automatic_fixed_float(&key(), &WindowId("win-v".to_owned())),
             "{name} not automatic"
         );
         assert_eq!(
-            tiled_ids(&session),
+            tiled_ids(&layout),
             vec!["win-v".to_owned()],
             "{name} in tree"
         );
@@ -394,22 +375,17 @@ fn partial_zero_vectors_tile_under_both_axes_and_float_under_either_axis() {
         ),
     ];
     for (name, hints) in partials {
-        let mut both = fixed_session();
-        let base = both.accepted_revision();
-        let result = both
-            .converge_observation(
-                &observation(
-                    base,
-                    vec![obs(
-                        "win-p", false, false, false, false, false, false, hints,
-                    )],
-                ),
-                None,
-            )
-            .unwrap_or_else(|e| panic!("{name} both-axes: {e:?}"));
+        let mut both = fixed_layout();
+        let result = converge(
+            &mut both,
+            vec![obs(
+                "win-p", false, false, false, false, false, false, hints,
+            )],
+        )
+        .unwrap_or_else(|e| panic!("{name} both-axes: {e:?}"));
         assert_eq!(result.admitted, 1, "{name} tiles under both-axes");
         assert!(
-            !both.is_automatic_fixed_float(&WindowId("win-p".to_owned())),
+            !both.is_automatic_fixed_float(&key(), &WindowId("win-p".to_owned())),
             "{name} not automatic under both-axes"
         );
         assert_eq!(
@@ -418,22 +394,17 @@ fn partial_zero_vectors_tile_under_both_axes_and_float_under_either_axis() {
             "{name} keeps a slot under both-axes"
         );
 
-        let mut either = fixed_session();
+        let mut either = fixed_layout();
         either.set_fixed_size_predicate(FixedSizePredicate::EitherAxis);
-        let base = either.accepted_revision();
-        either
-            .converge_observation(
-                &observation(
-                    base,
-                    vec![obs(
-                        "win-p", false, false, false, false, false, false, hints,
-                    )],
-                ),
-                None,
-            )
-            .unwrap_or_else(|e| panic!("{name} either-axis: {e:?}"));
+        converge(
+            &mut either,
+            vec![obs(
+                "win-p", false, false, false, false, false, false, hints,
+            )],
+        )
+        .unwrap_or_else(|e| panic!("{name} either-axis: {e:?}"));
         assert!(
-            either.is_automatic_fixed_float(&WindowId("win-p".to_owned())),
+            either.is_automatic_fixed_float(&key(), &WindowId("win-p".to_owned())),
             "{name} floats under either-axis"
         );
         assert_eq!(
@@ -463,22 +434,17 @@ fn partial_zero_vectors_tile_under_both_axes_and_float_under_either_axis() {
             },
         ),
     ] {
-        let mut either = fixed_session();
+        let mut either = fixed_layout();
         either.set_fixed_size_predicate(FixedSizePredicate::EitherAxis);
-        let base = either.accepted_revision();
-        either
-            .converge_observation(
-                &observation(
-                    base,
-                    vec![obs(
-                        "win-p", false, false, false, false, false, false, hints,
-                    )],
-                ),
-                None,
-            )
-            .unwrap_or_else(|e| panic!("{name} either-axis: {e:?}"));
+        converge(
+            &mut either,
+            vec![obs(
+                "win-p", false, false, false, false, false, false, hints,
+            )],
+        )
+        .unwrap_or_else(|e| panic!("{name} either-axis: {e:?}"));
         assert!(
-            !either.is_automatic_fixed_float(&WindowId("win-p".to_owned())),
+            !either.is_automatic_fixed_float(&key(), &WindowId("win-p".to_owned())),
             "{name} still tiles under either-axis"
         );
     }
@@ -495,100 +461,76 @@ fn partial_zero_predicate_switch_never_reclassifies_retained_tile() {
         max_w: Some(640),
         max_h: Some(0),
     };
-    let mut session = fixed_session();
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-p", false, false, false, false, false, false, hints,
-                )],
-            ),
-            None,
-        )
-        .expect("partial-zero tiles by default");
-    assert_eq!(tiled_ids(&session), vec!["win-p".to_owned()]);
-    session.set_fixed_size_predicate(FixedSizePredicate::EitherAxis);
-    let base = session.accepted_revision();
-    let result = session
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-p", false, false, false, false, false, false, hints,
-                )],
-            ),
-            None,
-        )
-        .expect("switch converges");
+    let mut layout = fixed_layout();
+    converge(
+        &mut layout,
+        vec![obs(
+            "win-p", false, false, false, false, false, false, hints,
+        )],
+    )
+    .expect("partial-zero tiles by default");
+    assert_eq!(tiled_ids(&layout), vec!["win-p".to_owned()]);
+    layout.set_fixed_size_predicate(FixedSizePredicate::EitherAxis);
+    let result = converge(
+        &mut layout,
+        vec![obs(
+            "win-p", false, false, false, false, false, false, hints,
+        )],
+    )
+    .expect("switch converges");
     assert_eq!(
         (result.removed, result.admitted, result.flags_adopted),
         (0, 0, 0),
         "switch changes nothing retained"
     );
-    assert_eq!(tiled_ids(&session), vec!["win-p".to_owned()]);
-    assert!(!session.is_automatic_fixed_float(&WindowId("win-p".to_owned())));
+    assert_eq!(tiled_ids(&layout), vec!["win-p".to_owned()]);
+    assert!(!layout.is_automatic_fixed_float(&key(), &WindowId("win-p".to_owned())));
 }
 
 #[test]
 fn hint_transitions_never_reclassify_either_direction() {
-    let mut session = fixed_session();
-    admit_plain(&mut session, "win-a", "c-a");
+    let mut layout = fixed_layout();
+    admit_plain(&mut layout, "win-a");
     // Tiled window becomes fixed: stays tiled (D2).
-    let base = session.accepted_revision();
-    let result = session
-        .converge_observation(&observation(base, vec![fixed("win-a")]), None)
-        .expect("hint change converges");
+    let result = converge(&mut layout, vec![fixed("win-a")]).expect("hint change converges");
     assert_eq!(
         (result.removed, result.admitted, result.flags_adopted),
         (0, 0, 0),
         "no change"
     );
-    assert_eq!(tiled_ids(&session), vec!["win-a".to_owned()]);
-    assert!(!session.is_automatic_fixed_float(&WindowId("win-a".to_owned())));
+    assert_eq!(tiled_ids(&layout), vec!["win-a".to_owned()]);
+    assert!(!layout.is_automatic_fixed_float(&key(), &WindowId("win-a".to_owned())));
     // Automatic float loses fixed hints: stays floating (D2).
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(base, vec![plain("win-a"), fixed("win-f")]),
-            None,
-        )
-        .expect("admit fixed");
-    assert!(session.is_automatic_fixed_float(&WindowId("win-f".to_owned())));
-    let base = session.accepted_revision();
-    let result = session
-        .converge_observation(
-            &observation(
-                base,
-                vec![
-                    plain("win-a"),
-                    obs(
-                        "win-f",
-                        true,
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        WindowSizeHints::none(),
-                    ),
-                ],
+    converge(&mut layout, vec![plain("win-a"), fixed("win-f")]).expect("admit fixed");
+    assert!(layout.is_automatic_fixed_float(&key(), &WindowId("win-f".to_owned())));
+    let result = converge(
+        &mut layout,
+        vec![
+            plain("win-a"),
+            obs(
+                "win-f",
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                WindowSizeHints::none(),
             ),
-            None,
-        )
-        .expect("hint loss converges");
+        ],
+    )
+    .expect("hint loss converges");
     assert_eq!(
         (result.removed, result.admitted, result.flags_adopted),
         (0, 0, 0),
         "identity kept"
     );
     assert!(
-        session.is_exception(&WindowId("win-f".to_owned())),
+        layout.is_exception(&key(), &WindowId("win-f".to_owned())),
         "still floating"
     );
     assert!(
-        session.is_automatic_fixed_float(&WindowId("win-f".to_owned())),
+        layout.is_automatic_fixed_float(&key(), &WindowId("win-f".to_owned())),
         "still automatic"
     );
 }
@@ -599,41 +541,32 @@ fn automatic_hint_loss_with_native_unfloat_stays_floating_until_explicit_win() {
     // hintless hints keeps floating with its marker (no fresh
     // admission, so no new geometry or focus); only a genuine
     // explicit win (suppress signal, retained override) tiles.
-    let mut session = fixed_session();
-    admit_plain(&mut session, "win-a", "c-a");
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(base, vec![plain("win-a"), fixed("win-f")]),
-            None,
-        )
-        .expect("admit fixed");
+    let mut layout = fixed_layout();
+    admit_plain(&mut layout, "win-a");
+    converge(&mut layout, vec![plain("win-a"), fixed("win-f")]).expect("admit fixed");
     let id = WindowId("win-f".to_owned());
     assert!(
-        session.is_automatic_fixed_float(&id),
+        layout.is_automatic_fixed_float(&key(), &id),
         "automatic marker set"
     );
-    let base = session.accepted_revision();
-    let result = session
-        .converge_observation(
-            &observation(base, vec![plain("win-a"), plain("win-f")]),
-            None,
-        )
-        .expect("hint loss converges");
+    let result =
+        converge(&mut layout, vec![plain("win-a"), plain("win-f")]).expect("hint loss converges");
     assert_eq!(
         (result.removed, result.admitted),
         (0, 0),
         "no fresh admission"
     );
-    assert!(session.is_exception(&id), "still floating");
+    assert!(layout.is_exception(&key(), &id), "still floating");
     assert!(
-        session.is_automatic_fixed_float(&id),
+        layout.is_automatic_fixed_float(&key(), &id),
         "marker kept across hint loss"
     );
-    assert!(!session.has_fixed_tile_override(&id), "no inferred win");
+    assert!(
+        !layout.has_fixed_tile_override(&key(), &id),
+        "no inferred win"
+    );
     // An observed suppress signal with the same hintless hints is a
     // genuine explicit win: it tiles and records the override.
-    let base = session.accepted_revision();
     let suppressed = obs(
         "win-f",
         false,
@@ -644,24 +577,19 @@ fn automatic_hint_loss_with_native_unfloat_stays_floating_until_explicit_win() {
         true,
         WindowSizeHints::none(),
     );
-    session
-        .converge_observation(&observation(base, vec![plain("win-a"), suppressed]), None)
-        .expect("suppress converges");
-    assert!(!session.is_exception(&id), "tiled");
-    assert!(session.has_fixed_tile_override(&id), "win recorded");
+    converge(&mut layout, vec![plain("win-a"), suppressed]).expect("suppress converges");
+    assert!(!layout.is_exception(&key(), &id), "tiled");
+    assert!(layout.has_fixed_tile_override(&key(), &id), "win recorded");
     // The retained override keeps it tiled across restored or lost hints.
     for hints in [fixed_hints(), WindowSizeHints::none()] {
-        let base = session.accepted_revision();
         let shown = obs("win-f", false, false, false, false, false, false, hints);
-        let result = session
-            .converge_observation(&observation(base, vec![plain("win-a"), shown]), None)
-            .expect("resync converges");
+        let result = converge(&mut layout, vec![plain("win-a"), shown]).expect("resync converges");
         assert_eq!(
             (result.removed, result.admitted),
             (0, 0),
             "override keeps tile"
         );
-        assert_eq!(tiled_ids(&session).len(), 2, "stays tiled");
+        assert_eq!(tiled_ids(&layout).len(), 2, "stays tiled");
     }
 }
 
@@ -670,74 +598,64 @@ fn floating_fixed_without_origin_signal_stays_intentional() {
     // Known floating intent is never inferred automatic from hints
     // alone: without the adapter's explicit fixed_auto origin the
     // window floats as an intentional exception.
-    let mut session = fixed_session();
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-f",
-                    true,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    fixed_hints(),
-                )],
-            ),
-            None,
-        )
-        .expect("converge");
+    let mut layout = fixed_layout();
+    converge(
+        &mut layout,
+        vec![obs(
+            "win-f",
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            fixed_hints(),
+        )],
+    )
+    .expect("converge");
     let id = WindowId("win-f".to_owned());
-    assert!(session.is_exception(&id), "floating membership");
-    assert!(!session.is_automatic_fixed_float(&id), "no inferred origin");
+    assert!(layout.is_exception(&key(), &id), "floating membership");
+    assert!(
+        !layout.is_automatic_fixed_float(&key(), &id),
+        "no inferred origin"
+    );
     // Re-observed tiled without a suppress signal becomes automatic
     // (D5/D6 fixed becomes float): no override is inferred, the
     // automatic marker is. An explicit suppress still tiles (D3, see
     // suppress_signal_records_override_on_retile).
-    let base = session.accepted_revision();
-    session
-        .converge_observation(&observation(base, vec![fixed("win-f")]), None)
-        .expect("retile");
-    assert!(session.is_exception(&id), "fixed stays floating");
+    converge(&mut layout, vec![fixed("win-f")]).expect("retile");
+    assert!(layout.is_exception(&key(), &id), "fixed stays floating");
     assert!(
-        session.is_automatic_fixed_float(&id),
+        layout.is_automatic_fixed_float(&key(), &id),
         "fresh automatic marker"
     );
     assert!(
-        !session.has_fixed_tile_override(&id),
+        !layout.has_fixed_tile_override(&key(), &id),
         "no inferred override"
     );
 }
 
 #[test]
 fn fixed_auto_signal_marks_automatic() {
-    let mut session = fixed_session();
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-f",
-                    true,
-                    false,
-                    false,
-                    false,
-                    true,
-                    false,
-                    fixed_hints(),
-                )],
-            ),
-            None,
-        )
-        .expect("converge");
+    let mut layout = fixed_layout();
+    converge(
+        &mut layout,
+        vec![obs(
+            "win-f",
+            true,
+            false,
+            false,
+            false,
+            true,
+            false,
+            fixed_hints(),
+        )],
+    )
+    .expect("converge");
     let id = WindowId("win-f".to_owned());
-    assert!(session.is_exception(&id));
+    assert!(layout.is_exception(&key(), &id));
     assert!(
-        session.is_automatic_fixed_float(&id),
+        layout.is_automatic_fixed_float(&key(), &id),
         "explicit origin honored"
     );
 }
@@ -747,53 +665,38 @@ fn suppress_signal_tiles_and_records_override() {
     // The adapter-retained tile win crosses admission: a suppressed
     // fixed window tiles and the win stages into the retained set, so
     // later unsuppressed observations keep it tiled.
-    let mut session = fixed_session();
-    let base = session.accepted_revision();
-    let result = session
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-f",
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    true,
-                    fixed_hints(),
-                )],
-            ),
-            None,
-        )
-        .expect("converge");
+    let mut layout = fixed_layout();
+    let result = converge(
+        &mut layout,
+        vec![obs(
+            "win-f",
+            false,
+            false,
+            false,
+            false,
+            false,
+            true,
+            fixed_hints(),
+        )],
+    )
+    .expect("converge");
     assert_eq!(result.admitted, 1, "suppressed tiles");
     let id = WindowId("win-f".to_owned());
-    assert!(!session.is_exception(&id));
+    assert!(!layout.is_exception(&key(), &id));
     assert!(
-        session.has_fixed_tile_override(&id),
+        layout.has_fixed_tile_override(&key(), &id),
         "win mirrored into retained set"
     );
-    let base = session.accepted_revision();
-    let result = session
-        .converge_observation(&observation(base, vec![fixed("win-f")]), None)
-        .expect("resync");
+    let result = converge(&mut layout, vec![fixed("win-f")]).expect("resync");
     assert_eq!(
         (result.removed, result.admitted, result.flags_adopted),
         (0, 0, 0)
     );
-    assert_eq!(tiled_ids(&session), vec!["win-f".to_owned()], "stays tiled");
+    assert_eq!(tiled_ids(&layout), vec!["win-f".to_owned()], "stays tiled");
 }
 
-fn unfloat_committed(session: &mut Session, window: &str, corr: &str) {
-    let base = session.accepted_revision();
-    let mut windows: Vec<ObservedWindow> = session
-        .snapshot()
-        .windows
-        .iter()
-        .map(|l| plain(&l.window.0))
-        .collect();
-    windows.extend(session.exception_observed());
+fn unfloat_committed(layout: &mut WorldLayout, window: &str) {
+    let mut windows = current_observed(layout, &key());
     // The unfloat target rides floating until the toggle commits.
     for entry in windows.iter_mut() {
         if entry.window.0 == window {
@@ -801,186 +704,132 @@ fn unfloat_committed(session: &mut Session, window: &str, corr: &str) {
         }
     }
     windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
-    let plan = session
-        .propose(
-            &SessionCommand::ToggleFloat {
-                window: WindowId(window.to_owned()),
-                float_geometry: None,
-            },
-            &observation(base, windows),
-            &correlation(corr),
-            &LifecycleCapabilities::full(),
-        )
+    layout
+        .toggle_float(&key(), &WindowId(window.to_owned()), None, &windows)
         .unwrap_or_else(|e| panic!("unfloat {window}: {e:?}"));
-    session
-        .acknowledge(&AdapterAck::new(
-            correlation(corr),
-            owner(),
-            generation(),
-            base,
-            AckOutcome::Accepted,
-        ))
-        .expect("unfloat ack");
-    session
-        .verify_lifecycle(&crate::contract::LifecyclePostObservation::new(
-            Observation::new(owner(), generation(), base, 200 + base),
-            correlation(corr),
-            true,
-            plan.dispatch.preconditions.clone(),
-            plan.dispatch.operation.clone(),
-        ))
-        .expect("unfloat verify");
 }
 
 #[test]
 fn explicit_unfloat_wins_across_hide_show() {
-    let mut session = fixed_session();
-    admit_plain(&mut session, "win-a", "c-a");
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(base, vec![plain("win-a"), fixed("win-f")]),
-            None,
-        )
-        .expect("admit fixed");
-    unfloat_committed(&mut session, "win-f", "c-u");
+    let mut layout = fixed_layout();
+    admit_plain(&mut layout, "win-a");
+    converge(&mut layout, vec![plain("win-a"), fixed("win-f")]).expect("admit fixed");
+    unfloat_committed(&mut layout, "win-f");
     let id = WindowId("win-f".to_owned());
-    assert!(session.has_fixed_tile_override(&id), "override recorded");
-    assert!(!session.is_automatic_fixed_float(&id), "automatic cleared");
-    assert_eq!(tiled_ids(&session).len(), 2, "win-f tiled");
+    assert!(
+        layout.has_fixed_tile_override(&key(), &id),
+        "override recorded"
+    );
+    assert!(
+        !layout.is_automatic_fixed_float(&key(), &id),
+        "automatic cleared"
+    );
+    assert_eq!(tiled_ids(&layout).len(), 2, "win-f tiled");
     // Hide/show and hint churn keep the explicit tile (D3, D2).
     for round in 0..2 {
-        let base = session.accepted_revision();
         let hints = if round == 0 {
             fixed_hints()
         } else {
             WindowSizeHints::none()
         };
         let shown = obs("win-f", false, false, false, false, false, false, hints);
-        let result = session
-            .converge_observation(&observation(base, vec![plain("win-a"), shown]), None)
-            .expect("resync");
+        let result = converge(&mut layout, vec![plain("win-a"), shown]).expect("resync");
         assert_eq!(
             (result.removed, result.admitted, result.flags_adopted),
             (0, 0, 0),
             "no re-float"
         );
-        assert!(!session.is_exception(&id), "stays tiled");
+        assert!(!layout.is_exception(&key(), &id), "stays tiled");
     }
     assert!(
-        session.has_fixed_tile_override(&id),
+        layout.has_fixed_tile_override(&key(), &id),
         "override survives re-observation"
     );
 }
 
 #[test]
 fn removal_clears_override_and_replacement_reclassifies() {
-    let mut session = fixed_session();
-    admit_plain(&mut session, "win-a", "c-a");
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(base, vec![plain("win-a"), fixed("win-f")]),
-            None,
-        )
-        .expect("admit fixed");
-    unfloat_committed(&mut session, "win-f", "c-u");
+    let mut layout = fixed_layout();
+    admit_plain(&mut layout, "win-a");
+    converge(&mut layout, vec![plain("win-a"), fixed("win-f")]).expect("admit fixed");
+    unfloat_committed(&mut layout, "win-f");
     let id = WindowId("win-f".to_owned());
-    assert!(session.has_fixed_tile_override(&id));
+    assert!(layout.has_fixed_tile_override(&key(), &id));
     // Removal drops bookkeeping (D3 fence).
-    let base = session.accepted_revision();
-    let result = session
-        .converge_observation(&observation(base, vec![plain("win-a")]), None)
-        .expect("remove");
+    let result = converge(&mut layout, vec![plain("win-a")]).expect("remove");
     assert_eq!(result.removed, 1);
     assert!(
-        !session.has_fixed_tile_override(&id),
+        !layout.has_fixed_tile_override(&key(), &id),
         "override cleared on removal"
     );
-    assert!(!session.is_automatic_fixed_float(&id));
+    assert!(!layout.is_automatic_fixed_float(&key(), &id));
     // A replaced native reference with the same id classifies again.
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(base, vec![plain("win-a"), fixed("win-f")]),
-            None,
-        )
-        .expect("re-admit");
+    converge(&mut layout, vec![plain("win-a"), fixed("win-f")]).expect("re-admit");
     assert!(
-        session.is_automatic_fixed_float(&id),
+        layout.is_automatic_fixed_float(&key(), &id),
         "new client floats again"
     );
 }
 
 #[test]
 fn fixed_maximized_floats_without_tile_nonfixed_maxima_unchanged() {
-    let mut session = fixed_session();
-    let base = session.accepted_revision();
+    let mut layout = fixed_layout();
     // Fixed born maximized: floating base under the native overlay (D4).
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-m",
-                    false,
-                    false,
-                    true,
-                    false,
-                    false,
-                    false,
-                    fixed_hints(),
-                )],
-            ),
-            None,
-        )
-        .expect("max fixed converges");
+    converge(
+        &mut layout,
+        vec![obs(
+            "win-m",
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+            fixed_hints(),
+        )],
+    )
+    .expect("max fixed converges");
     assert!(
-        session.is_exception(&WindowId("win-m".to_owned())),
+        layout.is_exception(&key(), &WindowId("win-m".to_owned())),
         "max fixed floats"
     );
-    assert!(session.is_automatic_fixed_float(&WindowId("win-m".to_owned())));
+    assert!(layout.is_automatic_fixed_float(&key(), &WindowId("win-m".to_owned())));
     assert_eq!(
-        tree_leaf_count(&session),
+        tree_leaf_count(&layout),
         0,
         "no tile reserved under maximize"
     );
     // Nonfixed born maxima tile exactly as before (Q3 unchanged). The
     // maximize overlay itself stays native-only: core membership rides
     // the floating flag, so the retained exception observes floating.
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![
-                    obs(
-                        "win-m",
-                        true,
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        fixed_hints(),
-                    ),
-                    obs(
-                        "win-n",
-                        false,
-                        false,
-                        true,
-                        false,
-                        false,
-                        false,
-                        WindowSizeHints::none(),
-                    ),
-                ],
+    converge(
+        &mut layout,
+        vec![
+            obs(
+                "win-m",
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                fixed_hints(),
             ),
-            None,
-        )
-        .expect("nonfixed max converges");
+            obs(
+                "win-n",
+                false,
+                false,
+                true,
+                false,
+                false,
+                false,
+                WindowSizeHints::none(),
+            ),
+        ],
+    )
+    .expect("nonfixed max converges");
     assert_eq!(
-        tiled_ids(&session),
+        tiled_ids(&layout),
         vec!["win-n".to_owned()],
         "nonfixed max tiles"
     );
@@ -988,89 +837,76 @@ fn fixed_maximized_floats_without_tile_nonfixed_maxima_unchanged() {
 
 #[test]
 fn born_fullscreen_holds_then_exits_fresh_fixed_floats() {
-    let mut session = fixed_session();
-    let base = session.accepted_revision();
+    let mut layout = fixed_layout();
     // Born fullscreen holds slotless with no writes (D5): plain
     // exception, no tiled slot, no automatic marker yet.
-    let result = session
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-s",
-                    false,
-                    true,
-                    false,
-                    false,
-                    false,
-                    false,
-                    fixed_hints(),
-                )],
-            ),
-            None,
-        )
-        .expect("born FS converges");
+    let result = converge(
+        &mut layout,
+        vec![obs(
+            "win-s",
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            fixed_hints(),
+        )],
+    )
+    .expect("born FS converges");
     assert_eq!(result.admitted, 0, "born FS takes no tiled slot while held");
     assert!(
-        session.is_exception(&WindowId("win-s".to_owned())),
+        layout.is_exception(&key(), &WindowId("win-s".to_owned())),
         "held slotless"
     );
     assert!(
-        !session.is_automatic_fixed_float(&WindowId("win-s".to_owned())),
+        !layout.is_automatic_fixed_float(&key(), &WindowId("win-s".to_owned())),
         "no marker while held"
     );
     // First exit is fresh admission with the CURRENT predicate (D5):
     // fixed floats untouched automatic, no tiled slot.
-    let base = session.accepted_revision();
-    let result = session
-        .converge_observation(&observation(base, vec![fixed("win-s")]), None)
-        .expect("FS exit converges");
+    let result = converge(&mut layout, vec![fixed("win-s")]).expect("FS exit converges");
     assert!(
-        session.is_exception(&WindowId("win-s".to_owned())),
+        layout.is_exception(&key(), &WindowId("win-s".to_owned())),
         "fixed exit floats"
     );
     assert!(
-        session.is_automatic_fixed_float(&WindowId("win-s".to_owned())),
+        layout.is_automatic_fixed_float(&key(), &WindowId("win-s".to_owned())),
         "automatic marker on exit"
     );
-    assert_eq!(tiled_ids(&session), Vec::<String>::new(), "no tile taken");
+    assert_eq!(tiled_ids(&layout), Vec::<String>::new(), "no tile taken");
     let _ = result;
 }
 
 #[test]
 fn born_fullscreen_nonfixed_exit_tiles() {
-    let mut session = fixed_session();
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-n",
-                    false,
-                    true,
-                    false,
-                    false,
-                    false,
-                    false,
-                    WindowSizeHints::none(),
-                )],
-            ),
-            None,
-        )
-        .expect("born FS converges");
-    assert!(session.is_exception(&WindowId("win-n".to_owned())), "held");
-    let base = session.accepted_revision();
-    session
-        .converge_observation(&observation(base, vec![plain("win-n")]), None)
-        .expect("exit converges");
+    let mut layout = fixed_layout();
+    converge(
+        &mut layout,
+        vec![obs(
+            "win-n",
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            WindowSizeHints::none(),
+        )],
+    )
+    .expect("born FS converges");
+    assert!(
+        layout.is_exception(&key(), &WindowId("win-n".to_owned())),
+        "held"
+    );
+    converge(&mut layout, vec![plain("win-n")]).expect("exit converges");
     assert_eq!(
-        tiled_ids(&session),
+        tiled_ids(&layout),
         vec!["win-n".to_owned()],
         "nonfixed exit tiles"
     );
     assert!(
-        !session.is_automatic_fixed_float(&WindowId("win-n".to_owned())),
+        !layout.is_automatic_fixed_float(&key(), &WindowId("win-n".to_owned())),
         "no marker"
     );
 }
@@ -1079,41 +915,33 @@ fn born_fullscreen_nonfixed_exit_tiles() {
 fn born_fullscreen_exit_uses_current_predicate() {
     // One-axis-fixed born fullscreen: exits tiled under both-axes,
     // floats under either-axis (CURRENT predicate, D5).
-    let mut both = fixed_session();
-    let base = both.accepted_revision();
-    both.converge_observation(
-        &observation(
-            base,
-            vec![obs(
-                "win-s",
-                false,
-                true,
-                false,
-                false,
-                false,
-                false,
-                one_axis_hints(),
-            )],
-        ),
-        None,
+    let mut both = fixed_layout();
+    converge(
+        &mut both,
+        vec![obs(
+            "win-s",
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            one_axis_hints(),
+        )],
     )
     .expect("born holds");
-    let base = both.accepted_revision();
-    both.converge_observation(
-        &observation(
-            base,
-            vec![obs(
-                "win-s",
-                false,
-                false,
-                false,
-                false,
-                false,
-                false,
-                one_axis_hints(),
-            )],
-        ),
-        None,
+    converge(
+        &mut both,
+        vec![obs(
+            "win-s",
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            one_axis_hints(),
+        )],
     )
     .expect("exit");
     assert_eq!(
@@ -1122,52 +950,42 @@ fn born_fullscreen_exit_uses_current_predicate() {
         "both-axes exit tiles one-axis"
     );
 
-    let mut either = fixed_session();
+    let mut either = fixed_layout();
     either.set_fixed_size_predicate(crate::size_hints::FixedSizePredicate::EitherAxis);
-    let base = either.accepted_revision();
-    either
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-s",
-                    false,
-                    true,
-                    false,
-                    false,
-                    false,
-                    false,
-                    one_axis_hints(),
-                )],
-            ),
-            None,
-        )
-        .expect("born holds");
-    let base = either.accepted_revision();
-    either
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-s",
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    one_axis_hints(),
-                )],
-            ),
-            None,
-        )
-        .expect("exit");
+    converge(
+        &mut either,
+        vec![obs(
+            "win-s",
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            one_axis_hints(),
+        )],
+    )
+    .expect("born holds");
+    converge(
+        &mut either,
+        vec![obs(
+            "win-s",
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            one_axis_hints(),
+        )],
+    )
+    .expect("exit");
     assert!(
-        either.is_exception(&WindowId("win-s".to_owned())),
+        either.is_exception(&key(), &WindowId("win-s".to_owned())),
         "either-axis exit floats one-axis"
     );
     assert!(
-        either.is_automatic_fixed_float(&WindowId("win-s".to_owned())),
+        either.is_automatic_fixed_float(&key(), &WindowId("win-s".to_owned())),
         "automatic under either-axis"
     );
 }
@@ -1176,67 +994,57 @@ fn born_fullscreen_exit_uses_current_predicate() {
 fn born_fullscreen_hint_change_while_held_uses_exit_hints() {
     // Hints changing while still fullscreen must not classify: the
     // first exit decides with its own hints.
-    let mut session = fixed_session();
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-s",
-                    false,
-                    true,
-                    false,
-                    false,
-                    false,
-                    false,
-                    WindowSizeHints::none(),
-                )],
-            ),
-            None,
-        )
-        .expect("born holds hintless");
+    let mut layout = fixed_layout();
+    converge(
+        &mut layout,
+        vec![obs(
+            "win-s",
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            WindowSizeHints::none(),
+        )],
+    )
+    .expect("born holds hintless");
     // Still fullscreen but now reporting fixed: still held, no marker.
-    let base = session.accepted_revision();
-    let result = session
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-s",
-                    false,
-                    true,
-                    false,
-                    false,
-                    false,
-                    false,
-                    fixed_hints(),
-                )],
-            ),
-            None,
-        )
-        .expect("fullscreen hint churn holds");
+    let result = converge(
+        &mut layout,
+        vec![obs(
+            "win-s",
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            fixed_hints(),
+        )],
+    )
+    .expect("fullscreen hint churn holds");
     assert_eq!(
         (result.removed, result.admitted, result.flags_adopted),
         (0, 0, 0),
         "no classification while fullscreen"
     );
-    assert!(session.is_exception(&WindowId("win-s".to_owned())), "held");
     assert!(
-        !session.is_automatic_fixed_float(&WindowId("win-s".to_owned())),
+        layout.is_exception(&key(), &WindowId("win-s".to_owned())),
+        "held"
+    );
+    assert!(
+        !layout.is_automatic_fixed_float(&key(), &WindowId("win-s".to_owned())),
         "no marker while held"
     );
     // Exit with fixed hints floats.
-    let base = session.accepted_revision();
-    session
-        .converge_observation(&observation(base, vec![fixed("win-s")]), None)
-        .expect("exit");
+    converge(&mut layout, vec![fixed("win-s")]).expect("exit");
     assert!(
-        session.is_exception(&WindowId("win-s".to_owned())),
+        layout.is_exception(&key(), &WindowId("win-s".to_owned())),
         "exit floats"
     );
     assert!(
-        session.is_automatic_fixed_float(&WindowId("win-s".to_owned())),
+        layout.is_automatic_fixed_float(&key(), &WindowId("win-s".to_owned())),
         "automatic on exit"
     );
 }
@@ -1245,52 +1053,42 @@ fn born_fullscreen_hint_change_while_held_uses_exit_hints() {
 fn born_fullscreen_predicate_switch_while_held_uses_current() {
     // Predicate switches after birth but before exit: the exit uses
     // the CURRENT predicate, not birth-time state.
-    let mut session = fixed_session();
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-s",
-                    false,
-                    true,
-                    false,
-                    false,
-                    false,
-                    false,
-                    one_axis_hints(),
-                )],
-            ),
-            None,
-        )
-        .expect("born holds under both-axes");
-    session.set_fixed_size_predicate(crate::size_hints::FixedSizePredicate::EitherAxis);
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-s",
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    one_axis_hints(),
-                )],
-            ),
-            None,
-        )
-        .expect("exit");
+    let mut layout = fixed_layout();
+    converge(
+        &mut layout,
+        vec![obs(
+            "win-s",
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            one_axis_hints(),
+        )],
+    )
+    .expect("born holds under both-axes");
+    layout.set_fixed_size_predicate(crate::size_hints::FixedSizePredicate::EitherAxis);
+    converge(
+        &mut layout,
+        vec![obs(
+            "win-s",
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            one_axis_hints(),
+        )],
+    )
+    .expect("exit");
     assert!(
-        session.is_exception(&WindowId("win-s".to_owned())),
+        layout.is_exception(&key(), &WindowId("win-s".to_owned())),
         "switched predicate floats one-axis on exit"
     );
     assert!(
-        session.is_automatic_fixed_float(&WindowId("win-s".to_owned())),
+        layout.is_automatic_fixed_float(&key(), &WindowId("win-s".to_owned())),
         "automatic under current predicate"
     );
 }
@@ -1299,217 +1097,179 @@ fn born_fullscreen_predicate_switch_while_held_uses_current() {
 fn repeated_fullscreen_exits_follow_retained_identity() {
     // First exit classifies fresh; later fullscreen cycles keep
     // retained identity instead of re-admitting.
-    let mut session = fixed_session();
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-s",
-                    false,
-                    true,
-                    false,
-                    false,
-                    false,
-                    false,
-                    fixed_hints(),
-                )],
-            ),
-            None,
-        )
-        .expect("born holds");
-    let base = session.accepted_revision();
-    session
-        .converge_observation(&observation(base, vec![fixed("win-s")]), None)
-        .expect("first exit floats");
-    assert!(session.is_automatic_fixed_float(&WindowId("win-s".to_owned())));
+    let mut layout = fixed_layout();
+    converge(
+        &mut layout,
+        vec![obs(
+            "win-s",
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            fixed_hints(),
+        )],
+    )
+    .expect("born holds");
+    converge(&mut layout, vec![fixed("win-s")]).expect("first exit floats");
+    assert!(layout.is_automatic_fixed_float(&key(), &WindowId("win-s".to_owned())));
     // Second fullscreen cycle: rides as floating with origin, exits
     // retained even though hints are now plain (D2: no re-admission).
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-s",
-                    true,
-                    true,
-                    false,
-                    false,
-                    false,
-                    false,
-                    fixed_hints(),
-                )],
-            ),
-            None,
-        )
-        .expect("second fullscreen rides");
-    let base = session.accepted_revision();
-    let result = session
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-s",
-                    true,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    WindowSizeHints::none(),
-                )],
-            ),
-            None,
-        )
-        .expect("second exit retains");
+    converge(
+        &mut layout,
+        vec![obs(
+            "win-s",
+            true,
+            true,
+            false,
+            false,
+            false,
+            false,
+            fixed_hints(),
+        )],
+    )
+    .expect("second fullscreen rides");
+    let result = converge(
+        &mut layout,
+        vec![obs(
+            "win-s",
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            WindowSizeHints::none(),
+        )],
+    )
+    .expect("second exit retains");
     assert_eq!(
         (result.removed, result.admitted),
         (0, 0),
         "no fresh admission on later exit"
     );
     assert!(
-        session.is_exception(&WindowId("win-s".to_owned())),
+        layout.is_exception(&key(), &WindowId("win-s".to_owned())),
         "retained"
     );
     assert!(
-        session.is_automatic_fixed_float(&WindowId("win-s".to_owned())),
+        layout.is_automatic_fixed_float(&key(), &WindowId("win-s".to_owned())),
         "marker retained"
     );
     // Tiled windows keep their slot across later fullscreen too,
     // even when fixed hints appear (D2: tiled hint changes never move).
-    let mut tiled = fixed_session();
-    admit_plain(&mut tiled, "win-t", "c-t");
-    let base = tiled.accepted_revision();
-    tiled
-        .converge_observation(
-            &observation(base, vec![plain("win-t"), fixed("win-f")]),
-            None,
-        )
-        .expect("admit fixed");
+    let mut tiled = fixed_layout();
+    admit_plain(&mut tiled, "win-t");
+    converge(&mut tiled, vec![plain("win-t"), fixed("win-f")]).expect("admit fixed");
     let id = WindowId("win-t".to_owned());
-    let base = tiled.accepted_revision();
-    tiled
-        .converge_observation(
-            &observation(
-                base,
-                vec![
-                    obs(
-                        "win-t",
-                        false,
-                        true,
-                        false,
-                        false,
-                        false,
-                        false,
-                        WindowSizeHints::none(),
-                    ),
-                    obs(
-                        "win-f",
-                        true,
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        fixed_hints(),
-                    ),
-                ],
+    converge(
+        &mut tiled,
+        vec![
+            obs(
+                "win-t",
+                false,
+                true,
+                false,
+                false,
+                false,
+                false,
+                WindowSizeHints::none(),
             ),
-            None,
-        )
-        .expect("tiled fullscreen keeps slot");
+            obs(
+                "win-f",
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                fixed_hints(),
+            ),
+        ],
+    )
+    .expect("tiled fullscreen keeps slot");
     assert_eq!(tiled_ids(&tiled), vec!["win-t".to_owned()]);
-    let base = tiled.accepted_revision();
-    tiled
-        .converge_observation(
-            &observation(
-                base,
-                vec![
-                    obs(
-                        "win-t",
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        fixed_hints(),
-                    ),
-                    obs(
-                        "win-f",
-                        true,
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        fixed_hints(),
-                    ),
-                ],
+    converge(
+        &mut tiled,
+        vec![
+            obs(
+                "win-t",
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                fixed_hints(),
             ),
-            None,
-        )
-        .expect("later exit keeps tile despite fixed hints");
+            obs(
+                "win-f",
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                fixed_hints(),
+            ),
+        ],
+    )
+    .expect("later exit keeps tile despite fixed hints");
     assert_eq!(tiled_ids(&tiled), vec!["win-t".to_owned()], "no re-float");
-    assert!(!tiled.is_automatic_fixed_float(&id), "no marker inferred");
+    assert!(
+        !tiled.is_automatic_fixed_float(&key(), &id),
+        "no marker inferred"
+    );
 }
 
 #[test]
 fn repeated_fullscreen_hold_takes_no_slot() {
     // Unchanged fullscreen observations never classify: direct
     // fullscreen holds across repeats with no marker, even fixed.
-    let mut session = fixed_session();
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-s",
-                    false,
-                    true,
-                    false,
-                    false,
-                    false,
-                    false,
-                    fixed_hints(),
-                )],
-            ),
-            None,
-        )
-        .expect("born holds");
-    let base = session.accepted_revision();
-    let result = session
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-s",
-                    false,
-                    true,
-                    false,
-                    false,
-                    false,
-                    false,
-                    fixed_hints(),
-                )],
-            ),
-            None,
-        )
-        .expect("repeat holds");
+    let mut layout = fixed_layout();
+    converge(
+        &mut layout,
+        vec![obs(
+            "win-s",
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            fixed_hints(),
+        )],
+    )
+    .expect("born holds");
+    let result = converge(
+        &mut layout,
+        vec![obs(
+            "win-s",
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            fixed_hints(),
+        )],
+    )
+    .expect("repeat holds");
     assert_eq!(
         (result.removed, result.admitted, result.flags_adopted),
         (0, 0, 0),
         "repeat fullscreen is converged hold"
     );
-    assert!(session.is_exception(&WindowId("win-s".to_owned())), "held");
     assert!(
-        !session.is_automatic_fixed_float(&WindowId("win-s".to_owned())),
+        layout.is_exception(&key(), &WindowId("win-s".to_owned())),
+        "held"
+    );
+    assert!(
+        !layout.is_automatic_fixed_float(&key(), &WindowId("win-s".to_owned())),
         "still no marker before exit"
     );
-    assert!(tiled_ids(&session).is_empty(), "no slot while held");
+    assert!(tiled_ids(&layout).is_empty(), "no slot while held");
 }
 
 #[test]
@@ -1517,294 +1277,232 @@ fn optout_exception_retile_with_fullscreen_tiles_legacy() {
     // Without the opt-in there is no fullscreen hold: a floating
     // exception re-observed tiled while fullscreen re-tiles exactly
     // like before.
-    let mut session = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("session");
-    assert!(!session.fixed_size_admission(), "opt-in stays off");
-    admit_plain(&mut session, "win-a", "c-a");
-    float_intentional(&mut session, "win-a", "c-f");
+    let mut layout = WorldLayout::new();
+    admit_plain(&mut layout, "win-a");
+    float_intentional(&mut layout, "win-a");
     let id = WindowId("win-a".to_owned());
-    assert!(session.is_exception(&id), "intentional floats");
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![obs(
-                    "win-a",
-                    false,
-                    true,
-                    false,
-                    false,
-                    false,
-                    false,
-                    WindowSizeHints::none(),
-                )],
-            ),
-            None,
-        )
-        .expect("retile converges");
-    assert!(!session.is_exception(&id), "legacy retile tiles");
-    assert_eq!(tiled_ids(&session), vec!["win-a".to_owned()]);
+    assert!(layout.is_exception(&key(), &id), "intentional floats");
+    converge(
+        &mut layout,
+        vec![obs(
+            "win-a",
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            WindowSizeHints::none(),
+        )],
+    )
+    .expect("retile converges");
+    assert!(!layout.is_exception(&key(), &id), "legacy retile tiles");
+    assert_eq!(tiled_ids(&layout), vec!["win-a".to_owned()]);
 }
 
 #[test]
 fn optin_exception_retile_with_fullscreen_holds() {
     // Same observation shape with the opt-in on holds instead: the
     // automatic keeps floating with its marker and no tiled slot.
-    let mut session = fixed_session();
-    admit_plain(&mut session, "win-a", "c-a");
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(base, vec![plain("win-a"), fixed("win-f")]),
-            None,
-        )
-        .expect("admit fixed");
+    let mut layout = fixed_layout();
+    admit_plain(&mut layout, "win-a");
+    converge(&mut layout, vec![plain("win-a"), fixed("win-f")]).expect("admit fixed");
     let id = WindowId("win-f".to_owned());
-    assert!(session.is_automatic_fixed_float(&id));
-    let base = session.accepted_revision();
-    let result = session
-        .converge_observation(
-            &observation(
-                base,
-                vec![
-                    plain("win-a"),
-                    obs(
-                        "win-f",
-                        false,
-                        true,
-                        false,
-                        false,
-                        false,
-                        false,
-                        fixed_hints(),
-                    ),
-                ],
+    assert!(layout.is_automatic_fixed_float(&key(), &id));
+    let result = converge(
+        &mut layout,
+        vec![
+            plain("win-a"),
+            obs(
+                "win-f",
+                false,
+                true,
+                false,
+                false,
+                false,
+                false,
+                fixed_hints(),
             ),
-            None,
-        )
-        .expect("fullscreen holds");
+        ],
+    )
+    .expect("fullscreen holds");
     assert_eq!(
         (result.removed, result.admitted, result.flags_adopted),
         (0, 0, 0),
         "hold converges clean"
     );
-    assert!(session.is_exception(&id), "still floating");
-    assert!(session.is_automatic_fixed_float(&id), "marker kept");
-    assert_eq!(tiled_ids(&session), vec!["win-a".to_owned()]);
+    assert!(layout.is_exception(&key(), &id), "still floating");
+    assert!(layout.is_automatic_fixed_float(&key(), &id), "marker kept");
+    assert_eq!(tiled_ids(&layout), vec!["win-a".to_owned()]);
 }
 
 #[test]
 fn floating_fullscreen_cycle_restores_floating() {
-    let mut session = fixed_session();
-    admit_plain(&mut session, "win-a", "c-a");
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(base, vec![plain("win-a"), fixed("win-f")]),
-            None,
-        )
-        .expect("admit fixed");
+    let mut layout = fixed_layout();
+    admit_plain(&mut layout, "win-a");
+    converge(&mut layout, vec![plain("win-a"), fixed("win-f")]).expect("admit fixed");
     let id = WindowId("win-f".to_owned());
     // A formerly fixed-floating client entering fullscreen keeps floating.
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![
-                    plain("win-a"),
-                    obs(
-                        "win-f",
-                        true,
-                        true,
-                        false,
-                        false,
-                        false,
-                        false,
-                        fixed_hints(),
-                    ),
-                ],
+    converge(
+        &mut layout,
+        vec![
+            plain("win-a"),
+            obs(
+                "win-f",
+                true,
+                true,
+                false,
+                false,
+                false,
+                false,
+                fixed_hints(),
             ),
-            None,
-        )
-        .expect("enter FS");
-    assert!(session.is_exception(&id), "floating through FS");
+        ],
+    )
+    .expect("enter FS");
+    assert!(layout.is_exception(&key(), &id), "floating through FS");
     // Exiting restores floating (D5).
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![
-                    plain("win-a"),
-                    obs(
-                        "win-f",
-                        true,
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        fixed_hints(),
-                    ),
-                ],
+    converge(
+        &mut layout,
+        vec![
+            plain("win-a"),
+            obs(
+                "win-f",
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                fixed_hints(),
             ),
-            None,
-        )
-        .expect("exit FS");
-    assert!(session.is_exception(&id), "restores floating");
-    assert!(session.is_automatic_fixed_float(&id), "automatic kept");
+        ],
+    )
+    .expect("exit FS");
+    assert!(layout.is_exception(&key(), &id), "restores floating");
+    assert!(
+        layout.is_automatic_fixed_float(&key(), &id),
+        "automatic kept"
+    );
 }
 
-fn float_intentional(session: &mut Session, window: &str, corr: &str) {
-    let base = session.accepted_revision();
-    let mut windows: Vec<ObservedWindow> = session
-        .snapshot()
-        .windows
-        .iter()
-        .map(|l| plain(&l.window.0))
-        .collect();
-    windows.extend(session.exception_observed());
+fn float_intentional(layout: &mut WorldLayout, window: &str) {
+    let mut windows = current_observed(layout, &key());
     windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
-    let plan = session
-        .propose(
-            &SessionCommand::ToggleFloat {
-                window: WindowId(window.to_owned()),
-                float_geometry: Some(Rect {
-                    x: 10,
-                    y: 10,
-                    w: 100,
-                    h: 80,
-                }),
-            },
-            &observation(base, windows),
-            &correlation(corr),
-            &LifecycleCapabilities::full(),
+    layout
+        .toggle_float(
+            &key(),
+            &WindowId(window.to_owned()),
+            Some(Rect {
+                x: 10,
+                y: 10,
+                w: 100,
+                h: 80,
+            }),
+            &windows,
         )
         .unwrap_or_else(|e| panic!("float {window}: {e:?}"));
-    session
-        .acknowledge(&AdapterAck::new(
-            correlation(corr),
-            owner(),
-            generation(),
-            base,
-            AckOutcome::Accepted,
-        ))
-        .expect("float ack");
-    session
-        .verify_lifecycle(&crate::contract::LifecyclePostObservation::new(
-            Observation::new(owner(), generation(), base, 200 + base),
-            correlation(corr),
-            true,
-            plan.dispatch.preconditions.clone(),
-            plan.dispatch.operation.clone(),
-        ))
-        .expect("float verify");
 }
 
 #[test]
 fn workspace_enable_keeps_automatic_floats_others_tile() {
-    let mut session = fixed_session();
-    admit_plain(&mut session, "win-a", "c-a");
-    admit_plain(&mut session, "win-g", "c-g");
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(base, vec![plain("win-a"), plain("win-g"), fixed("win-f")]),
-            None,
-        )
-        .expect("admit fixed");
-    float_intentional(&mut session, "win-g", "c-f");
+    let mut layout = fixed_layout();
+    admit_plain(&mut layout, "win-a");
+    admit_plain(&mut layout, "win-g");
+    converge(
+        &mut layout,
+        vec![plain("win-a"), plain("win-g"), fixed("win-f")],
+    )
+    .expect("admit fixed");
+    float_intentional(&mut layout, "win-g");
     let auto = WindowId("win-f".to_owned());
     let manual = WindowId("win-g".to_owned());
-    assert!(session.is_automatic_fixed_float(&auto));
+    assert!(layout.is_automatic_fixed_float(&key(), &auto));
     assert!(
-        !session.is_automatic_fixed_float(&manual),
+        !layout.is_automatic_fixed_float(&key(), &manual),
         "intentional never automatic"
     );
     // Enabling workspace tiling checks every window (D6): the automatic
     // float stays floating untouched (no override recorded) while the
     // intentional float keeps its existing rule (re-tiles when observed
     // tiled without a fixed win).
-    let base = session.accepted_revision();
-    let result = session
-        .converge_observation(
-            &observation(
-                base,
-                vec![
-                    plain("win-a"),
-                    obs(
-                        "win-g",
-                        true,
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        WindowSizeHints::none(),
-                    ),
-                    fixed("win-f"),
-                ],
+    converge(
+        &mut layout,
+        vec![
+            plain("win-a"),
+            obs(
+                "win-g",
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                WindowSizeHints::none(),
             ),
-            None,
-        )
-        .expect("retile");
-    let _ = result;
-    assert!(session.is_exception(&auto), "automatic stays floating");
+            fixed("win-f"),
+        ],
+    )
+    .expect("retile");
     assert!(
-        session.is_automatic_fixed_float(&auto),
+        layout.is_exception(&key(), &auto),
+        "automatic stays floating"
+    );
+    assert!(
+        layout.is_automatic_fixed_float(&key(), &auto),
         "automatic marker kept"
     );
     assert!(
-        !session.has_fixed_tile_override(&auto),
+        !layout.has_fixed_tile_override(&key(), &auto),
         "no tile win recorded for automatic"
     );
-    assert!(session.is_exception(&manual), "intentional keeps floating");
     assert!(
-        !session.has_fixed_tile_override(&manual),
+        layout.is_exception(&key(), &manual),
+        "intentional keeps floating"
+    );
+    assert!(
+        !layout.has_fixed_tile_override(&key(), &manual),
         "intentional untouched"
     );
     // An explicit suppress signal still tiles the automatic (D3 user
     // override wins for the same live client).
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![
-                    plain("win-a"),
-                    obs(
-                        "win-g",
-                        true,
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        WindowSizeHints::none(),
-                    ),
-                    obs(
-                        "win-f",
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        true,
-                        fixed_hints(),
-                    ),
-                ],
+    converge(
+        &mut layout,
+        vec![
+            plain("win-a"),
+            obs(
+                "win-g",
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                WindowSizeHints::none(),
             ),
-            None,
-        )
-        .expect("explicit retile");
-    assert!(!session.is_exception(&auto), "suppressed automatic tiles");
+            obs(
+                "win-f",
+                false,
+                false,
+                false,
+                false,
+                false,
+                true,
+                fixed_hints(),
+            ),
+        ],
+    )
+    .expect("explicit retile");
     assert!(
-        session.has_fixed_tile_override(&auto),
+        !layout.is_exception(&key(), &auto),
+        "suppressed automatic tiles"
+    );
+    assert!(
+        layout.has_fixed_tile_override(&key(), &auto),
         "explicit win recorded"
     );
     assert_eq!(
-        tiled_ids(&session),
+        tiled_ids(&layout),
         vec!["win-a".to_owned(), "win-f".to_owned()],
         "retiled joins tree"
     );
@@ -1815,274 +1513,159 @@ fn suppress_signal_records_override_on_retile() {
     // An intentional float re-tiled with the adapter's suppress signal
     // (sticky-off-to-tile) records the win; without the signal the
     // re-admit stays plain.
-    let mut session = fixed_session();
-    admit_plain(&mut session, "win-a", "c-a");
-    admit_plain(&mut session, "win-g", "c-g");
-    float_intentional(&mut session, "win-g", "c-f");
+    let mut layout = fixed_layout();
+    admit_plain(&mut layout, "win-a");
+    admit_plain(&mut layout, "win-g");
+    float_intentional(&mut layout, "win-g");
     let manual = WindowId("win-g".to_owned());
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![
-                    plain("win-a"),
-                    obs(
-                        "win-g",
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        true,
-                        WindowSizeHints::none(),
-                    ),
-                ],
+    converge(
+        &mut layout,
+        vec![
+            plain("win-a"),
+            obs(
+                "win-g",
+                false,
+                false,
+                false,
+                false,
+                false,
+                true,
+                WindowSizeHints::none(),
             ),
-            None,
-        )
-        .expect("retile with signal");
-    assert!(!session.is_exception(&manual));
-    assert!(session.has_fixed_tile_override(&manual), "signal recorded");
+        ],
+    )
+    .expect("retile with signal");
+    assert!(!layout.is_exception(&key(), &manual));
+    assert!(
+        layout.has_fixed_tile_override(&key(), &manual),
+        "signal recorded"
+    );
 }
 
 #[test]
 fn sticky_adopts_automatic_as_intentional() {
-    let mut session = fixed_session();
-    admit_plain(&mut session, "win-a", "c-a");
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(base, vec![plain("win-a"), fixed("win-f")]),
-            None,
-        )
-        .expect("admit fixed");
+    let mut layout = fixed_layout();
+    admit_plain(&mut layout, "win-a");
+    converge(&mut layout, vec![plain("win-a"), fixed("win-f")]).expect("admit fixed");
     let id = WindowId("win-f".to_owned());
-    assert!(session.is_automatic_fixed_float(&id));
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![
-                    plain("win-a"),
-                    obs(
-                        "win-f",
-                        true,
-                        false,
-                        false,
-                        true,
-                        false,
-                        false,
-                        fixed_hints(),
-                    ),
-                ],
+    assert!(layout.is_automatic_fixed_float(&key(), &id));
+    converge(
+        &mut layout,
+        vec![
+            plain("win-a"),
+            obs(
+                "win-f",
+                true,
+                false,
+                false,
+                true,
+                false,
+                false,
+                fixed_hints(),
             ),
-            None,
-        )
-        .expect("sticky on");
-    assert!(session.is_exception(&id), "stays floating");
+        ],
+    )
+    .expect("sticky on");
+    assert!(layout.is_exception(&key(), &id), "stays floating");
     assert!(
-        !session.is_automatic_fixed_float(&id),
+        !layout.is_automatic_fixed_float(&key(), &id),
         "sticky is intentional now"
     );
 }
 
 #[test]
 fn explicit_admit_floats_fixed_as_deferred_without_geometry() {
-    // The explicit SessionCommand::Admit route classifies too: no tile,
-    // no geometry, focus kept. The suppress origin instead tiles with
-    // its win staged transactionally.
-    let mut session = fixed_session();
-    admit_plain(&mut session, "win-a", "c-a");
-    let focus_before = session.focus();
-    let base = session.accepted_revision();
-    let mut windows: Vec<ObservedWindow> = session
-        .snapshot()
-        .windows
-        .iter()
-        .map(|l| plain(&l.window.0))
-        .collect();
-    windows.extend(session.exception_observed());
+    // The explicit admit_window route classifies too: no tile,
+    // no geometry, focus kept.
+    let mut layout = fixed_layout();
+    admit_plain(&mut layout, "win-a");
+    let focus_before = layout.focus_leaf(&key()).cloned();
+    let mut windows = current_observed(&layout, &key());
     windows.push(fixed("win-f"));
     windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
-    let plan = session
-        .propose(
-            &SessionCommand::Admit {
-                window: WindowId("win-f".to_owned()),
-                output: OutputId("out-1".to_owned()),
-                workspace: WorkspaceId("ws-1".to_owned()),
-                exceptions: ExceptionFlags::none(),
-                exception_behavior: None,
-                placement_bounds: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 120,
-                    h: 80,
-                },
-                suppress_fixed_float: false,
+    let outcome = layout
+        .admit_window(
+            &key(),
+            &WindowId("win-f".to_owned()),
+            ExceptionFlags::none(),
+            None,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 120,
+                h: 80,
             },
-            &observation(base, windows),
-            &correlation("c-admit-fixed"),
-            &LifecycleCapabilities::full(),
+            false,
+            false,
+            &windows,
         )
-        .expect("fixed admit proposes");
+        .expect("fixed admit");
     assert!(
-        plan.desired_geometry.is_empty(),
+        outcome.geometry.is_empty(),
         "membership only, no geometry (D8)"
     );
-    assert_eq!(plan.desired_focus_domain, focus_before.0, "focus untouched");
-    assert_eq!(plan.desired_focus_leaf, focus_before.1, "focus untouched");
-    session
-        .acknowledge(&AdapterAck::new(
-            correlation("c-admit-fixed"),
-            owner(),
-            generation(),
-            base,
-            AckOutcome::Accepted,
-        ))
-        .expect("ack");
-    session
-        .verify_lifecycle(&crate::contract::LifecyclePostObservation::new(
-            Observation::new(owner(), generation(), base, 201),
-            correlation("c-admit-fixed"),
-            true,
-            plan.dispatch.preconditions.clone(),
-            plan.dispatch.operation.clone(),
-        ))
-        .expect("verify");
-    assert!(session.is_exception(&WindowId("win-f".to_owned())));
-    assert!(session.is_automatic_fixed_float(&WindowId("win-f".to_owned())));
+    assert!(outcome.admitted_leaf.is_none());
+    assert_eq!(
+        layout.focus_leaf(&key()).cloned(),
+        focus_before,
+        "focus untouched"
+    );
+    assert!(layout.is_exception(&key(), &WindowId("win-f".to_owned())));
+    assert!(layout.is_automatic_fixed_float(&key(), &WindowId("win-f".to_owned())));
 }
 
 #[test]
 fn failed_propose_stages_nothing() {
-    // A refused fixed admission stages no plan and no markers: the
+    // A refused fixed admission stages no state and no markers: the
     // committed sets are exactly untouched.
-    let mut session = fixed_session();
-    admit_plain(&mut session, "win-a", "c-a");
-    let base = session.accepted_revision();
-    let mut windows: Vec<ObservedWindow> = session
-        .snapshot()
-        .windows
-        .iter()
-        .map(|l| plain(&l.window.0))
-        .collect();
-    windows.extend(session.exception_observed());
+    let mut layout = fixed_layout();
+    admit_plain(&mut layout, "win-a");
+    let mut windows = current_observed(&layout, &key());
     windows.push(fixed("win-f"));
     windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
-    let error = session
-        .propose(
-            &SessionCommand::Admit {
-                window: WindowId("win-f".to_owned()),
-                output: OutputId("out-1".to_owned()),
-                workspace: WorkspaceId("ws-1".to_owned()),
-                exceptions: ExceptionFlags::none(),
-                exception_behavior: None,
-                // Degenerate bounds refuse before anything stages.
-                placement_bounds: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 0,
-                    h: 0,
-                },
-                suppress_fixed_float: false,
+    let error = layout
+        .admit_window(
+            &key(),
+            &WindowId("win-f".to_owned()),
+            ExceptionFlags::none(),
+            None,
+            // Degenerate bounds refuse before anything stages.
+            Rect {
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 0,
             },
-            &observation(base, windows),
-            &correlation("c-fail"),
-            &LifecycleCapabilities::full(),
+            false,
+            false,
+            &windows,
         )
         .expect_err("degenerate bounds refuse");
-    assert_eq!(error, ProposeError::Refused(RefusalKind::MalformedInput));
-    assert!(!session.has_pending(), "no pending staged");
-    assert!(!session.has_pending_desired(), "no desired staged");
-    assert!(!session.is_exception(&WindowId("win-f".to_owned())));
-    assert!(!session.is_automatic_fixed_float(&WindowId("win-f".to_owned())));
-    assert!(!session.has_fixed_tile_override(&WindowId("win-f".to_owned())));
+    assert_eq!(error, LayoutFailure::Semantics(RefusalKind::MalformedInput));
+    assert!(!layout.is_exception(&key(), &WindowId("win-f".to_owned())));
+    assert!(!layout.is_automatic_fixed_float(&key(), &WindowId("win-f".to_owned())));
+    assert!(!layout.has_fixed_tile_override(&key(), &WindowId("win-f".to_owned())));
 }
 
-#[test]
-fn divergence_after_propose_discards_staged_markers() {
-    // A divergence between propose and verify clears the staged plan
-    // including its fixed-size markers: the committed sets never see
-    // the failed admission.
-    let mut session = fixed_session();
-    admit_plain(&mut session, "win-a", "c-a");
-    let base = session.accepted_revision();
-    let mut windows: Vec<ObservedWindow> = session
-        .snapshot()
-        .windows
-        .iter()
-        .map(|l| plain(&l.window.0))
-        .collect();
-    windows.extend(session.exception_observed());
-    windows.push(fixed("win-f"));
-    windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
-    session
-        .propose(
-            &SessionCommand::Admit {
-                window: WindowId("win-f".to_owned()),
-                output: OutputId("out-1".to_owned()),
-                workspace: WorkspaceId("ws-1".to_owned()),
-                exceptions: ExceptionFlags::none(),
-                exception_behavior: None,
-                placement_bounds: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 120,
-                    h: 80,
-                },
-                suppress_fixed_float: false,
-            },
-            &observation(base, windows),
-            &correlation("c-div"),
-            &LifecycleCapabilities::full(),
-        )
-        .expect("fixed admit proposes");
-    assert!(session.has_pending(), "plan pending");
-    session.note_adapter_loss();
-    assert!(!session.has_pending(), "pending discarded");
-    assert!(!session.has_pending_desired(), "desired discarded");
-    assert!(
-        !session.is_automatic_fixed_float(&WindowId("win-f".to_owned())),
-        "no leaked marker"
-    );
-    assert!(!session.has_fixed_tile_override(&WindowId("win-f".to_owned())));
-    assert_eq!(
-        tiled_ids(&session),
-        vec!["win-a".to_owned()],
-        "topology untouched"
-    );
-}
+// Retired: `divergence_after_propose_discards_staged_markers` tested
+// `Session::note_adapter_loss` between `propose` and `verify` on the deleted
+// two-phase pending state machine. Candidate atomicity on synchronous refusal
+// is covered by `failed_propose_stages_nothing`.
 
 #[test]
 fn optout_keeps_original_refusals_and_tiles_fixed() {
-    // With the opt-in off, legacy behavior is byte-identical: fixed
+    // With the opt-in off, legacy behavior is preserved: fixed
     // hints tile (no classifier), overlay admissions refuse as
     // partial-observation, and unfloat bindings compare exact flags.
-    let mut session = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("session");
-    assert!(!session.fixed_size_admission(), "opt-in defaults off");
-    admit_plain(&mut session, "win-a", "c-a");
+    let mut layout = WorldLayout::new();
+    admit_plain(&mut layout, "win-a");
     // Fixed hints tile without the opt-in.
-    let base = session.accepted_revision();
-    let result = session
-        .converge_observation(
-            &observation(base, vec![plain("win-a"), fixed("win-f")]),
-            None,
-        )
-        .expect("converge");
+    let result = converge(&mut layout, vec![plain("win-a"), fixed("win-f")]).expect("converge");
     assert_eq!(result.admitted, 1, "opt-out tiles fixed");
-    assert!(!session.is_automatic_fixed_float(&WindowId("win-f".to_owned())));
-    assert!(!session.has_fixed_tile_override(&WindowId("win-f".to_owned())));
+    assert!(!layout.is_automatic_fixed_float(&key(), &WindowId("win-f".to_owned())));
+    assert!(!layout.has_fixed_tile_override(&key(), &WindowId("win-f".to_owned())));
     // Overlay admission refuses exactly as before.
-    let base = session.accepted_revision();
-    let mut windows: Vec<ObservedWindow> = session
-        .snapshot()
-        .windows
-        .iter()
-        .map(|l| plain(&l.window.0))
-        .collect();
-    windows.extend(session.exception_observed());
+    let mut windows = current_observed(&layout, &key());
     windows.push(obs(
         "win-o",
         false,
@@ -2094,30 +1677,26 @@ fn optout_keeps_original_refusals_and_tiles_fixed() {
         fixed_hints(),
     ));
     windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
-    let error = session
-        .propose(
-            &SessionCommand::Admit {
-                window: WindowId("win-o".to_owned()),
-                output: OutputId("out-1".to_owned()),
-                workspace: WorkspaceId("ws-1".to_owned()),
-                exceptions: ExceptionFlags::none(),
-                exception_behavior: None,
-                placement_bounds: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 120,
-                    h: 80,
-                },
-                suppress_fixed_float: false,
+    let error = layout
+        .admit_window(
+            &key(),
+            &WindowId("win-o".to_owned()),
+            ExceptionFlags::none(),
+            None,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 120,
+                h: 80,
             },
-            &observation(base, windows),
-            &correlation("c-opt"),
-            &LifecycleCapabilities::full(),
+            false,
+            false,
+            &windows,
         )
         .expect_err("overlay admit refuses");
     assert_eq!(
         error,
-        ProposeError::Refused(RefusalKind::PartialObservation)
+        LayoutFailure::Semantics(RefusalKind::PartialObservation)
     );
 }
 
@@ -2125,39 +1704,23 @@ fn optout_keeps_original_refusals_and_tiles_fixed() {
 fn optout_unfloat_keeps_exact_flag_binding() {
     // Without the opt-in, an unfloat whose observed flags drift from the
     // record (sticky overlay) refuses exactly as before.
-    let mut session = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("session");
-    admit_plain(&mut session, "win-a", "c-a");
-    float_intentional(&mut session, "win-a", "c-f");
-    let base = session.accepted_revision();
-    let mut windows: Vec<ObservedWindow> = session
-        .snapshot()
-        .windows
-        .iter()
-        .map(|l| plain(&l.window.0))
-        .collect();
-    windows.extend(session.exception_observed());
+    let mut layout = WorldLayout::new();
+    admit_plain(&mut layout, "win-a");
+    float_intentional(&mut layout, "win-a");
+    let mut windows = current_observed(&layout, &key());
     for entry in windows.iter_mut() {
         if entry.window.0 == "win-a" {
             entry.sticky = true;
         }
     }
     windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
-    let error = session
-        .propose(
-            &SessionCommand::ToggleFloat {
-                window: WindowId("win-a".to_owned()),
-                float_geometry: None,
-            },
-            &observation(base, windows),
-            &correlation("c-opt-u"),
-            &LifecycleCapabilities::full(),
-        )
+    let error = layout
+        .toggle_float(&key(), &WindowId("win-a".to_owned()), None, &windows)
         .expect_err("drifted flags refuse");
     assert_eq!(
         error,
-        ProposeError::Refused(RefusalKind::PartialObservation)
+        LayoutFailure::Semantics(RefusalKind::PartialObservation)
     );
-    assert!(!session.has_pending(), "no pending staged");
 }
 
 #[test]
@@ -2259,110 +1822,79 @@ fn plain_carried(window: &str) -> EngineWindow {
 fn fixed_carried(window: &str) -> EngineWindow {
     carried(window, false, false, false, false, false, fixed_hints())
 }
-fn reconcile_event(base: u64, focused: &str, windows: Vec<EngineWindow>, corr: &str) -> CoreEvent {
-    CoreEvent {
-        owner: owner(),
-        generation: generation(),
-        correlation: correlation(corr),
-        revision: base,
-        fingerprint: 999,
-        domain: domain(),
-        domain_key: key(),
-        outer_gap: 0,
-        focused_window: WindowId(focused.to_owned()),
-        windows,
-        directional: None,
-        directional_target_outer_gap: None,
-        target_domain: None,
-        target_windows: vec![],
-        closed_windows: vec![],
-        command: CoreCommand::Reconcile,
-    }
-}
 
 #[test]
 fn engine_fresh_fixed_reports_bounded_diagnostic() {
-    // Opt-in engine: fresh foreground+hidden-style adoption classifies (D7).
-    let mut engine = Engine::new();
-    engine.sync_binding(&owner(), &generation());
-    engine.set_fixed_size_admission(true);
-    let event = reconcile_event(
-        0,
-        "win-a",
-        vec![plain_carried("win-a"), fixed_carried("win-f")],
-        "fixed-eng-1",
+    // Opt-in layout: fresh foreground+hidden-style adoption classifies (D7);
+    // `Engine::last_fixed_admission` diagnostic was retired with `Engine`.
+    let mut layout = fixed_layout();
+    let out = layout
+        .reconcile_fresh(
+            &domain(),
+            0,
+            &WindowId("win-a".to_owned()),
+            &[plain_carried("win-a"), fixed_carried("win-f")],
+        )
+        .expect("fresh fixed");
+    let ids: Vec<&str> = out
+        .projection
+        .geometry
+        .iter()
+        .map(|g| g.window.0.as_str())
+        .collect();
+    assert!(ids.contains(&"win-a"), "sibling tiles {ids:?}");
+    assert!(
+        !ids.contains(&"win-f"),
+        "fixed takes no geometry (D8) {ids:?}"
     );
-    match engine.handle(&event) {
-        CoreReply::Tiled(plan) => {
-            let ids: Vec<&str> = plan.geometry.iter().map(|g| g.window.0.as_str()).collect();
-            assert!(ids.contains(&"win-a"), "sibling tiles {ids:?}");
-            assert!(
-                !ids.contains(&"win-f"),
-                "fixed takes no geometry (D8) {ids:?}"
-            );
-        }
-        CoreReply::Projection(_) => {}
-        other => panic!("fresh fixed must plan, got {other:?}"),
-    }
-    let session = engine.session(&key()).expect("session retained");
-    assert!(session.is_automatic_fixed_float(&WindowId("win-f".to_owned())));
-    let report = engine
-        .last_fixed_admission()
-        .expect("fixed report recorded");
-    assert_eq!(report.correlation.as_str(), "fixed-eng-1", "correlated");
-    assert_eq!(report.reason, "fixed-equal");
-    assert_eq!(report.admitted, 1);
-    assert_eq!(report.evaluated, 1);
+    assert!(layout.is_automatic_fixed_float(&key(), &WindowId("win-f".to_owned())));
+
     // A suppressed re-observation after domain release tiles without
-    // reclassifying: the adapter-retained win crosses sessions.
-    let mut engine2 = Engine::new();
-    engine2.sync_binding(&owner(), &generation());
-    engine2.set_fixed_size_admission(true);
-    let event = reconcile_event(
-        0,
-        "win-f",
-        vec![carried(
-            "win-f",
-            false,
-            false,
-            false,
-            false,
-            true,
-            fixed_hints(),
-        )],
-        "fixed-eng-3",
-    );
-    match engine2.handle(&event) {
-        CoreReply::Tiled(plan) => {
-            let ids: Vec<&str> = plan.geometry.iter().map(|g| g.window.0.as_str()).collect();
-            assert!(ids.contains(&"win-f"), "suppressed tiles {ids:?}");
-        }
-        other => panic!("suppressed must tile, got {other:?}"),
-    }
-    assert!(
-        engine2.last_fixed_admission().is_none(),
-        "suppression logs no admission"
-    );
-    // Windows default (opt-in off) keeps exact current behavior: fixed tiles.
-    let mut plain_engine = Engine::new();
-    plain_engine.sync_binding(&owner(), &generation());
-    let event = reconcile_event(
-        0,
-        "win-a",
-        vec![plain_carried("win-a"), fixed_carried("win-f")],
-        "fixed-eng-2",
-    );
-    match plain_engine.handle(&event) {
-        CoreReply::Tiled(plan) => {
-            let ids: Vec<&str> = plan.geometry.iter().map(|g| g.window.0.as_str()).collect();
-            assert!(ids.contains(&"win-f"), "opt-out tiles fixed {ids:?}");
-        }
-        other => panic!("opt-out must tile, got {other:?}"),
-    }
-    assert!(
-        plain_engine.last_fixed_admission().is_none(),
-        "no report when off"
-    );
+    // reclassifying: the adapter-retained win crosses domains.
+    let mut layout2 = fixed_layout();
+    let out2 = layout2
+        .reconcile_fresh(
+            &domain(),
+            0,
+            &WindowId("win-f".to_owned()),
+            &[carried(
+                "win-f",
+                false,
+                false,
+                false,
+                false,
+                true,
+                fixed_hints(),
+            )],
+        )
+        .expect("suppressed must tile");
+    let ids2: Vec<&str> = out2
+        .projection
+        .geometry
+        .iter()
+        .map(|g| g.window.0.as_str())
+        .collect();
+    assert!(ids2.contains(&"win-f"), "suppressed tiles {ids2:?}");
+    assert!(!layout2.is_automatic_fixed_float(&key(), &WindowId("win-f".to_owned())));
+
+    // Opt-in off keeps exact legacy behavior: fixed tiles.
+    let mut plain_layout = WorldLayout::new();
+    let out3 = plain_layout
+        .reconcile_fresh(
+            &domain(),
+            0,
+            &WindowId("win-a".to_owned()),
+            &[plain_carried("win-a"), fixed_carried("win-f")],
+        )
+        .expect("opt-out must tile");
+    let ids3: Vec<&str> = out3
+        .projection
+        .geometry
+        .iter()
+        .map(|g| g.window.0.as_str())
+        .collect();
+    assert!(ids3.contains(&"win-f"), "opt-out tiles fixed {ids3:?}");
+    assert!(!plain_layout.is_automatic_fixed_float(&key(), &WindowId("win-f".to_owned())));
 }
 
 fn dom_pair(output: &str, workspace: &str) -> OutputDomain {
@@ -2402,426 +1934,245 @@ fn obs_homed(
     }
 }
 
-fn observation_fp(base: u64, fingerprint: u64, windows: Vec<ObservedWindow>) -> SessionObservation {
-    SessionObservation {
-        observation: Observation::new(owner(), generation(), base, fingerprint),
-        windows,
+fn carried_homed(
+    window: &str,
+    floating: bool,
+    fixed_suppress: bool,
+    hints: WindowSizeHints,
+    output: &str,
+    workspace: &str,
+) -> EngineWindow {
+    EngineWindow {
+        window: WindowId(window.to_owned()),
+        output: OutputId(output.to_owned()),
+        workspace: WorkspaceId(workspace.to_owned()),
+        rect: Rect {
+            x: 0,
+            y: 0,
+            w: 200,
+            h: 200,
+        },
+        floating,
+        fit_excluded: floating,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress,
+        hints,
     }
 }
 
-fn fixed_session_at(output: &str, workspace: &str) -> Session {
-    let mut session = Session::new(
-        owner(),
-        generation(),
-        0,
-        7,
-        vec![dom_pair(output, workspace)],
-    )
-    .expect("session");
-    session.set_fixed_size_admission(true);
-    session
-}
-
 /// Full pair/send/split metadata roundtrip for one suppressed tile win
-/// plus one automatic float (D3, actual send fixture API).
+/// plus one automatic float (D3, actual `run_pair_send` fixture API).
 ///
 /// Source holds win-keep (plain tile), win-auto (automatic fixed float),
-/// and win-sup (fixed, explicitly untilled with a retained override);
-/// target holds win-t. Pairing unions the marks, the workspace send
-/// carries the suppressed mover, and the split partitions every mark
-/// with membership. An admitted automatic send keeps its mark and stages
-/// no mover allocation.
+/// and win-sup (fixed, explicitly untiled with a retained override);
+/// target holds win-t. An automatic send runs as `PairSendKind::Deferred`
+/// with no mover allocation; a suppressed send moves the mover tiled onto
+/// the target with its override, while the automatic sibling never moves.
 #[test]
 fn pair_send_split_preserves_automatic_and_override() {
     let dom_a = dom_pair("out-1", "ws-a");
     let dom_b = dom_pair("out-1", "ws-b");
-    let mut source = fixed_session_at("out-1", "ws-a");
-    // Plain tile first so later fixed admissions never steal focus.
-    let base = source.accepted_revision();
-    let plan = source
-        .propose(
-            &SessionCommand::Admit {
-                window: WindowId("win-keep".to_owned()),
-                output: OutputId("out-1".to_owned()),
-                workspace: WorkspaceId("ws-a".to_owned()),
-                exceptions: ExceptionFlags::none(),
-                exception_behavior: None,
-                placement_bounds: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 120,
-                    h: 80,
-                },
-                suppress_fixed_float: false,
-            },
-            &observation_fp(
-                base,
-                300,
-                vec![obs_homed(
+    let key_a = dom_a.key();
+    let key_b = dom_b.key();
+    let mut layout = fixed_layout();
+    converge_at(
+        &mut layout,
+        &dom_a,
+        vec![obs_homed(
+            "win-keep",
+            false,
+            false,
+            WindowSizeHints::none(),
+            "out-1",
+            "ws-a",
+        )],
+    )
+    .expect("admit win-keep");
+    // Both fixed windows admit as automatic floats in one convergence.
+    let result = converge_at(
+        &mut layout,
+        &dom_a,
+        vec![
+            obs_homed(
+                "win-keep",
+                false,
+                false,
+                WindowSizeHints::none(),
+                "out-1",
+                "ws-a",
+            ),
+            obs_homed("win-auto", false, false, fixed_hints(), "out-1", "ws-a"),
+            obs_homed("win-sup", false, false, fixed_hints(), "out-1", "ws-a"),
+        ],
+    )
+    .expect("converge fixed pair");
+    assert_eq!(result.flags_adopted, 2, "both fixed float");
+    let auto = WindowId("win-auto".to_owned());
+    let sup = WindowId("win-sup".to_owned());
+    assert!(layout.is_automatic_fixed_float(&key_a, &auto));
+    assert!(layout.is_automatic_fixed_float(&key_a, &sup));
+    // Explicit unfloat records the suppress override for win-sup only.
+    layout
+        .toggle_float(
+            &key_a,
+            &sup,
+            None,
+            &[
+                obs_homed(
                     "win-keep",
                     false,
                     false,
                     WindowSizeHints::none(),
                     "out-1",
                     "ws-a",
-                )],
-            ),
-            &correlation("pair-keep"),
-            &LifecycleCapabilities::full(),
-        )
-        .expect("admit win-keep");
-    source
-        .acknowledge(&AdapterAck::new(
-            correlation("pair-keep"),
-            owner(),
-            generation(),
-            base,
-            AckOutcome::Accepted,
-        ))
-        .expect("ack");
-    source
-        .verify_lifecycle(&crate::contract::LifecyclePostObservation::new(
-            Observation::new(owner(), generation(), base, 301),
-            correlation("pair-keep"),
-            true,
-            plan.dispatch.preconditions.clone(),
-            plan.dispatch.operation.clone(),
-        ))
-        .expect("verify");
-    // Both fixed windows admit as automatic floats in one convergence.
-    let base = source.accepted_revision();
-    let result = source
-        .converge_observation(
-            &observation_fp(
-                base,
-                302,
-                vec![
-                    obs_homed(
-                        "win-keep",
-                        false,
-                        false,
-                        WindowSizeHints::none(),
-                        "out-1",
-                        "ws-a",
-                    ),
-                    obs_homed("win-auto", false, false, fixed_hints(), "out-1", "ws-a"),
-                    obs_homed("win-sup", false, false, fixed_hints(), "out-1", "ws-a"),
-                ],
-            ),
-            None,
-        )
-        .expect("converge fixed pair");
-    assert_eq!(result.flags_adopted, 2, "both fixed float");
-    let auto = WindowId("win-auto".to_owned());
-    let sup = WindowId("win-sup".to_owned());
-    assert!(source.is_automatic_fixed_float(&auto));
-    assert!(source.is_automatic_fixed_float(&sup));
-    // Explicit unfloat records the suppress override for win-sup only.
-    let base = source.accepted_revision();
-    let plan = source
-        .propose(
-            &SessionCommand::ToggleFloat {
-                window: sup.clone(),
-                float_geometry: None,
-            },
-            &observation_fp(
-                base,
-                303,
-                vec![
-                    obs_homed(
-                        "win-keep",
-                        false,
-                        false,
-                        WindowSizeHints::none(),
-                        "out-1",
-                        "ws-a",
-                    ),
-                    obs_homed(
-                        "win-auto",
-                        true,
-                        false,
-                        WindowSizeHints::none(),
-                        "out-1",
-                        "ws-a",
-                    ),
-                    obs_homed(
-                        "win-sup",
-                        true,
-                        false,
-                        WindowSizeHints::none(),
-                        "out-1",
-                        "ws-a",
-                    ),
-                ],
-            ),
-            &correlation("pair-unfloat"),
-            &LifecycleCapabilities::full(),
-        )
-        .expect("unfloat win-sup");
-    source
-        .acknowledge(&AdapterAck::new(
-            correlation("pair-unfloat"),
-            owner(),
-            generation(),
-            base,
-            AckOutcome::Accepted,
-        ))
-        .expect("ack");
-    source
-        .verify_lifecycle(&crate::contract::LifecyclePostObservation::new(
-            Observation::new(owner(), generation(), base, 304),
-            correlation("pair-unfloat"),
-            true,
-            plan.dispatch.preconditions.clone(),
-            plan.dispatch.operation.clone(),
-        ))
-        .expect("verify");
-    assert!(source.has_fixed_tile_override(&sup), "override recorded");
-    assert!(!source.is_automatic_fixed_float(&sup), "automatic cleared");
-    assert!(
-        source.is_automatic_fixed_float(&auto),
-        "sibling stays automatic"
-    );
-    assert!(
-        source.sync_focus_from_window(
-            &DomainKey {
-                output: OutputId("out-1".to_owned()),
-                workspace: WorkspaceId("ws-a".to_owned()),
-            },
-            &sup,
-        ),
-        "mover focused for the send"
-    );
-    let mut target = fixed_session_at("out-1", "ws-b");
-    let base = target.accepted_revision();
-    let plan = target
-        .propose(
-            &SessionCommand::Admit {
-                window: WindowId("win-t".to_owned()),
-                output: OutputId("out-1".to_owned()),
-                workspace: WorkspaceId("ws-b".to_owned()),
-                exceptions: ExceptionFlags::none(),
-                exception_behavior: None,
-                placement_bounds: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 120,
-                    h: 80,
-                },
-                suppress_fixed_float: false,
-            },
-            &observation_fp(
-                base,
-                310,
-                vec![obs_homed(
-                    "win-t",
-                    false,
+                ),
+                obs_homed(
+                    "win-auto",
+                    true,
                     false,
                     WindowSizeHints::none(),
                     "out-1",
-                    "ws-b",
-                )],
-            ),
-            &correlation("pair-t"),
-            &LifecycleCapabilities::full(),
+                    "ws-a",
+                ),
+                obs_homed(
+                    "win-sup",
+                    true,
+                    false,
+                    WindowSizeHints::none(),
+                    "out-1",
+                    "ws-a",
+                ),
+            ],
         )
-        .expect("admit win-t");
-    target
-        .acknowledge(&AdapterAck::new(
-            correlation("pair-t"),
-            owner(),
-            generation(),
-            base,
-            AckOutcome::Accepted,
-        ))
-        .expect("ack");
-    target
-        .verify_lifecycle(&crate::contract::LifecyclePostObservation::new(
-            Observation::new(owner(), generation(), base, 311),
-            correlation("pair-t"),
-            true,
-            plan.dispatch.preconditions.clone(),
-            plan.dispatch.operation.clone(),
-        ))
-        .expect("verify");
-    // Roundtrip with no mover: pairing then splitting preserves every
-    // mark on its homed side.
-    let pair = Session::paired_from_canonical_for_send(
-        &source,
-        Some(&target),
-        vec![dom_a.clone(), dom_b.clone()],
+        .expect("unfloat win-sup");
+    assert!(
+        layout.has_fixed_tile_override(&key_a, &sup),
+        "override recorded"
+    );
+    assert!(
+        !layout.is_automatic_fixed_float(&key_a, &sup),
+        "automatic cleared"
+    );
+    assert!(
+        layout.is_automatic_fixed_float(&key_a, &auto),
+        "sibling stays automatic"
+    );
+
+    converge_at(
+        &mut layout,
+        &dom_b,
+        vec![obs_homed(
+            "win-t",
+            false,
+            false,
+            WindowSizeHints::none(),
+            "out-1",
+            "ws-b",
+        )],
     )
-    .expect("pair");
-    assert!(
-        pair.is_automatic_fixed_float(&auto),
-        "pair unions automatic"
-    );
-    assert!(pair.has_fixed_tile_override(&sup), "pair unions override");
-    let (source_rt, target_rt) = pair.split_canonical_pair().expect("split");
-    let target_rt = target_rt.expect("target retained");
-    assert!(
-        source_rt.is_automatic_fixed_float(&auto),
-        "automatic stays sourced"
-    );
-    assert!(
-        source_rt.has_fixed_tile_override(&sup),
-        "override stays sourced"
-    );
-    assert!(
-        !target_rt.is_automatic_fixed_float(&auto) && !target_rt.has_fixed_tile_override(&sup),
-        "target gains no foreign marks"
-    );
-    // An automatic float is a send mover: the transfer plans slotless
-    // MoveDeferred with no mover allocation, keeping the automatic mark.
-    let mut pair = Session::paired_from_canonical_for_send(
-        &source,
-        Some(&target),
-        vec![dom_a.clone(), dom_b.clone()],
-    )
-    .expect("pair for automatic send");
-    let base = pair.accepted_revision();
-    let mut observed: Vec<ObservedWindow> = pair
-        .snapshot()
-        .windows
-        .iter()
-        .map(|l| {
-            obs_homed(
-                &l.window.0,
+    .expect("admit win-t");
+
+    let pair_observed = || {
+        vec![
+            carried_homed(
+                "win-keep",
                 false,
-                l.window == sup,
-                if l.window == sup {
-                    fixed_hints()
-                } else {
-                    WindowSizeHints::none()
-                },
-                &l.output.0,
-                &l.workspace.0,
-            )
-        })
-        .collect();
-    observed.extend(pair.exception_observed());
-    let plan = pair
-        .propose(
-            &SessionCommand::MoveToWorkspace {
-                window: auto.clone(),
-                target_output: OutputId("out-1".to_owned()),
-                target_workspace: WorkspaceId("ws-b".to_owned()),
-                follow: true,
-            },
-            &observation_fp(base, 320, observed),
-            &correlation("pair-send-auto"),
-            &LifecycleCapabilities::full(),
-        )
-        .expect("automatic send proposes");
-    match &plan.dispatch.operation {
-        LifecycleOperation::MoveDeferred { window, .. } => assert_eq!(window, &auto),
-        other => panic!("automatic send must plan MoveDeferred, got {other:?}"),
-    }
+                false,
+                WindowSizeHints::none(),
+                "out-1",
+                "ws-a",
+            ),
+            carried_homed("win-sup", false, true, fixed_hints(), "out-1", "ws-a"),
+            carried_homed(
+                "win-auto",
+                true,
+                false,
+                WindowSizeHints::none(),
+                "out-1",
+                "ws-a",
+            ),
+            carried_homed(
+                "win-t",
+                false,
+                false,
+                WindowSizeHints::none(),
+                "out-1",
+                "ws-b",
+            ),
+        ]
+    };
+
+    // An automatic float is a send mover: the transfer plans slotless
+    // Deferred with no mover allocation.
+    let mut auto_layout = layout.clone();
+    let observed_auto = pair_observed();
+    let ctx_auto = PairOperationContext {
+        source_domain: &dom_a,
+        target_domain: &dom_b,
+        source_outer_gap: 0,
+        target_outer_gap: Some(0),
+        observed_focus: &auto,
+        observed: &observed_auto,
+        closed: &[],
+    };
+    let out_auto = auto_layout
+        .run_pair_send(&ctx_auto, &auto, true, false)
+        .expect("automatic send");
+    assert_eq!(out_auto.kind, PairSendKind::Deferred);
+    assert_eq!(out_auto.window, auto);
     assert!(
-        plan.desired_geometry.iter().all(|g| g.window != auto),
+        out_auto.geometry.iter().all(|g| g.window != auto),
         "slotless mover takes no allocation"
     );
+
+    // The suppressed tile win sends: the mover lands tiled on the target
+    // with its override, while the automatic sibling never moves.
+    let observed_sup = pair_observed();
+    let ctx_sup = PairOperationContext {
+        source_domain: &dom_a,
+        target_domain: &dom_b,
+        source_outer_gap: 0,
+        target_outer_gap: Some(0),
+        observed_focus: &sup,
+        observed: &observed_sup,
+        closed: &[],
+    };
+    let out_sup = layout
+        .run_pair_send(&ctx_sup, &sup, true, false)
+        .expect("suppressed send");
+    assert_eq!(out_sup.kind, PairSendKind::Tiled);
     assert!(
-        pair.is_automatic_fixed_float(&auto),
-        "proposal keeps automatic"
-    );
-    // The suppressed tile win sends: rebuild the pair first (the admitted
-    // automatic proposal above staged pending), then the mover lands tiled
-    // on the target with its override, while the automatic sibling never
-    // moves.
-    let mut pair = Session::paired_from_canonical_for_send(
-        &source,
-        Some(&target),
-        vec![dom_a.clone(), dom_b.clone()],
-    )
-    .expect("pair for suppressed send");
-    let base = pair.accepted_revision();
-    let mut observed: Vec<ObservedWindow> = pair
-        .snapshot()
-        .windows
-        .iter()
-        .map(|l| {
-            obs_homed(
-                &l.window.0,
-                false,
-                l.window == sup,
-                if l.window == sup {
-                    fixed_hints()
-                } else {
-                    WindowSizeHints::none()
-                },
-                &l.output.0,
-                &l.workspace.0,
-            )
-        })
-        .collect();
-    observed.extend(pair.exception_observed());
-    let plan = pair
-        .propose(
-            &SessionCommand::MoveToWorkspace {
-                window: sup.clone(),
-                target_output: OutputId("out-1".to_owned()),
-                target_workspace: WorkspaceId("ws-b".to_owned()),
-                follow: true,
-            },
-            &observation_fp(base, 321, observed),
-            &correlation("pair-send"),
-            &LifecycleCapabilities::full(),
-        )
-        .expect("suppressed send proposes");
-    assert!(
-        plan.desired_geometry
+        out_sup
+            .geometry
             .iter()
             .any(|g| g.window == sup && g.workspace.0 == "ws-b"),
         "mover desired on target"
     );
-    pair.acknowledge(&AdapterAck::new(
-        correlation("pair-send"),
-        owner(),
-        generation(),
-        base,
-        AckOutcome::Accepted,
-    ))
-    .expect("ack");
-    pair.verify_lifecycle(&crate::contract::LifecyclePostObservation::new(
-        Observation::new(owner(), generation(), base, 322),
-        correlation("pair-send"),
-        true,
-        plan.dispatch.preconditions.clone(),
-        plan.dispatch.operation.clone(),
-    ))
-    .expect("verify");
-    let (source_after, target_after) = pair.split_canonical_pair().expect("split");
-    let target_after = target_after.expect("target retained");
     assert!(
-        source_after.is_automatic_fixed_float(&auto),
+        layout.is_automatic_fixed_float(&key_a, &auto),
         "automatic never moves"
     );
     assert!(
-        !source_after.has_fixed_tile_override(&sup),
+        !layout.has_fixed_tile_override(&key_a, &sup),
         "override travels with the mover, never duplicates"
     );
     assert!(
-        target_after.has_fixed_tile_override(&sup),
+        layout.has_fixed_tile_override(&key_b, &sup),
         "target keeps the tile win"
     );
     assert!(
-        !target_after.is_automatic_fixed_float(&sup),
+        !layout.is_automatic_fixed_float(&key_b, &sup),
         "moved tile is not automatic"
     );
-    let sup_link = target_after
-        .snapshot()
-        .windows
-        .into_iter()
-        .find(|l| l.window == sup)
-        .expect("mover tiled on target");
-    assert_eq!(sup_link.workspace.0, "ws-b", "mover homed on target");
     assert!(
-        target_after
-            .snapshot()
-            .windows
-            .iter()
-            .any(|l| l.window.0 == "win-t"),
+        layout.is_tiled_window(&key_b, &sup),
+        "mover homed on target"
+    );
+    assert!(
+        layout.is_tiled_window(&key_b, &WindowId("win-t".to_owned())),
         "target survivor undisturbed"
     );
 }
@@ -2837,7 +2188,7 @@ fn one_axis_hints() -> WindowSizeHints {
 
 #[test]
 fn predicate_defaults_to_both_axes_matching_delivered_behavior() {
-    use crate::size_hints::{FixedSizePredicate, fixed_size_reason_with, is_fixed_size_with};
+    use crate::size_hints::{fixed_size_reason_with, is_fixed_size_with, FixedSizePredicate};
     assert_eq!(FixedSizePredicate::default(), FixedSizePredicate::BothAxes);
     assert_eq!(
         FixedSizePredicate::BothAxes.as_wire_str(),
@@ -2893,176 +2244,141 @@ fn predicate_defaults_to_both_axes_matching_delivered_behavior() {
         sentinel,
         FixedSizePredicate::EitherAxis
     ));
-    // Engine/session defaults match.
-    let engine = Engine::new();
-    assert!(!engine.fixed_size_admission(), "opt-in defaults off");
-    assert_eq!(engine.fixed_size_predicate(), FixedSizePredicate::BothAxes);
-    let session = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("session");
-    assert_eq!(session.fixed_size_predicate(), FixedSizePredicate::BothAxes);
+    // WorldLayout default matches BothAxes.
+    let layout = WorldLayout::new();
+    assert_eq!(layout.fixed_size_predicate(), FixedSizePredicate::BothAxes);
 }
 
 #[test]
 fn either_axis_admits_one_axis_fixed_while_both_axes_tiles() {
-    let mut both = fixed_session();
-    admit_plain(&mut both, "win-a", "c-a");
-    let base = both.accepted_revision();
-    let result = both
-        .converge_observation(
-            &observation(
-                base,
-                vec![
-                    plain("win-a"),
-                    obs(
-                        "win-f",
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        one_axis_hints(),
-                    ),
-                ],
+    let mut both = fixed_layout();
+    admit_plain(&mut both, "win-a");
+    let result = converge(
+        &mut both,
+        vec![
+            plain("win-a"),
+            obs(
+                "win-f",
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                one_axis_hints(),
             ),
-            None,
-        )
-        .expect("converge");
+        ],
+    )
+    .expect("converge");
     assert_eq!(result.flags_adopted, 0, "one-axis tiles under both-axes");
-    assert!(!both.is_exception(&WindowId("win-f".to_owned())));
+    assert!(!both.is_exception(&key(), &WindowId("win-f".to_owned())));
     assert_eq!(
         tiled_ids(&both),
         vec!["win-a".to_owned(), "win-f".to_owned()]
     );
 
-    let mut either = fixed_session();
+    let mut either = fixed_layout();
     either.set_fixed_size_predicate(crate::size_hints::FixedSizePredicate::EitherAxis);
-    admit_plain(&mut either, "win-a", "c-a");
-    let base = either.accepted_revision();
-    let result = either
-        .converge_observation(
-            &observation(
-                base,
-                vec![
-                    plain("win-a"),
-                    obs(
-                        "win-f",
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        one_axis_hints(),
-                    ),
-                ],
+    admit_plain(&mut either, "win-a");
+    let result = converge(
+        &mut either,
+        vec![
+            plain("win-a"),
+            obs(
+                "win-f",
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                one_axis_hints(),
             ),
-            None,
-        )
-        .expect("converge");
+        ],
+    )
+    .expect("converge");
     assert_eq!(result.flags_adopted, 1, "one-axis floats under either-axis");
-    assert!(either.is_exception(&WindowId("win-f".to_owned())));
-    assert!(either.is_automatic_fixed_float(&WindowId("win-f".to_owned())));
+    assert!(either.is_exception(&key(), &WindowId("win-f".to_owned())));
+    assert!(either.is_automatic_fixed_float(&key(), &WindowId("win-f".to_owned())));
     assert_eq!(tiled_ids(&either), vec!["win-a".to_owned()]);
 }
 
 #[test]
 fn predicate_switch_applies_to_subsequent_admissions_without_reclassifying() {
-    let mut session = fixed_session();
-    admit_plain(&mut session, "win-a", "c-a");
+    let mut layout = fixed_layout();
+    admit_plain(&mut layout, "win-a");
     // win-b admitted tiled under the both-axes default (one-axis hints tile).
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(
-                base,
-                vec![
-                    plain("win-a"),
-                    obs(
-                        "win-b",
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        one_axis_hints(),
-                    ),
-                ],
+    converge(
+        &mut layout,
+        vec![
+            plain("win-a"),
+            obs(
+                "win-b",
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                one_axis_hints(),
             ),
-            None,
-        )
-        .expect("converge");
-    assert!(!session.is_exception(&WindowId("win-b".to_owned())));
+        ],
+    )
+    .expect("converge");
+    assert!(!layout.is_exception(&key(), &WindowId("win-b".to_owned())));
     // Switch to either-axis: retained win-b stays tiled (no reclassification).
-    session.set_fixed_size_predicate(crate::size_hints::FixedSizePredicate::EitherAxis);
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(base, vec![plain("win-a"), plain("win-b")]),
-            None,
-        )
-        .expect("converge");
+    layout.set_fixed_size_predicate(crate::size_hints::FixedSizePredicate::EitherAxis);
+    converge(&mut layout, vec![plain("win-a"), plain("win-b")]).expect("converge");
     assert!(
-        !session.is_exception(&WindowId("win-b".to_owned())),
+        !layout.is_exception(&key(), &WindowId("win-b".to_owned())),
         "switch must not reclassify retained windows"
     );
     assert_eq!(
-        tiled_ids(&session),
+        tiled_ids(&layout),
         vec!["win-a".to_owned(), "win-b".to_owned()]
     );
     // Subsequent one-axis admission floats under the new predicate.
-    let base = session.accepted_revision();
-    let result = session
-        .converge_observation(
-            &observation(
-                base,
-                vec![
-                    plain("win-a"),
-                    plain("win-b"),
-                    obs(
-                        "win-c",
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
-                        one_axis_hints(),
-                    ),
-                ],
+    let result = converge(
+        &mut layout,
+        vec![
+            plain("win-a"),
+            plain("win-b"),
+            obs(
+                "win-c",
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                one_axis_hints(),
             ),
-            None,
-        )
-        .expect("converge");
+        ],
+    )
+    .expect("converge");
     assert_eq!(result.flags_adopted, 1);
-    assert!(session.is_automatic_fixed_float(&WindowId("win-c".to_owned())));
+    assert!(layout.is_automatic_fixed_float(&key(), &WindowId("win-c".to_owned())));
 }
 
 #[test]
 fn live_tile_override_wins_under_either_axis_predicate() {
-    let mut session = fixed_session();
-    session.set_fixed_size_predicate(crate::size_hints::FixedSizePredicate::EitherAxis);
-    admit_plain(&mut session, "win-a", "c-a");
+    let mut layout = fixed_layout();
+    layout.set_fixed_size_predicate(crate::size_hints::FixedSizePredicate::EitherAxis);
+    admit_plain(&mut layout, "win-a");
     // Explicit user tile (suppress origin) wins for the live client.
-    admit_with(&mut session, "win-f", "c-f", true, one_axis_hints());
+    admit_with(&mut layout, "win-f", true, one_axis_hints());
     assert!(
-        !session.is_exception(&WindowId("win-f".to_owned())),
+        !layout.is_exception(&key(), &WindowId("win-f".to_owned())),
         "override wins over either-axis admission"
     );
-    assert!(session.has_fixed_tile_override(&WindowId("win-f".to_owned())));
+    assert!(layout.has_fixed_tile_override(&key(), &WindowId("win-f".to_owned())));
     assert_eq!(
-        tiled_ids(&session),
+        tiled_ids(&layout),
         vec!["win-a".to_owned(), "win-f".to_owned()]
     );
     // Later re-observation keeps it tiled (no reclassification).
-    let base = session.accepted_revision();
-    session
-        .converge_observation(
-            &observation(base, vec![plain("win-a"), plain("win-f")]),
-            None,
-        )
-        .expect("converge");
-    assert!(!session.is_exception(&WindowId("win-f".to_owned())));
+    converge(&mut layout, vec![plain("win-a"), plain("win-f")]).expect("converge");
+    assert!(!layout.is_exception(&key(), &WindowId("win-f".to_owned())));
 }
 
 // B9 maximized intentional unfloat (M09=A): shared-core regression evidence.
@@ -3074,13 +2390,12 @@ fn live_tile_override_wins_under_either_axis_predicate() {
 #[test]
 fn b9_maximized_float_unfloat_refuses_until_clear_then_fresh_admits() {
     // Ordinary non-fixed leg.
-    let mut session = fixed_session();
-    admit_plain(&mut session, "win-a", "c-b9-a1");
-    admit_plain(&mut session, "win-b", "c-b9-a2");
-    float_intentional(&mut session, "win-b", "c-b9-f1");
+    let mut layout = fixed_layout();
+    admit_plain(&mut layout, "win-a");
+    admit_plain(&mut layout, "win-b");
+    float_intentional(&mut layout, "win-b");
     // Pre-clear: floating + maximized refuses.
     {
-        let base = session.accepted_revision();
         let windows = vec![
             plain("win-a"),
             obs(
@@ -3094,32 +2409,27 @@ fn b9_maximized_float_unfloat_refuses_until_clear_then_fresh_admits() {
                 WindowSizeHints::none(),
             ),
         ];
-        let err = session
-            .propose(
-                &SessionCommand::ToggleFloat {
-                    window: WindowId("win-b".to_owned()),
-                    float_geometry: Some(Rect {
-                        x: 0,
-                        y: 0,
-                        w: 1200,
-                        h: 800,
-                    }),
-                },
-                &observation(base, windows),
-                &correlation("c-b9-pre1"),
-                &LifecycleCapabilities::full(),
+        let err = layout
+            .toggle_float(
+                &key(),
+                &WindowId("win-b".to_owned()),
+                Some(Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1200,
+                    h: 800,
+                }),
+                &windows,
             )
             .unwrap_err();
         assert_eq!(
             err,
-            ProposeError::Refused(RefusalKind::PartialObservation),
+            LayoutFailure::Semantics(RefusalKind::PartialObservation),
             "maximized float must refuse before the native clear"
         );
-        assert!(!session.has_pending_desired(), "refusal stages nothing");
     }
     // Post-clear: floating + unmaximized fresh-admits with the D3 pin.
     {
-        let base = session.accepted_revision();
         let windows = vec![
             plain("win-a"),
             obs(
@@ -3133,72 +2443,39 @@ fn b9_maximized_float_unfloat_refuses_until_clear_then_fresh_admits() {
                 WindowSizeHints::none(),
             ),
         ];
-        let plan = session
-            .propose(
-                &SessionCommand::ToggleFloat {
-                    window: WindowId("win-b".to_owned()),
-                    float_geometry: Some(Rect {
-                        x: 100,
-                        y: 100,
-                        w: 400,
-                        h: 300,
-                    }),
-                },
-                &observation(base, windows),
-                &correlation("c-b9-post1"),
-                &LifecycleCapabilities::full(),
+        layout
+            .toggle_float(
+                &key(),
+                &WindowId("win-b".to_owned()),
+                Some(Rect {
+                    x: 100,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                }),
+                &windows,
             )
             .unwrap_or_else(|e| panic!("cleared unfloat admits: {e:?}"));
-        session
-            .acknowledge(&AdapterAck::new(
-                correlation("c-b9-post1"),
-                owner(),
-                generation(),
-                base,
-                AckOutcome::Accepted,
-            ))
-            .expect("ack");
-        session
-            .verify_lifecycle(&crate::contract::LifecyclePostObservation::new(
-                Observation::new(owner(), generation(), base, 200 + base),
-                correlation("c-b9-post1"),
-                true,
-                plan.dispatch.preconditions.clone(),
-                plan.dispatch.operation.clone(),
-            ))
-            .expect("verify");
         assert_eq!(
-            tiled_ids(&session),
+            tiled_ids(&layout),
             vec!["win-a".to_owned(), "win-b".to_owned()],
             "cleared float rejoins the tiled topology"
         );
         assert!(
-            session.has_fixed_tile_override(&WindowId("win-b".to_owned())),
+            layout.has_fixed_tile_override(&key(), &WindowId("win-b".to_owned())),
             "explicit unfloat records the user tile win"
         );
     }
 
     // Fixed-size leg: automatic float, maximized, then cleared.
-    let mut fixed_session_state = fixed_session();
-    admit_plain(&mut fixed_session_state, "win-a", "c-b9-fa");
-    let base = fixed_session_state.accepted_revision();
-    fixed_session_state
-        .converge_observation(
-            &observation(base, vec![plain("win-a"), fixed("win-f")]),
-            None,
-        )
+    let mut fixed_state = fixed_layout();
+    admit_plain(&mut fixed_state, "win-a");
+    converge(&mut fixed_state, vec![plain("win-a"), fixed("win-f")])
         .expect("admit fixed automatic");
-    assert!(fixed_session_state.is_automatic_fixed_float(&WindowId("win-f".to_owned())));
+    assert!(fixed_state.is_automatic_fixed_float(&key(), &WindowId("win-f".to_owned())));
     // Pre-clear refuses without staging.
     {
-        let base = fixed_session_state.accepted_revision();
-        let mut windows: Vec<ObservedWindow> = fixed_session_state
-            .snapshot()
-            .windows
-            .iter()
-            .map(|l| plain(&l.window.0))
-            .collect();
-        windows.extend(fixed_session_state.exception_observed());
+        let mut windows = current_observed(&fixed_state, &key());
         for entry in windows.iter_mut() {
             if entry.window.0 == "win-f" {
                 entry.floating = true;
@@ -3206,38 +2483,28 @@ fn b9_maximized_float_unfloat_refuses_until_clear_then_fresh_admits() {
             }
         }
         windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
-        let err = fixed_session_state
-            .propose(
-                &SessionCommand::ToggleFloat {
-                    window: WindowId("win-f".to_owned()),
-                    float_geometry: Some(Rect {
-                        x: 0,
-                        y: 0,
-                        w: 1200,
-                        h: 800,
-                    }),
-                },
-                &observation(base, windows),
-                &correlation("c-b9-pre2"),
-                &LifecycleCapabilities::full(),
+        let err = fixed_state
+            .toggle_float(
+                &key(),
+                &WindowId("win-f".to_owned()),
+                Some(Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1200,
+                    h: 800,
+                }),
+                &windows,
             )
             .unwrap_err();
         assert_eq!(
             err,
-            ProposeError::Refused(RefusalKind::PartialObservation),
+            LayoutFailure::Semantics(RefusalKind::PartialObservation),
             "maximized automatic float must refuse before the native clear"
         );
     }
     // Post-clear admits with the suppress pin and never re-auto-floats.
     {
-        let base = fixed_session_state.accepted_revision();
-        let mut windows: Vec<ObservedWindow> = fixed_session_state
-            .snapshot()
-            .windows
-            .iter()
-            .map(|l| plain(&l.window.0))
-            .collect();
-        windows.extend(fixed_session_state.exception_observed());
+        let mut windows = current_observed(&fixed_state, &key());
         for entry in windows.iter_mut() {
             if entry.window.0 == "win-f" {
                 entry.floating = true;
@@ -3245,97 +2512,50 @@ fn b9_maximized_float_unfloat_refuses_until_clear_then_fresh_admits() {
             }
         }
         windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
-        let plan = fixed_session_state
-            .propose(
-                &SessionCommand::ToggleFloat {
-                    window: WindowId("win-f".to_owned()),
-                    float_geometry: Some(Rect {
-                        x: 100,
-                        y: 100,
-                        w: 400,
-                        h: 300,
-                    }),
-                },
-                &observation(base, windows),
-                &correlation("c-b9-post2"),
-                &LifecycleCapabilities::full(),
+        fixed_state
+            .toggle_float(
+                &key(),
+                &WindowId("win-f".to_owned()),
+                Some(Rect {
+                    x: 100,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                }),
+                &windows,
             )
             .unwrap_or_else(|e| panic!("cleared fixed unfloat admits: {e:?}"));
-        fixed_session_state
-            .acknowledge(&AdapterAck::new(
-                correlation("c-b9-post2"),
-                owner(),
-                generation(),
-                base,
-                AckOutcome::Accepted,
-            ))
-            .expect("ack");
-        fixed_session_state
-            .verify_lifecycle(&crate::contract::LifecyclePostObservation::new(
-                Observation::new(owner(), generation(), base, 200 + base),
-                correlation("c-b9-post2"),
-                true,
-                plan.dispatch.preconditions.clone(),
-                plan.dispatch.operation.clone(),
-            ))
-            .expect("verify");
         let id = WindowId("win-f".to_owned());
         assert!(
-            fixed_session_state.has_fixed_tile_override(&id),
+            fixed_state.has_fixed_tile_override(&key(), &id),
             "explicit unfloat wins over fixed re-float"
         );
         assert!(
-            !fixed_session_state.is_automatic_fixed_float(&id),
+            !fixed_state.is_automatic_fixed_float(&key(), &id),
             "automatic identity withdrawn"
         );
         assert_eq!(
-            tiled_ids(&fixed_session_state),
+            tiled_ids(&fixed_state),
             vec!["win-a".to_owned(), "win-f".to_owned()],
             "fixed client tiles after the clear"
         );
     }
 }
 
-// Retained-float unfloat exact-refusal shapes: every reachable
-// PartialObservation emit on the explicit-tile route after convergence,
-// each row mutating exactly one fact so the earliest guard is proved.
-// Unreachable on this route (not tested): the tiled-to-float missing
-// target lookup (that leg never runs for a retained float), the admit
-// subject lookup shadowed by completeness set equality, the normal
-// admission overlay gate shadowed by the subject binding check, and the
-// remove-leg completeness/known-match guards (unfloat fresh-admits,
-// never removes).
+// Retained-float unfloat exact-refusal shapes: every reachable refusal
+// on the explicit-tile route after convergence, each row mutating
+// exactly one fact so the earliest guard is proved.
 #[test]
 fn retained_float_unfloat_exact_refusals() {
-    fn setup() -> Session {
-        let mut session = Session::new(
-            owner(),
-            generation(),
-            0,
-            7,
-            vec![domain(), dom_pair("out-1", "ws-2")],
-        )
-        .expect("session");
-        session.set_fixed_size_admission(true);
-        admit_plain(&mut session, "win-a", "c-rf-a");
-        let base = session.accepted_revision();
-        session
-            .converge_observation(
-                &observation(base, vec![plain("win-a"), fixed("win-f")]),
-                None,
-            )
-            .expect("admit fixed automatic");
-        assert!(session.is_automatic_fixed_float(&WindowId("win-f".to_owned())));
-        session
+    fn setup() -> WorldLayout {
+        let mut layout = fixed_layout();
+        admit_plain(&mut layout, "win-a");
+        converge(&mut layout, vec![plain("win-a"), fixed("win-f")]).expect("admit fixed automatic");
+        assert!(layout.is_automatic_fixed_float(&key(), &WindowId("win-f".to_owned())));
+        layout
     }
-    fn complete(session: &Session) -> Vec<ObservedWindow> {
-        let mut windows: Vec<ObservedWindow> = session
-            .snapshot()
-            .windows
-            .iter()
-            .map(|l| plain(&l.window.0))
-            .collect();
-        windows.extend(session.exception_observed());
+    fn complete(layout: &WorldLayout) -> Vec<ObservedWindow> {
+        let mut windows = current_observed(layout, &key());
         for entry in windows.iter_mut() {
             if entry.window.0 == "win-f" {
                 entry.floating = true;
@@ -3359,15 +2579,23 @@ fn retained_float_unfloat_exact_refusals() {
     impl RefusalCase {
         fn site(self) -> &'static str {
             match self {
-                Self::MissingTarget => "propose_toggle_float missing-target",
-                Self::StaleFloating => "propose_toggle_float stale-floating-binding",
-                Self::StaleHoming => "propose_toggle_float stale-homing-binding",
-                Self::MaximizedTarget => "propose_toggle_float maximized-target",
-                Self::MissingPeer => "propose_admit completeness missing-peer",
-                Self::ExtraPeer => "propose_admit completeness extra-peer",
-                Self::StalePeerFlags => "propose_admit known-match stale-peer-flags",
-                Self::StalePeerHoming => "propose_admit known-match stale-peer-homing",
-                Self::StaleSubjectSticky => "propose_admit subject-binding stale-subject-sticky",
+                Self::MissingTarget => "toggle_float missing-target",
+                Self::StaleFloating => "toggle_float stale-floating-binding",
+                Self::StaleHoming => "toggle_float stale-homing-binding",
+                Self::MaximizedTarget => "toggle_float maximized-target",
+                Self::MissingPeer => "admit completeness missing-peer",
+                Self::ExtraPeer => "admit completeness extra-peer",
+                Self::StalePeerFlags => "admit known-match stale-peer-flags",
+                Self::StalePeerHoming => "admit known-match stale-peer-homing",
+                Self::StaleSubjectSticky => "admit subject-binding stale-subject-sticky",
+            }
+        }
+        fn expected_refusal(self) -> RefusalKind {
+            match self {
+                // Single-domain `toggle_float` checks foreign homing before
+                // target/peer binding guards.
+                Self::StaleHoming | Self::StalePeerHoming => RefusalKind::CrossDomainMismatch,
+                _ => RefusalKind::PartialObservation,
             }
         }
         fn mutate(self, windows: &mut Vec<ObservedWindow>) {
@@ -3433,81 +2661,60 @@ fn retained_float_unfloat_exact_refusals() {
         RefusalCase::StalePeerHoming,
         RefusalCase::StaleSubjectSticky,
     ];
-    for (i, case) in rows.iter().enumerate() {
+    for case in rows {
         let site = case.site();
-        let mut session = setup();
-        let base = session.accepted_revision();
-        let mut windows = complete(&session);
+        let mut layout = setup();
+        let mut windows = complete(&layout);
         case.mutate(&mut windows);
         windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
-        let err = session
-            .propose(
-                &SessionCommand::ToggleFloat {
-                    window: WindowId("win-f".to_owned()),
-                    float_geometry: None,
-                },
-                &observation(base, windows),
-                &correlation(&format!("c-rf-{i}")),
-                &LifecycleCapabilities::full(),
-            )
+        let err = layout
+            .toggle_float(&key(), &WindowId("win-f".to_owned()), None, &windows)
             .unwrap_err();
         assert_eq!(
             err,
-            ProposeError::Refused(RefusalKind::PartialObservation),
+            LayoutFailure::Semantics(case.expected_refusal()),
             "{site} refuses exact"
         );
-        assert!(!session.has_pending(), "{site} stages no plan");
-        assert!(!session.has_pending_desired(), "{site} stages no desired");
         let id = WindowId("win-f".to_owned());
-        assert!(session.is_exception(&id), "{site} keeps float");
+        assert!(layout.is_exception(&key(), &id), "{site} keeps float");
         assert!(
-            session.is_automatic_fixed_float(&id),
+            layout.is_automatic_fixed_float(&key(), &id),
             "{site} keeps automatic marker"
         );
         assert!(
-            !session.has_fixed_tile_override(&id),
+            !layout.has_fixed_tile_override(&key(), &id),
             "{site} records no override"
         );
         assert_eq!(
-            tiled_ids(&session),
+            tiled_ids(&layout),
             vec!["win-a".to_owned()],
             "{site} mutates no topology"
         );
-        // Restored complete facts accept in the same session: the refusal
-        // staged nothing, so the genuine toggle still proposes.
-        let base = session.accepted_revision();
-        session
-            .propose(
-                &SessionCommand::ToggleFloat {
-                    window: WindowId("win-f".to_owned()),
-                    float_geometry: None,
-                },
-                &observation(base, complete(&session)),
-                &correlation(&format!("c-rf-restore-{i}")),
-                &LifecycleCapabilities::full(),
+        // Restored complete facts accept in the same layout: the refusal
+        // staged nothing, so the genuine toggle still succeeds.
+        layout
+            .toggle_float(
+                &key(),
+                &WindowId("win-f".to_owned()),
+                None,
+                &complete(&layout),
             )
             .unwrap_or_else(|e| panic!("{site} restored facts accept: {e:?}"));
     }
     // Corrected full facts accept, directly and after two converging
     // re-observations.
     for (tag, resyncs) in [("direct", 0), ("resync", 2)] {
-        let mut session = setup();
+        let mut layout = setup();
         for _ in 0..resyncs {
-            let base = session.accepted_revision();
-            session
-                .converge_observation(&observation(base, complete(&session)), None)
-                .expect("resync converges");
+            let windows = complete(&layout);
+            converge(&mut layout, windows).expect("resync converges");
         }
-        let base = session.accepted_revision();
-        session
-            .propose(
-                &SessionCommand::ToggleFloat {
-                    window: WindowId("win-f".to_owned()),
-                    float_geometry: None,
-                },
-                &observation(base, complete(&session)),
-                &correlation(&format!("c-rf-ok-{tag}")),
-                &LifecycleCapabilities::full(),
+        layout
+            .toggle_float(
+                &key(),
+                &WindowId("win-f".to_owned()),
+                None,
+                &complete(&layout),
             )
             .unwrap_or_else(|e| panic!("{tag} complete facts accept: {e:?}"));
     }

@@ -1,21 +1,11 @@
 #![forbid(unsafe_code)]
 use std::collections::BTreeMap;
 
-use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
-use crate::engine::Engine;
 use crate::geometry::Rect;
-use crate::ids::{CorrelationId, GenerationId, OwnerId};
-use crate::seed::{EngineWindow, seed_session};
+use crate::seed::EngineWindow;
 use crate::session::OutputDomain;
-
-fn owner() -> OwnerId {
-    OwnerId::parse("kwin-plan-adapter").unwrap()
-}
-
-fn generation() -> GenerationId {
-    GenerationId::parse("plan-1").unwrap()
-}
+use crate::world_layout::{FreshDomainOutcome, RetainedProjectionOutcome, WorldLayout};
 
 fn domain(output: &str) -> OutputDomain {
     OutputDomain {
@@ -54,97 +44,100 @@ fn window(id: &str, output: &str, x: i32) -> EngineWindow {
     }
 }
 
-fn seeded_engine() -> Engine {
-    let mut engine = Engine::new();
-    engine.sync_binding(&owner(), &generation());
+fn seeded_layout() -> WorldLayout {
+    let mut layout = WorldLayout::new();
     let retained = domain("out-1");
     let old = [
         window("win-old-1", "out-1", 0),
         window("win-old-2", "out-1", 600),
     ];
-    engine.store_committed(
-        retained.key(),
-        seed_session(&owner(), &generation(), 7, &retained, &old).unwrap(),
-        0,
-    );
-    engine
+    layout
+        .reconcile_fresh(&retained, 0, &WindowId("win-old-2".into()), &old)
+        .expect("seed layout");
+    layout
 }
 
-fn reconcile(windows: Vec<EngineWindow>) -> CoreEvent {
-    let domain = domain("out-1");
-    CoreEvent {
-        owner: owner(),
-        generation: generation(),
-        correlation: CorrelationId::parse("c-restart").unwrap(),
-        revision: 0,
-        fingerprint: 7,
-        domain_key: domain.key(),
-        domain,
-        outer_gap: 0,
-        focused_window: WindowId("win-z-left".into()),
-        windows,
-        directional: None,
-        directional_target_outer_gap: None,
-        target_domain: None,
-        target_windows: vec![],
-        closed_windows: vec![],
-        command: CoreCommand::Reconcile,
+enum ReconcileOutcome {
+    Fresh(FreshDomainOutcome),
+    Retained(RetainedProjectionOutcome),
+}
+
+fn reconcile(layout: &mut WorldLayout, windows: &[EngineWindow]) -> ReconcileOutcome {
+    let d = domain("out-1");
+    let key = d.key();
+    let disjoint = !windows.is_empty()
+        && layout.contains_domain(&key)
+        && !windows.iter().any(|w| {
+            layout.is_tiled_window(&key, &w.window)
+                || layout.is_exception(&key, &w.window)
+                || layout.has_minimized_slot(&key, &w.window)
+        });
+    if disjoint {
+        layout.drop_domain(&key);
+    }
+    let focus = WindowId("win-z-left".into());
+    match layout
+        .reconcile_retained(&key, d.bounds, d.gap, 0, &focus, windows, &[])
+        .expect("retained reconcile")
+    {
+        Some(proj) => ReconcileOutcome::Retained(proj),
+        None => ReconcileOutcome::Fresh(
+            layout
+                .reconcile_fresh(&d, 0, &focus, windows)
+                .expect("fresh reconcile"),
+        ),
     }
 }
 
 #[test]
 fn disjoint_reconcile_adopts_like_fresh_startup() {
-    let mut engine = seeded_engine();
+    let mut layout = seeded_layout();
     // UUID order is opposite observed spatial order.
-    let event = reconcile(vec![
+    let windows = vec![
         window("win-z-left", "out-1", 0),
         window("win-a-right", "out-1", 600),
-    ]);
-    match engine.handle(&event) {
-        CoreReply::Tiled(plan) => {
-            assert_eq!(plan.geometry.len(), 2);
-            assert_eq!(plan.geometry[0].window.0, "win-z-left");
-            assert_eq!(plan.geometry[0].rect.x, 0);
-            assert_eq!(plan.geometry[1].window.0, "win-a-right");
-            assert_eq!(plan.geometry[1].rect.x, 600);
+    ];
+    match reconcile(&mut layout, &windows) {
+        ReconcileOutcome::Fresh(outcome) => {
+            let geom = outcome.projection.geometry;
+            assert_eq!(geom.len(), 2);
+            assert_eq!(geom[0].window.0, "win-z-left");
+            assert_eq!(geom[0].rect.x, 0);
+            assert_eq!(geom[1].window.0, "win-a-right");
+            assert_eq!(geom[1].rect.x, 600);
         }
-        other => panic!("expected fresh strip adoption, got {other:?}"),
+        ReconcileOutcome::Retained(other) => {
+            panic!("expected fresh strip adoption, got retained {other:?}")
+        }
     }
-    assert_eq!(engine.generation().unwrap().as_str(), "plan-1");
 }
 
 #[test]
 fn any_shared_id_preserves_retained_topology() {
-    let mut engine = seeded_engine();
+    let mut layout = seeded_layout();
     let key = domain("out-1").key();
-    let original = engine.session(&key).unwrap().snapshot();
-    let survivor_leaf = original
-        .windows
-        .iter()
-        .find(|link| link.window.0 == "win-old-2")
+    let survivor_leaf = layout
+        .bindings(&key)
+        .find(|(w, _)| w.0 == "win-old-2")
         .unwrap()
-        .leaf
+        .1
         .clone();
-    let event = reconcile(vec![
+    let windows = vec![
         window("win-new", "out-1", 0),
         window("win-old-2", "out-1", 600),
-    ]);
-    assert!(matches!(engine.handle(&event), CoreReply::Projection(_)));
-    let after = engine.session(&key).unwrap().snapshot();
+    ];
+    assert!(matches!(
+        reconcile(&mut layout, &windows),
+        ReconcileOutcome::Retained(_)
+    ));
     assert_eq!(
-        after
-            .windows
-            .iter()
-            .find(|link| link.window.0 == "win-old-2")
+        layout
+            .bindings(&key)
+            .find(|(w, _)| w.0 == "win-old-2")
             .unwrap()
-            .leaf,
-        survivor_leaf
+            .1,
+        &survivor_leaf
     );
-    assert!(
-        !after
-            .windows
-            .iter()
-            .any(|link| link.window.0 == "win-old-1")
-    );
-    assert!(after.windows.iter().any(|link| link.window.0 == "win-new"));
+    assert!(!layout.bindings(&key).any(|(w, _)| w.0 == "win-old-1"));
+    assert!(layout.bindings(&key).any(|(w, _)| w.0 == "win-new"));
 }

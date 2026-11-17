@@ -1,18 +1,14 @@
-//! Relocated per-domain Engine regression tests (reconcile/admit/snap-back,
+//! Relocated per-domain layout regression tests (reconcile/admit/snap-back,
 //! margins, pointer-resize, directional focus/move, update-gaps topology).
-//! Moved from the Windows adapter suite when the per-domain adapter route was
-//! removed; behavior is portable core behavior, so the tests live with the
-//! core per-domain suites and build observations via [`crate::per_domain_fixture`].
 
-use crate::boundary::CoreCommand;
-use crate::boundary::CoreReply;
-use crate::directional::{OutputId, WindowId, WorkspaceId};
-use crate::engine::Engine;
+use crate::directional::{Direction, OutputId, SameAxisMove, WindowId, WorkspaceId};
 use crate::geometry::Rect;
-use crate::ids::{CorrelationId, GenerationId, OwnerId};
-use crate::per_domain_fixture::reconcile_event_for;
+use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
 use crate::size_hints::WindowSizeHints;
+use crate::world_layout::{
+    LocalOperationContext, RetainedProjectionOutcome, RetainedReconcileFailure, WorldLayout,
+};
 
 /// Retired adapter parity values (inner gap 8, outer gap 8) for the
 /// relocated observation fixtures below.
@@ -23,161 +19,159 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn ev(
-    owner: &OwnerId,
-    generation: &GenerationId,
-    correlation: &CorrelationId,
-    revision: u64,
-    fp: u64,
-    bounds: Rect,
-    windows: &[(WindowId, Rect)],
-    focused: Option<&WindowId>,
-) -> crate::boundary::CoreEvent {
-    let hinted: Vec<(WindowId, Rect, crate::size_hints::WindowSizeHints)> = windows
-        .iter()
-        .map(|(w, r)| (w.clone(), *r, crate::size_hints::WindowSizeHints::none()))
-        .collect();
-    let domain = OutputDomain {
+fn test_domain(bounds: Rect, gap: i32) -> OutputDomain {
+    OutputDomain {
         id: OutputId("display-0".to_owned()),
         workspace: WorkspaceId("workspace-0".to_owned()),
         bounds,
-        gap: INNER_GAP,
+        gap,
         adjacent: std::collections::BTreeMap::new(),
-    };
-    let domain_key = DomainKey {
-        output: OutputId("display-0".to_owned()),
-        workspace: WorkspaceId("workspace-0".to_owned()),
-    };
-    reconcile_event_for(
-        owner,
-        generation,
-        correlation,
-        revision,
-        fp,
-        &domain,
-        &domain_key,
-        OUTER_GAP,
-        &hinted,
-        focused,
-    )
+    }
 }
+
+fn engine_windows(domain: &OutputDomain, windows: &[(WindowId, Rect)]) -> Vec<EngineWindow> {
+    windows
+        .iter()
+        .map(|(w, r)| EngineWindow {
+            window: w.clone(),
+            output: domain.id.clone(),
+            workspace: domain.workspace.clone(),
+            rect: *r,
+            floating: false,
+            fit_excluded: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: WindowSizeHints::none(),
+        })
+        .collect()
+}
+
+enum ReconcileReply {
+    Fresh(RetainedProjectionOutcome),
+    Retained(RetainedProjectionOutcome),
+}
+
+impl ReconcileReply {
+    fn projection(self) -> RetainedProjectionOutcome {
+        match self {
+            Self::Fresh(p) | Self::Retained(p) => p,
+        }
+    }
+}
+
+fn reconcile(
+    layout: &mut WorldLayout,
+    domain: &OutputDomain,
+    outer_gap: i32,
+    windows: &[(WindowId, Rect)],
+    focused: Option<&WindowId>,
+) -> ReconcileReply {
+    let key = domain.key();
+    let observed = engine_windows(domain, windows);
+    let focus = focused.cloned().unwrap_or_else(|| WindowId(String::new()));
+    match layout
+        .reconcile_retained(
+            &key,
+            domain.bounds,
+            domain.gap,
+            outer_gap,
+            &focus,
+            &observed,
+            &[],
+        )
+        .expect("retained reconcile succeeds")
+    {
+        Some(proj) => ReconcileReply::Retained(proj),
+        None => ReconcileReply::Fresh(
+            layout
+                .reconcile_fresh(domain, outer_gap, &focus, &observed)
+                .expect("fresh reconcile succeeds")
+                .projection,
+        ),
+    }
+}
+
 #[test]
 fn engine_admits_then_removes_windows() {
-    use crate::boundary::CoreReply;
-    use crate::engine::Engine;
-
-    let owner = OwnerId::parse("tiler-windows").expect("valid");
-    let generation = GenerationId::parse("abcdef0123456789").expect("valid");
-    let mut engine = Engine::new();
-    engine.sync_binding(&owner, &generation);
+    let mut layout = WorldLayout::new();
+    let domain = test_domain(rect(0, 0, 1600, 900), INNER_GAP);
 
     // Two windows admitted through fresh reconcile.
-    let event = ev(
-        &owner,
-        &generation,
-        &CorrelationId::parse("tick-1").expect("valid"),
-        0,
-        1,
-        rect(0, 0, 1600, 900),
+    let first = reconcile(
+        &mut layout,
+        &domain,
+        OUTER_GAP,
         &[
             (WindowId("w1".to_owned()), rect(0, 0, 800, 884)),
             (WindowId("w2".to_owned()), rect(800, 0, 800, 884)),
         ],
         None,
-    );
-    let reply = engine.handle(&event);
-    let base = match &reply {
-        CoreReply::Tiled(plan) => {
-            assert!(!plan.geometry.is_empty());
-            plan.base_revision
-        }
-        CoreReply::Projection(plan) => plan.base_revision,
-        other => panic!("unexpected reply: {other:?}"),
-    };
+    )
+    .projection();
+    assert!(!first.geometry.is_empty());
 
-    // Retained reconcile at the committed revision projects geometry.
-    let event = ev(
-        &owner,
-        &generation,
-        &CorrelationId::parse("tick-2").expect("valid"),
-        base,
-        2,
-        rect(0, 0, 1600, 900),
+    // Retained reconcile projects geometry.
+    match reconcile(
+        &mut layout,
+        &domain,
+        OUTER_GAP,
         &[
             (WindowId("w1".to_owned()), rect(0, 0, 800, 884)),
             (WindowId("w2".to_owned()), rect(800, 0, 800, 884)),
         ],
         None,
-    );
-    match engine.handle(&event) {
-        CoreReply::Projection(plan) => assert_eq!(plan.geometry.len(), 2),
-        other => panic!("unexpected reply: {other:?}"),
+    ) {
+        ReconcileReply::Retained(plan) => assert_eq!(plan.geometry.len(), 2),
+        ReconcileReply::Fresh(other) => panic!("expected retained projection, got fresh {other:?}"),
     }
 
     // Close one window: convergence removes it, projection covers the survivor.
-    let event = ev(
-        &owner,
-        &generation,
-        &CorrelationId::parse("tick-3").expect("valid"),
-        base,
-        3,
-        rect(0, 0, 1600, 900),
+    match reconcile(
+        &mut layout,
+        &domain,
+        OUTER_GAP,
         &[(WindowId("w1".to_owned()), rect(0, 0, 800, 884))],
         None,
-    );
-    match engine.handle(&event) {
-        CoreReply::Projection(plan) => {
+    ) {
+        ReconcileReply::Retained(plan) => {
+            assert_eq!(plan.geometry.len(), 1);
             assert!(plan.geometry.iter().all(|g| g.window.0 == "w1"));
         }
-        other => panic!("unexpected reply: {other:?}"),
+        ReconcileReply::Fresh(other) => panic!("expected retained projection, got fresh {other:?}"),
     }
 }
+
 #[test]
 fn engine_manual_geometry_never_adopted() {
-    use crate::boundary::CoreReply;
-    use crate::engine::Engine;
-
-    let owner = OwnerId::parse("tiler-windows").expect("valid");
-    let generation = GenerationId::parse("abcdef0123456789").expect("valid");
-    let mut engine = Engine::new();
-    engine.sync_binding(&owner, &generation);
-    let event = ev(
-        &owner,
-        &generation,
-        &CorrelationId::parse("tick-1").expect("valid"),
-        0,
-        1,
-        rect(0, 0, 1600, 900),
+    let mut layout = WorldLayout::new();
+    let domain = test_domain(rect(0, 0, 1600, 900), INNER_GAP);
+    reconcile(
+        &mut layout,
+        &domain,
+        OUTER_GAP,
         &[
             (WindowId("w1".to_owned()), rect(0, 0, 800, 884)),
             (WindowId("w2".to_owned()), rect(800, 0, 800, 884)),
         ],
         None,
     );
-    let base = match engine.handle(&event) {
-        CoreReply::Tiled(plan) => plan.base_revision,
-        CoreReply::Projection(plan) => plan.base_revision,
-        other => panic!("unexpected reply: {other:?}"),
-    };
     // User drags w1 elsewhere without a drag-drop op: retained reconcile
     // reprojects from topology (snap-back), proving the gesture route is
     // required to honor manual moves.
-    let event = ev(
-        &owner,
-        &generation,
-        &CorrelationId::parse("tick-2").expect("valid"),
-        base,
-        2,
-        rect(0, 0, 1600, 900),
+    match reconcile(
+        &mut layout,
+        &domain,
+        OUTER_GAP,
         &[
             (WindowId("w1".to_owned()), rect(400, 200, 800, 600)),
             (WindowId("w2".to_owned()), rect(800, 0, 800, 884)),
         ],
         None,
-    );
-    match engine.handle(&event) {
-        CoreReply::Projection(plan) => {
+    ) {
+        ReconcileReply::Retained(plan) => {
             let w1 = plan
                 .geometry
                 .iter()
@@ -185,44 +179,34 @@ fn engine_manual_geometry_never_adopted() {
                 .expect("w1 projected");
             assert_ne!(w1.rect, rect(400, 200, 800, 600));
         }
-        other => panic!("unexpected reply: {other:?}"),
+        ReconcileReply::Fresh(other) => panic!("expected retained projection, got fresh {other:?}"),
     }
 }
+
 #[test]
 fn engine_projects_visible_margins_and_inner_gap() {
-    use crate::boundary::CoreReply;
-    use crate::engine::Engine;
-
     // Full rcWork in, inset domain out: 8px visible margin on every side plus
     // the 8px inner gap between tiles. Desired rects are visible-frame rects
     // the adapter converts to outer rects per app; the invisible border may
     // land outside rcWork and that is correct.
     let work = rect(0, 0, 1600, 900);
-    let domain = crate::geometry::inset_bounds(work, OUTER_GAP).expect("inset");
-    let owner = OwnerId::parse("tiler-windows").expect("valid");
-    let generation = GenerationId::parse("abcdef0123456789").expect("valid");
-    let mut engine = Engine::new();
-    engine.sync_binding(&owner, &generation);
-    let event = ev(
-        &owner,
-        &generation,
-        &CorrelationId::parse("tick-1").expect("valid"),
-        0,
-        1,
-        domain,
+    let bounds = crate::geometry::inset_bounds(work, OUTER_GAP).expect("inset");
+    let domain = test_domain(bounds, INNER_GAP);
+    let mut layout = WorldLayout::new();
+    let geometry = reconcile(
+        &mut layout,
+        &domain,
+        OUTER_GAP,
         &[
             (WindowId("w1".to_owned()), rect(0, 0, 800, 884)),
             (WindowId("w2".to_owned()), rect(800, 0, 800, 884)),
         ],
         None,
-    );
-    let geometry = match engine.handle(&event) {
-        CoreReply::Tiled(plan) => plan.geometry,
-        CoreReply::Projection(plan) => plan.geometry,
-        other => panic!("unexpected reply: {other:?}"),
-    };
+    )
+    .projection()
+    .geometry;
     assert_eq!(geometry.len(), 2);
-    let mut by_x = geometry.clone();
+    let mut by_x = geometry;
     by_x.sort_by_key(|g| g.rect.x);
     let (left, right) = (&by_x[0], &by_x[1]);
     assert_eq!((left.rect.x, left.rect.y), (8, 8));
@@ -230,168 +214,93 @@ fn engine_projects_visible_margins_and_inner_gap() {
     assert_eq!((right.rect.x, right.rect.w), (8 + 788 + INNER_GAP, 788));
     assert!(!left.overconstrained && !left.client_clamped);
 }
+
 #[test]
 fn engine_pointer_resize_returns_resize_plan() {
-    use crate::boundary::{CoreCommand, CoreReply};
-    use crate::engine::Engine;
-
-    let owner = OwnerId::parse("tiler-windows").expect("valid");
-    let generation = GenerationId::parse("abcdef0123456789").expect("valid");
-    let mut engine = Engine::new();
-    engine.sync_binding(&owner, &generation);
-    let domain = crate::geometry::inset_bounds(rect(0, 0, 1600, 900), OUTER_GAP).expect("inset");
-    let event = ev(
-        &owner,
-        &generation,
-        &CorrelationId::parse("tick-1").expect("valid"),
-        0,
-        1,
-        domain,
-        &[
-            (WindowId("w1".to_owned()), rect(8, 8, 788, 884)),
-            (WindowId("w2".to_owned()), rect(804, 8, 788, 884)),
-        ],
-        None,
-    );
-    let base = match engine.handle(&event) {
-        CoreReply::Tiled(plan) => plan.base_revision,
-        CoreReply::Projection(plan) => plan.base_revision,
-        other => panic!("unexpected reply: {other:?}"),
-    };
+    let mut layout = WorldLayout::new();
+    let bounds = crate::geometry::inset_bounds(rect(0, 0, 1600, 900), OUTER_GAP).expect("inset");
+    let domain = test_domain(bounds, INNER_GAP);
+    let windows = [
+        (WindowId("w1".to_owned()), rect(8, 8, 788, 884)),
+        (WindowId("w2".to_owned()), rect(804, 8, 788, 884)),
+    ];
+    reconcile(&mut layout, &domain, OUTER_GAP, &windows, None);
     let w1 = WindowId("w1".to_owned());
-    let mut event = ev(
-        &owner,
-        &generation,
-        &CorrelationId::parse("tick-2").expect("valid"),
-        base,
-        2,
-        domain,
-        &[
-            (WindowId("w1".to_owned()), rect(8, 8, 788, 884)),
-            (WindowId("w2".to_owned()), rect(804, 8, 788, 884)),
-        ],
-        Some(&w1),
-    );
-    event.command = CoreCommand::PointerResize {
-        // w1 holds the right leaf (see margin test): its left edge borders
-        // w2, so "left" moves the shared boundary. A "right" resize on the
-        // rightmost leaf has no neighbor and correctly refuses `Unchanged`.
-        window: "w1".to_owned(),
-        direction: "left".to_owned(),
-        boundary: 700,
-        direction2: None,
-        boundary2: None,
+    let observed = engine_windows(&domain, &windows);
+    let ctx = LocalOperationContext {
+        domain: &domain,
+        outer_gap: OUTER_GAP,
+        observed_focus: &w1,
+        observed: &observed,
+        preconverged: false,
     };
-    match engine.handle(&event) {
-        CoreReply::Resize(plan) => assert!(!plan.geometry.is_empty()),
-        other => panic!("unexpected reply: {other:?}"),
-    }
+    // w1 holds the right leaf (see margin test): its left edge borders
+    // w2, so "left" moves the shared boundary. A "right" resize on the
+    // rightmost leaf has no neighbor and correctly refuses `Unchanged`.
+    let plan = layout
+        .run_pointer_resize(&ctx, &w1, Direction::Left, 700)
+        .expect("pointer resize succeeds");
+    assert!(!plan.geometry.is_empty());
 }
-fn engine_harness(
+
+fn seeded_layout(
     windows: &[(WindowId, Rect)],
     focused: &WindowId,
-) -> (Engine, crate::boundary::CoreEvent) {
-    let mut engine = Engine::new();
-    let owner = OwnerId::parse("tiler-windows").expect("valid");
-    let generation = GenerationId::parse("gen-1").expect("valid");
-    engine.sync_binding(&owner, &generation);
-    let pairs: Vec<(String, Rect)> = windows.iter().map(|(w, r)| (w.0.clone(), *r)).collect();
-    let hinted: Vec<(WindowId, Rect, WindowSizeHints)> = windows
-        .iter()
-        .map(|(w, r)| (w.clone(), *r, WindowSizeHints::none()))
-        .collect();
-    let domain = OutputDomain {
-        id: OutputId("display-0".to_owned()),
-        workspace: WorkspaceId("workspace-0".to_owned()),
-        bounds: Rect {
-            x: 0,
-            y: 0,
-            w: 1600,
-            h: 900,
-        },
-        gap: INNER_GAP,
-        adjacent: std::collections::BTreeMap::new(),
-    };
-    let domain_key = DomainKey {
-        output: OutputId("display-0".to_owned()),
-        workspace: WorkspaceId("workspace-0".to_owned()),
-    };
-    let event = reconcile_event_for(
-        &owner,
-        &generation,
-        &CorrelationId::parse("snap-test").expect("valid"),
-        0,
-        crate::per_domain_fixture::fingerprint(&pairs),
-        &domain,
-        &domain_key,
-        OUTER_GAP,
-        &hinted,
-        Some(focused),
-    );
-    (engine, event)
+) -> (WorldLayout, OutputDomain, Vec<EngineWindow>) {
+    let mut layout = WorldLayout::new();
+    let domain = test_domain(rect(0, 0, 1600, 900), INNER_GAP);
+    reconcile(&mut layout, &domain, OUTER_GAP, windows, Some(focused));
+    let observed = engine_windows(&domain, windows);
+    (layout, domain, observed)
 }
+
 #[test]
 fn engine_focus_moves_through_nested_topology() {
     let w1 = WindowId("w1".to_owned());
     let w2 = WindowId("w2".to_owned());
     let w3 = WindowId("w3".to_owned());
-    let observed = vec![
+    let observed_rects = vec![
         (w1.clone(), rect(8, 8, 500, 884)),
         (w2.clone(), rect(516, 8, 500, 884)),
         (w3.clone(), rect(1024, 8, 568, 884)),
     ];
-    let (mut engine, seed) = engine_harness(&observed, &w1);
-    let reply = engine.handle(&seed);
-    assert!(
-        matches!(reply, CoreReply::Projection(_) | CoreReply::Tiled(_)),
-        "seed must converge, got {reply:?}"
-    );
+    let (mut layout, domain, observed) = seeded_layout(&observed_rects, &w1);
     // Focus right from w1 lands on its neighbor with full geometry.
-    let mut focus = seed.clone();
-    focus.command = CoreCommand::Focus {
-        window: w1.0.clone(),
-        direction: "right".to_owned(),
-        cross_output_transfer: false,
-        float_subject: false,
+    let ctx = LocalOperationContext {
+        domain: &domain,
+        outer_gap: OUTER_GAP,
+        observed_focus: &w1,
+        observed: &observed,
+        preconverged: false,
     };
-    assert_eq!(focus.command.op(), "focus");
-    let reply = engine.handle(&focus);
-    match reply {
-        CoreReply::FocusDirectional(plan) => {
-            assert_eq!(plan.to_window, w2);
-            assert_eq!(plan.geometry.len(), 3);
-        }
-        other => panic!("focus must plan directionally, got {other:?}"),
-    }
-    // Move uses the move route with full desired geometry. The moved window
-    // is the focused one, mirroring the owner drain. Explicit default-wrap
-    // fixture: production threads the live `core.same_axis_move` here.
-    let mut mv = seed.clone();
-    mv.focused_window = w2.clone();
-    mv.command = CoreCommand::Move {
-        window: w2.0.clone(),
-        direction: "right".to_owned(),
-        cross_output_transfer: false,
-        same_axis_move: crate::directional::SameAxisMove::GroupWithNeighbor,
+    let plan = layout
+        .run_local_focus(&ctx, &w1, Direction::Right)
+        .expect("focus must plan directionally");
+    assert_eq!(plan.to_window, w2);
+    assert_eq!(plan.geometry.len(), 3);
+
+    // Move uses the move route with full desired geometry.
+    let mv_ctx = LocalOperationContext {
+        domain: &domain,
+        outer_gap: OUTER_GAP,
+        observed_focus: &w2,
+        observed: &observed,
+        preconverged: false,
     };
-    assert_eq!(mv.command.op(), "move");
-    let reply = engine.handle(&mv);
-    match reply {
-        CoreReply::MoveDirectional(plan) => {
-            assert_eq!(plan.geometry.len(), 3);
-        }
-        other => panic!("move must plan directionally, got {other:?}"),
-    }
+    let plan = layout
+        .run_local_move(
+            &mv_ctx,
+            &w2,
+            Direction::Right,
+            SameAxisMove::GroupWithNeighbor,
+        )
+        .expect("move must plan directionally");
+    assert_eq!(plan.geometry.len(), 3);
 }
+
 #[test]
 fn retained_update_gaps_preserves_topology() {
-    use crate::boundary::{CoreCommand, CoreReply};
-    use crate::directional::{OutputId, WindowId, WorkspaceId};
-    use crate::geometry::Rect;
-    use crate::ids::{CorrelationId, GenerationId, OwnerId};
-    use crate::session::{DomainKey, OutputDomain};
-
-    fn rect() -> Rect {
+    fn bounds_rect() -> Rect {
         Rect {
             x: 0,
             y: 0,
@@ -399,125 +308,79 @@ fn retained_update_gaps_preserves_topology() {
             h: 600,
         }
     }
-    let mut engine = crate::engine::Engine::new();
-    let owner = OwnerId::parse("tiler-windows").expect("owner");
-    let generation = GenerationId::parse("aa").expect("generation");
-    engine.sync_binding(&owner, &generation);
+    let mut layout = WorldLayout::new();
     let key = DomainKey {
         output: OutputId("mon-a".to_owned()),
         workspace: WorkspaceId("ws-1".to_owned()),
     };
     let domain = OutputDomain {
-        id: OutputId("mon-a".to_owned()),
-        workspace: WorkspaceId("ws-1".to_owned()),
-        bounds: rect(),
+        id: key.output.clone(),
+        workspace: key.workspace.clone(),
+        bounds: bounds_rect(),
         gap: 8,
         adjacent: std::collections::BTreeMap::new(),
     };
-    let rows = vec![
-        (
-            WindowId("w1".to_owned()),
-            rect(),
-            crate::size_hints::WindowSizeHints::none(),
-            false,
-        ),
-        (
-            WindowId("w2".to_owned()),
-            rect(),
-            crate::size_hints::WindowSizeHints::none(),
-            false,
-        ),
+    let windows = vec![
+        (WindowId("w1".to_owned()), bounds_rect()),
+        (WindowId("w2".to_owned()), bounds_rect()),
     ];
-    let fingerprint = crate::per_domain_fixture::fingerprint(
-        &rows
-            .iter()
-            .map(|(t, r, _, _)| (t.0.clone(), *r))
-            .collect::<Vec<_>>(),
-    );
-    let correlation = CorrelationId::parse("seed").expect("correlation");
-    let mut seed = crate::per_domain_fixture::reconcile_event_for_floating(
-        &owner,
-        &generation,
-        &correlation,
-        0,
-        fingerprint,
-        &domain,
-        &key,
-        8,
-        &rows,
-        Some(&WindowId("w1".to_owned())),
-    );
-    assert!(seed.command == CoreCommand::Reconcile);
-    let reply = engine.handle(&seed);
-    assert!(
-        matches!(reply, CoreReply::Projection(_) | CoreReply::Tiled(_)),
-        "seed converges, got {reply:?}"
-    );
-    let tree_before = format!(
-        "{:?}",
-        engine.session(&key).expect("session").snapshot().domains
-    );
+    let w1 = WindowId("w1".to_owned());
+    reconcile(&mut layout, &domain, 8, &windows, Some(&w1));
+    let tree_before = layout.tree(&key).cloned().expect("tree");
+    let bindings_before: Vec<_> = layout
+        .bindings(&key)
+        .map(|(w, l)| (w.clone(), l.clone()))
+        .collect();
+
     // Plain reconcile with drifted gaps refuses instead of adopting.
-    seed.command = CoreCommand::Reconcile;
-    seed.domain.gap = 4;
-    seed.outer_gap = 12;
-    let reply = engine.handle(&seed);
-    let CoreReply::Rejected { kind, .. } = reply else {
-        panic!("gap drift must refuse, got {reply:?}");
-    };
-    assert_eq!(kind, "domain-mismatch");
+    let observed = engine_windows(&domain, &windows);
+    let err = layout
+        .reconcile_retained(&key, bounds_rect(), 4, 12, &w1, &observed, &[])
+        .expect_err("gap drift must refuse");
+    assert_eq!(err, RetainedReconcileFailure::InnerGapMismatch);
+
     // The retained update-gaps path adopts without destroying topology.
-    // A retained mismatch issues `UpdateGaps` so topology survives: plain
-    // reconcile refuses gap drift instead of adopting it.
-    let retained_matches = |engine: &crate::engine::Engine, gap: i32, outer_gap: i32| {
-        engine.session(&key).is_some_and(|session| {
-            session
-                .domains()
-                .iter()
-                .any(|domain| domain.key() == key && domain.gap == gap)
-        }) && engine.outer_gap_matches(&key, outer_gap)
-    };
-    assert!(!retained_matches(&engine, 4, 12));
-    seed.command = CoreCommand::UpdateGaps;
-    let reply = engine.handle(&seed);
-    assert!(
-        matches!(reply, CoreReply::Projection(_)),
-        "update-gaps adopts, got {reply:?}"
+    assert_eq!(layout.domain_geometry(&key), Some((bounds_rect(), 8)));
+    assert_eq!(layout.domain_outer_gap(&key), Some(8));
+    layout
+        .update_domain_gaps(&key, bounds_rect(), 4, 12, &w1, &observed)
+        .expect("update-gaps adopts");
+    assert_eq!(
+        layout.tree(&key).cloned().expect("tree"),
+        tree_before,
+        "topology survives the gap update"
     );
-    let tree_after = format!(
-        "{:?}",
-        engine.session(&key).expect("session").snapshot().domains
-    );
-    assert_eq!(tree_before, tree_after, "topology survives the gap update");
-    assert!(retained_matches(&engine, 4, 12));
-    assert_eq!(engine.outer_gap(&key), Some(12));
+    let bindings_after: Vec<_> = layout
+        .bindings(&key)
+        .map(|(w, l)| (w.clone(), l.clone()))
+        .collect();
+    assert_eq!(bindings_before, bindings_after);
+    assert_eq!(layout.domain_geometry(&key), Some((bounds_rect(), 4)));
+    assert_eq!(layout.domain_outer_gap(&key), Some(12));
 }
 
 #[test]
 fn engine_edge_focus_is_a_no_op_rejection() {
     let w1 = WindowId("w1".to_owned());
     let w2 = WindowId("w2".to_owned());
-    let observed = vec![
+    let observed_rects = vec![
         (w1.clone(), rect(8, 8, 788, 884)),
         (w2.clone(), rect(804, 8, 788, 884)),
     ];
-    let (mut engine, seed) = engine_harness(&observed, &w1);
-    let seed_reply = engine.handle(&seed);
-    assert!(
-        matches!(seed_reply, CoreReply::Projection(_) | CoreReply::Tiled(_)),
-        "seed must converge, got {seed_reply:?}"
-    );
+    let (mut layout, domain, observed) = seeded_layout(&observed_rects, &w1);
     // Focus left off the left edge: no neighbor, no actuation.
-    let mut edge = seed.clone();
-    edge.command = CoreCommand::Focus {
-        window: w1.0.clone(),
-        direction: "left".to_owned(),
-        cross_output_transfer: false,
-        float_subject: false,
+    let ctx = LocalOperationContext {
+        domain: &domain,
+        outer_gap: OUTER_GAP,
+        observed_focus: &w1,
+        observed: &observed,
+        preconverged: false,
     };
-    let reply = engine.handle(&edge);
-    assert!(
-        matches!(reply, CoreReply::Rejected { .. }),
-        "edge focus must refuse without geometry, got {reply:?}"
-    );
+    let err = layout
+        .run_local_focus(&ctx, &w1, Direction::Left)
+        .expect_err("edge focus must refuse without geometry");
+    assert!(matches!(
+        err,
+        crate::world_layout::LocalOperationFailure::Layout(_)
+    ));
 }

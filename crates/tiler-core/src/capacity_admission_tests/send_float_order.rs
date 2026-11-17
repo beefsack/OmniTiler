@@ -1,9 +1,12 @@
-//! Send-float results and admission order: exhausted-float mover frame, failed-ack preservation, deferred carry, and sequence stability.
+//! Send-float results and admission order: exhausted-float mover frame, deferred carry, and sequence stability.
 //!
-//! Shared helpers live in the parent (`capacity_admission.rs`); this module
+//! Shared helpers live in the parent (`capacity_admission_tests.rs`); this module
 //! holds only `#[test]` fns.
 
 use super::*;
+use crate::world_layout::{
+    FreshOutcomeKind, LayoutFailure, PairOperationContext, PairOperationFailure, PairSendKind,
+};
 
 #[test]
 fn send_exhausted_floats_mover_with_exact_frame() {
@@ -11,25 +14,15 @@ fn send_exhausted_floats_mover_with_exact_frame() {
     // as a slotless capacity float instead of refusing. The mover keeps
     // its exact current frame (no native move), the source allocation is
     // released, the destination tree is untouched, the origin is
-    // diagnostic capacity, the admission order never re-sequences, and
-    // the plan passes the existing send transfer-proof gate.
-    // The mover carries size hints so the hinted candidate evaluation
-    // resolves through the mover leaf mapping.
-    use crate::size_hints::WindowSizeHints;
+    // diagnostic capacity, and the admission order never re-sequences.
     for follow in [true, false] {
-        let mut session = Session::new(
-            owner(),
-            generation(),
-            0,
-            7,
-            vec![
-                domain("o", "ws-1", 120, 80, 0),
-                domain("o", "ws-2", 1, 1, 0),
-            ],
-        )
-        .expect("session");
-        admit_and_commit(&mut session, "a", "o", "ws-1", placement(120, 40), "c-1");
-        let b_plan = {
+        let mut layout = WorldLayout::new();
+        let d1 = domain("o", "ws-1", 120, 80, 0);
+        let d2 = domain("o", "ws-2", 1, 1, 0);
+        let key1 = d1.key();
+        let key2 = d2.key();
+        admit_into(&mut layout, &d1, "a", placement(120, 40));
+        let b_geom = {
             let mut extra = tiled_observed("b", "o", "ws-1");
             extra.hints = WindowSizeHints {
                 min_w: Some(200),
@@ -37,183 +30,105 @@ fn send_exhausted_floats_mover_with_exact_frame() {
                 max_w: None,
                 max_h: None,
             };
-            let obs = complete_observation(&session, vec![extra]);
-            let plan = session
-                .propose(
-                    &admit_command("b", "o", "ws-1", placement(120, 40)),
+            let obs = complete_observed_for(&layout, &key1, vec![extra]);
+            layout
+                .admit_window(
+                    &key1,
+                    &WindowId("b".to_owned()),
+                    ExceptionFlags::none(),
+                    None,
+                    placement(120, 40),
+                    false,
+                    false,
                     &obs,
-                    &correlation("c-2"),
-                    &LifecycleCapabilities::full(),
                 )
-                .expect("b tiles despite minima");
-            commit_plan(&mut session, &plan, "c-2");
-            plan
+                .expect("b tiles despite minima")
+                .geometry
         };
-        let frame_b = b_plan
-            .desired_geometry
+        let frame_b = b_geom
             .iter()
             .find(|g| g.window.0 == "b")
             .expect("b projected at admission")
             .rect;
-        admit_and_commit(&mut session, "d", "o", "ws-2", placement(1, 1), "c-3");
-        let dest_tree_before = session
-            .tree_for(&DomainKey {
-                output: OutputId("o".to_owned()),
-                workspace: WorkspaceId("ws-2".to_owned()),
-            })
-            .expect("destination tree")
-            .clone();
-        let seq_b = session.admission_sequence(&WindowId("b".to_owned()));
-        let mover_leaf = leaf_of(&session, "b");
-        let key1 = DomainKey {
-            output: OutputId("o".to_owned()),
-            workspace: WorkspaceId("ws-1".to_owned()),
-        };
-        let key2 = DomainKey {
-            output: OutputId("o".to_owned()),
-            workspace: WorkspaceId("ws-2".to_owned()),
-        };
-        assert!(session.sync_focus_from_window(&key1, &WindowId("b".to_owned())));
-        let obs = complete_observation(&session, Vec::new());
-        let plan = session
-            .propose(
-                &SessionCommand::MoveToWorkspace {
-                    window: WindowId("b".to_owned()),
-                    target_output: OutputId("o".to_owned()),
-                    target_workspace: WorkspaceId("ws-2".to_owned()),
-                    follow,
-                },
-                &obs,
-                &correlation("s-1"),
-                &LifecycleCapabilities::full(),
-            )
-            .expect("exhausted send floats under default float");
-        match &plan.dispatch.operation {
-            crate::contract::LifecycleOperation::MoveToFloat {
-                window,
-                leaf,
-                source_output,
-                target_workspace,
-                ..
-            } => {
-                assert_eq!(window.0, "b");
-                assert_eq!(leaf, &mover_leaf, "dropped leaf named for audit");
-                assert_eq!(source_output.0, "o");
-                assert_eq!(target_workspace.0, "ws-2");
+        admit_into(&mut layout, &d2, "d", placement(1, 1));
+        let dest_tree_before = layout.tree(&key2).expect("destination tree").clone();
+        let seq_b = layout.admission_sequence(&key1, &WindowId("b".to_owned()));
+        assert!(layout.sync_focus_from_window(&key1, &WindowId("b".to_owned())));
+        let mut obs = complete_engine_obs(&layout, &[&key1, &key2]);
+        for entry in &mut obs {
+            if entry.window.0 == "b" {
+                entry.rect = frame_b;
             }
-            other => panic!("float send carries MoveToFloat, got {other:?}"),
         }
+        let ctx = PairOperationContext {
+            source_domain: &d1,
+            source_outer_gap: 0,
+            target_domain: &d2,
+            target_outer_gap: Some(0),
+            observed_focus: &WindowId("b".to_owned()),
+            observed: &obs,
+            closed: &[],
+        };
+        let outcome = layout
+            .run_pair_send(&ctx, &WindowId("b".to_owned()), follow, false)
+            .expect("exhausted send floats under default float");
+        assert_eq!(outcome.kind, PairSendKind::CapacityFloat);
+        assert_eq!(outcome.window.0, "b");
+        assert_eq!(outcome.source_output.0, "o");
+        assert_eq!(outcome.target_workspace.0, "ws-2");
         assert!(
-            crate::boundary::SendWorkspacePlan::from_session(&plan).is_some(),
-            "existing send transfer-proof gate accepts the float shape"
-        );
-        assert!(
-            plan.desired_geometry.iter().all(|g| g.window.0 != "b"),
+            outcome.geometry.iter().all(|g| g.window.0 != "b"),
             "slotless mover takes no tiled geometry: no native frame move"
         );
-        commit_plan(&mut session, &plan, "s-1");
-        assert_eq!(tiled_windows(&session), vec!["a", "d"]);
-        let record = session
-            .exception_observed()
-            .into_iter()
-            .find(|w| w.window.0 == "b")
+        assert_eq!(tiled_windows(&layout), vec!["a", "d"]);
+        let flags = layout
+            .exception_flags(&key2, &WindowId("b".to_owned()))
             .expect("mover floated");
-        assert_eq!(record.output.0, "o");
-        assert_eq!(record.workspace.0, "ws-2");
-        assert!(record.floating && !record.fullscreen && !record.maximized && !record.sticky);
-        assert!(session.is_capacity_float(&WindowId("b".to_owned())));
+        assert!(flags.floating && !flags.fullscreen && !flags.maximized && !flags.sticky);
+        assert!(layout.is_capacity_float(&key2, &WindowId("b".to_owned())));
         assert!(
-            !session.is_automatic_fixed_float(&WindowId("b".to_owned())),
+            !layout.is_automatic_fixed_float(&key2, &WindowId("b".to_owned())),
             "capacity origin stays distinct from fixed auto"
         );
         assert_eq!(
-            session.floating_geometry(&WindowId("b".to_owned())),
+            layout.exception_float_geometry(&key2, &WindowId("b".to_owned())),
             Some(frame_b),
             "exact current frame preserved verbatim"
         );
         assert_eq!(
-            session.retained_float_geometry(&WindowId("b".to_owned())),
+            layout.retained_float_geometry(&key2, &WindowId("b".to_owned())),
             Some(frame_b)
         );
         assert_eq!(
-            session.tree_for(&key2),
+            layout.tree(&key2),
             Some(&dest_tree_before),
             "destination tree untouched: no tile slot taken"
         );
         assert_eq!(
-            session.admission_sequence(&WindowId("b".to_owned())),
+            layout.admission_sequence(&key2, &WindowId("b".to_owned())),
             seq_b,
             "moves never re-sequence"
         );
         if follow {
             assert_eq!(
-                session.focus(),
-                (Some(key2), Some(leaf_of(&session, "d"))),
+                layout.focus_leaf(&key2),
+                Some(&leaf_of(&layout, &key2, "d")),
                 "follow names the target bookkeeping MRU"
             );
         } else {
             assert_eq!(
-                session.focus(),
-                (Some(key1), Some(leaf_of(&session, "a"))),
+                layout.focus_leaf(&key1),
+                Some(&leaf_of(&layout, &key1, "a")),
                 "stay falls back through the source MRU"
             );
         }
     }
 }
 
-#[test]
-fn send_float_failed_ack_preserves_source() {
-    // A staged capacity-float send withdrawn before acknowledgement
-    // commits nothing: the mover stays tiled at the source, no exception
-    // or origin leaks, focus and revision untouched.
-    let mut session = Session::new(
-        owner(),
-        generation(),
-        0,
-        7,
-        vec![
-            domain("o", "ws-1", 120, 80, 0),
-            domain("o", "ws-2", 1, 1, 0),
-        ],
-    )
-    .expect("session");
-    admit_and_commit(&mut session, "a", "o", "ws-1", placement(120, 40), "c-1");
-    admit_and_commit(&mut session, "b", "o", "ws-1", placement(120, 40), "c-2");
-    admit_and_commit(&mut session, "d", "o", "ws-2", placement(1, 1), "c-3");
-    let key1 = DomainKey {
-        output: OutputId("o".to_owned()),
-        workspace: WorkspaceId("ws-1".to_owned()),
-    };
-    assert!(session.sync_focus_from_window(&key1, &WindowId("b".to_owned())));
-    let (snapshot, focus, revision) = (
-        session.snapshot(),
-        session.focus(),
-        session.accepted_revision(),
-    );
-    let obs = complete_observation(&session, Vec::new());
-    let plan = session
-        .propose(
-            &SessionCommand::MoveToWorkspace {
-                window: WindowId("b".to_owned()),
-                target_output: OutputId("o".to_owned()),
-                target_workspace: WorkspaceId("ws-2".to_owned()),
-                follow: true,
-            },
-            &obs,
-            &correlation("s-1"),
-            &LifecycleCapabilities::full(),
-        )
-        .expect("float send stages");
-    session
-        .cancel_unacked_pending(&correlation("s-1"), plan.dispatch.base_revision)
-        .expect("withdrawn before ack");
-    assert_eq!(session.snapshot(), snapshot, "source preserved");
-    assert_eq!(session.focus(), focus);
-    assert_eq!(session.accepted_revision(), revision);
-    assert_eq!(tiled_windows(&session), vec!["a", "b", "d"]);
-    assert!(session.exception_observed().is_empty());
-    assert!(!session.is_capacity_float(&WindowId("b".to_owned())));
-}
+// Retired test: `send_float_failed_ack_preserves_source`
+// Tested `Session::cancel_unacked_pending` on the deleted two-phase
+// `propose`/`acknowledge` state machine; `WorldLayout` executes synchronously
+// with candidate atomicity (covered by refusal preservation tests).
 
 #[test]
 fn capacity_float_send_then_deferred_carries_ordinary_status() {
@@ -221,74 +136,56 @@ fn capacity_float_send_then_deferred_carries_ordinary_status() {
     // deferred path (same eligibility as an intentional float): the
     // slotless carry rehomes it with the diagnostic origin riding the
     // lifetime, and tiled survivors never reflow.
-    let mut session = Session::new(
-        owner(),
-        generation(),
-        0,
-        7,
-        vec![
-            domain("o", "ws-1", 120, 80, 0),
-            domain("o", "ws-2", 1, 1, 0),
-        ],
-    )
-    .expect("session");
-    admit_and_commit(&mut session, "a", "o", "ws-1", placement(120, 40), "c-1");
-    admit_and_commit(&mut session, "b", "o", "ws-1", placement(120, 40), "c-2");
-    admit_and_commit(&mut session, "d", "o", "ws-2", placement(1, 1), "c-3");
-    let key1 = DomainKey {
-        output: OutputId("o".to_owned()),
-        workspace: WorkspaceId("ws-1".to_owned()),
+    let mut layout = WorldLayout::new();
+    let d1 = domain("o", "ws-1", 120, 80, 0);
+    let d2 = domain("o", "ws-2", 1, 1, 0);
+    let key1 = d1.key();
+    let key2 = d2.key();
+    admit_into(&mut layout, &d1, "a", placement(120, 40));
+    admit_into(&mut layout, &d1, "b", placement(120, 40));
+    admit_into(&mut layout, &d2, "d", placement(1, 1));
+    assert!(layout.sync_focus_from_window(&key1, &WindowId("b".to_owned())));
+    let obs = complete_engine_obs(&layout, &[&key1, &key2]);
+    let ctx1 = PairOperationContext {
+        source_domain: &d1,
+        source_outer_gap: 0,
+        target_domain: &d2,
+        target_outer_gap: Some(0),
+        observed_focus: &WindowId("b".to_owned()),
+        observed: &obs,
+        closed: &[],
     };
-    assert!(session.sync_focus_from_window(&key1, &WindowId("b".to_owned())));
-    let obs = complete_observation(&session, Vec::new());
-    let plan = session
-        .propose(
-            &SessionCommand::MoveToWorkspace {
-                window: WindowId("b".to_owned()),
-                target_output: OutputId("o".to_owned()),
-                target_workspace: WorkspaceId("ws-2".to_owned()),
-                follow: true,
-            },
-            &obs,
-            &correlation("s-1"),
-            &LifecycleCapabilities::full(),
-        )
-        .expect("float send stages");
-    commit_plan(&mut session, &plan, "s-1");
-    assert!(session.is_capacity_float(&WindowId("b".to_owned())));
+    let send_out = layout
+        .run_pair_send(&ctx1, &WindowId("b".to_owned()), true, false)
+        .expect("float send succeeds");
+    assert_eq!(send_out.kind, PairSendKind::CapacityFloat);
+    assert!(layout.is_capacity_float(&key2, &WindowId("b".to_owned())));
+
     // The floated arrival carries onward like any ordinary float.
-    let obs = complete_observation(&session, Vec::new());
-    let carry = session
-        .propose(
-            &SessionCommand::MoveToWorkspace {
-                window: WindowId("b".to_owned()),
-                target_output: OutputId("o".to_owned()),
-                target_workspace: WorkspaceId("ws-1".to_owned()),
-                follow: false,
-            },
-            &obs,
-            &correlation("s-2"),
-            &LifecycleCapabilities::full(),
-        )
+    let obs = complete_engine_obs(&layout, &[&key1, &key2]);
+    let ctx2 = PairOperationContext {
+        source_domain: &d2,
+        source_outer_gap: 0,
+        target_domain: &d1,
+        target_outer_gap: Some(0),
+        observed_focus: &WindowId("b".to_owned()),
+        observed: &obs,
+        closed: &[],
+    };
+    let carry = layout
+        .run_pair_send(&ctx2, &WindowId("b".to_owned()), false, false)
         .expect("capacity float carries through the ordinary deferred path");
-    match &carry.dispatch.operation {
-        crate::contract::LifecycleOperation::MoveDeferred { window, .. } => {
-            assert_eq!(window.0, "b");
-        }
-        other => panic!("float carry stays slotless deferred, got {other:?}"),
-    }
-    commit_plan(&mut session, &carry, "s-2");
-    let record = session
-        .exception_observed()
-        .into_iter()
-        .find(|w| w.window.0 == "b")
-        .expect("still floated");
-    assert_eq!(record.workspace.0, "ws-1", "rehomed with the lifetime");
+    assert_eq!(carry.kind, PairSendKind::Deferred);
+    assert_eq!(carry.window.0, "b");
     assert!(
-        session.is_capacity_float(&WindowId("b".to_owned())),
+        layout.is_exception(&key1, &WindowId("b".to_owned())),
+        "rehomed with the lifetime"
+    );
+    assert!(
+        layout.is_capacity_float(&key1, &WindowId("b".to_owned())),
         "diagnostic origin rides the lifetime across moves"
     );
-    assert_eq!(tiled_windows(&session), vec!["a", "d"]);
+    assert_eq!(tiled_windows(&layout), vec!["a", "d"]);
 }
 
 #[test]
@@ -297,63 +194,54 @@ fn converge_batch_records_carried_admission_order_not_id_order() {
     // (carried admission order), never id order (a=0, z=1). A later
     // shrink then evicts the actual newest (a-win), not the id-first
     // window.
-    let mut session = Session::new(
-        owner(),
-        generation(),
-        0,
-        7,
-        vec![domain("o", "w", 120, 80, 0)],
-    )
-    .expect("session");
-    let obs = SessionObservation {
-        observation: Observation::new(owner(), generation(), 0, 42),
-        windows: vec![
-            tiled_observed("z-win", "o", "w"),
-            tiled_observed("a-win", "o", "w"),
-        ],
-    };
-    let counts = session
-        .converge_observation(&obs, Some(&WindowId("a-win".to_owned())))
+    let mut layout = WorldLayout::new();
+    let d = domain("o", "w", 120, 80, 0);
+    let key = d.key();
+    let counts = layout
+        .converge_fresh_domain(
+            &d,
+            0,
+            &[
+                tiled_observed("z-win", "o", "w"),
+                tiled_observed("a-win", "o", "w"),
+            ],
+            Some(&WindowId("a-win".to_owned())),
+        )
         .expect("batch converges");
     assert_eq!(
         (counts.removed, counts.admitted, counts.flags_adopted),
         (0, 2, 0)
     );
     assert_eq!(
-        session.admission_sequence(&WindowId("z-win".to_owned())),
+        layout.admission_sequence(&key, &WindowId("z-win".to_owned())),
         Some(0),
         "first in carried order takes the first sequence"
     );
     assert_eq!(
-        session.admission_sequence(&WindowId("a-win".to_owned())),
+        layout.admission_sequence(&key, &WindowId("a-win".to_owned())),
         Some(1),
         "second in carried order takes the second sequence, never id order"
     );
     // Shrink until exactly one victim must float: the actual newest.
-    let key = DomainKey {
-        output: OutputId("o".to_owned()),
-        workspace: WorkspaceId("w".to_owned()),
-    };
-    assert!(session.update_domain_gaps(
-        &key,
-        Rect {
-            x: 0,
-            y: 0,
-            w: 1,
-            h: 80
-        },
-        0
-    ));
-    assert!(session.repair_infeasible_domain(
-        &key,
-        &BTreeMap::new(),
-        &BTreeSet::new(),
-        &BTreeMap::new(),
-        true,
-    ));
-    assert_eq!(tiled_windows(&session), vec!["z-win".to_string()]);
+    let obs = complete_engine_obs(&layout, &[&key]);
+    layout
+        .update_domain_gaps(
+            &key,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 80,
+            },
+            0,
+            0,
+            &WindowId("a-win".to_owned()),
+            &obs,
+        )
+        .expect("shrink repairs");
+    assert_eq!(tiled_windows(&layout), vec!["z-win".to_string()]);
     assert!(
-        session.is_capacity_float(&WindowId("a-win".to_owned())),
+        layout.is_capacity_float(&key, &WindowId("a-win".to_owned())),
         "shrink evicts the actual newest first"
     );
 }
@@ -362,94 +250,66 @@ fn converge_batch_records_carried_admission_order_not_id_order() {
 fn clean_fit_roster_shares_one_sequence_with_identity_tiebreak() {
     // A clean-fit roster shares one admission sequence number, so later
     // victim selection breaks the tie by window identity descending.
-    use crate::directional::{Axis, WindowLink};
-    let mut session = Session::new(
-        owner(),
-        generation(),
-        0,
-        7,
-        vec![domain("o", "w", 200, 100, 0)],
-    )
-    .expect("session");
-    let tree = Node::Group {
-        id: NodeId("fit-g0".to_owned()),
-        axis: Axis::Horizontal,
-        children: vec![
-            Node::Leaf {
-                id: NodeId("fit-l0".to_owned()),
+    let mut layout = WorldLayout::new();
+    let d = domain("o", "w", 200, 100, 0);
+    let key = d.key();
+    let windows = vec![
+        engine_window(
+            "a",
+            "o",
+            "w",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 100,
             },
-            Node::Leaf {
-                id: NodeId("fit-l1".to_owned()),
+        ),
+        engine_window(
+            "b",
+            "o",
+            "w",
+            Rect {
+                x: 100,
+                y: 0,
+                w: 100,
+                h: 100,
             },
-        ],
-        shares: vec![100, 100],
-    };
-    let links = vec![
-        WindowLink {
-            window: WindowId("a".to_owned()),
-            leaf: NodeId("fit-l0".to_owned()),
-            output: OutputId("o".to_owned()),
-            workspace: WorkspaceId("w".to_owned()),
-        },
-        WindowLink {
-            window: WindowId("b".to_owned()),
-            leaf: NodeId("fit-l1".to_owned()),
-            output: OutputId("o".to_owned()),
-            workspace: WorkspaceId("w".to_owned()),
-        },
+        ),
     ];
-    let obs = complete_observation(
-        &session,
-        vec![tiled_observed("a", "o", "w"), tiled_observed("b", "o", "w")],
-    );
-    let plan = session
-        .propose_fitted_admit(
-            tree,
-            links,
-            NodeId("fit-l0".to_owned()),
-            &WindowId("a".to_owned()),
-            &OutputId("o".to_owned()),
-            &WorkspaceId("w".to_owned()),
-            &obs,
-            &correlation("f-1"),
-            &LifecycleCapabilities::full(),
-        )
-        .expect("clean fit stages");
-    commit_plan(&mut session, &plan, "f-1");
+    let fresh = layout
+        .reconcile_fresh(&d, 0, &WindowId("a".to_owned()), &windows)
+        .expect("clean fit succeeds");
+    assert_eq!(fresh.kind, FreshOutcomeKind::Fit);
     assert_eq!(
-        session.admission_sequence(&WindowId("a".to_owned())),
-        session.admission_sequence(&WindowId("b".to_owned())),
+        layout.admission_sequence(&key, &WindowId("a".to_owned())),
+        layout.admission_sequence(&key, &WindowId("b".to_owned())),
         "clean-fit roster shares one sequence number"
     );
     assert_eq!(
-        session.admission_sequence(&WindowId("a".to_owned())),
+        layout.admission_sequence(&key, &WindowId("a".to_owned())),
         Some(0)
     );
     // Shrink until one victim must float: the shared sequence ties, so
     // identity descending evicts b first.
-    let key = DomainKey {
-        output: OutputId("o".to_owned()),
-        workspace: WorkspaceId("w".to_owned()),
-    };
-    assert!(session.update_domain_gaps(
-        &key,
-        Rect {
-            x: 0,
-            y: 0,
-            w: 1,
-            h: 100
-        },
-        0
-    ));
-    assert!(session.repair_infeasible_domain(
-        &key,
-        &BTreeMap::new(),
-        &BTreeSet::new(),
-        &BTreeMap::new(),
-        true,
-    ));
-    assert_eq!(tiled_windows(&session), vec!["a".to_string()]);
-    assert!(session.is_capacity_float(&WindowId("b".to_owned())));
+    let obs = complete_engine_obs(&layout, &[&key]);
+    layout
+        .update_domain_gaps(
+            &key,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 100,
+            },
+            0,
+            0,
+            &WindowId("a".to_owned()),
+            &obs,
+        )
+        .expect("shrink repairs");
+    assert_eq!(tiled_windows(&layout), vec!["a".to_string()]);
+    assert!(layout.is_capacity_float(&key, &WindowId("b".to_owned())));
 }
 
 #[test]
@@ -457,87 +317,67 @@ fn workspace_send_preserves_global_admission_order() {
     // Transfer keeps the mover's first sequence globally: a later fresh
     // admission in either domain takes the next counter, never a
     // collision with the moved lifetime.
-    let mut session = Session::new(
-        owner(),
-        generation(),
-        0,
-        7,
-        vec![
-            domain("o", "ws-1", 120, 80, 0),
-            domain("o", "ws-2", 120, 80, 0),
-        ],
-    )
-    .expect("session");
-    admit_and_commit(&mut session, "a", "o", "ws-1", placement(120, 40), "c-1");
-    admit_and_commit(&mut session, "b", "o", "ws-1", placement(120, 40), "c-2");
-    admit_and_commit(&mut session, "d", "o", "ws-2", placement(120, 40), "c-3");
+    let mut layout = WorldLayout::new();
+    let d1 = domain("o", "ws-1", 120, 80, 0);
+    let d2 = domain("o", "ws-2", 120, 80, 0);
+    let key1 = d1.key();
+    let key2 = d2.key();
+    admit_into(&mut layout, &d1, "a", placement(120, 40));
+    admit_into(&mut layout, &d1, "b", placement(120, 40));
+    admit_into(&mut layout, &d2, "d", placement(120, 40));
     assert_eq!(
-        session.admission_sequence(&WindowId("b".to_owned())),
+        layout.admission_sequence(&key1, &WindowId("b".to_owned())),
         Some(1)
     );
-    let key1 = DomainKey {
-        output: OutputId("o".to_owned()),
-        workspace: WorkspaceId("ws-1".to_owned()),
+    assert!(layout.sync_focus_from_window(&key1, &WindowId("b".to_owned())));
+    let obs = complete_engine_obs(&layout, &[&key1, &key2]);
+    let ctx = PairOperationContext {
+        source_domain: &d1,
+        source_outer_gap: 0,
+        target_domain: &d2,
+        target_outer_gap: Some(0),
+        observed_focus: &WindowId("b".to_owned()),
+        observed: &obs,
+        closed: &[],
     };
-    assert!(session.sync_focus_from_window(&key1, &WindowId("b".to_owned())));
-    let obs = complete_observation(&session, Vec::new());
-    let plan = session
-        .propose(
-            &SessionCommand::MoveToWorkspace {
-                window: WindowId("b".to_owned()),
-                target_output: OutputId("o".to_owned()),
-                target_workspace: WorkspaceId("ws-2".to_owned()),
-                follow: true,
-            },
-            &obs,
-            &correlation("s-1"),
-            &LifecycleCapabilities::full(),
-        )
-        .expect("send plans");
-    commit_plan(&mut session, &plan, "s-1");
+    layout
+        .run_pair_send(&ctx, &WindowId("b".to_owned()), true, false)
+        .expect("send succeeds");
     assert_eq!(
-        session.admission_sequence(&WindowId("b".to_owned())),
+        layout.admission_sequence(&key2, &WindowId("b".to_owned())),
         Some(1),
         "transfer keeps the first sequence"
     );
-    admit_and_commit(&mut session, "c", "o", "ws-1", placement(120, 40), "c-4");
+    admit_into(&mut layout, &d1, "c", placement(120, 40));
     assert_eq!(
-        session.admission_sequence(&WindowId("c".to_owned())),
+        layout.admission_sequence(&key1, &WindowId("c".to_owned())),
         Some(3),
         "fresh admission advances the global counter past the moved lifetime"
     );
     assert_eq!(
-        session.admission_sequence(&WindowId("d".to_owned())),
+        layout.admission_sequence(&key2, &WindowId("d".to_owned())),
         Some(2)
     );
 }
 
 #[test]
 fn send_to_float_same_output_keeps_native_live_frame() {
-    // MED-2: the engine-carried native live frame is the exact current
+    // MED-2: the carried native live frame is the exact current
     // native frame. It wins over the projected allocation (which can
     // differ under B6/clamped hints) instead of assuming equality.
-    let mut session = Session::new(
-        owner(),
-        generation(),
-        0,
-        7,
-        vec![
-            domain("o", "ws-1", 120, 80, 0),
-            domain("o", "ws-2", 1, 1, 0),
-        ],
-    )
-    .expect("session");
-    admit_and_commit(&mut session, "a", "o", "ws-1", placement(120, 40), "c-1");
-    let b_plan = admit_and_commit(&mut session, "b", "o", "ws-1", placement(120, 40), "c-2");
-    let allocation = b_plan
-        .desired_geometry
+    let mut layout = WorldLayout::new();
+    let d1 = domain("o", "ws-1", 120, 80, 0);
+    let d2 = domain("o", "ws-2", 1, 1, 0);
+    let key1 = d1.key();
+    let key2 = d2.key();
+    admit_into(&mut layout, &d1, "a", placement(120, 40));
+    let b_geom = admit_into(&mut layout, &d1, "b", placement(120, 40));
+    let allocation = b_geom
         .iter()
         .find(|g| g.window.0 == "b")
         .expect("b projected at admission")
         .rect;
-    admit_and_commit(&mut session, "d", "o", "ws-2", placement(1, 1), "c-3");
-    // A live frame the allocation never equals (discriminating input).
+    admit_into(&mut layout, &d2, "d", placement(1, 1));
     let live = Rect {
         x: 1,
         y: 2,
@@ -545,46 +385,38 @@ fn send_to_float_same_output_keeps_native_live_frame() {
         h: 30,
     };
     assert_ne!(live, allocation, "live frame differs from the allocation");
-    let key1 = DomainKey {
-        output: OutputId("o".to_owned()),
-        workspace: WorkspaceId("ws-1".to_owned()),
+    assert!(layout.sync_focus_from_window(&key1, &WindowId("b".to_owned())));
+    let mut obs = complete_engine_obs(&layout, &[&key1, &key2]);
+    for entry in &mut obs {
+        if entry.window.0 == "b" {
+            entry.rect = live;
+        }
+    }
+    let ctx = PairOperationContext {
+        source_domain: &d1,
+        source_outer_gap: 0,
+        target_domain: &d2,
+        target_outer_gap: Some(0),
+        observed_focus: &WindowId("b".to_owned()),
+        observed: &obs,
+        closed: &[],
     };
-    assert!(session.sync_focus_from_window(&key1, &WindowId("b".to_owned())));
-    let obs = complete_observation(&session, Vec::new());
-    let plan = session
-        .propose_send_with_live_frame(
-            &SessionCommand::MoveToWorkspace {
-                window: WindowId("b".to_owned()),
-                target_output: OutputId("o".to_owned()),
-                target_workspace: WorkspaceId("ws-2".to_owned()),
-                follow: true,
-            },
-            &obs,
-            &correlation("s-1"),
-            &LifecycleCapabilities::full(),
-            Some(live),
-        )
+    let out = layout
+        .run_pair_send(&ctx, &WindowId("b".to_owned()), true, false)
         .expect("exhausted send floats");
+    assert_eq!(out.kind, PairSendKind::CapacityFloat);
     assert!(
-        matches!(
-            &plan.dispatch.operation,
-            crate::contract::LifecycleOperation::MoveToFloat { .. }
-        ),
-        "exhausted destination capacity-floats"
-    );
-    assert!(
-        plan.desired_geometry.iter().all(|g| g.window.0 != "b"),
+        out.geometry.iter().all(|g| g.window.0 != "b"),
         "slotless mover takes no tiled geometry"
     );
-    commit_plan(&mut session, &plan, "s-1");
-    assert!(session.is_capacity_float(&WindowId("b".to_owned())));
+    assert!(layout.is_capacity_float(&key2, &WindowId("b".to_owned())));
     assert_eq!(
-        session.floating_geometry(&WindowId("b".to_owned())),
+        layout.exception_float_geometry(&key2, &WindowId("b".to_owned())),
         Some(live),
         "same-output float keeps the exact native live frame"
     );
     assert_eq!(
-        session.retained_float_geometry(&WindowId("b".to_owned())),
+        layout.retained_float_geometry(&key2, &WindowId("b".to_owned())),
         Some(live)
     );
 }
@@ -620,145 +452,105 @@ fn send_to_float_cross_output_stages_no_source_coordinate_claim() {
         gap: 0,
         adjacent: BTreeMap::new(),
     };
-    let mut session = Session::new(owner(), generation(), 0, 7, vec![out1, out2]).expect("session");
-    admit_and_commit(&mut session, "m", "out-1", "ws", placement(120, 40), "c-1");
-    admit_and_commit(&mut session, "t", "out-2", "ws", placement(1, 1), "c-2");
-    let src = DomainKey {
-        output: OutputId("out-1".to_owned()),
-        workspace: WorkspaceId("ws".to_owned()),
-    };
-    let target_key = DomainKey {
-        output: OutputId("out-2".to_owned()),
-        workspace: WorkspaceId("ws".to_owned()),
-    };
-    let dest_tree_before = session.tree_for(&target_key).expect("target tree").clone();
-    assert!(session.sync_focus_from_window(&src, &WindowId("m".to_owned())));
-    let obs = complete_observation(&session, Vec::new());
-    // A source-coordinate live frame must not leak into the target,
-    // with or without a carried frame.
-    for (corr, live) in [
-        (
-            "x-1",
-            Some(Rect {
+    let mut layout = WorldLayout::new();
+    admit_into(&mut layout, &out1, "m", placement(120, 40));
+    admit_into(&mut layout, &out2, "t", placement(1, 1));
+    let src = out1.key();
+    let target_key = out2.key();
+    let dest_tree_before = layout.tree(&target_key).expect("target tree").clone();
+    assert!(layout.sync_focus_from_window(&src, &WindowId("m".to_owned())));
+    let mut obs = complete_engine_obs(&layout, &[&src, &target_key]);
+    for entry in &mut obs {
+        if entry.window.0 == "m" {
+            entry.rect = Rect {
                 x: 0,
                 y: 0,
                 w: 120,
                 h: 80,
-            }),
-        ),
-        ("x-2", None),
-    ] {
-        let mut probe = session.clone();
-        let plan = probe
-            .propose_send_with_live_frame(
-                &SessionCommand::MoveToOutput {
-                    window: WindowId("m".to_owned()),
-                    target_output: OutputId("out-2".to_owned()),
-                    target_workspace: WorkspaceId("ws".to_owned()),
-                    follow: true,
-                },
-                &obs,
-                &correlation(corr),
-                &LifecycleCapabilities::full(),
-                live,
-            )
-            .expect("exhausted cross-output send floats");
-        assert!(
-            matches!(
-                &plan.dispatch.operation,
-                crate::contract::LifecycleOperation::MoveToFloat { .. }
-            ),
-            "exhausted destination capacity-floats"
-        );
-        commit_plan(&mut probe, &plan, corr);
-        assert_eq!(tiled_windows(&probe), vec!["t".to_string()]);
-        assert!(probe.is_capacity_float(&WindowId("m".to_owned())));
-        assert_eq!(
-            probe.floating_geometry(&WindowId("m".to_owned())),
-            None,
-            "no source-coordinate claim at the target (live={live:?})"
-        );
-        assert_eq!(
-            probe.retained_float_geometry(&WindowId("m".to_owned())),
-            None
-        );
-        let record = probe
-            .exception_observed()
-            .into_iter()
-            .find(|w| w.window.0 == "m")
-            .expect("mover floated");
-        assert_eq!(record.output.0, "out-2", "homed at the target");
-        assert_eq!(
-            probe.tree_for(&target_key),
-            Some(&dest_tree_before),
-            "destination tree untouched"
-        );
+            };
+        }
     }
+    let ctx = PairOperationContext {
+        source_domain: &out1,
+        source_outer_gap: 0,
+        target_domain: &out2,
+        target_outer_gap: Some(0),
+        observed_focus: &WindowId("m".to_owned()),
+        observed: &obs,
+        closed: &[],
+    };
+    let out = layout
+        .run_pair_send(&ctx, &WindowId("m".to_owned()), true, true)
+        .expect("exhausted cross-output send floats");
+    assert_eq!(out.kind, PairSendKind::CapacityFloat);
+    assert_eq!(tiled_windows(&layout), vec!["t".to_string()]);
+    assert!(layout.is_capacity_float(&target_key, &WindowId("m".to_owned())));
+    assert_eq!(
+        layout.exception_float_geometry(&target_key, &WindowId("m".to_owned())),
+        None,
+        "no source-coordinate claim at the target"
+    );
+    assert_eq!(
+        layout.retained_float_geometry(&target_key, &WindowId("m".to_owned())),
+        None
+    );
+    assert!(layout.is_exception(&target_key, &WindowId("m".to_owned())));
+    assert_eq!(
+        layout.tree(&target_key),
+        Some(&dest_tree_before),
+        "destination tree untouched"
+    );
 }
 
 #[test]
 fn send_to_output_refused_when_target_unknown_source_preserved() {
     // Unavailable remap target: the output send refuses UnknownDomain
     // with the source exactly preserved and no re-sequencing.
-    let mut session = Session::new(
-        owner(),
-        generation(),
-        0,
-        7,
-        vec![
-            domain("o1", "ws", 120, 80, 0),
-            domain("o2", "ws", 120, 80, 0),
-        ],
-    )
-    .expect("session");
-    admit_and_commit(&mut session, "a", "o1", "ws", placement(120, 40), "c-1");
-    admit_and_commit(&mut session, "b", "o1", "ws", placement(120, 40), "c-2");
-    let seq_b = session.admission_sequence(&WindowId("b".to_owned()));
-    let key1 = DomainKey {
-        output: OutputId("o1".to_owned()),
-        workspace: WorkspaceId("ws".to_owned()),
-    };
-    assert!(session.sync_focus_from_window(&key1, &WindowId("b".to_owned())));
-    let (snapshot, focus, revision) = (
-        session.snapshot(),
-        session.focus(),
-        session.accepted_revision(),
+    let mut layout = WorldLayout::new();
+    let d1 = domain("o1", "ws", 120, 80, 0);
+    let d2 = domain("o2", "ws", 120, 80, 0);
+    let d9 = domain("o9", "ws", 120, 80, 0);
+    let key1 = d1.key();
+    let key2 = d2.key();
+    admit_into(&mut layout, &d1, "a", placement(120, 40));
+    admit_into(&mut layout, &d1, "b", placement(120, 40));
+    admit_into(&mut layout, &d2, "c", placement(120, 40));
+    let seq_b = layout.admission_sequence(&key1, &WindowId("b".to_owned()));
+    assert!(layout.sync_focus_from_window(&key1, &WindowId("b".to_owned())));
+    let (tree_before, focus_before, rev_before) = (
+        layout.tree(&key1).cloned(),
+        layout.focus_leaf(&key1).cloned(),
+        layout.accepted_revision(&key1),
     );
-    let obs = complete_observation(&session, Vec::new());
-    let err = session
-        .propose_send_with_live_frame(
-            &SessionCommand::MoveToOutput {
-                window: WindowId("b".to_owned()),
-                target_output: OutputId("o9".to_owned()),
-                target_workspace: WorkspaceId("ws".to_owned()),
-                follow: true,
-            },
-            &obs,
-            &correlation("x-1"),
-            &LifecycleCapabilities::full(),
-            Some(Rect {
-                x: 0,
-                y: 0,
-                w: 60,
-                h: 80,
-            }),
-        )
+    let obs = complete_engine_obs(&layout, &[&key1, &key2]);
+    let ctx = PairOperationContext {
+        source_domain: &d1,
+        source_outer_gap: 0,
+        target_domain: &d9,
+        target_outer_gap: Some(0),
+        observed_focus: &WindowId("b".to_owned()),
+        observed: &obs,
+        closed: &[],
+    };
+    let err = layout
+        .run_pair_send(&ctx, &WindowId("b".to_owned()), true, true)
         .expect_err("unknown target refuses");
     assert_eq!(
         err,
-        crate::session::ProposeError::Refused(crate::session::RefusalKind::UnknownDomain)
+        PairOperationFailure::Layout(LayoutFailure::Semantics(
+            crate::session::RefusalKind::UnknownDomain
+        ))
     );
-    assert_eq!(session.snapshot(), snapshot, "source preserved");
-    assert_eq!(session.focus(), focus);
-    assert_eq!(session.accepted_revision(), revision);
-    assert!(!session.has_pending() && !session.has_pending_desired());
+    assert_eq!(layout.tree(&key1), tree_before.as_ref(), "source preserved");
+    assert_eq!(layout.focus_leaf(&key1), focus_before.as_ref());
+    assert_eq!(layout.accepted_revision(&key1), rev_before);
     assert_eq!(
-        session.admission_sequence(&WindowId("b".to_owned())),
+        layout.admission_sequence(&key1, &WindowId("b".to_owned())),
         seq_b,
         "refusal never re-sequences"
     );
     assert!(
-        session.exception_observed().is_empty(),
+        layout.all_exception_windows().next().is_none(),
         "no fake float staged"
     );
 }

@@ -556,3 +556,13 @@
   involving command-result and frame-setter vocabulary. Native sources are
   unchanged; baseline failure status has not been verified. These host checks
   do not establish native-target caller compilation.
+- Retained convergence, admission, reconciliation, minimize/restore and gap
+  repair tests now use typed layout operations. Across 16 test/helper files,
+  155 tests become 122: 30 obsolete reconciler-handshake tests and three
+  pending cancellation/divergence tests retire with the deleted machines.
+  Remaining assertions retain admission order, provenance, refusal atomicity,
+  restore-slot cleanup and independent-domain behavior. Typed-ID bounds and
+  portable-import checks remain; a direct integration spot check passes both.
+  Scoped formatting passes. Internal migrated tests are not yet executed:
+  other standalone and integration rigs still prevent full test compilation.
+  Removed embedded coverage also still requires semantic reconciliation.

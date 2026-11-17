@@ -4,21 +4,11 @@
 
 use std::collections::BTreeMap;
 
-use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
-use crate::engine::Engine;
 use crate::geometry::Rect;
-use crate::ids::{CorrelationId, GenerationId, OwnerId};
 use crate::seed::EngineWindow;
 use crate::session::OutputDomain;
-
-fn owner() -> OwnerId {
-    OwnerId::parse("owner-1").unwrap()
-}
-
-fn generation() -> GenerationId {
-    GenerationId::parse("gen-1").unwrap()
-}
+use crate::world_layout::{RetainedProjectionOutcome, WorldLayout};
 
 fn domain(output: &str, workspace: &str) -> OutputDomain {
     OutputDomain {
@@ -52,116 +42,84 @@ fn window(id: &str, output: &str, workspace: &str, x: i32, w: i32) -> EngineWind
     }
 }
 
-fn event(
-    domain: &OutputDomain,
-    windows: Vec<EngineWindow>,
-    focused: &str,
-    correlation: &str,
-    command: CoreCommand,
-) -> CoreEvent {
-    CoreEvent {
-        owner: owner(),
-        generation: generation(),
-        correlation: CorrelationId::parse(correlation).unwrap(),
-        revision: 0,
-        fingerprint: 7,
-        domain_key: domain.key(),
-        domain: domain.clone(),
-        outer_gap: 0,
-        focused_window: WindowId(focused.into()),
-        windows,
-        directional: None,
-        directional_target_outer_gap: None,
-        target_domain: None,
-        target_windows: vec![],
-        closed_windows: vec![],
-        command,
-    }
+enum ReconcileKind {
+    Fresh(RetainedProjectionOutcome),
+    Retained(RetainedProjectionOutcome),
 }
 
 fn reconcile(
+    layout: &mut WorldLayout,
     domain: &OutputDomain,
-    windows: Vec<EngineWindow>,
+    windows: &[EngineWindow],
     focused: &str,
-    correlation: &str,
-) -> CoreEvent {
-    event(
-        domain,
-        windows,
-        focused,
-        correlation,
-        CoreCommand::Reconcile,
-    )
-}
-
-fn release(
-    domain: &OutputDomain,
-    windows: Vec<EngineWindow>,
-    focused: &str,
-    correlation: &str,
-) -> CoreEvent {
-    event(
-        domain,
-        windows,
-        focused,
-        correlation,
-        CoreCommand::ReleaseDomain,
-    )
-}
-
-fn tiled_geometry(reply: CoreReply) -> Vec<(String, Rect)> {
-    match reply {
-        CoreReply::Tiled(plan) => plan
-            .geometry
-            .iter()
-            .map(|g| (g.window.0.clone(), g.rect))
-            .collect(),
-        other => panic!("expected tiled plan, got {other:?}"),
+) -> ReconcileKind {
+    let key = domain.key();
+    let focus = WindowId(focused.into());
+    match layout
+        .reconcile_retained(&key, domain.bounds, domain.gap, 0, &focus, windows, &[])
+        .expect("retained reconcile succeeds")
+    {
+        Some(proj) => ReconcileKind::Retained(proj),
+        None => ReconcileKind::Fresh(
+            layout
+                .reconcile_fresh(domain, 0, &focus, windows)
+                .expect("fresh reconcile succeeds")
+                .projection,
+        ),
     }
+}
+
+fn tiled_geometry(proj: RetainedProjectionOutcome) -> Vec<(String, Rect)> {
+    proj.geometry
+        .into_iter()
+        .map(|g| (g.window.0, g.rect))
+        .collect()
 }
 
 #[test]
 fn release_then_fresh_reconcile_readopts_current_geometry() {
-    let mut engine = Engine::new();
-    engine.sync_binding(&owner(), &generation());
+    let mut layout = WorldLayout::new();
     let home = domain("out-1", "ws-1");
     let current = vec![
         window("win-a1", "out-1", "ws-1", 0, 600),
         window("win-a2", "out-1", "ws-1", 600, 600),
     ];
-    let planned =
-        tiled_geometry(engine.handle(&reconcile(&home, current.clone(), "win-a2", "rel-seed-1")));
+    let planned = match reconcile(&mut layout, &home, &current, "win-a2") {
+        ReconcileKind::Fresh(proj) => tiled_geometry(proj),
+        other => panic!(
+            "expected fresh adoption, got retained {:?}",
+            match other {
+                ReconcileKind::Retained(p) => p,
+                ReconcileKind::Fresh(_) => unreachable!(),
+            }
+        ),
+    };
     assert_eq!(planned.len(), 2);
-    assert!(engine.contains(&home.key()));
+    assert!(layout.contains_domain(&home.key()));
 
-    match engine.handle(&release(&home, current.clone(), "win-a2", "rel-drop-1")) {
-        CoreReply::Released => {}
-        other => panic!("expected release, got {other:?}"),
-    }
-    assert!(!engine.contains(&home.key()));
+    layout.drop_domain(&home.key());
+    assert!(!layout.contains_domain(&home.key()));
 
     // Repeat release is idempotent: still released, still absent.
-    match engine.handle(&release(&home, current.clone(), "win-a2", "rel-drop-2")) {
-        CoreReply::Released => {}
-        other => panic!("expected idempotent release, got {other:?}"),
-    }
-    assert!(!engine.contains(&home.key()));
+    layout.drop_domain(&home.key());
+    assert!(!layout.contains_domain(&home.key()));
 
     // Ordinary fresh reconcile re-adopts the carried current geometry
     // through the existing fit instead of the seed spiral.
-    let mut readapted =
-        tiled_geometry(engine.handle(&reconcile(&home, current.clone(), "win-a2", "rel-fresh-1")));
+    let mut readapted = match reconcile(&mut layout, &home, &current, "win-a2") {
+        ReconcileKind::Fresh(proj) => tiled_geometry(proj),
+        ReconcileKind::Retained(p) => panic!("expected fresh adoption, got retained {p:?}"),
+    };
     readapted.sort_by(|a, b| a.0.cmp(&b.0));
     let mut expected = planned;
     expected.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(readapted, expected);
-    assert!(engine.contains(&home.key()));
+    assert!(layout.contains_domain(&home.key()));
 }
 
 #[test]
 fn release_leaves_independent_domain_untouched() {
-    let mut engine = Engine::new();
-    engine.sync_binding(&owner(), &generation());
+    let mut layout = WorldLayout::new();
     let home = domain("out-1", "ws-1");
     let away = domain("out-2", "ws-1");
     let home_windows = vec![
@@ -169,54 +127,33 @@ fn release_leaves_independent_domain_untouched() {
         window("win-a2", "out-1", "ws-1", 600, 600),
     ];
     let away_windows = vec![window("win-b1", "out-2", "ws-1", 0, 1200)];
-    tiled_geometry(engine.handle(&reconcile(
-        &home,
-        home_windows.clone(),
-        "win-a2",
-        "rel-two-1",
-    )));
-    tiled_geometry(engine.handle(&reconcile(
-        &away,
-        away_windows.clone(),
-        "win-b1",
-        "rel-two-2",
-    )));
+    reconcile(&mut layout, &home, &home_windows, "win-a2");
+    reconcile(&mut layout, &away, &away_windows, "win-b1");
 
-    let before = match engine.handle(&reconcile(
-        &away,
-        away_windows.clone(),
-        "win-b1",
-        "rel-two-3",
-    )) {
-        CoreReply::Projection(plan) => plan.geometry,
-        other => panic!("expected retained projection for untouched domain, got {other:?}"),
+    let before = match reconcile(&mut layout, &away, &away_windows, "win-b1") {
+        ReconcileKind::Retained(plan) => plan.geometry,
+        ReconcileKind::Fresh(p) => {
+            panic!("expected retained projection for untouched domain, got fresh {p:?}")
+        }
     };
 
-    match engine.handle(&release(&home, home_windows.clone(), "win-a2", "rel-two-4")) {
-        CoreReply::Released => {}
-        other => panic!("expected release, got {other:?}"),
-    }
-    assert!(!engine.contains(&home.key()));
-    assert!(engine.contains(&away.key()));
+    layout.drop_domain(&home.key());
+    assert!(!layout.contains_domain(&home.key()));
+    assert!(layout.contains_domain(&away.key()));
 
-    match engine.handle(&reconcile(
-        &away,
-        away_windows.clone(),
-        "win-b1",
-        "rel-two-5",
-    )) {
-        CoreReply::Projection(plan) => assert_eq!(plan.geometry, before),
-        other => panic!("independent domain must keep projecting, got {other:?}"),
+    match reconcile(&mut layout, &away, &away_windows, "win-b1") {
+        ReconcileKind::Retained(plan) => assert_eq!(plan.geometry, before),
+        ReconcileKind::Fresh(p) => {
+            panic!("independent domain must keep projecting, got fresh {p:?}")
+        }
     }
 
     // The released domain fresh-adopts on its next ordinary reconcile.
-    let readapted = tiled_geometry(engine.handle(&reconcile(
-        &home,
-        home_windows.clone(),
-        "win-a2",
-        "rel-two-6",
-    )));
+    let readapted = match reconcile(&mut layout, &home, &home_windows, "win-a2") {
+        ReconcileKind::Fresh(proj) => tiled_geometry(proj),
+        ReconcileKind::Retained(p) => panic!("expected fresh adoption, got retained {p:?}"),
+    };
     assert_eq!(readapted.len(), 2);
-    assert!(engine.contains(&home.key()));
-    assert!(engine.contains(&away.key()));
+    assert!(layout.contains_domain(&home.key()));
+    assert!(layout.contains_domain(&away.key()));
 }

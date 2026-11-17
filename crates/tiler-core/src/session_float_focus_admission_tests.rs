@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
 //! R-INS-05 float-focus admission + R-CLOSE-02 fresh-reopen fixtures (0.1 triage D05/D07).
 //!
-//! Verification-only characterization of the shared Engine route in a
+//! Verification-only characterization of the shared layout route in a
 //! 120x80 test domain (gap 0):
-//! - float-focus convergence: `converge_observation` with `focused_window = F`
+//! - float-focus convergence: `converge_domain` with `focused_window = F`
 //!   (ordinary float exception) admits C at the retained tiled focus B as
 //!   nested `V[B,C]` (`H[A,V[B,C]]`; A keeps its 60x80 half, B/C take 60x40
 //!   each); the float is preserved and the retained focus stays B until
@@ -14,32 +14,13 @@
 //!   (`H[A,V[C,D]]`, newcomer focus), never an old-slot restore; survivor
 //!   ratio rescale is not asserted here.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::boundary::{ProjectionKind, project_retained_tiled_geometry};
-use crate::contract::{
-    AckOutcome, AdapterAck, LifecycleCapabilities, LifecyclePostObservation, Observation,
-};
 use crate::directional::{Axis, Node, NodeId, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
-use crate::ids::{CorrelationId, GenerationId, OwnerId};
-use crate::session::{
-    DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, Session, SessionCommand,
-    SessionObservation, SessionPlan,
-};
+use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, OutputDomain};
 use crate::size_hints::WindowSizeHints;
-
-fn owner() -> OwnerId {
-    OwnerId::parse("owner-1").expect("valid")
-}
-
-fn generation() -> GenerationId {
-    GenerationId::parse("gen-1").expect("valid")
-}
-
-fn correlation(value: &str) -> CorrelationId {
-    CorrelationId::parse(value).unwrap_or_else(|| panic!("valid correlation {value}"))
-}
+use crate::world_layout::{AdmissionOutcome, WorldLayout};
 
 fn domain(output: &str, workspace: &str, w: i32, h: i32) -> OutputDomain {
     OutputDomain {
@@ -47,19 +28,15 @@ fn domain(output: &str, workspace: &str, w: i32, h: i32) -> OutputDomain {
         workspace: WorkspaceId(workspace.to_owned()),
         bounds: Rect { x: 0, y: 0, w, h },
         gap: 0,
-        adjacent: std::collections::BTreeMap::new(),
+        adjacent: BTreeMap::new(),
     }
 }
 
-fn single_domain_session() -> Session {
-    Session::new(
-        owner(),
-        generation(),
-        0,
-        7,
-        vec![domain("out-1", "ws-1", 120, 80)],
-    )
-    .expect("session")
+fn domain_key(output: &str, workspace: &str) -> DomainKey {
+    DomainKey {
+        output: OutputId(output.to_owned()),
+        workspace: WorkspaceId(workspace.to_owned()),
+    }
 }
 
 fn tiled_observed(window: &str, output: &str, workspace: &str) -> ObservedWindow {
@@ -92,175 +69,146 @@ fn float_observed(window: &str, output: &str, workspace: &str) -> ObservedWindow
     }
 }
 
-/// Complete pre-observation for the session state plus optional extra entries.
-/// Revision always tracks the session accepted revision.
-fn complete_observation(session: &Session, extra: Vec<ObservedWindow>) -> SessionObservation {
-    let mut windows: Vec<ObservedWindow> = session
-        .snapshot()
-        .windows
-        .iter()
-        .map(|link| ObservedWindow {
-            window: link.window.clone(),
-            output: link.output.clone(),
-            workspace: link.workspace.clone(),
-            floating: false,
-            fullscreen: false,
-            maximized: false,
-            sticky: false,
+/// Complete observed window list for the domain plus optional extra entries.
+fn complete_observed(
+    layout: &WorldLayout,
+    key: &DomainKey,
+    extra: Vec<ObservedWindow>,
+) -> Vec<ObservedWindow> {
+    let mut windows: Vec<ObservedWindow> = layout
+        .tiled_windows(key)
+        .map(|w| tiled_observed(&w.0, &key.output.0, &key.workspace.0))
+        .collect();
+    for (w, flags) in layout.exception_windows_with_flags(key) {
+        windows.push(ObservedWindow {
+            window: w.clone(),
+            output: key.output.clone(),
+            workspace: key.workspace.clone(),
+            floating: flags.floating,
+            fullscreen: flags.fullscreen,
+            maximized: flags.maximized,
+            sticky: flags.sticky,
             fixed_auto: false,
             fixed_suppress: false,
             hints: WindowSizeHints::none(),
-        })
-        .collect();
-    windows.extend(session.exception_observed());
+        });
+    }
     windows.extend(extra);
     windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
     windows.dedup_by(|a, b| a.window == b.window);
-    SessionObservation {
-        observation: Observation::new(
-            owner(),
-            generation(),
-            session.accepted_revision(),
-            100 + session.accepted_revision(),
-        ),
-        windows,
-    }
+    windows
 }
 
 fn admit_with_placement(
-    session: &mut Session,
+    layout: &mut WorldLayout,
+    key: &DomainKey,
+    d: &OutputDomain,
     window: &str,
-    output: &str,
-    workspace: &str,
     placement_bounds: Rect,
-    corr: &str,
-) -> SessionPlan {
-    let extra = vec![tiled_observed(window, output, workspace)];
-    let obs = complete_observation(session, extra);
-    let base = session.accepted_revision();
-    let command = SessionCommand::Admit {
-        window: WindowId(window.to_owned()),
-        output: OutputId(output.to_owned()),
-        workspace: WorkspaceId(workspace.to_owned()),
-        exceptions: ExceptionFlags::none(),
-        exception_behavior: None,
-        placement_bounds,
-        suppress_fixed_float: false,
-    };
-    let plan = session
-        .propose(
-            &command,
-            &obs,
-            &correlation(corr),
-            &LifecycleCapabilities::full(),
-        )
-        .unwrap_or_else(|e| panic!("admit {window} proposes: {e:?}"));
-    session
-        .acknowledge(&AdapterAck::new(
-            correlation(corr),
-            owner(),
-            generation(),
-            base,
-            AckOutcome::Accepted,
-        ))
-        .expect("ack");
-    let post = LifecyclePostObservation::new(
-        Observation::new(owner(), generation(), base, 200 + base),
-        correlation(corr),
-        true,
-        plan.dispatch.preconditions.clone(),
-        plan.dispatch.operation.clone(),
-    );
-    session.verify_lifecycle(&post).expect("commit");
-    plan
-}
-
-fn remove_and_commit(session: &mut Session, window: &str, corr: &str) {
-    let obs = complete_observation(session, Vec::new());
-    let base = session.accepted_revision();
-    let plan = session
-        .propose(
-            &SessionCommand::Remove {
-                window: WindowId(window.to_owned()),
-            },
-            &obs,
-            &correlation(corr),
-            &LifecycleCapabilities::full(),
-        )
-        .unwrap_or_else(|e| panic!("remove {window} proposes: {e:?}"));
-    session
-        .acknowledge(&AdapterAck::new(
-            correlation(corr),
-            owner(),
-            generation(),
-            base,
-            AckOutcome::Accepted,
-        ))
-        .expect("ack");
-    let post = LifecyclePostObservation::new(
-        Observation::new(owner(), generation(), base, 300 + base),
-        correlation(corr),
-        true,
-        plan.dispatch.preconditions.clone(),
-        plan.dispatch.operation.clone(),
-    );
-    session.verify_lifecycle(&post).expect("commit");
-}
-
-fn domain_key(output: &str, workspace: &str) -> DomainKey {
-    DomainKey {
-        output: OutputId(output.to_owned()),
-        workspace: WorkspaceId(workspace.to_owned()),
+) -> AdmissionOutcome {
+    let win_obs = tiled_observed(window, &key.output.0, &key.workspace.0);
+    if !layout.contains_domain(key) {
+        let win_id = WindowId(window.to_owned());
+        layout
+            .converge_fresh_domain(d, 0, &[win_obs], Some(&win_id))
+            .expect("fresh domain seed");
+        return AdmissionOutcome {
+            base_revision: 0,
+            revision: layout.accepted_revision(key),
+            admitted_leaf: layout.focus_leaf(key).cloned(),
+            geometry: layout
+                .project_retained_tiled_geometry(key, d.bounds, d.gap, &BTreeMap::new(), &[])
+                .unwrap_or_default(),
+        };
     }
+    let obs = complete_observed(layout, key, vec![win_obs]);
+    layout
+        .admit_window(
+            key,
+            &WindowId(window.to_owned()),
+            ExceptionFlags::none(),
+            None,
+            placement_bounds,
+            false,
+            false,
+            &obs,
+        )
+        .unwrap_or_else(|e| panic!("admit {window} fails: {e:?}"))
+}
+
+fn remove_window(layout: &mut WorldLayout, key: &DomainKey, window: &str) {
+    let target = WindowId(window.to_owned());
+    let obs: Vec<ObservedWindow> = complete_observed(layout, key, Vec::new())
+        .into_iter()
+        .filter(|entry| entry.window != target)
+        .collect();
+    let mut closed = BTreeSet::new();
+    closed.insert(target);
+    layout
+        .converge_domain(key, &obs, None, &closed)
+        .unwrap_or_else(|e| panic!("remove {window} fails: {e:?}"));
 }
 
 #[test]
 fn float_focus_convergence_admits_newcomer_at_prior_tiled_focus() {
     // R-INS-05 retained-route characterization on the unchanged policy: the
     // native signal is `focused_window = F` (ordinary float exception)
-    // through the actual Engine reconciliation primitive. Float focus never
+    // through the actual convergence primitive. Float focus never
     // takes tile focus, so C tiles at the retained tiled focus B under the
     // ordinary long-edge rule (B is 60x80 tall, so Vertical): `H[A,V[B,C]]`
     // with A keeping its half. The retained focus stays B, and F is
     // preserved. A later observation with native focus on C syncs focus to
     // the newcomer.
-    let mut session = single_domain_session();
+    let mut layout = WorldLayout::new();
+    let d = domain("out-1", "ws-1", 120, 80);
+    let key = domain_key("out-1", "ws-1");
     let wide = Rect {
         x: 0,
         y: 0,
         w: 120,
         h: 80,
     };
-    admit_with_placement(&mut session, "win-a", "out-1", "ws-1", wide, "conv-a");
-    admit_with_placement(&mut session, "win-b", "out-1", "ws-1", wide, "conv-b");
+    admit_with_placement(&mut layout, &key, &d, "win-a", wide);
+    admit_with_placement(&mut layout, &key, &d, "win-b", wide);
 
     // Float F appears with native focus on it.
-    let counts = session
-        .converge_observation(
-            &complete_observation(&session, vec![float_observed("win-f", "out-1", "ws-1")]),
+    let obs_f = complete_observed(
+        &layout,
+        &key,
+        vec![float_observed("win-f", "out-1", "ws-1")],
+    );
+    let counts = layout
+        .converge_domain(
+            &key,
+            &obs_f,
             Some(&WindowId("win-f".to_owned())),
+            &BTreeSet::new(),
         )
         .expect("float converges");
     assert_eq!(counts.flags_adopted, 1);
-    assert!(session.is_exception(&WindowId("win-f".to_owned())));
+    assert!(layout.is_exception(&key, &WindowId("win-f".to_owned())));
     // Prior valid tiled focus B is retained: a float never takes leaf focus.
     assert_eq!(
-        session.focus(),
-        (
-            Some(domain_key("out-1", "ws-1")),
-            Some(NodeId("leaf-win-b".to_owned()))
-        )
+        layout.focus_leaf(&key),
+        Some(&NodeId("leaf-win-b".to_owned()))
     );
 
     // Newcomer C opens while F holds native focus.
-    let counts = session
-        .converge_observation(
-            &complete_observation(&session, vec![tiled_observed("win-c", "out-1", "ws-1")]),
+    let obs_c = complete_observed(
+        &layout,
+        &key,
+        vec![tiled_observed("win-c", "out-1", "ws-1")],
+    );
+    let counts = layout
+        .converge_domain(
+            &key,
+            &obs_c,
             Some(&WindowId("win-f".to_owned())),
+            &BTreeSet::new(),
         )
         .expect("newcomer converges");
     assert_eq!(counts.admitted, 1);
-    match &session.snapshot().domains[0].tree {
+    match layout.tree(&key) {
         Some(Node::Group {
             axis,
             children,
@@ -300,26 +248,12 @@ fn float_focus_convergence_admits_newcomer_at_prior_tiled_focus() {
     // Concrete projected frames for the 120x80 test domain (gap 0) via the
     // shared retained-geometry read path: A keeps its 60x80 left half, B/C
     // split the right half 60x40 each.
-    let retained = session.domains().first().expect("domain").clone();
-    let (focus_domain, focus_leaf) = session.focus();
-    let mut frames: Vec<(String, Rect)> = project_retained_tiled_geometry(
-        &session,
-        &domain_key("out-1", "ws-1"),
-        retained.bounds,
-        retained.gap,
-        Some((
-            focus_domain.expect("focus domain"),
-            focus_leaf.expect("focus leaf"),
-        )),
-        ProjectionKind::Reconcile,
-        &BTreeMap::<WindowId, WindowSizeHints>::new(),
-        &[],
-    )
-    .expect("projects")
-    .geometry
-    .iter()
-    .map(|g| (g.window.0.clone(), g.rect))
-    .collect();
+    let mut frames: Vec<(String, Rect)> = layout
+        .project_retained_tiled_geometry(&key, d.bounds, d.gap, &BTreeMap::new(), &[])
+        .expect("projects")
+        .into_iter()
+        .map(|g| (g.window.0, g.rect))
+        .collect();
     frames.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(
         frames,
@@ -354,21 +288,21 @@ fn float_focus_convergence_admits_newcomer_at_prior_tiled_focus() {
         ],
         "A keeps its half; B/C stack vertically in the right half"
     );
-    assert!(session.is_exception(&WindowId("win-f".to_owned())));
+    assert!(layout.is_exception(&key, &WindowId("win-f".to_owned())));
     assert_eq!(
-        session.focus(),
-        (
-            Some(domain_key("out-1", "ws-1")),
-            Some(NodeId("leaf-win-b".to_owned()))
-        ),
+        layout.focus_leaf(&key),
+        Some(&NodeId("leaf-win-b".to_owned())),
         "float focus never displaces the retained tiled focus"
     );
 
     // Native focus follows the newcomer: focus syncs to C with no topology change.
-    let counts = session
-        .converge_observation(
-            &complete_observation(&session, Vec::new()),
+    let obs_follow = complete_observed(&layout, &key, Vec::new());
+    let counts = layout
+        .converge_domain(
+            &key,
+            &obs_follow,
             Some(&WindowId("win-c".to_owned())),
+            &BTreeSet::new(),
         )
         .expect("focus follow converges");
     assert_eq!(
@@ -376,11 +310,8 @@ fn float_focus_convergence_admits_newcomer_at_prior_tiled_focus() {
         (0, 0, 0)
     );
     assert_eq!(
-        session.focus(),
-        (
-            Some(domain_key("out-1", "ws-1")),
-            Some(NodeId("leaf-win-c".to_owned()))
-        )
+        layout.focus_leaf(&key),
+        Some(&NodeId("leaf-win-c".to_owned()))
     );
 }
 
@@ -393,25 +324,37 @@ fn seeded_mru_admission_anchors_without_focus() {
     // preserves for focused-removal fallback — rather than root-wrapping.
     // Genuine per-domain focus history (remembered last-active) would win
     // over this seed; with none anywhere the seed is the last activity.
-    let mut session = single_domain_session();
-    for (window, extra) in [
-        ("win-a", vec![tiled_observed("win-a", "out-1", "ws-1")]),
-        ("win-b", vec![tiled_observed("win-b", "out-1", "ws-1")]),
-    ] {
-        let counts = session
-            .converge_observation(&complete_observation(&session, extra), None)
-            .unwrap_or_else(|e| panic!("converge {window}: {e:?}"));
-        assert_eq!(counts.admitted, 1);
-        assert_eq!(session.focus(), (None, None));
-    }
-    let counts = session
-        .converge_observation(
-            &complete_observation(&session, vec![tiled_observed("win-c", "out-1", "ws-1")]),
-            None,
-        )
+    let mut layout = WorldLayout::new();
+    let d = domain("out-1", "ws-1", 120, 80);
+    let key = domain_key("out-1", "ws-1");
+    let win_a = tiled_observed("win-a", "out-1", "ws-1");
+    let counts = layout
+        .converge_fresh_domain(&d, 0, &[win_a], None)
+        .expect("converge win-a");
+    assert_eq!(counts.admitted, 1);
+    assert_eq!(layout.focus_leaf(&key), None);
+
+    let obs_b = complete_observed(
+        &layout,
+        &key,
+        vec![tiled_observed("win-b", "out-1", "ws-1")],
+    );
+    let counts = layout
+        .converge_domain(&key, &obs_b, None, &BTreeSet::new())
+        .expect("converge win-b");
+    assert_eq!(counts.admitted, 1);
+    assert_eq!(layout.focus_leaf(&key), None);
+
+    let obs_c = complete_observed(
+        &layout,
+        &key,
+        vec![tiled_observed("win-c", "out-1", "ws-1")],
+    );
+    let counts = layout
+        .converge_domain(&key, &obs_c, None, &BTreeSet::new())
         .expect("third converge admits");
     assert_eq!(counts.admitted, 1);
-    match &session.snapshot().domains[0].tree {
+    match layout.tree(&key) {
         Some(Node::Group {
             axis,
             children,
@@ -433,7 +376,7 @@ fn seeded_mru_admission_anchors_without_focus() {
         }
         other => panic!("expected H[A,H[B,C]], got {other:?}"),
     }
-    assert_eq!(session.focus(), (None, None));
+    assert_eq!(layout.focus_leaf(&key), None);
 }
 
 #[test]
@@ -443,28 +386,29 @@ fn close_then_reopen_is_fresh_admission_at_refocus_not_old_slot() {
     // different tile C; reopen a same-app window. Fresh admission anchors at
     // C (`H[A,V[C,D]]`, newcomer focus), never an old-slot restore. Survivor
     // manual-ratio rescale is not asserted here.
-    let mut session = single_domain_session();
+    let mut layout = WorldLayout::new();
+    let d = domain("out-1", "ws-1", 120, 80);
+    let key = domain_key("out-1", "ws-1");
     let wide = Rect {
         x: 0,
         y: 0,
         w: 120,
         h: 80,
     };
-    admit_with_placement(&mut session, "win-a", "out-1", "ws-1", wide, "close-a");
-    admit_with_placement(&mut session, "win-b", "out-1", "ws-1", wide, "close-b");
-    admit_with_placement(&mut session, "win-c", "out-1", "ws-1", wide, "close-c");
-    let key = domain_key("out-1", "ws-1");
+    admit_with_placement(&mut layout, &key, &d, "win-a", wide);
+    admit_with_placement(&mut layout, &key, &d, "win-b", wide);
+    admit_with_placement(&mut layout, &key, &d, "win-c", wide);
     // End state of the row Given: B active (stack tops B over A over C).
-    assert!(session.sync_focus_from_window(&key, &WindowId("win-a".to_owned())));
-    assert!(session.sync_focus_from_window(&key, &WindowId("win-b".to_owned())));
+    assert!(layout.sync_focus_from_window(&key, &WindowId("win-a".to_owned())));
+    assert!(layout.sync_focus_from_window(&key, &WindowId("win-b".to_owned())));
     assert_eq!(
-        session.focus(),
-        (Some(key.clone()), Some(NodeId("leaf-win-b".to_owned())))
+        layout.focus_leaf(&key),
+        Some(&NodeId("leaf-win-b".to_owned()))
     );
 
     // Close focused B: survivors keep order.
-    remove_and_commit(&mut session, "win-b", "close-rm-b");
-    let leaves: Vec<String> = match &session.snapshot().domains[0].tree {
+    remove_window(&mut layout, &key, "win-b");
+    let leaves: Vec<String> = match layout.tree(&key) {
         Some(Node::Group { children, .. }) => children.iter().map(|c| c.id().0.clone()).collect(),
         other => panic!("expected surviving H[A,C], got {other:?}"),
     };
@@ -474,27 +418,26 @@ fn close_then_reopen_is_fresh_admission_at_refocus_not_old_slot() {
     );
 
     // Explicitly refocus the different tile C (the row's "focus C" step).
-    assert!(session.sync_focus_from_window(&key, &WindowId("win-c".to_owned())));
+    assert!(layout.sync_focus_from_window(&key, &WindowId("win-c".to_owned())));
     assert_eq!(
-        session.focus(),
-        (Some(key.clone()), Some(NodeId("leaf-win-c".to_owned())))
+        layout.focus_leaf(&key),
+        Some(&NodeId("leaf-win-c".to_owned()))
     );
 
     // Reopen a same-app window under a new id: fresh admission at C.
-    let plan = admit_with_placement(
-        &mut session,
+    let outcome = admit_with_placement(
+        &mut layout,
+        &key,
+        &d,
         "win-b2",
-        "out-1",
-        "ws-1",
         Rect {
             x: 60,
             y: 0,
             w: 60,
             h: 80,
         },
-        "close-reopen",
     );
-    match &session.snapshot().domains[0].tree {
+    match layout.tree(&key) {
         Some(Node::Group { axis, children, .. }) => {
             assert_eq!(*axis, Axis::Horizontal);
             assert_eq!(children.len(), 2);
@@ -513,25 +456,20 @@ fn close_then_reopen_is_fresh_admission_at_refocus_not_old_slot() {
         }
         other => panic!("expected H[A,V[C,D]], got {other:?}"),
     }
-    let (_, focus) = session.focus();
-    assert_eq!(focus, Some(NodeId("leaf-win-b2".to_owned())));
-    assert_eq!(plan.desired_geometry.len(), 3);
+    assert_eq!(
+        layout.focus_leaf(&key),
+        Some(&NodeId("leaf-win-b2".to_owned()))
+    );
+    assert_eq!(outcome.geometry.len(), 3);
 }
 
 /// First layout leaf window for one domain, in deterministic child order
 /// (tentative no-history tie-break for view returns).
-fn first_leaf_window(session: &Session, key: &DomainKey) -> Option<WindowId> {
-    let mut node = session.tree_for(key)?;
+fn first_leaf_window(layout: &WorldLayout, key: &DomainKey) -> Option<WindowId> {
+    let mut node = layout.tree(key)?;
     loop {
         match node {
-            Node::Leaf { id } => {
-                return session
-                    .snapshot()
-                    .windows
-                    .iter()
-                    .find(|link| &link.leaf == id)
-                    .map(|link| link.window.clone());
-            }
+            Node::Leaf { id } => return layout.window_for_leaf(key, id),
             Node::Group { children, .. } => {
                 node = children.first()?;
             }
@@ -547,51 +485,55 @@ fn view_return_candidates_prefers_remembered_then_mru_then_first() {
     // the first layout leaf (win-a). A remembered leaf wins over a newer
     // MRU top, ineligible top candidates fall through per candidate at
     // the call site, and an empty domain resolves to no candidate.
-    fn first_candidate(session: &Session, key: &DomainKey) -> Option<NodeId> {
-        session.view_return_candidates(key).into_iter().next()
+    fn first_candidate(layout: &WorldLayout, key: &DomainKey) -> Option<NodeId> {
+        layout.view_return_candidates(key).into_iter().next()
     }
-    let mut session = single_domain_session();
+    let mut layout = WorldLayout::new();
+    let d = domain("out-1", "ws-1", 120, 80);
     let key = domain_key("out-1", "ws-1");
-    let obs = complete_observation(
-        &session,
-        vec![
-            tiled_observed("win-a", "out-1", "ws-1"),
-            tiled_observed("win-b", "out-1", "ws-1"),
-        ],
-    );
-    session.converge_observation(&obs, None).expect("converge");
-    assert_eq!(session.focus(), (None, None));
+    layout
+        .converge_fresh_domain(
+            &d,
+            0,
+            &[
+                tiled_observed("win-a", "out-1", "ws-1"),
+                tiled_observed("win-b", "out-1", "ws-1"),
+            ],
+            None,
+        )
+        .expect("converge");
+    assert_eq!(layout.focus_leaf(&key), None);
     assert_eq!(
-        first_leaf_window(&session, &key)
+        first_leaf_window(&layout, &key)
             .as_ref()
             .map(|w| w.0.as_str()),
         Some("win-a")
     );
     assert_eq!(
-        first_candidate(&session, &key),
+        first_candidate(&layout, &key),
         Some(NodeId("leaf-win-b".to_owned())),
         "MRU top wins with no remembered leaf"
     );
     // Ordinary activation advances the MRU stack only; the remembered
     // leaf still wins the return.
-    assert!(session.sync_focus_from_window(&key, &WindowId("win-b".to_owned())));
-    assert!(session.remember_focus(&key, &WindowId("win-a".to_owned())));
-    assert!(session.sync_focus_from_window(&key, &WindowId("win-b".to_owned())));
+    assert!(layout.sync_focus_from_window(&key, &WindowId("win-b".to_owned())));
+    assert!(layout.remember_focus(&key, &WindowId("win-a".to_owned())));
+    assert!(layout.sync_focus_from_window(&key, &WindowId("win-b".to_owned())));
     assert_eq!(
-        first_candidate(&session, &key),
+        first_candidate(&layout, &key),
         Some(NodeId("leaf-win-a".to_owned())),
         "remembered leaf beats the newer MRU top"
     );
     // Candidate order documents the fall-through: remembered first, then
     // MRU recency, then layout order, deduplicated.
     assert_eq!(
-        session.view_return_candidates(&key),
+        layout.view_return_candidates(&key),
         vec![
             NodeId("leaf-win-a".to_owned()),
             NodeId("leaf-win-b".to_owned())
         ]
     );
     // Empty domain: no candidate, never invented focus.
-    let empty = single_domain_session();
+    let empty = WorldLayout::new();
     assert_eq!(first_candidate(&empty, &key), None);
 }

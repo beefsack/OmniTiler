@@ -3,25 +3,15 @@
 //! reveal-route mirror (adopt gaps, then reconcile) and a shape-dependence
 //! witness. Geometry below is generic representative stress input (numeric
 //! regression values), not host detail.
-//!
-//! Relocated from the Windows adapter suite when the per-domain adapter
-//! route was removed: the replay covers portable core gap-repair behavior,
-//! so it lives with the core per-domain tests and builds its observations
-//! through [`crate::per_domain_fixture`].
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::boundary::{CoreCommand, CoreReply};
-use crate::directional::{Axis, Node, NodeId, WindowId};
-use crate::directional::{OutputId, WorkspaceId};
-use crate::engine::Engine;
-use crate::geometry::{Rect, project};
-use crate::ids::{CorrelationId, GenerationId, OwnerId};
-use crate::per_domain_fixture::{
-    fingerprint, reconcile_event_for_floating as build_reconcile_event_for_floating,
-};
+use crate::directional::{Axis, Node, NodeId, OutputId, WindowId, WorkspaceId};
+use crate::geometry::{project, Rect};
+use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
-use crate::size_hints::{WindowSizeHints, project_with_hints};
+use crate::size_hints::{project_with_hints, WindowSizeHints};
+use crate::world_layout::{LayoutFailure, RetainedProjectionOutcome, WorldLayout};
 
 const OUTPUT: &str = "display-0";
 const WORKSPACE: &str = "ws-1";
@@ -62,9 +52,22 @@ fn token(i: usize) -> WindowId {
 
 /// Single shared row constructor: both replay branches carry identical
 /// identities, rects, hints, and tiled flags by construction.
-fn carried_rows() -> Vec<(WindowId, Rect, WindowSizeHints, bool)> {
+fn carried_rows() -> Vec<EngineWindow> {
     (0..ROSTER)
-        .map(|i| (token(i), birth_rect(), helper_hints(), false))
+        .map(|i| EngineWindow {
+            window: token(i),
+            output: OutputId(OUTPUT.to_owned()),
+            workspace: WorkspaceId(WORKSPACE.to_owned()),
+            rect: birth_rect(),
+            floating: false,
+            fit_excluded: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: helper_hints(),
+        })
         .collect()
 }
 
@@ -87,57 +90,6 @@ fn domain_for_output(output: &str, workspace: &str, inner_gap: i32) -> (OutputDo
         adjacent: std::collections::BTreeMap::new(),
     };
     (domain, key)
-}
-
-fn owner() -> OwnerId {
-    OwnerId::parse("tiler-windows").expect("owner")
-}
-
-fn generation() -> GenerationId {
-    GenerationId::parse("aa").expect("generation")
-}
-
-fn correlation(value: &str) -> CorrelationId {
-    CorrelationId::parse(value).expect("correlation")
-}
-
-fn revision_of(engine: &Engine, key: &DomainKey) -> u64 {
-    engine
-        .session(key)
-        .map(|session| session.accepted_revision())
-        .unwrap_or(0)
-}
-
-fn dispatch(
-    engine: &mut Engine,
-    key: &DomainKey,
-    domain: &OutputDomain,
-    outer_gap: i32,
-    command: CoreCommand,
-    focused: Option<&WindowId>,
-    correlation_id: &str,
-) -> CoreReply {
-    let carried = carried_rows();
-    let fp = fingerprint(
-        &carried
-            .iter()
-            .map(|(id, rect, _, _)| (id.0.clone(), *rect))
-            .collect::<Vec<_>>(),
-    );
-    let mut event = build_reconcile_event_for_floating(
-        &owner(),
-        &generation(),
-        &correlation(correlation_id),
-        revision_of(engine, key),
-        fp,
-        domain,
-        key,
-        outer_gap,
-        &carried,
-        focused,
-    );
-    event.command = command;
-    engine.handle(&event)
 }
 
 #[derive(Clone, Copy)]
@@ -165,66 +117,46 @@ impl FocusRule {
     }
 }
 
-fn admit_roster(focus: FocusRule) -> Engine {
-    let mut engine = Engine::new();
-    engine.sync_binding(&owner(), &generation());
+fn admit_roster(focus: FocusRule) -> WorldLayout {
+    let mut layout = WorldLayout::new();
     let (domain, key) = domain_for(8);
+    let all_rows = carried_rows();
     for i in 0..ROSTER {
-        let carried: Vec<(WindowId, Rect, WindowSizeHints, bool)> = (0..=i)
-            .map(|j| (token(j), birth_rect(), helper_hints(), false))
-            .collect();
-        let fp = fingerprint(
-            &carried
-                .iter()
-                .map(|(id, rect, _, _)| (id.0.clone(), *rect))
-                .collect::<Vec<_>>(),
-        );
-        let focused = focus.admission_focus(i);
-        let mut event = build_reconcile_event_for_floating(
-            &owner(),
-            &generation(),
-            &correlation(&format!("admit-{i:02}")),
-            revision_of(&engine, &key),
-            fp,
-            &domain,
-            &key,
-            8,
-            &carried,
-            focused.as_ref(),
-        );
-        event.command = CoreCommand::Reconcile;
-        let reply = engine.handle(&event);
-        assert!(
-            matches!(reply, CoreReply::Projection(_) | CoreReply::Tiled(_)),
-            "admission leg {i} must converge, got {reply:?}"
-        );
+        let carried = &all_rows[..=i];
+        let focused = focus
+            .admission_focus(i)
+            .unwrap_or_else(|| WindowId(String::new()));
+        match layout
+            .reconcile_retained(&key, domain.bounds, domain.gap, 8, &focused, carried, &[])
+            .expect("retained reconcile succeeds")
+        {
+            Some(_) => {}
+            None => {
+                layout
+                    .reconcile_fresh(&domain, 8, &focused, carried)
+                    .expect("fresh reconcile succeeds");
+            }
+        }
     }
-    let session = engine.session(&key).expect("retained session");
-    assert_eq!(session.snapshot().windows.len(), ROSTER);
-    assert_eq!(session.capacity_float_count(), 0);
-    engine
+    assert_eq!(layout.tiled_count(&key), ROSTER);
+    assert!(capacity_victims(&layout, &key).is_empty());
+    layout
 }
 
-fn capacity_victims(engine: &Engine, key: &DomainKey) -> BTreeSet<String> {
-    let Some(session) = engine.session(key) else {
-        return BTreeSet::new();
-    };
+fn capacity_victims(layout: &WorldLayout, key: &DomainKey) -> BTreeSet<String> {
     (0..ROSTER)
         .map(token)
-        .filter(|id| session.is_capacity_float(id))
-        .map(|id| id.0.clone())
+        .filter(|id| layout.is_capacity_float(key, id))
+        .map(|id| id.0)
         .collect()
 }
 
-fn admission_sequences(engine: &Engine, key: &DomainKey) -> BTreeMap<String, u64> {
-    let Some(session) = engine.session(key) else {
-        return BTreeMap::new();
-    };
+fn admission_sequences(layout: &WorldLayout, key: &DomainKey) -> BTreeMap<String, u64> {
     (0..ROSTER)
         .map(token)
         .map(|id| {
-            let seq = session.admission_sequence(&id).expect("tracked order");
-            (id.0.clone(), seq)
+            let seq = layout.admission_sequence(key, &id).expect("tracked order");
+            (id.0, seq)
         })
         .collect()
 }
@@ -241,62 +173,39 @@ fn newest_suffix(sequences: &BTreeMap<String, u64>, n: usize) -> BTreeSet<String
         .collect()
 }
 
-fn tiled_links(engine: &Engine, key: &DomainKey) -> usize {
-    engine
-        .session(key)
-        .map(|session| session.snapshot().windows.len())
-        .unwrap_or(0)
+fn tiled_links(layout: &WorldLayout, key: &DomainKey) -> usize {
+    layout.tiled_count(key)
 }
 
-fn retained_tree(engine: &Engine, key: &DomainKey) -> Node {
-    engine
-        .session(key)
-        .expect("session")
-        .snapshot()
-        .domains
-        .into_iter()
-        .find(|view| view.output == key.output && view.workspace == key.workspace)
-        .expect("domain view")
-        .tree
-        .expect("retained tree")
+fn retained_tree(layout: &WorldLayout, key: &DomainKey) -> Node {
+    layout.tree(key).cloned().expect("retained tree")
 }
 
 fn update_gaps(
-    engine: &mut Engine,
+    layout: &mut WorldLayout,
     key: &DomainKey,
     gap: i32,
     focused: Option<&WindowId>,
-    correlation_id: &str,
-) -> CoreReply {
+) -> Result<RetainedProjectionOutcome, LayoutFailure> {
     let (domain, _) = domain_for(gap);
-    dispatch(
-        engine,
-        key,
-        &domain,
-        gap,
-        CoreCommand::UpdateGaps,
-        focused,
-        correlation_id,
-    )
+    let carried = carried_rows();
+    let focus = focused.cloned().unwrap_or_else(|| WindowId(String::new()));
+    layout.update_domain_gaps(key, domain.bounds, domain.gap, gap, &focus, &carried)
 }
 
 fn reconcile(
-    engine: &mut Engine,
+    layout: &mut WorldLayout,
     key: &DomainKey,
     gap: i32,
     focused: Option<&WindowId>,
-    correlation_id: &str,
-) -> CoreReply {
+) -> RetainedProjectionOutcome {
     let (domain, _) = domain_for(gap);
-    dispatch(
-        engine,
-        key,
-        &domain,
-        gap,
-        CoreCommand::Reconcile,
-        focused,
-        correlation_id,
-    )
+    let carried = carried_rows();
+    let focus = focused.cloned().unwrap_or_else(|| WindowId(String::new()));
+    layout
+        .reconcile_retained(key, domain.bounds, domain.gap, gap, &focus, &carried, &[])
+        .expect("retained reconcile succeeds")
+        .expect("retained domain present")
 }
 
 #[test]
@@ -304,7 +213,7 @@ fn matched_visible_vs_hidden_gap_repair() {
     assert!(
         carried_rows()
             .iter()
-            .all(|(_, _, hints, floating)| *hints == helper_hints() && !floating),
+            .all(|row| row.hints == helper_hints() && !row.floating),
         "replay inputs must carry identical hints and tiled flags"
     );
     for focus in [FocusRule::Newest, FocusRule::None, FocusRule::First] {
@@ -312,12 +221,22 @@ fn matched_visible_vs_hidden_gap_repair() {
         let mut visible = admit_roster(focus);
         let mut hidden = admit_roster(focus);
         let (_, key) = domain_for(8);
-        // Matched session inputs: identical snapshots (trees with shares,
-        // links), identical admission order.
+        // Matched layout inputs: identical trees with shares, bindings, and admission order.
         assert_eq!(
-            visible.session(&key).expect("session").snapshot(),
-            hidden.session(&key).expect("session").snapshot(),
-            "{mode}: retained sessions must match before replay"
+            retained_tree(&visible, &key),
+            retained_tree(&hidden, &key),
+            "{mode}: retained trees must match before replay"
+        );
+        assert_eq!(
+            visible
+                .bindings(&key)
+                .map(|(w, l)| (w.clone(), l.clone()))
+                .collect::<Vec<_>>(),
+            hidden
+                .bindings(&key)
+                .map(|(w, l)| (w.clone(), l.clone()))
+                .collect::<Vec<_>>(),
+            "{mode}: retained bindings must match before replay"
         );
         let order = admission_sequences(&visible, &key);
         assert_eq!(order.len(), ROSTER);
@@ -331,48 +250,26 @@ fn matched_visible_vs_hidden_gap_repair() {
         assert_eq!(expected_28.len(), EXPECTED_AT_32);
         assert_eq!(expected_30.len(), EXPECTED_AT_64);
 
-        let focus_of = |engine: &Engine| -> Option<WindowId> {
+        let focus_of = |layout: &WorldLayout| -> Option<WindowId> {
             match focus {
                 FocusRule::None => None,
                 FocusRule::Newest => Some(token(ROSTER - 1)),
                 FocusRule::First => Some(token(0)),
             }
-            .filter(|id| {
-                engine.session(&key).is_some_and(|session| {
-                    session
-                        .snapshot()
-                        .windows
-                        .iter()
-                        .any(|link| &link.window == id)
-                })
-            })
+            .filter(|id| layout.is_tiled_window(&key, id))
         };
 
         // Staged visible sequence: 8 -> 32 -> 64.
-        let focus = focus_of(&visible);
-        let reply_32 = update_gaps(
-            &mut visible,
-            &key,
-            32,
-            focus.as_ref(),
-            &format!("{mode}-gap32"),
-        );
-        assert!(matches!(reply_32, CoreReply::Projection(_)));
+        let focus_val = focus_of(&visible);
+        update_gaps(&mut visible, &key, 32, focus_val.as_ref()).expect("8->32 succeeds");
         let victims_32 = capacity_victims(&visible, &key);
         assert_eq!(
             victims_32, expected_28,
             "{mode}: 8->32 must evict exactly the newest 28"
         );
 
-        let focus = focus_of(&visible);
-        let reply_64 = update_gaps(
-            &mut visible,
-            &key,
-            64,
-            focus.as_ref(),
-            &format!("{mode}-gap64"),
-        );
-        assert!(matches!(reply_64, CoreReply::Projection(_)));
+        let focus_val = focus_of(&visible);
+        update_gaps(&mut visible, &key, 64, focus_val.as_ref()).expect("32->64 succeeds");
         let victims_seq = capacity_victims(&visible, &key);
         assert_eq!(
             victims_seq, expected_30,
@@ -380,15 +277,8 @@ fn matched_visible_vs_hidden_gap_repair() {
         );
 
         // Direct hidden-style jump on the matched tree.
-        let focus = focus_of(&hidden);
-        let reply_direct = update_gaps(
-            &mut hidden,
-            &key,
-            64,
-            focus.as_ref(),
-            &format!("{mode}-gap64-direct"),
-        );
-        assert!(matches!(reply_direct, CoreReply::Projection(_)));
+        let focus_val = focus_of(&hidden);
+        update_gaps(&mut hidden, &key, 64, focus_val.as_ref()).expect("8->64 succeeds");
         let victims_direct = capacity_victims(&hidden, &key);
         assert_eq!(
             victims_direct, victims_seq,
@@ -410,9 +300,9 @@ fn gap_repair_trigger_is_shape_dependent() {
     let hints = helper_hints();
     let resolve = |_: &NodeId| hints;
 
-    let engine = admit_roster(FocusRule::Newest);
+    let layout = admit_roster(FocusRule::Newest);
     let (_, key) = domain_for(8);
-    let deep = retained_tree(&engine, &key);
+    let deep = retained_tree(&layout, &key);
     assert!(
         project(&deep, domain_64.bounds, domain_64.gap).is_err(),
         "serial-admission tree must be gap-infeasible at 64/64"
@@ -459,112 +349,78 @@ fn balanced_tree(n: usize) -> Node {
 /// Stale-observation reproducer for the pre-fix select route: hidden period
 /// commits nothing to the roster domain, then a raw `UpdateGaps` adoption
 /// followed by a reconcile built from the same pre-adopt all-tiled rows.
-/// This Engine-level sequence re-tiles the silent victims (0 victims, 40
+/// This layout-level sequence re-tiles the silent victims (0 victims, 40
 /// tiled) and is kept as numeric characterization of the old behavior.
-/// The corrected production route (`selection.rs`) refreshes observation
-/// flags from current session exceptions between the two dispatches; that
-/// fix is pinned by `tiling_sys::select_repair_route_tests`, not here.
-/// `adopt_gaps_for_route` itself is `pub(super)` in `tiling_sys::cross_drag`,
-/// unreachable from integration tests without production edits (out of
-/// scope), so this mirrors its protocol sequence with identical builders.
 mod hidden_reveal_route {
     use super::{
-        EXPECTED_AT_64, FocusRule, ROSTER, admission_sequences, admit_roster,
-        build_reconcile_event_for_floating, capacity_victims, correlation, domain_for,
-        domain_for_output, fingerprint, generation, newest_suffix, owner, project, reconcile,
-        retained_tree, tiled_links, token, update_gaps,
+        admission_sequences, admit_roster, capacity_victims, domain_for, domain_for_output,
+        newest_suffix, project, reconcile, retained_tree, tiled_links, token, update_gaps,
+        FocusRule, EXPECTED_AT_64, ROSTER,
     };
-    use crate::boundary::{CoreCommand, CoreReply};
+    use crate::directional::WindowId;
 
     #[test]
     fn reveal_adopts_then_reconciles_without_hidden_commits() {
-        let mut engine = admit_roster(FocusRule::Newest);
+        let mut layout = admit_roster(FocusRule::Newest);
         let (_, key) = domain_for(8);
-        let before = engine.session(&key).expect("session").snapshot();
-        let gaps_before = engine
-            .session(&key)
-            .expect("session")
-            .domains()
-            .iter()
-            .find(|domain| domain.key() == key)
-            .expect("domain")
-            .gap;
+        let tree_before = retained_tree(&layout, &key);
+        let geom_before = layout.domain_geometry(&key);
+        let outer_before = layout.domain_outer_gap(&key);
 
-        // Hidden period: the adapter runs no tick legs for hidden domains, so
-        // nothing dispatches here. A gap adoption on an unknown domain (the
-        // active empty workspace) refuses and commits nothing anywhere.
+        // Hidden period: a gap adoption on an unknown domain refuses and
+        // commits nothing anywhere.
         let (other_domain, other_key) = domain_for_output("display-0", "ws-0", 64);
-        let mut event = build_reconcile_event_for_floating(
-            &owner(),
-            &generation(),
-            &correlation("hidden-period-probe"),
-            0,
-            fingerprint(&[]),
-            &other_domain,
+        let refused = layout.update_domain_gaps(
             &other_key,
+            other_domain.bounds,
+            other_domain.gap,
             64,
+            &WindowId(String::new()),
             &[],
-            None,
         );
-        event.command = CoreCommand::UpdateGaps;
-        let refused = engine.handle(&event);
-        assert!(matches!(refused, CoreReply::Rejected { .. }));
+        assert!(refused.is_err());
         assert_eq!(
-            engine.session(&key).expect("session").snapshot(),
-            before,
+            retained_tree(&layout, &key),
+            tree_before,
             "hidden period must commit nothing to the roster domain"
         );
         assert_eq!(
-            engine
-                .session(&key)
-                .expect("session")
-                .domains()
-                .iter()
-                .find(|domain| domain.key() == key)
-                .expect("domain")
-                .gap,
-            gaps_before,
+            layout.domain_geometry(&key),
+            geom_before,
             "roster retained gaps must stay 8/8 while hidden"
         );
+        assert_eq!(layout.domain_outer_gap(&key), outer_before);
 
         // Reveal adoption, then a follow-on reconcile built from the same
-        // pre-adopt all-tiled rows (the stale sequence the old select
-        // route ran: it assembled rows once, adopted, then reconciled
-        // without refreshing flags).
+        // pre-adopt all-tiled rows.
         let focused = token(ROSTER - 1);
-        let deep_before = retained_tree(&engine, &key);
-        let adopted = update_gaps(&mut engine, &key, 64, Some(&focused), "reveal-adopt");
-        let survivor_geometry = match adopted {
-            CoreReply::Projection(plan) => plan.geometry.len(),
-            other => panic!("reveal adoption must project, got {other:?}"),
-        };
-        let order = admission_sequences(&engine, &key);
+        let deep_before = retained_tree(&layout, &key);
+        let adopted = update_gaps(&mut layout, &key, 64, Some(&focused))
+            .expect("reveal adoption must project");
+        let survivor_geometry = adopted.geometry.len();
+        let order = admission_sequences(&layout, &key);
         let expected_30 = newest_suffix(&order, EXPECTED_AT_64);
         assert_eq!(
-            capacity_victims(&engine, &key),
+            capacity_victims(&layout, &key),
             expected_30,
             "reveal adoption must evict exactly the newest 30"
         );
-        assert_eq!(tiled_links(&engine, &key), ROSTER - EXPECTED_AT_64);
+        assert_eq!(tiled_links(&layout, &key), ROSTER - EXPECTED_AT_64);
         assert_eq!(survivor_geometry, ROSTER - EXPECTED_AT_64);
 
         // The stale follow-on reconcile re-tiles the silent victims:
         // convergence flag-adopts the exceptions observed as tiled, so the
-        // repair is undone with zero logged adoptions (adopt_gaps_for_route
-        // never registers floats; only a reconcile reply is adopted).
-        let reconciled = reconcile(&mut engine, &key, 64, Some(&focused), "reveal-reconcile");
-        let retiled_geometry = match reconciled {
-            CoreReply::Projection(plan) => plan.geometry.len(),
-            other => panic!("reveal reconcile must project, got {other:?}"),
-        };
+        // repair is undone with zero logged adoptions.
+        let reconciled = reconcile(&mut layout, &key, 64, Some(&focused));
+        let retiled_geometry = reconciled.geometry.len();
         assert_eq!(
-            capacity_victims(&engine, &key),
+            capacity_victims(&layout, &key),
             std::collections::BTreeSet::new(),
             "follow-on reconcile must leave zero capacity victims"
         );
-        assert_eq!(tiled_links(&engine, &key), ROSTER);
+        assert_eq!(tiled_links(&layout, &key), ROSTER);
         assert_eq!(retiled_geometry, ROSTER);
-        let retiled_tree = retained_tree(&engine, &key);
+        let retiled_tree = retained_tree(&layout, &key);
         assert_ne!(
             retiled_tree, deep_before,
             "re-admission must rebuild a new survivor tree"
