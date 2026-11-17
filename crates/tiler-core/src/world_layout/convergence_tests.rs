@@ -155,3 +155,119 @@ fn hidden_vs_absent_automatic_override_retention() {
     assert!(!domain.automatic_fixed.contains(&w1));
     assert!(!domain.fixed_tile_override.contains(&w1));
 }
+
+fn engine_window(id: &str) -> EngineWindow {
+    let key = key();
+    EngineWindow {
+        window: WindowId(id.to_owned()),
+        output: key.output,
+        workspace: key.workspace,
+        rect: Rect {
+            x: 0,
+            y: 0,
+            w: 120,
+            h: 80,
+        },
+        floating: false,
+        fit_excluded: false,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress: false,
+        hints: crate::size_hints::WindowSizeHints::none(),
+    }
+}
+
+#[test]
+fn converge_retained_observation_cleans_closed_slots_and_preserves_hidden_lifetime() {
+    use crate::directional::Axis;
+    let key = key();
+    let w1 = WindowId("w1".to_owned());
+    let w_tiled_closed = WindowId("w-tiled-closed".to_owned());
+    let w_closed = WindowId("w-closed".to_owned());
+    let w_hidden = WindowId("w-hidden".to_owned());
+    let mut layout = tiled_layout();
+    {
+        let domain = layout.domains.get_mut(&key).unwrap();
+        domain.accepted_revision = 4;
+        domain.tree = Some(Node::Group {
+            id: NodeId("g1".to_owned()),
+            axis: Axis::Horizontal,
+            children: vec![leaf_node("a"), leaf_node("d")],
+            shares: vec![1, 1],
+        });
+        domain
+            .leaves
+            .insert(w_tiled_closed.clone(), NodeId("d".to_owned()));
+        domain.minimized_slots.insert(
+            w_closed.clone(),
+            DomainRestoreSlot {
+                leaf: NodeId("b".to_owned()),
+                tree: leaf_node("a"),
+            },
+        );
+        domain.minimized_slots.insert(
+            w_hidden.clone(),
+            DomainRestoreSlot {
+                leaf: NodeId("c".to_owned()),
+                tree: leaf_node("a"),
+            },
+        );
+        domain.automatic_fixed.insert(w_closed.clone());
+        domain.fixed_tile_override.insert(w_closed.clone());
+        domain.automatic_fixed.insert(w_hidden.clone());
+        domain.fixed_tile_override.insert(w_hidden.clone());
+    }
+
+    let windows = vec![engine_window("w1")];
+    let closed = vec![w_closed.clone(), w_tiled_closed.clone()];
+    let result = layout.converge_retained_observation(&key, &windows, &w1, &closed);
+    assert!(result.unwrap().is_some());
+
+    let domain = layout.domain(&key).unwrap();
+    assert!(!domain.leaves.contains_key(&w_tiled_closed));
+    assert!(!domain.minimized_slots.contains_key(&w_tiled_closed));
+    assert!(!domain.minimized_slots.contains_key(&w_closed));
+    assert!(!domain.automatic_fixed.contains(&w_closed));
+    assert!(!domain.fixed_tile_override.contains(&w_closed));
+    assert!(domain.minimized_slots.contains_key(&w_hidden));
+    assert!(domain.automatic_fixed.contains(&w_hidden));
+    assert!(domain.fixed_tile_override.contains(&w_hidden));
+    assert_eq!(domain.accepted_revision, 5);
+}
+
+#[test]
+fn converge_retained_observation_refusal_keeps_slots_and_state_atomic() {
+    let key = key();
+    let w_closed = WindowId("w-closed".to_owned());
+    let w2 = WindowId("w2".to_owned());
+    let mut layout = tiled_layout();
+    {
+        let domain = layout.domains.get_mut(&key).unwrap();
+        domain.accepted_revision = MAX_REVISION;
+        domain.minimized_slots.insert(
+            w_closed.clone(),
+            DomainRestoreSlot {
+                leaf: NodeId("b".to_owned()),
+                tree: leaf_node("a"),
+            },
+        );
+    }
+
+    let windows = vec![engine_window("w1"), engine_window("w2")];
+    let closed = vec![w_closed.clone()];
+    let empty_focus = WindowId(String::new());
+    assert_eq!(
+        layout.converge_retained_observation(&key, &windows, &empty_focus, &closed),
+        Err(LayoutFailure::RevisionLimit {
+            base: MAX_REVISION,
+            limit: MAX_REVISION,
+        })
+    );
+
+    let domain = layout.domain(&key).unwrap();
+    assert!(domain.minimized_slots.contains_key(&w_closed));
+    assert_eq!(domain.accepted_revision, MAX_REVISION);
+    assert!(!domain.leaves.contains_key(&w2));
+}

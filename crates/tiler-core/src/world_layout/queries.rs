@@ -254,6 +254,26 @@ impl WorldLayout {
         self.domain(key).map(|domain| (domain.bounds, domain.gap))
     }
 
+    /// Retained outer gap for one domain, if it exists.
+    #[must_use]
+    pub(crate) fn domain_outer_gap(&self, key: &DomainKey) -> Option<i32> {
+        self.domain(key).map(|domain| domain.outer_gap)
+    }
+
+    /// Whether `window` is marked as an automatic fixed-size float in `key`.
+    #[must_use]
+    pub(crate) fn is_automatic_fixed_float(&self, key: &DomainKey, window: &WindowId) -> bool {
+        self.domain(key)
+            .is_some_and(|domain| domain.automatic_fixed.contains(window))
+    }
+
+    /// Whether `window` carries an explicit fixed-tile override in `key`.
+    #[must_use]
+    pub(crate) fn has_fixed_tile_override(&self, key: &DomainKey, window: &WindowId) -> bool {
+        self.domain(key)
+            .is_some_and(|domain| domain.fixed_tile_override.contains(window))
+    }
+
     /// Production commit for a restored explicit tile. Records the override
     /// in every domain currently linking the window tiled; unknown windows
     /// are ignored and existing marks are kept. Revision-neutral.

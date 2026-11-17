@@ -350,3 +350,14 @@
   library-and-tests check still fails on 101 library and 293 test-build errors
   in unmigrated consumers, with no adoption-module error. Caller integration
   is pending.
+- World observation sweeps now compose typed convergence, retained/fresh
+  reconciliation and gap updates directly. Gesture deferral uses retained
+  geometry; inset exhaustion, unchanged-sweep skipping, disjoint fresh
+  adoption and safety-exclusion focus holds retain their source ordering.
+  Explicit closes forget restore slots only after successful convergence;
+  hidden lifetimes retain their provenance. Two direct tests cover this
+  cleanup and revision-bound refusal. Source review corrected a test's
+  revision expectation because provenance pruning itself advances convergence.
+  Scoped formatting passes; reported diagnostics find no sweep/convergence
+  errors, but global compilation and executed behavioural acceptance remain
+  pending.

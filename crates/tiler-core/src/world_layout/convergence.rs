@@ -15,6 +15,7 @@ use crate::contract::MAX_REVISION;
 use crate::cursor_targeting::FreshPlacement;
 use crate::directional::{Node, NodeId, WindowId};
 use crate::geometry::Rect;
+use crate::seed::{EngineWindow, observed_window_from_engine};
 use crate::session::{
     DomainKey, ExceptionFlags, ObservationConvergence, ObservedWindow, RefusalKind,
 };
@@ -35,6 +36,53 @@ use super::tree_edit::{admission_placement_for, remove_leaf_from_tree};
 mod tests;
 
 impl WorldLayout {
+    /// Converge one retained domain from carried [`EngineWindow`] entries.
+    ///
+    /// Computes the hidden set from retained leaves, exceptions and minimize
+    /// slots absent from both `windows` and `closed_windows`, maps empty
+    /// `focused_window` to `None`, runs [`Self::converge_domain`] (which
+    /// updates the shared admission high-water mark on success), and then
+    /// forgets explicitly closed minimize restore slots revision-neutrally.
+    /// Returns `Ok(None)` when `key` is absent without mutating state.
+    pub(crate) fn converge_retained_observation(
+        &mut self,
+        key: &DomainKey,
+        windows: &[EngineWindow],
+        focused_window: &WindowId,
+        closed_windows: &[WindowId],
+    ) -> Result<Option<ObservationConvergence>, LayoutFailure> {
+        let Some(domain) = self.domain(key) else {
+            return Ok(None);
+        };
+        let observed_ids: BTreeSet<&WindowId> = windows.iter().map(|w| &w.window).collect();
+        let closed_ids: BTreeSet<&WindowId> = closed_windows.iter().collect();
+        let mut hidden = BTreeSet::new();
+        for id in domain
+            .leaves
+            .keys()
+            .chain(domain.exceptions.keys())
+            .chain(domain.minimized_slots.keys())
+        {
+            if !observed_ids.contains(id) && !closed_ids.contains(id) {
+                hidden.insert(id.clone());
+            }
+        }
+        let observed: Vec<ObservedWindow> =
+            windows.iter().map(observed_window_from_engine).collect();
+        let focus = if focused_window.0.is_empty() {
+            None
+        } else {
+            Some(focused_window)
+        };
+        let counts = self.converge_domain(key, &observed, focus, &hidden)?;
+        if let Some(domain) = self.domains.get_mut(key) {
+            for window in closed_windows {
+                domain.minimized_slots.remove(window);
+            }
+        }
+        Ok(Some(counts))
+    }
+
     /// Converge one retained domain against a complete observation.
     ///
     /// `observed` is the full carried slice for this domain; admission legs

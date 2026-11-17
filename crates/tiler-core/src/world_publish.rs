@@ -7,11 +7,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::boundary::{CoreReply, ProjectionKind, project_retained_tiled_geometry};
+use crate::boundary::{ProjectionKind, project_retained_tiled_geometry};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::session::{DomainKey, RefusalKind};
 use crate::world_engine::WorldEngine;
+use crate::world_layout::{FreshDomainFailure, LayoutFailure, RetainedReconcileFailure};
 use crate::world_report::{
     CommandResult, FloatOrigin, HoldReason, IntentDesire, OneShotEffect, OutputDesire,
     ScopeAuthority, ScopeStatus, ScreenView, TilingMode, TransferKind, WindowDesire,
@@ -26,6 +27,13 @@ use crate::world_report::{
 pub(crate) struct PublicationRows {
     pub scopes: Vec<ScopeStatus>,
     pub windows: Vec<WindowDesire>,
+}
+
+/// Typed layout sweep failure classified by [`WorldEngine::classify_sweep_hold`].
+pub(crate) enum SweepFailure {
+    Layout(LayoutFailure),
+    Retained(RetainedReconcileFailure),
+    Fresh(FreshDomainFailure),
 }
 
 impl WorldEngine {
@@ -157,32 +165,33 @@ impl WorldEngine {
     /// One-place hold classification for sweep failures (capacity B).
     /// This is the single replaceable policy: only proven geometric
     /// exhaustion keeps topology and holds as [`HoldReason::ConstraintClamp`].
-    /// In the sweep path the input is already validated and the command is
-    /// always `Reconcile`, so the two seed/projection refusal shapes mean
-    /// the layout ran out of representable pixels
-    /// (`extent - gap*(children-1) < children` with no positive child
-    /// segment, R-MIN-04/R-INS-09): `malformed-topology` from retained-tree
-    /// projection or `seed-failed` from the seed build
-    /// (`Session::new` inputs are pre-validated, so only the geometric
-    /// admit steps can still fail there). Best-effort admission (D2/D3/D7,
-    /// selected 2026-10-17) floats ordinary geometric
-    /// exhaustion before this classifier runs, so a surviving hold here
-    /// means a protected remainder (overlays, explicit fixed-tile wins,
-    /// unsafe or excluded members), nonpositive usable area, or invalid
-    /// topology: never a floatable newcomer. Every other sweep failure
-    /// (divergence, pending, partial observation, commit rejection, ...)
-    /// holds as [`HoldReason::Unreadable`]: the adapter must not write
-    /// there, and recovery retries the full report.
-    pub(crate) fn classify_sweep_hold(reply: &CoreReply) -> HoldReason {
-        match reply {
-            CoreReply::Rejected { kind, .. }
-                if *kind == RefusalKind::MalformedTopology.as_str() =>
-            {
-                HoldReason::ConstraintClamp
-            }
-            CoreReply::SnapshotInvalid { detail, .. } if *detail == "seed-failed" => {
-                HoldReason::ConstraintClamp
-            }
+    /// In the sweep path the input is already validated, so the two
+    /// seed/projection refusal shapes mean the layout ran out of
+    /// representable pixels (`extent - gap*(children-1) < children` with
+    /// no positive child segment, R-MIN-04/R-INS-09):
+    /// [`RefusalKind::MalformedTopology`] from convergence, gap update, or
+    /// retained-tree projection, or [`FreshDomainFailure::SeedFailed`] from
+    /// fresh seed construction. Best-effort admission (D2/D3/D7, selected
+    /// 2026-10-17) floats ordinary geometric exhaustion before this
+    /// classifier runs, so a surviving hold here means a protected
+    /// remainder (overlays, explicit fixed-tile wins, unsafe or excluded
+    /// members), nonpositive usable area, or invalid topology: never a
+    /// floatable newcomer. Every other sweep failure (revision bounds,
+    /// gap mismatch, partial observation, focus mismatch, ...) holds as
+    /// [`HoldReason::Unreadable`]: the adapter must not write there, and
+    /// recovery retries the full report.
+    pub(crate) fn classify_sweep_hold(failure: SweepFailure) -> HoldReason {
+        match failure {
+            SweepFailure::Layout(LayoutFailure::Semantics(RefusalKind::MalformedTopology))
+            | SweepFailure::Retained(RetainedReconcileFailure::Layout(LayoutFailure::Semantics(
+                RefusalKind::MalformedTopology,
+            )))
+            | SweepFailure::Fresh(
+                FreshDomainFailure::SeedFailed
+                | FreshDomainFailure::Layout(LayoutFailure::Semantics(
+                    RefusalKind::MalformedTopology,
+                )),
+            ) => HoldReason::ConstraintClamp,
             _ => HoldReason::Unreadable,
         }
     }

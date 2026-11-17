@@ -2,22 +2,26 @@
 //!
 //! Split from [crate::world_engine]: same impl WorldEngine ownership,
 //! only relocated for source size. Owns ring/view/lifecycle convergence,
-//! admission focus, and the Engine sweep over staged domains.
+//! admission focus, and the layout sweep over staged domains.
 //! No behavior change.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
-use crate::engine::Engine;
 use crate::ids::{CorrelationId, OwnerId};
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
 use crate::world_engine::{RetainedTransfer, StagedDomain, WorldEngine, inset_world_domain};
+use crate::world_publish::SweepFailure;
 use crate::world_report::{
     EffectCause, EffectKind, HeldScreenRow, HoldReason, OneShotEffect, ScreenReport, TilingMode,
     TransferKind, TransferTarget,
 };
+
+#[cfg(test)]
+thread_local! {
+    static TEST_SWEEP_SKIP_HITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 
 impl WorldEngine {
     /// Live output order for one staged observation: ordinal-interleaved
@@ -238,7 +242,7 @@ impl WorldEngine {
                                     output: OutputId(output.clone()),
                                     workspace: WorkspaceId(id.clone()),
                                 };
-                                self.engine.remove(&key);
+                                self.layout.drop_domain(&key);
                                 self.tiling.remove(&key);
                             }
                         } else {
@@ -390,7 +394,7 @@ impl WorldEngine {
                                 output: OutputId(output.clone()),
                                 workspace: WorkspaceId(id.clone()),
                             };
-                            self.engine.remove(&key);
+                            self.layout.drop_domain(&key);
                             self.tiling.remove(&key);
                         } else {
                             kept.push(id.clone());
@@ -496,9 +500,9 @@ impl WorldEngine {
                 });
             }
         }
-        for key in self.engine.domain_keys() {
+        for key in self.layout.domain_keys() {
             if !ringed.contains(&key) {
-                self.engine.remove(&key);
+                self.layout.drop_domain(&key);
             }
         }
     }
@@ -1364,20 +1368,20 @@ impl WorldEngine {
     ) -> Vec<OneShotEffect> {
         let mut known_now: BTreeSet<String> = BTreeSet::new();
         let mut current: BTreeMap<DomainKey, BTreeSet<String>> = BTreeMap::new();
-        for key in self.engine.domain_keys() {
-            let Some(session) = self.engine.session(&key) else {
+        for key in self.layout.domain_keys() {
+            if !self.layout.contains_domain(&key) {
                 continue;
-            };
+            }
             let mut known = BTreeSet::new();
-            for link in session.snapshot().windows {
-                known.insert(link.window.0.clone());
-                known_now.insert(link.window.0.clone());
+            for window in self.layout.tiled_windows(&key) {
+                known.insert(window.0.clone());
+                known_now.insert(window.0.clone());
             }
-            for observed in session.exception_observed() {
-                known.insert(observed.window.0.clone());
-                known_now.insert(observed.window.0.clone());
+            for window in self.layout.exception_windows(&key) {
+                known.insert(window.0.clone());
+                known_now.insert(window.0.clone());
             }
-            for (window, _, _) in session.minimized_entries() {
+            for window in self.layout.minimized_windows(&key) {
                 known_now.insert(window.0.clone());
             }
             current.insert(key, known);
@@ -1486,9 +1490,13 @@ impl WorldEngine {
                     // intent. Each withheld newcomer spends here so it
                     // never replays, while selection continues to the last
                     // non-withheld newcomer, preserving ordinary selection.
-                    if let Some(session) = self.engine.session(&domain.key)
-                        && session.is_automatic_fixed_float(&window.window)
-                        && !session.has_fixed_tile_override(&window.window)
+                    if self.layout.contains_domain(&domain.key)
+                        && self
+                            .layout
+                            .is_automatic_fixed_float(&domain.key, &window.window)
+                        && !self
+                            .layout
+                            .has_fixed_tile_override(&domain.key, &window.window)
                     {
                         self.admission_focus_spent.insert(window.window.0.clone());
                         continue;
@@ -1594,40 +1602,23 @@ impl WorldEngine {
         self.prior_context.empty_controlled.contains(key)
     }
 
-    /// Reconcile one readable staged domain through the retained engine
-    /// sweep. Failures hold the scope explicitly; floating callers never
-    /// reach here. A gesture (`gesture_barrier`) without an explicit
-    /// Session drag defers geometric capacity repair (D7): when the
-    /// carried bounds/gaps changed, membership still converges at the
     /// Closed ids converged for one staged domain: explicit closes homed
-    /// here plus safety/own-process exclusions the retained session still
+    /// here plus safety/own-process exclusions the retained layout still
     /// holds (links, exceptions, minimized slots). Exclusions never enter
     /// or keep membership, so the sweep drops their slots exactly like a
     /// close; this authorizes no native close, only slot removal.
     pub(crate) fn closed_for_domain(&self, domain: &StagedDomain) -> Vec<WindowId> {
         let mut closed = domain.closed.clone();
-        let Some(session) = self.engine.session(&domain.key) else {
+        if !self.layout.contains_domain(&domain.key) {
             return closed;
-        };
+        }
         for id in &self.staged.excluded {
             if closed.iter().any(|known| known == id) {
                 continue;
             }
-            let held_here = session.snapshot().windows.iter().any(|link| {
-                &link.window == id
-                    && link.output == domain.key.output
-                    && link.workspace == domain.key.workspace
-            }) || session.exception_observed().iter().any(|observed| {
-                &observed.window == id
-                    && observed.output == domain.key.output
-                    && observed.workspace == domain.key.workspace
-            }) || session.minimized_entries().iter().any(
-                |(window, output, workspace)| {
-                    window == id
-                        && output == &domain.key.output
-                        && workspace == &domain.key.workspace
-                },
-            );
+            let held_here = self.layout.is_tiled_window(&domain.key, id)
+                || self.layout.is_exception(&domain.key, id)
+                || self.layout.has_minimized_slot(&domain.key, id);
             if held_here {
                 closed.push(id.clone());
             }
@@ -1635,16 +1626,21 @@ impl WorldEngine {
         closed
     }
 
-    /// retained geometry, but gap adoption and victim repair wait for the
-    /// first report after the gesture clears. The scope holds as
+    /// Reconcile one readable staged domain through the retained layout
+    /// sweep. Failures hold the scope explicitly; floating callers never
+    /// reach here. A gesture (`gesture_barrier`) without an explicit
+    /// layout drag defers geometric capacity repair (D7): when the carried
+    /// bounds/gaps changed, membership still converges at the retained
+    /// geometry, but gap adoption and victim repair wait for the first
+    /// report after the gesture clears. The scope holds as
     /// [`HoldReason::GestureBarrier`] with topology/order retained, so no
     /// float intent persists mid-gesture and no classification runs.
     /// Unchanged shapes converge exactly as without the barrier.
     pub(crate) fn sweep_domain(
         &mut self,
         domain: &StagedDomain,
-        owner: &OwnerId,
-        correlation: &CorrelationId,
+        _owner: &OwnerId,
+        _correlation: &CorrelationId,
         held_scopes: &mut BTreeSet<DomainKey>,
     ) {
         let key = domain.key.clone();
@@ -1655,7 +1651,7 @@ impl WorldEngine {
             gap: domain.gap,
             adjacent: BTreeMap::new(),
         };
-        // The Engine retains the outer-inset work area. Inset exhaustion
+        // Retained layout tracks the outer-inset work area. Inset exhaustion
         // holds geometrically (capacity B), never seeds an empty domain or
         // drops retained topology. This protected hold stands even
         // mid-gesture: the barrier defers repair, never exhaustion.
@@ -1665,149 +1661,181 @@ impl WorldEngine {
             held_scopes.insert(key);
             return;
         };
-        if self.defer_gesture_repair(domain, &inset, owner, correlation, held_scopes) {
+        if self.defer_gesture_repair(domain, &inset, _owner, _correlation, held_scopes) {
             return;
         }
-        let windows = self.shielded_windows(&domain.key, &domain.windows);
-        let accepted = self
-            .engine
-            .session(&key)
-            .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
-        let (revision, fingerprint) = accepted.unwrap_or((0, 0));
         // Gap/bounds changes adopt through the topology-preserving
         // update-gaps path (legacy parity); unchanged shapes reconcile.
-        // Unknown sessions reconcile (fresh seed), never update-gaps
+        // Unknown domains reconcile (fresh seed), never update-gaps
         // (which refuses unknown domains so the fresh route seeds them).
-        let command = match self.engine.session(&key) {
-            Some(session) => {
-                let retained_gap = session
-                    .domains()
-                    .iter()
-                    .find(|d| d.key() == key)
-                    .map(|d| (d.bounds, d.gap));
-                let retained_outer = self.engine.outer_gap(&key);
-                match (retained_gap, retained_outer) {
-                    (Some((bounds, gap)), Some(outer))
-                        if bounds == inset.bounds
-                            && gap == inset.gap
-                            && outer == domain.outer_gap =>
-                    {
-                        CoreCommand::Reconcile
-                    }
-                    (Some(_), Some(_)) => CoreCommand::UpdateGaps,
-                    _ => CoreCommand::Reconcile,
-                }
+        let is_update_gaps = match (
+            self.layout.domain_geometry(&key),
+            self.layout.domain_outer_gap(&key),
+        ) {
+            (Some((bounds, gap)), Some(outer)) => {
+                bounds != inset.bounds || gap != inset.gap || outer != domain.outer_gap
             }
-            None => CoreCommand::Reconcile,
+            _ => false,
         };
-        let retained_focus = self.engine.session(&key).and_then(|session| {
-            let (focus_domain, focus_leaf) = session.focus();
-            match (focus_domain, focus_leaf) {
-                (Some(focus_domain), Some(focus_leaf)) if focus_domain == key => {
-                    session.focused_window_for(&focus_leaf, &key)
-                }
-                _ => None,
+        let retained_focus = self
+            .layout
+            .focus_leaf(&key)
+            .and_then(|focus_leaf| self.layout.window_for_leaf(&key, focus_leaf));
+        let windows = self.shielded_windows(&domain.key, &domain.windows);
+        let closed_windows = self.closed_for_domain(domain);
+        if !is_update_gaps {
+            // Conservative live-state no-op: proven unchanged domains skip
+            // convergence and projection entirely. Every other case (and every
+            // uncertainty) keeps the ordinary path below.
+            if self.layout.try_unchanged_reconcile(
+                &key,
+                inset.bounds,
+                inset.gap,
+                domain.outer_gap,
+                &domain.focused,
+                &windows,
+                &closed_windows,
+            ) {
+                #[cfg(test)]
+                TEST_SWEEP_SKIP_HITS.with(|hits| hits.set(hits.get() + 1));
+                return;
             }
-        });
-        let event = CoreEvent {
-            owner: owner.clone(),
-            generation: self.core_generation.clone(),
-            correlation: correlation.clone(),
-            revision,
-            fingerprint,
-            domain: Engine::canonical_component_domain(&inset),
-            domain_key: key.clone(),
-            outer_gap: domain.outer_gap,
-            focused_window: domain.focused.clone(),
-            windows,
-            closed_windows: self.closed_for_domain(domain),
-            directional: None,
-            directional_target_outer_gap: None,
-            target_domain: None,
-            target_windows: Vec::new(),
-            command,
-        };
-        // Conservative live-state no-op: proven unchanged domains skip the
-        // cloned/projecting handle path entirely. Every other case (and every
-        // uncertainty) keeps the ordinary handle below.
-        if self.engine.try_skip_unchanged_reconcile(&event) {
-            return;
-        }
-        match self.engine.handle(&event) {
-            CoreReply::Projection(_) | CoreReply::Tiled(_) | CoreReply::Released => {
-                // Safety-exclusion focus hold: the retained focus converged
-                // away as a safety/own-process exclusion (never an explicit
-                // positive close) with no observed focus. The scope stays
-                // fenced until the adapter proves focus, even though an
-                // explicit positive close of the focus reflows readable.
-                // Convergence already ran, so the slot is retired; only
-                // publication holds.
-                if domain.focused.0.is_empty()
-                    && let Some(window) = retained_focus
-                    && self.staged.excluded.contains(&window)
-                    && !domain.closed.contains(&window)
-                {
-                    self.hold_reasons
-                        .insert(key.clone(), HoldReason::Unreadable);
-                    held_scopes.insert(key);
-                }
-            }
-            refused => {
-                // Single-policy classification (capacity B): the staged
-                // reason publishes with the held scope and its rows.
-                self.hold_reasons
-                    .insert(key.clone(), Self::classify_sweep_hold(&refused));
+            if let Err(hold) = self.run_reconcile_sweep(
+                &inset,
+                domain.outer_gap,
+                &domain.focused,
+                &windows,
+                &closed_windows,
+            ) {
+                self.hold_reasons.insert(key.clone(), hold);
                 held_scopes.insert(key);
+                return;
             }
+        } else {
+            if let Err(failure) = self.layout.converge_retained_observation(
+                &key,
+                &windows,
+                &domain.focused,
+                &closed_windows,
+            ) {
+                self.hold_reasons.insert(
+                    key.clone(),
+                    Self::classify_sweep_hold(SweepFailure::Layout(failure)),
+                );
+                held_scopes.insert(key);
+                return;
+            }
+            if let Err(failure) = self.layout.update_domain_gaps(
+                &key,
+                inset.bounds,
+                inset.gap,
+                domain.outer_gap,
+                &domain.focused,
+                &windows,
+            ) {
+                self.hold_reasons.insert(
+                    key.clone(),
+                    Self::classify_sweep_hold(SweepFailure::Layout(failure)),
+                );
+                held_scopes.insert(key);
+                return;
+            }
+        }
+        // Safety-exclusion focus hold: the retained focus converged away as a
+        // safety/own-process exclusion (never an explicit positive close) with
+        // no observed focus. The scope stays fenced until the adapter proves
+        // focus, even though an explicit positive close of the focus reflows
+        // readable. Convergence already ran, so the slot is retired; only
+        // publication holds.
+        if domain.focused.0.is_empty()
+            && let Some(window) = retained_focus
+            && self.staged.excluded.contains(&window)
+            && !domain.closed.contains(&window)
+        {
+            self.hold_reasons
+                .insert(key.clone(), HoldReason::Unreadable);
+            held_scopes.insert(key);
+        }
+    }
+
+    fn run_reconcile_sweep(
+        &mut self,
+        domain: &OutputDomain,
+        outer_gap: i32,
+        focused: &WindowId,
+        windows: &[EngineWindow],
+        closed_windows: &[WindowId],
+    ) -> Result<(), HoldReason> {
+        let key = domain.key();
+        let disjoint = !windows.is_empty()
+            && self.layout.contains_domain(&key)
+            && !windows.iter().any(|w| {
+                self.layout.is_tiled_window(&key, &w.window)
+                    || self.layout.is_exception(&key, &w.window)
+                    || self.layout.has_minimized_slot(&key, &w.window)
+            });
+        if disjoint {
+            self.layout.drop_domain(&key);
+        }
+        if let Err(failure) =
+            self.layout
+                .converge_retained_observation(&key, windows, focused, closed_windows)
+        {
+            return Err(Self::classify_sweep_hold(SweepFailure::Layout(failure)));
+        }
+        match self.layout.reconcile_retained(
+            &key,
+            domain.bounds,
+            domain.gap,
+            outer_gap,
+            focused,
+            windows,
+            closed_windows,
+        ) {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => self
+                .layout
+                .reconcile_fresh(domain, outer_gap, focused, windows)
+                .map(|_| ())
+                .map_err(|failure| Self::classify_sweep_hold(SweepFailure::Fresh(failure))),
+            Err(failure) => Err(Self::classify_sweep_hold(SweepFailure::Retained(failure))),
         }
     }
 
     /// Gesture repair deferral for one domain (D7): true when the barrier
     /// owned this domain (the caller returns without sweeping further).
     /// Convergence-only at the retained bounds/gaps when those changed:
-    /// membership still reconciles through the ordinary [`Engine::handle`]
-    /// path at retained geometry (a `Reconcile` there never adopts gaps or
-    /// repairs), then the scope holds as [`HoldReason::GestureBarrier`]
-    /// with retained topology, order, focus, and float state untouched.
-    /// Unchanged shapes return false so the ordinary sweep converges them
-    /// fully (the barrier only withholds frame writes at publish). Fresh
-    /// seeds (no retained session) also return false. A failed
-    /// convergence keeps its classified hold: the barrier postpones
-    /// repair, never real failures.
+    /// membership still reconciles through the ordinary retained-geometry
+    /// reconcile path (never adopting new gaps or running shape-change D7),
+    /// then the scope holds as [`HoldReason::GestureBarrier`] with retained
+    /// topology, order, focus, and float state untouched. Unchanged shapes
+    /// return false so the ordinary sweep converges them fully (the barrier
+    /// only withholds frame writes at publish). Fresh seeds (no retained
+    /// domain) also return false. A failed convergence keeps its classified
+    /// hold: the barrier postpones repair, never real failures.
     pub(crate) fn defer_gesture_repair(
         &mut self,
         domain: &StagedDomain,
         inset: &OutputDomain,
-        owner: &OwnerId,
-        correlation: &CorrelationId,
+        _owner: &OwnerId,
+        _correlation: &CorrelationId,
         held_scopes: &mut BTreeSet<DomainKey>,
     ) -> bool {
         if !self.staged.gesture_barrier {
             return false;
         }
         let key = domain.key.clone();
-        let retained = self.engine.session(&key).and_then(|session| {
-            let geometry = session
-                .domains()
-                .iter()
-                .find(|d| d.key() == key)
-                .map(|d| (d.bounds, d.gap))?;
-            let outer = self.engine.outer_gap(&key)?;
-            Some((
-                geometry.0,
-                geometry.1,
-                outer,
-                session.accepted_revision(),
-                session.accepted_fingerprint(),
-            ))
-        });
-        let Some((bounds, gap, outer, revision, fingerprint)) = retained else {
+        let Some((bounds, gap)) = self.layout.domain_geometry(&key) else {
+            return false;
+        };
+        let Some(outer) = self.layout.domain_outer_gap(&key) else {
             return false;
         };
         if bounds == inset.bounds && gap == inset.gap && outer == domain.outer_gap {
             return false;
         }
         let windows = self.shielded_windows(&key, &domain.windows);
+        let closed_windows = self.closed_for_domain(domain);
         let retained_domain = OutputDomain {
             id: key.output.clone(),
             workspace: key.workspace.clone(),
@@ -1815,34 +1843,16 @@ impl WorldEngine {
             gap,
             adjacent: BTreeMap::new(),
         };
-        let event = CoreEvent {
-            owner: owner.clone(),
-            generation: self.core_generation.clone(),
-            correlation: correlation.clone(),
-            revision,
-            fingerprint,
-            domain: Engine::canonical_component_domain(&retained_domain),
-            domain_key: key.clone(),
-            outer_gap: outer,
-            focused_window: domain.focused.clone(),
-            windows,
-            closed_windows: self.closed_for_domain(domain),
-            directional: None,
-            directional_target_outer_gap: None,
-            target_domain: None,
-            target_windows: Vec::new(),
-            command: CoreCommand::Reconcile,
-        };
-        match self.engine.handle(&event) {
-            CoreReply::Projection(_) | CoreReply::Tiled(_) | CoreReply::Released => {}
-            refused => {
-                // Single-policy classification (capacity B): the staged
-                // reason publishes with the held scope and its rows.
-                self.hold_reasons
-                    .insert(key.clone(), Self::classify_sweep_hold(&refused));
-                held_scopes.insert(key);
-                return true;
-            }
+        if let Err(hold) = self.run_reconcile_sweep(
+            &retained_domain,
+            outer,
+            &domain.focused,
+            &windows,
+            &closed_windows,
+        ) {
+            self.hold_reasons.insert(key.clone(), hold);
+            held_scopes.insert(key);
+            return true;
         }
         self.hold_reasons
             .insert(key.clone(), HoldReason::GestureBarrier);
@@ -1870,7 +1880,7 @@ impl WorldEngine {
             if !was_floating.contains(&domain.key)
                 || self.floating_scopes.contains(&domain.key)
                 || held_scopes.contains(&domain.key)
-                || self.engine.contains(&domain.key)
+                || self.layout.contains_domain(&domain.key)
             {
                 continue;
             }
@@ -2295,7 +2305,7 @@ mod skip_witness_tests {
             None,
         );
         let first_reply = accepted(&mut engine, &first);
-        let before = engine.engine.skip_hits();
+        let before = TEST_SWEEP_SKIP_HITS.with(|hits| hits.get());
         let second = report_full(
             2,
             2,
@@ -2308,7 +2318,7 @@ mod skip_witness_tests {
         );
         let second_reply = accepted(&mut engine, &second);
         assert!(
-            engine.engine.skip_hits() > before,
+            TEST_SWEEP_SKIP_HITS.with(|hits| hits.get()) > before,
             "unchanged second report must take the sweep skip"
         );
         assert!(
@@ -2349,9 +2359,9 @@ mod skip_witness_tests {
                 None,
                 None,
             );
-            let before = engine.engine.skip_hits();
+            let before = TEST_SWEEP_SKIP_HITS.with(|hits| hits.get());
             let reply = accepted(&mut engine, &report);
-            let delta = engine.engine.skip_hits() - before;
+            let delta = TEST_SWEEP_SKIP_HITS.with(|hits| hits.get()) - before;
             warm = Some(reply);
             seq += 1;
             if delta == 2 {
@@ -2359,7 +2369,7 @@ mod skip_witness_tests {
             }
         }
         assert!(
-            engine.engine.skip_hits() >= 2,
+            TEST_SWEEP_SKIP_HITS.with(|hits| hits.get()) >= 2,
             "two domains must warm into stable skip hits within four fresh reports"
         );
         let warm = warm.expect("at least one reply");
@@ -2372,10 +2382,10 @@ mod skip_witness_tests {
             ..WindowSizeHints::none()
         });
         let report = report_full(seq, seq, screens, changed, Vec::new(), "a-1", None, None);
-        let before = engine.engine.skip_hits();
+        let before = TEST_SWEEP_SKIP_HITS.with(|hits| hits.get());
         let reply = accepted(&mut engine, &report);
         assert_eq!(
-            engine.engine.skip_hits() - before,
+            TEST_SWEEP_SKIP_HITS.with(|hits| hits.get()) - before,
             1,
             "exactly the unchanged domain must skip"
         );
