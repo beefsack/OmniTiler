@@ -1137,3 +1137,74 @@ fn pair_minimum_refuses_distinct_kind() {
     );
     assert_eq!(e.layout.accepted_revision(&ek), erev_before);
 }
+
+#[test]
+fn sixty_five_share_keyboard_resize_succeeds_without_count_cap() {
+    let mut r = KeyboardResizeRig::new(vec![domain("out-1", "ws-1", 65 * 400, 600, 0)]);
+    let k = key("out-1", "ws-1");
+    let mut children = Vec::with_capacity(65);
+    let mut leaves = BTreeMap::new();
+    let mut focus_stack = Vec::with_capacity(65);
+    let mut observed = Vec::with_capacity(65);
+    for i in 0..65 {
+        let w = win(&format!("win-{i}"));
+        let l = NodeId(format!("leaf-{i}"));
+        children.push(Node::Leaf { id: l.clone() });
+        leaves.insert(w.clone(), l.clone());
+        focus_stack.push(l);
+        observed.push(tiled(&format!("win-{i}"), "out-1", "ws-1"));
+    }
+    let focused_window = win("win-0");
+    let focused_leaf = leaves.get(&focused_window).cloned().expect("win-0 leaf");
+    r.layout.domains.insert(
+        k.clone(),
+        DomainLayout {
+            tree: Some(Node::Group {
+                id: NodeId("root".to_owned()),
+                axis: Axis::Horizontal,
+                children,
+                shares: vec![1; 65],
+            }),
+            leaves,
+            bounds: Rect {
+                x: 0,
+                y: 0,
+                w: 65 * 400,
+                h: 600,
+            },
+            gap: 0,
+            outer_gap: 0,
+            exceptions: BTreeMap::new(),
+            focused_leaf: Some(focused_leaf),
+            focus_stack,
+            focus_history: Vec::new(),
+            last_active: None,
+            retained_float_geometry: BTreeMap::new(),
+            automatic_fixed: std::collections::BTreeSet::new(),
+            fixed_tile_override: std::collections::BTreeSet::new(),
+            capacity_floats: std::collections::BTreeSet::new(),
+            admission_order: BTreeMap::new(),
+            minimized_slots: BTreeMap::new(),
+            accepted_revision: 1,
+        },
+    );
+
+    let outcome = r
+        .layout
+        .keyboard_resize(
+            &k,
+            &focused_window,
+            Direction::Right,
+            ResizeMode::Outwards,
+            0,
+            &focused_window,
+            &observed,
+        )
+        .expect("65-share keyboard resize succeeds without count cap");
+    assert_eq!(outcome.base_revision, 1);
+    assert_eq!(outcome.revision, 2);
+    assert_eq!(outcome.operation.old_shares.len(), 65);
+    assert_eq!(outcome.operation.new_shares.len(), 65);
+    assert_eq!(outcome.geometry.len(), 65);
+    assert!(outcome.operation.new_shares[0] > outcome.operation.new_shares[1]);
+}

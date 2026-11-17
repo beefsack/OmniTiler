@@ -1146,3 +1146,148 @@ fn drag_preview_drop_parity_with_hints_and_prior() {
             .contains_key(&win("win-m"))
     );
 }
+
+#[test]
+fn local_drag_insertion_index_sixty_five_succeeds_without_count_cap() {
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 6600,
+        h: 400,
+    };
+    let key = ws_key("out-1", "ws-1");
+    let desc = domain_desc(&key, bounds, 0);
+
+    let mut children = Vec::with_capacity(66);
+    let mut leaves = BTreeMap::new();
+    let mut focus_stack = Vec::with_capacity(66);
+    let mut obs = Vec::with_capacity(66);
+    for i in 0..66 {
+        let wid = format!("w{i}");
+        let lid = format!("leaf-{i}");
+        children.push(crate::directional::Node::Leaf { id: nid(&lid) });
+        leaves.insert(win(&wid), nid(&lid));
+        focus_stack.push(nid(&lid));
+        obs.push(eng(&wid, &key, (i as i32) * 100, 100));
+    }
+
+    let mut layout = WorldLayout::new();
+    layout.domains.insert(
+        key.clone(),
+        super::state::DomainLayout {
+            tree: Some(crate::directional::Node::Group {
+                id: nid("g-root"),
+                axis: crate::directional::Axis::Horizontal,
+                children,
+                shares: vec![1; 66],
+            }),
+            leaves,
+            bounds,
+            gap: 0,
+            outer_gap: 0,
+            exceptions: BTreeMap::new(),
+            focused_leaf: Some(nid("leaf-0")),
+            focus_stack,
+            focus_history: Vec::new(),
+            last_active: None,
+            retained_float_geometry: BTreeMap::new(),
+            automatic_fixed: std::collections::BTreeSet::new(),
+            fixed_tile_override: std::collections::BTreeSet::new(),
+            capacity_floats: std::collections::BTreeSet::new(),
+            admission_order: BTreeMap::new(),
+            minimized_slots: BTreeMap::new(),
+            accepted_revision: 1,
+        },
+    );
+
+    // Drag w0 (index 0) onto the right edge of w65 (index 65 after w0 is
+    // removed -> insertion_index == 65) and verify no count cap blocks it.
+    let outcome = layout
+        .run_local_drag_drop(&desc, 0, &win("w0"), &win("w0"), &obs, 6595, 200, None)
+        .expect("65+ insertion index drop commits");
+    assert_eq!(outcome.base_revision, 1);
+    assert_eq!(outcome.revision, 2);
+
+    let geom = layout
+        .project_domain_geometry(&key, &BTreeMap::new())
+        .expect("projects 66 leaves");
+    assert_eq!(geom.len(), 66);
+    let w0_rect = geom
+        .iter()
+        .find(|g| g.window == win("w0"))
+        .expect("w0 geometry")
+        .rect;
+    let w65_rect = geom
+        .iter()
+        .find(|g| g.window == win("w65"))
+        .expect("w65 geometry")
+        .rect;
+    assert!(w0_rect.x > w65_rect.x, "w0 inserted after w65 at index 65");
+}
+
+#[test]
+fn local_drop_perpendicular_edge_wraps_root_and_self_drop_refuses() {
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 800,
+        h: 400,
+    };
+    let key = ws_key("out-1", "ws-1");
+    let desc = domain_desc(&key, bounds, 0);
+
+    let mut layout = WorldLayout::new();
+    let d = two_tile_domain(bounds, 0, "g-root", "w1", "a", "w2", "b", 4);
+    let original_tree = d.tree.clone();
+    layout.domains.insert(key.clone(), d);
+
+    let obs = vec![eng("w1", &key, 0, 400), eng("w2", &key, 400, 400)];
+
+    // Self-drop onto w1 refuses without mutating topology or revision.
+    assert!(
+        layout
+            .run_local_drag_drop(&desc, 0, &win("w1"), &win("w1"), &obs, 200, 200, None)
+            .is_err()
+    );
+    assert_eq!(
+        layout.domains.get(&key).map(|d| d.accepted_revision),
+        Some(4)
+    );
+    assert_eq!(
+        layout.domains.get(&key).and_then(|d| d.tree.clone()),
+        original_tree
+    );
+
+    // Dropping w1 onto the top edge of w2 removes w1 from the 2-leaf root,
+    // leaving w2 as sole root, and wraps the root into a vertical group at
+    // insertion_index 0.
+    let outcome = layout
+        .run_local_drag_drop(&desc, 0, &win("w1"), &win("w1"), &obs, 600, 5, None)
+        .expect("root wrap drop commits");
+    assert_eq!(outcome.base_revision, 4);
+    assert_eq!(outcome.revision, 5);
+
+    let geom = layout
+        .project_domain_geometry(&key, &BTreeMap::new())
+        .expect("projects wrapped root");
+    let w1_rect = geom.iter().find(|g| g.window == win("w1")).unwrap().rect;
+    let w2_rect = geom.iter().find(|g| g.window == win("w2")).unwrap().rect;
+    assert_eq!(
+        w1_rect,
+        Rect {
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 200
+        }
+    );
+    assert_eq!(
+        w2_rect,
+        Rect {
+            x: 0,
+            y: 200,
+            w: 800,
+            h: 200
+        }
+    );
+}

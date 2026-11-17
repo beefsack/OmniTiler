@@ -823,3 +823,114 @@ fn world_directional_pair_refusal_priority_and_preflight_order() {
         }
     ));
 }
+
+#[test]
+fn focus_route_sixty_five_levels_deep_succeeds_without_count_cap() {
+    let k = source_key();
+    let obs_for = |window: &str| crate::session::ObservedWindow {
+        window: win(window),
+        output: k.output.clone(),
+        workspace: k.workspace.clone(),
+        floating: false,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress: false,
+        hints: WindowSizeHints::none(),
+    };
+    let mut layout = WorldLayout::new();
+    let mut leaves = BTreeMap::new();
+    let mut focus_stack = Vec::new();
+    let mut observed = Vec::new();
+
+    // Build a 65-level deep nested tree on the right branch of root:
+    // g0(Horizontal: [leaf-0, g1]), g1(Horizontal: [g2, leaf-1]), ...,
+    // g64(Horizontal: [leaf-64, leaf-65]).
+    // Focusing Right from leaf-0 descends g1 -> g2 -> ... -> g64 -> leaf-64,
+    // yielding a route with >= 65 nodes.
+    let l64 = NodeId("leaf-64".to_owned());
+    let l65 = NodeId("leaf-65".to_owned());
+    let w64 = win("w64");
+    let w65 = win("w65");
+    leaves.insert(w64.clone(), l64.clone());
+    leaves.insert(w65.clone(), l65.clone());
+    focus_stack.push(l64.clone());
+    focus_stack.push(l65.clone());
+    observed.push(obs_for("w64"));
+    observed.push(obs_for("w65"));
+
+    let mut current = Node::Group {
+        id: NodeId("g64".to_owned()),
+        axis: Axis::Horizontal,
+        children: vec![Node::Leaf { id: l64 }, Node::Leaf { id: l65 }],
+        shares: vec![1, 1],
+    };
+
+    for i in (1..64).rev() {
+        let lid = NodeId(format!("leaf-{i}"));
+        let wid = win(&format!("w{i}"));
+        leaves.insert(wid.clone(), lid.clone());
+        focus_stack.push(lid.clone());
+        observed.push(obs_for(&format!("w{i}")));
+        current = Node::Group {
+            id: NodeId(format!("g{i}")),
+            axis: Axis::Horizontal,
+            children: vec![current, Node::Leaf { id: lid }],
+            shares: vec![500, 1],
+        };
+    }
+
+    let l0 = NodeId("leaf-0".to_owned());
+    let w0 = win("w0");
+    leaves.insert(w0.clone(), l0.clone());
+    focus_stack.push(l0.clone());
+    observed.push(obs_for("w0"));
+
+    let root = Node::Group {
+        id: NodeId("g0".to_owned()),
+        axis: Axis::Horizontal,
+        children: vec![Node::Leaf { id: l0.clone() }, current],
+        shares: vec![1, 1],
+    };
+
+    layout.domains.insert(
+        k.clone(),
+        DomainLayout {
+            tree: Some(root),
+            leaves,
+            bounds: Rect {
+                x: 0,
+                y: 0,
+                w: 20_000,
+                h: 800,
+            },
+            gap: 0,
+            outer_gap: 0,
+            exceptions: BTreeMap::new(),
+            focused_leaf: Some(l0),
+            focus_stack,
+            focus_history: Vec::new(),
+            last_active: None,
+            retained_float_geometry: BTreeMap::new(),
+            automatic_fixed: BTreeSet::new(),
+            fixed_tile_override: BTreeSet::new(),
+            capacity_floats: BTreeSet::new(),
+            admission_order: BTreeMap::new(),
+            minimized_slots: BTreeMap::new(),
+            accepted_revision: 1,
+        },
+    );
+
+    let outcome = layout
+        .local_focus(&k, &w0, Direction::Right, &w0, &observed)
+        .expect("65-level focus route succeeds without count cap");
+    assert_eq!(outcome.base_revision, 1);
+    assert_eq!(outcome.revision, 2);
+    assert_eq!(outcome.to_window, w64);
+    assert!(
+        outcome.route.len() >= 65,
+        "expected route len >= 65, got {}",
+        outcome.route.len()
+    );
+}
