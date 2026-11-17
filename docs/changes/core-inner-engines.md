@@ -371,3 +371,12 @@
   Source review corrects a test to expect focus mismatch before directional
   exhaustion. Scoped formatting passes; reported diagnostics find no resize
   errors. Caller integration and executed behavioural acceptance remain pending.
+- Intentional float/unfloat now operates on one retained candidate, reusing
+  admission for explicit unfloat and preserving durable placement, fullscreen
+  tolerance, maximized refusal, capacity no-space origin and lifecycle focus/
+  provenance cleanup. No observed-focus sync is introduced. Nine direct tests
+  cover these transitions, validation priority and revision-bound allocation
+  burns. Source review removes domain-key checks absent from float command
+  shape validation. Scoped formatting passes; a library-and-tests diagnostic
+  still fails on 83 library and 268 test-build errors in unmigrated consumers,
+  with no layout-module error. Integration and executed tests remain pending.

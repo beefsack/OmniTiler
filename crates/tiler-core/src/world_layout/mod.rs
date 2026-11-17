@@ -16,6 +16,7 @@ mod bootstrap;
 mod capacity;
 mod convergence;
 mod fit;
+mod float;
 mod focus;
 mod observation;
 mod orientation;
@@ -32,6 +33,8 @@ mod tree_edit;
 mod unchanged;
 
 #[cfg(test)]
+mod float_tests;
+#[cfg(test)]
 mod query_focus_tests;
 #[cfg(test)]
 mod resize_tests;
@@ -39,8 +42,8 @@ mod resize_tests;
 mod unchanged_tests;
 
 pub(crate) use outcome::{
-    AdmissionOutcome, FittedAdmissionDecline, FittedAdmissionReason, FreshDomainFailure,
-    FreshDomainOutcome, FreshOutcomeKind, LayoutFailure, OrientationOutcome,
+    AdmissionOutcome, FittedAdmissionDecline, FittedAdmissionReason, FloatOutcome,
+    FreshDomainFailure, FreshDomainOutcome, FreshOutcomeKind, LayoutFailure, OrientationOutcome,
     PointerCornerResizeOutcome, ResizeOutcome, RetainedProjectionOutcome, RetainedReconcileFailure,
 };
 pub(crate) use projection::ProjectionFailure;

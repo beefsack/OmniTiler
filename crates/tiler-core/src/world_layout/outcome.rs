@@ -2,6 +2,7 @@
 
 use crate::contract::ResizeOperation;
 use crate::directional::{Direction, NodeId, OutputId, WindowId, WorkspaceId};
+use crate::geometry::Rect;
 use crate::seed::FitDeclineReason;
 use crate::session::{DesiredGeometry, RefusalKind};
 
@@ -212,4 +213,26 @@ pub(crate) struct PointerCornerResizeOutcome {
     pub(crate) geometry: Vec<DesiredGeometry>,
     /// Retained active focus leaf in the domain after the resize.
     pub(crate) focus_leaf: NodeId,
+}
+
+/// Typed result of an accepted intentional float or unfloat toggle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FloatOutcome {
+    /// Accepted revision before the operation.
+    pub(crate) base_revision: u64,
+    /// Accepted revision after the operation (`base_revision + 1`).
+    pub(crate) revision: u64,
+    /// Complete hinted geometry for the affected domain in child order.
+    /// Empty when floating the last tiled window, on a capacity no-space
+    /// re-float, or when only a tolerated fullscreen-only subject remains.
+    pub(crate) geometry: Vec<DesiredGeometry>,
+    /// Retained active focus leaf in the domain after the operation.
+    pub(crate) focus_leaf: Option<NodeId>,
+    /// Native float target: `Some(subject)` for tiled-to-float (with
+    /// `float_rect: Some(...)`) and for unfloat capacity no-space re-float
+    /// (with `float_rect: None`); `None` for unfloat-to-tile.
+    pub(crate) float_window: Option<WindowId>,
+    /// Effective float placement for tiled-to-float; `None` on unfloat or
+    /// capacity no-space re-float.
+    pub(crate) float_rect: Option<Rect>,
 }
