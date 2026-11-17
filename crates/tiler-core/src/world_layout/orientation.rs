@@ -15,7 +15,7 @@ use super::focus::{settle_domain_focus_tail, sync_domain_focus_from_window};
 use super::observation::{domain_observed_known_match, valid_observed_shapes};
 use super::outcome::{LayoutFailure, OrientationOutcome};
 use super::projection::{project_borrowed_geometry, sort_geometry};
-use super::state::WorldLayout;
+use super::state::{DomainLayout, WorldLayout};
 use super::topology::validate_domain_topology;
 
 impl WorldLayout {
@@ -36,11 +36,34 @@ impl WorldLayout {
         observed_focus: &WindowId,
         observed: &[ObservedWindow],
     ) -> Result<OrientationOutcome, LayoutFailure> {
+        let Some(original) = self.domain(key) else {
+            return Err(LayoutFailure::Semantics(RefusalKind::UnknownDomain));
+        };
+        let (candidate, outcome) = self.toggle_orientation_on_candidate(
+            key,
+            original,
+            subject,
+            observed_focus,
+            observed,
+            self.config.fixed_size_admission,
+        )?;
+        *self.domains.get_mut(key).expect("validated domain") = candidate;
+        Ok(outcome)
+    }
+
+    /// Build a staged parent-axis orientation toggle candidate without
+    /// installing it.
+    pub(super) fn toggle_orientation_on_candidate(
+        &self,
+        key: &DomainKey,
+        original: &DomainLayout,
+        subject: &WindowId,
+        observed_focus: &WindowId,
+        observed: &[ObservedWindow],
+        fixed_admission: bool,
+    ) -> Result<(DomainLayout, OrientationOutcome), LayoutFailure> {
         let refuse = LayoutFailure::Semantics;
 
-        let Some(original) = self.domain(key) else {
-            return Err(refuse(RefusalKind::UnknownDomain));
-        };
         if !validate_domain_topology(key, original) {
             return Err(refuse(RefusalKind::MalformedTopology));
         }
@@ -67,8 +90,7 @@ impl WorldLayout {
         if observed_ids != known {
             return Err(refuse(RefusalKind::PartialObservation));
         }
-        if !domain_observed_known_match(key, &candidate, observed, self.config.fixed_size_admission)
-        {
+        if !domain_observed_known_match(key, &candidate, observed, fixed_admission) {
             return Err(refuse(RefusalKind::PartialObservation));
         }
 
@@ -160,18 +182,19 @@ impl WorldLayout {
         WorldLayout::prune_domain_capacity_state(&mut candidate);
         candidate.accepted_revision = revision;
 
-        *self.domains.get_mut(key).expect("validated domain") = candidate;
-
-        Ok(OrientationOutcome {
-            base_revision: base,
-            revision,
-            window: subject.clone(),
-            leaf: focused_leaf,
-            group: parent,
-            output: key.output.clone(),
-            workspace: key.workspace.clone(),
-            geometry,
-        })
+        Ok((
+            candidate,
+            OrientationOutcome {
+                base_revision: base,
+                revision,
+                window: subject.clone(),
+                leaf: focused_leaf,
+                group: parent,
+                output: key.output.clone(),
+                workspace: key.workspace.clone(),
+                geometry,
+            },
+        ))
     }
 }
 

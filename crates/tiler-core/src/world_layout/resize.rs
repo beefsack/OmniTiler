@@ -41,11 +41,41 @@ impl WorldLayout {
         observed_focus: &WindowId,
         observed: &[ObservedWindow],
     ) -> Result<ResizeOutcome, LayoutFailure> {
+        let Some(original) = self.domain(key) else {
+            return Err(LayoutFailure::Semantics(RefusalKind::UnknownDomain));
+        };
+        let (candidate, outcome) = self.keyboard_resize_on_candidate(
+            key,
+            original,
+            subject,
+            direction,
+            mode,
+            press_index,
+            observed_focus,
+            observed,
+            self.config.fixed_size_admission,
+        )?;
+        *self.domains.get_mut(key).expect("validated domain") = candidate;
+        Ok(outcome)
+    }
+
+    /// Build a staged COSMIC keyboard pixel resize candidate without installing
+    /// it.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn keyboard_resize_on_candidate(
+        &self,
+        key: &DomainKey,
+        original: &DomainLayout,
+        subject: &WindowId,
+        direction: Direction,
+        mode: ResizeMode,
+        press_index: u32,
+        observed_focus: &WindowId,
+        observed: &[ObservedWindow],
+        fixed_admission: bool,
+    ) -> Result<(DomainLayout, ResizeOutcome), LayoutFailure> {
         let refuse = LayoutFailure::Semantics;
 
-        let Some(original) = self.domain(key) else {
-            return Err(refuse(RefusalKind::UnknownDomain));
-        };
         if !validate_domain_topology(key, original) {
             return Err(refuse(RefusalKind::MalformedTopology));
         }
@@ -69,8 +99,7 @@ impl WorldLayout {
         if observed_ids != known {
             return Err(refuse(RefusalKind::PartialObservation));
         }
-        if !domain_observed_known_match(key, &candidate, observed, self.config.fixed_size_admission)
-        {
+        if !domain_observed_known_match(key, &candidate, observed, fixed_admission) {
             return Err(refuse(RefusalKind::PartialObservation));
         }
 
@@ -181,15 +210,17 @@ impl WorldLayout {
         );
 
         settle_resize_commit_tail(&mut candidate, &focus_leaf, revision);
-        *self.domains.get_mut(key).expect("validated domain") = candidate;
 
-        Ok(ResizeOutcome {
-            base_revision: base,
-            revision,
-            operation,
-            geometry: desired_geometry,
-            focus_leaf,
-        })
+        Ok((
+            candidate,
+            ResizeOutcome {
+                base_revision: base,
+                revision,
+                operation,
+                geometry: desired_geometry,
+                focus_leaf,
+            },
+        ))
     }
 
     /// COSMIC pointer edge resize for `subject` in the converged domain `key`.
@@ -207,11 +238,37 @@ impl WorldLayout {
         observed_focus: &WindowId,
         observed: &[ObservedWindow],
     ) -> Result<ResizeOutcome, LayoutFailure> {
+        let Some(original) = self.domain(key) else {
+            return Err(LayoutFailure::Semantics(RefusalKind::UnknownDomain));
+        };
+        let (candidate, outcome) = self.pointer_resize_on_candidate(
+            key,
+            original,
+            subject,
+            direction,
+            proposed_boundary,
+            observed_focus,
+            observed,
+        )?;
+        *self.domains.get_mut(key).expect("validated domain") = candidate;
+        Ok(outcome)
+    }
+
+    /// Build a staged COSMIC pointer edge resize candidate without installing
+    /// it.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn pointer_resize_on_candidate(
+        &self,
+        key: &DomainKey,
+        original: &DomainLayout,
+        subject: &WindowId,
+        direction: Direction,
+        proposed_boundary: i32,
+        observed_focus: &WindowId,
+        observed: &[ObservedWindow],
+    ) -> Result<(DomainLayout, ResizeOutcome), LayoutFailure> {
         let refuse = LayoutFailure::Semantics;
 
-        let Some(original) = self.domain(key) else {
-            return Err(refuse(RefusalKind::UnknownDomain));
-        };
         if !validate_domain_topology(key, original) {
             return Err(refuse(RefusalKind::MalformedTopology));
         }
@@ -378,15 +435,17 @@ impl WorldLayout {
         );
 
         settle_resize_commit_tail(&mut candidate, &focus_leaf, revision);
-        *self.domains.get_mut(key).expect("validated domain") = candidate;
 
-        Ok(ResizeOutcome {
-            base_revision: base,
-            revision,
-            operation,
-            geometry: desired_geometry,
-            focus_leaf,
-        })
+        Ok((
+            candidate,
+            ResizeOutcome {
+                base_revision: base,
+                revision,
+                operation,
+                geometry: desired_geometry,
+                focus_leaf,
+            },
+        ))
     }
 
     /// Atomic dual-axis (corner) COSMIC pointer pixel resize for `subject` in
@@ -410,6 +469,42 @@ impl WorldLayout {
         observed_focus: &WindowId,
         observed: &[ObservedWindow],
     ) -> Result<PointerCornerResizeOutcome, LayoutFailure> {
+        if Axis::for_direction(direction_1) == Axis::for_direction(direction_2) {
+            return Err(LayoutFailure::Semantics(RefusalKind::MalformedInput));
+        }
+        let Some(original) = self.domain(key) else {
+            return Err(LayoutFailure::Semantics(RefusalKind::UnknownDomain));
+        };
+        let (candidate, outcome) = self.pointer_resize_corner_on_candidate(
+            key,
+            original,
+            subject,
+            direction_1,
+            boundary_1,
+            direction_2,
+            boundary_2,
+            observed_focus,
+            observed,
+        )?;
+        *self.domains.get_mut(key).expect("validated domain") = candidate;
+        Ok(outcome)
+    }
+
+    /// Build a staged atomic dual-axis (corner) COSMIC pointer pixel resize
+    /// candidate without installing it.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn pointer_resize_corner_on_candidate(
+        &self,
+        key: &DomainKey,
+        original: &DomainLayout,
+        subject: &WindowId,
+        direction_1: Direction,
+        boundary_1: i32,
+        direction_2: Direction,
+        boundary_2: i32,
+        observed_focus: &WindowId,
+        observed: &[ObservedWindow],
+    ) -> Result<(DomainLayout, PointerCornerResizeOutcome), LayoutFailure> {
         let refuse = LayoutFailure::Semantics;
 
         if Axis::for_direction(direction_1) == Axis::for_direction(direction_2) {
@@ -422,9 +517,6 @@ impl WorldLayout {
                 (direction_2, boundary_2, direction_1, boundary_1)
             };
 
-        let Some(original) = self.domain(key) else {
-            return Err(refuse(RefusalKind::UnknownDomain));
-        };
         if !validate_domain_topology(key, original) {
             return Err(refuse(RefusalKind::MalformedTopology));
         }
@@ -636,20 +728,22 @@ impl WorldLayout {
         );
 
         settle_resize_commit_tail(&mut candidate, &focus_leaf, revision);
-        *self.domains.get_mut(key).expect("validated domain") = candidate;
 
-        Ok(PointerCornerResizeOutcome {
-            base_revision: base,
-            revision,
-            direction_h,
-            boundary_h,
-            operation_h,
-            direction_v,
-            boundary_v,
-            operation_v,
-            geometry: desired_geometry,
-            focus_leaf,
-        })
+        Ok((
+            candidate,
+            PointerCornerResizeOutcome {
+                base_revision: base,
+                revision,
+                direction_h,
+                boundary_h,
+                operation_h,
+                direction_v,
+                boundary_v,
+                operation_v,
+                geometry: desired_geometry,
+                focus_leaf,
+            },
+        ))
     }
 }
 

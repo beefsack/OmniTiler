@@ -19,7 +19,7 @@ use super::local_move::geometry_covers_domain;
 use super::observation::{domain_observed_known_match, valid_observed_shapes};
 use super::outcome::{LayoutFailure, LocalFocusOutcome};
 use super::projection::{project_borrowed_geometry, sort_geometry};
-use super::state::WorldLayout;
+use super::state::{DomainLayout, WorldLayout};
 use super::topology::validate_domain_topology;
 
 impl WorldLayout {
@@ -41,11 +41,36 @@ impl WorldLayout {
         observed_focus: &WindowId,
         observed: &[ObservedWindow],
     ) -> Result<LocalFocusOutcome, LayoutFailure> {
+        let Some(original) = self.domain(key) else {
+            return Err(LayoutFailure::Semantics(RefusalKind::UnknownDomain));
+        };
+        let (candidate, outcome) = self.local_focus_on_candidate(
+            key,
+            original,
+            subject,
+            direction,
+            observed_focus,
+            observed,
+            self.config.fixed_size_admission,
+        )?;
+        *self.domains.get_mut(key).expect("validated domain") = candidate;
+        Ok(outcome)
+    }
+
+    /// Build a staged local directional focus candidate without installing it.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn local_focus_on_candidate(
+        &self,
+        key: &DomainKey,
+        original: &DomainLayout,
+        subject: &WindowId,
+        direction: Direction,
+        observed_focus: &WindowId,
+        observed: &[ObservedWindow],
+        fixed_admission: bool,
+    ) -> Result<(DomainLayout, LocalFocusOutcome), LayoutFailure> {
         let refuse = LayoutFailure::Semantics;
 
-        let Some(original) = self.domain(key) else {
-            return Err(refuse(RefusalKind::UnknownDomain));
-        };
         if !validate_domain_topology(key, original) {
             return Err(refuse(RefusalKind::MalformedTopology));
         }
@@ -72,8 +97,7 @@ impl WorldLayout {
         if observed_ids != known {
             return Err(refuse(RefusalKind::PartialObservation));
         }
-        if !domain_observed_known_match(key, &candidate, observed, self.config.fixed_size_admission)
-        {
+        if !domain_observed_known_match(key, &candidate, observed, fixed_admission) {
             return Err(refuse(RefusalKind::PartialObservation));
         }
 
@@ -183,18 +207,19 @@ impl WorldLayout {
         WorldLayout::prune_domain_fixed_size_state(&mut candidate);
         candidate.accepted_revision = revision;
 
-        *self.domains.get_mut(key).expect("validated domain") = candidate;
-
-        Ok(LocalFocusOutcome {
-            base_revision: base,
-            revision,
-            direction,
-            from_window: focused_window,
-            from_leaf: focused_leaf,
-            to_window: target_window,
-            to_leaf: target_leaf,
-            route,
-            geometry: desired_geometry,
-        })
+        Ok((
+            candidate,
+            LocalFocusOutcome {
+                base_revision: base,
+                revision,
+                direction,
+                from_window: focused_window,
+                from_leaf: focused_leaf,
+                to_window: target_window,
+                to_leaf: target_leaf,
+                route,
+                geometry: desired_geometry,
+            },
+        ))
     }
 }

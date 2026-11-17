@@ -12,13 +12,13 @@ use crate::contract::MAX_REVISION;
 use crate::directional::WindowId;
 use crate::geometry::Rect;
 use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, RefusalKind, centered_float_rect};
-use crate::size_hints::WindowSizeHints;
+use crate::size_hints::{FixedSizePredicate, WindowSizeHints};
 
 use super::focus::{domain_focus_resolves, settle_domain_focus_tail};
 use super::observation::{domain_observed_known_match, valid_observed_shapes};
 use super::outcome::{FloatOutcome, LayoutFailure};
 use super::projection::project_borrowed_geometry;
-use super::state::{DomainException, WorldLayout};
+use super::state::{DomainException, DomainLayout, WorldLayout};
 use super::topology::{collect_leaves, validate_domain_topology};
 use super::tree_edit::{admission_placement_for, remove_leaf_from_tree};
 
@@ -49,9 +49,37 @@ impl WorldLayout {
         float_geometry: Option<Rect>,
         observed: &[ObservedWindow],
     ) -> Result<FloatOutcome, LayoutFailure> {
+        let (candidate, new_counter, outcome) = self.toggle_float_on_candidate(
+            key,
+            self.domain(key),
+            self.admission_seq_next,
+            subject,
+            float_geometry,
+            observed,
+            self.config.fixed_size_admission,
+            self.config.fixed_size_predicate,
+        )?;
+        *self.domains.get_mut(key).expect("domain validated above") = candidate;
+        self.admission_seq_next = new_counter;
+        Ok(outcome)
+    }
+
+    /// Build a staged float/unfloat candidate without installing it.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn toggle_float_on_candidate(
+        &self,
+        key: &DomainKey,
+        original: Option<&DomainLayout>,
+        admission_counter: u64,
+        subject: &WindowId,
+        float_geometry: Option<Rect>,
+        observed: &[ObservedWindow],
+        fixed_admission: bool,
+        fixed_predicate: FixedSizePredicate,
+    ) -> Result<(DomainLayout, u64, FloatOutcome), LayoutFailure> {
         let refuse = LayoutFailure::Semantics;
 
-        if let Some(existing) = self.domain(key)
+        if let Some(existing) = original
             && !validate_domain_topology(key, existing)
         {
             return Err(refuse(RefusalKind::MalformedTopology));
@@ -71,7 +99,7 @@ impl WorldLayout {
             }
         }
 
-        let Some(original) = self.domain(key) else {
+        let Some(original) = original else {
             if !observed.is_empty() {
                 return Err(refuse(RefusalKind::CrossDomainMismatch));
             }
@@ -87,7 +115,7 @@ impl WorldLayout {
                 .find(|entry| &entry.window == subject)
                 .ok_or_else(|| refuse(RefusalKind::PartialObservation))?;
 
-            let bindings_match = if self.config.fixed_size_admission {
+            let bindings_match = if fixed_admission {
                 target.floating == record.flags.floating
             } else {
                 let exact = target.flags() == record.flags;
@@ -136,7 +164,7 @@ impl WorldLayout {
             let (installed_candidate, new_counter, admission) = self.build_admission_candidate(
                 key,
                 Some(&candidate),
-                self.admission_seq_next,
+                admission_counter,
                 subject,
                 ExceptionFlags::none(),
                 None,
@@ -144,26 +172,31 @@ impl WorldLayout {
                 true,
                 true,
                 &next_observed,
-                self.config.fixed_size_admission,
-                self.config.fixed_size_predicate,
+                fixed_admission,
+                fixed_predicate,
             )?;
 
             let focus_leaf = installed_candidate.focused_leaf.clone();
-            *self.domains.get_mut(key).expect("domain validated above") = installed_candidate;
-            if admission.admitted_leaf.is_some() {
-                self.admission_seq_next = new_counter;
-            }
+            let next_counter = if admission.admitted_leaf.is_some() {
+                new_counter
+            } else {
+                admission_counter
+            };
 
             let float_window = admission.admitted_leaf.is_none().then(|| subject.clone());
 
-            return Ok(FloatOutcome {
-                base_revision: admission.base_revision,
-                revision: admission.revision,
-                geometry: admission.geometry,
-                focus_leaf,
-                float_window,
-                float_rect: None,
-            });
+            return Ok((
+                installed_candidate,
+                next_counter,
+                FloatOutcome {
+                    base_revision: admission.base_revision,
+                    revision: admission.revision,
+                    geometry: admission.geometry,
+                    focus_leaf,
+                    float_window,
+                    float_rect: None,
+                },
+            ));
         }
 
         let target = observed
@@ -205,12 +238,7 @@ impl WorldLayout {
             return Err(refuse(RefusalKind::PartialObservation));
         };
         subject_entry.fullscreen = false;
-        if !domain_observed_known_match(
-            key,
-            original,
-            &adjusted_observed,
-            self.config.fixed_size_admission,
-        ) {
+        if !domain_observed_known_match(key, original, &adjusted_observed, fixed_admission) {
             return Err(refuse(RefusalKind::PartialObservation));
         }
 
@@ -310,16 +338,18 @@ impl WorldLayout {
         WorldLayout::prune_domain_capacity_state(&mut candidate);
         candidate.accepted_revision = revision;
 
-        *self.domains.get_mut(key).expect("domain validated above") = candidate;
-
-        Ok(FloatOutcome {
-            base_revision: base,
-            revision,
-            geometry: desired_geometry,
-            focus_leaf: desired_focus_leaf,
-            float_window: Some(subject.clone()),
-            float_rect: Some(effective),
-        })
+        Ok((
+            candidate,
+            admission_counter,
+            FloatOutcome {
+                base_revision: base,
+                revision,
+                geometry: desired_geometry,
+                focus_leaf: desired_focus_leaf,
+                float_window: Some(subject.clone()),
+                float_rect: Some(effective),
+            },
+        ))
     }
 }
 

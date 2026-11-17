@@ -391,3 +391,9 @@
   counter check. Scoped formatting passes; reported diagnostics find no new
   directional-module errors. Caller integration and executed tests remain
   pending.
+- Local orientation, float, directional and resize operations now separate
+  candidate validation from retained installation. Builders take explicit
+  admission configuration and counters so relocated and legacy-seeded trials
+  can remain uninstalled until successful completion. Existing retained entry
+  points preserve their validation order and commit tails. Source review and
+  scoped formatting pass; global compilation and executed tests remain pending.

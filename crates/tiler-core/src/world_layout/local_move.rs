@@ -41,11 +41,39 @@ impl WorldLayout {
         observed_focus: &WindowId,
         observed: &[ObservedWindow],
     ) -> Result<LocalMoveOutcome, LayoutFailure> {
+        let Some(original) = self.domain(key) else {
+            return Err(LayoutFailure::Semantics(RefusalKind::UnknownDomain));
+        };
+        let (candidate, outcome) = self.local_move_on_candidate(
+            key,
+            original,
+            subject,
+            direction,
+            same_axis_move,
+            observed_focus,
+            observed,
+            self.config.fixed_size_admission,
+        )?;
+        *self.domains.get_mut(key).expect("validated domain") = candidate;
+        Ok(outcome)
+    }
+
+    /// Build a staged local (R1-R3) directional move candidate without
+    /// installing it.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn local_move_on_candidate(
+        &self,
+        key: &DomainKey,
+        original: &DomainLayout,
+        subject: &WindowId,
+        direction: Direction,
+        same_axis_move: SameAxisMove,
+        observed_focus: &WindowId,
+        observed: &[ObservedWindow],
+        fixed_admission: bool,
+    ) -> Result<(DomainLayout, LocalMoveOutcome), LayoutFailure> {
         let refuse = LayoutFailure::Semantics;
 
-        let Some(original) = self.domain(key) else {
-            return Err(refuse(RefusalKind::UnknownDomain));
-        };
         if !validate_domain_topology(key, original) {
             return Err(refuse(RefusalKind::MalformedTopology));
         }
@@ -69,8 +97,7 @@ impl WorldLayout {
         if observed_ids != known {
             return Err(refuse(RefusalKind::PartialObservation));
         }
-        if !domain_observed_known_match(key, &candidate, observed, self.config.fixed_size_admission)
-        {
+        if !domain_observed_known_match(key, &candidate, observed, fixed_admission) {
             return Err(refuse(RefusalKind::PartialObservation));
         }
 
@@ -189,18 +216,19 @@ impl WorldLayout {
         WorldLayout::prune_domain_capacity_state(&mut candidate);
         candidate.accepted_revision = revision;
 
-        *self.domains.get_mut(key).expect("validated domain") = candidate;
-
-        Ok(LocalMoveOutcome {
-            base_revision: base,
-            revision,
-            rule: plan.rule,
-            capability: plan.required_capability,
-            direction,
-            window: focused_window,
-            focus_leaf: focused_leaf,
-            geometry: desired_geometry,
-        })
+        Ok((
+            candidate,
+            LocalMoveOutcome {
+                base_revision: base,
+                revision,
+                rule: plan.rule,
+                capability: plan.required_capability,
+                direction,
+                window: focused_window,
+                focus_leaf: focused_leaf,
+                geometry: desired_geometry,
+            },
+        ))
     }
 }
 
