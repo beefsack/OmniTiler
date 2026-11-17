@@ -23,6 +23,7 @@ mod outcome;
 mod projection;
 mod queries;
 mod relocation;
+mod resize;
 mod restore;
 mod retained;
 mod state;
@@ -33,12 +34,14 @@ mod unchanged;
 #[cfg(test)]
 mod query_focus_tests;
 #[cfg(test)]
+mod resize_tests;
+#[cfg(test)]
 mod unchanged_tests;
 
 pub(crate) use outcome::{
     AdmissionOutcome, FittedAdmissionDecline, FittedAdmissionReason, FreshDomainFailure,
     FreshDomainOutcome, FreshOutcomeKind, LayoutFailure, OrientationOutcome,
-    RetainedProjectionOutcome, RetainedReconcileFailure,
+    PointerCornerResizeOutcome, ResizeOutcome, RetainedProjectionOutcome, RetainedReconcileFailure,
 };
 pub(crate) use projection::ProjectionFailure;
 pub(crate) use state::WorldLayout;

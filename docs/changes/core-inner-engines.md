@@ -361,3 +361,13 @@
   Scoped formatting passes; reported diagnostics find no sweep/convergence
   errors, but global compilation and executed behavioural acceptance remain
   pending.
+- Keyboard, pointer-edge and atomic pointer-corner resize now validate local
+  layout candidates and reuse the existing pixel/share derivation algorithms.
+  Pointer observation binding remains distinct from keyboard binding; corners
+  normalize horizontal-first and derive the second axis from intermediate
+  geometry. The resize commit tail preserves last-active and capacity state
+  rather than adopting another operation's pruning rules. Eight direct tests
+  port repeat/minimum, focus/overlay, atomicity and revision-limit coverage.
+  Source review corrects a test to expect focus mismatch before directional
+  exhaustion. Scoped formatting passes; reported diagnostics find no resize
+  errors. Caller integration and executed behavioural acceptance remain pending.

@@ -1,6 +1,7 @@
 //! Compact typed outcomes and failures for direct-endpoint layout operations.
 
-use crate::directional::{NodeId, OutputId, WindowId, WorkspaceId};
+use crate::contract::ResizeOperation;
+use crate::directional::{Direction, NodeId, OutputId, WindowId, WorkspaceId};
 use crate::seed::FitDeclineReason;
 use crate::session::{DesiredGeometry, RefusalKind};
 
@@ -170,4 +171,45 @@ pub(crate) enum LayoutFailure {
         base: u64,
         limit: u64,
     },
+}
+
+/// Typed result of an accepted single-axis keyboard or pointer edge resize.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResizeOutcome {
+    /// Accepted revision before the operation.
+    pub(crate) base_revision: u64,
+    /// Accepted revision after the operation (`base_revision + 1`).
+    pub(crate) revision: u64,
+    /// Semantic resize operation (target group, adjacent pair, old/new shares).
+    pub(crate) operation: ResizeOperation,
+    /// Complete hinted geometry reprojected from the resized tree, sorted by
+    /// `(output, workspace, leaf)`.
+    pub(crate) geometry: Vec<DesiredGeometry>,
+    /// Retained active focus leaf in the domain after the resize.
+    pub(crate) focus_leaf: NodeId,
+}
+
+/// Typed result of an accepted atomic dual-axis (corner) pointer resize.
+/// Axes are normalized horizontal-first, vertical-second.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PointerCornerResizeOutcome {
+    /// Accepted revision before the operation.
+    pub(crate) base_revision: u64,
+    /// Accepted revision after the operation (`base_revision + 1`).
+    pub(crate) revision: u64,
+    /// Normalized horizontal direction and requested boundary.
+    pub(crate) direction_h: Direction,
+    pub(crate) boundary_h: i32,
+    /// Normalized horizontal resize operation.
+    pub(crate) operation_h: ResizeOperation,
+    /// Normalized vertical direction and requested boundary.
+    pub(crate) direction_v: Direction,
+    pub(crate) boundary_v: i32,
+    /// Normalized vertical resize operation.
+    pub(crate) operation_v: ResizeOperation,
+    /// Complete hinted geometry reprojected from the combined tree, sorted by
+    /// `(output, workspace, leaf)`.
+    pub(crate) geometry: Vec<DesiredGeometry>,
+    /// Retained active focus leaf in the domain after the resize.
+    pub(crate) focus_leaf: NodeId,
 }

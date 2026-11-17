@@ -67,3 +67,39 @@ pub(super) fn domain_observed_known_match(
     }
     true
 }
+
+/// Pointer-only observation binding tolerates overlay flags on tiled members
+/// other than `subject`; `subject` itself must have no flags and exception
+/// records must match their exact homing and flags.
+pub(super) fn domain_pointer_observation_matches(
+    key: &DomainKey,
+    domain: &DomainLayout,
+    observed: &[ObservedWindow],
+    subject: &WindowId,
+) -> bool {
+    let by_id: BTreeMap<&WindowId, &ObservedWindow> =
+        observed.iter().map(|w| (&w.window, w)).collect();
+    for id in domain.leaves.keys() {
+        let Some(entry) = by_id.get(id) else {
+            return false;
+        };
+        if entry.output != key.output || entry.workspace != key.workspace {
+            return false;
+        }
+        if id == subject && entry.flags().any() {
+            return false;
+        }
+    }
+    for (id, exception) in &domain.exceptions {
+        let Some(entry) = by_id.get(id) else {
+            return false;
+        };
+        if entry.output != key.output
+            || entry.workspace != key.workspace
+            || entry.flags() != exception.flags
+        {
+            return false;
+        }
+    }
+    true
+}
