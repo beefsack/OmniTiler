@@ -291,3 +291,10 @@
   hinted geometry construction rather than duplicating it. Source review and
   scoped formatting pass; three direct tests are present but unexecuted.
   Retained reconcile, fresh routing and world caller integration remain pending.
+- Retained reconciliation now builds a local candidate, including unique-source
+  relocation when eligible, and installs only after all gates pass. It preserves
+  gap-mismatch precedence, relocated exact-set checks, focus-none allowances,
+  bounds-change repair and revision-neutral projection. Gap updates share the
+  local repair tail. Three relocation/reconcile tests are ported but unexecuted;
+  source review and scoped formatting pass. Fresh routing and caller integration
+  remain pending.

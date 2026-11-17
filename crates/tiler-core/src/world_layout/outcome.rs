@@ -60,6 +60,27 @@ pub(crate) struct RetainedProjectionOutcome {
     pub(crate) focus_leaf: Option<NodeId>,
 }
 
+/// Typed failure for retained reconciliation. Relocation prechecks and the
+/// fresh-routing absence signal are not failures (an absent target with no
+/// eligible relocation returns `Ok(None)`); every other refusal is typed here.
+/// The gap mismatches map to the outer layer's exact `domain-mismatch` kind
+/// and messages, which stay outside this module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RetainedReconcileFailure {
+    /// A semantic or revision failure from the layout operation.
+    Layout(LayoutFailure),
+    /// Retained inner gap does not match the requested inner gap.
+    InnerGapMismatch,
+    /// Retained outer gap does not match the requested outer gap.
+    OuterGapMismatch,
+}
+
+impl From<LayoutFailure> for RetainedReconcileFailure {
+    fn from(value: LayoutFailure) -> Self {
+        Self::Layout(value)
+    }
+}
+
 /// Typed failure for a layout operation: a semantic refusal with a stable
 /// `RefusalKind`, or the per-domain accepted revision bound reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

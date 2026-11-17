@@ -9,8 +9,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::directional::WindowId;
+use crate::directional::{NodeId, WindowId};
 use crate::geometry::Rect;
+use crate::policy::LayoutPolicy;
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, RefusalKind};
 use crate::size_hints::WindowSizeHints;
@@ -119,50 +120,17 @@ impl WorldLayout {
 
         // D7 geometric repair runs only after a projection failure, on the
         // requested bounds/gap and with the caller's observed hints.
-        let mut candidate = original.clone();
-        if !adopt_gaps(&mut candidate, key, bounds, gap) {
-            return Err(LayoutFailure::Semantics(RefusalKind::MalformedTopology));
-        }
-        let observed_by_window: BTreeMap<&WindowId, &EngineWindow> = observed
-            .iter()
-            .map(|entry| (&entry.window, entry))
-            .collect();
-        let mut protected: BTreeSet<WindowId> = BTreeSet::new();
-        let mut live_frames: BTreeMap<WindowId, Rect> = BTreeMap::new();
-        for window in candidate.leaves.keys() {
-            let Some(entry) = observed_by_window.get(window) else {
-                continue;
-            };
-            if !entry.floating {
-                live_frames.insert(window.clone(), entry.rect);
-            }
-            if entry.fullscreen || entry.maximized || entry.sticky || entry.fit_excluded {
-                protected.insert(window.clone());
-            }
-        }
-        let repaired_focus = repair_domain_candidate(
-            &mut candidate,
+        let Some((mut candidate, repaired_focus)) = repair_retained_local_candidate(
+            original,
             self.policy.as_ref(),
             key,
+            bounds,
+            gap,
             &hints,
-            &protected,
-            &live_frames,
-            &original.focus_stack,
-            original.focused_leaf.as_ref(),
-        );
-        let Some(repaired_focus) = repaired_focus else {
+            observed,
+        ) else {
             return Err(LayoutFailure::Semantics(RefusalKind::MalformedTopology));
         };
-        settle_domain_focus_tail(
-            &mut candidate,
-            &original.focus_stack,
-            repaired_focus.clone(),
-            original.last_active.as_ref(),
-        );
-        WorldLayout::prune_domain_capacity_state(&mut candidate);
-        if !validate_domain_topology(key, &candidate) {
-            return Err(LayoutFailure::Semantics(RefusalKind::MalformedTopology));
-        }
 
         match repaired_focus {
             None => {
@@ -214,4 +182,64 @@ fn adopt_gaps(domain: &mut DomainLayout, key: &DomainKey, bounds: Rect, gap: i32
     domain.bounds = bounds;
     domain.gap = gap;
     validate_domain_topology(key, domain)
+}
+
+/// Shared local-candidate D7 repair used by both update-gaps and retained
+/// reconciliation. Adopts the requested bounds/gap on a disposable clone,
+/// evicts the shortest newest-first eligible victim prefix, settles focus to
+/// the newest surviving MRU, prunes stale capacity/admission provenance and
+/// validates topology. `None` is a narrow truthful hold and the caller
+/// discards the candidate. Revision-neutral; the caller sets the outer gap
+/// only after success, preserving the original commit order.
+pub(super) fn repair_retained_local_candidate(
+    original: &DomainLayout,
+    policy: &dyn LayoutPolicy,
+    key: &DomainKey,
+    bounds: Rect,
+    gap: i32,
+    hints: &BTreeMap<WindowId, WindowSizeHints>,
+    observed: &[EngineWindow],
+) -> Option<(DomainLayout, Option<NodeId>)> {
+    let mut candidate = original.clone();
+    if !adopt_gaps(&mut candidate, key, bounds, gap) {
+        return None;
+    }
+    let observed_by_window: BTreeMap<&WindowId, &EngineWindow> = observed
+        .iter()
+        .map(|entry| (&entry.window, entry))
+        .collect();
+    let mut protected: BTreeSet<WindowId> = BTreeSet::new();
+    let mut live_frames: BTreeMap<WindowId, Rect> = BTreeMap::new();
+    for window in candidate.leaves.keys() {
+        let Some(entry) = observed_by_window.get(window) else {
+            continue;
+        };
+        if !entry.floating {
+            live_frames.insert(window.clone(), entry.rect);
+        }
+        if entry.fullscreen || entry.maximized || entry.sticky || entry.fit_excluded {
+            protected.insert(window.clone());
+        }
+    }
+    let repaired_focus = repair_domain_candidate(
+        &mut candidate,
+        policy,
+        key,
+        hints,
+        &protected,
+        &live_frames,
+        &original.focus_stack,
+        original.focused_leaf.as_ref(),
+    )?;
+    settle_domain_focus_tail(
+        &mut candidate,
+        &original.focus_stack,
+        repaired_focus.clone(),
+        original.last_active.as_ref(),
+    );
+    WorldLayout::prune_domain_capacity_state(&mut candidate);
+    if !validate_domain_topology(key, &candidate) {
+        return None;
+    }
+    Some((candidate, repaired_focus))
 }

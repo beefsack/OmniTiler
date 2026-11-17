@@ -6,7 +6,8 @@
 //! - D7 repair focus settle and stale-provenance pruning.
 
 use crate::directional::{Axis, Node, NodeId, OutputId, WorkspaceId};
-use crate::session::{DesiredGeometry, ExceptionFlags};
+use crate::session::{DesiredGeometry, ExceptionFlags, RefusalKind};
+use crate::world_layout::RetainedReconcileFailure;
 
 use super::super::state::DomainException;
 use super::*;
@@ -46,6 +47,55 @@ fn tiled_observed(window_id: &str, frame: Rect, hints: WindowSizeHints) -> Engin
         fixed_suppress: false,
         hints,
     }
+}
+
+fn key_for(output: &str, workspace: &str) -> DomainKey {
+    DomainKey {
+        output: OutputId(output.to_owned()),
+        workspace: WorkspaceId(workspace.to_owned()),
+    }
+}
+
+fn observed_window(window_id: &str, output: &str, workspace: &str, floating: bool) -> EngineWindow {
+    EngineWindow {
+        window: window(window_id),
+        output: OutputId(output.to_owned()),
+        workspace: WorkspaceId(workspace.to_owned()),
+        rect: rect(0, 0, 100, 100),
+        floating,
+        fit_excluded: floating,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress: false,
+        hints: WindowSizeHints::none(),
+    }
+}
+
+fn seeded_domain(bounds: Rect, gap: i32, outer_gap: i32, ids: &[&str]) -> DomainLayout {
+    let mut domain = DomainLayout::new(bounds, gap, outer_gap);
+    let mut nodes = Vec::new();
+    for id in ids {
+        let node = leaf(&format!("leaf-{id}"));
+        domain.leaves.insert(window(id), node.clone());
+        domain.focus_stack.push(node.clone());
+        domain.focus_history.push(node.clone());
+        nodes.push(Node::Leaf { id: node });
+    }
+    domain.tree = Some(if nodes.len() == 1 {
+        nodes.remove(0)
+    } else {
+        Node::Group {
+            id: leaf("root"),
+            axis: Axis::Horizontal,
+            children: nodes,
+            shares: vec![1; ids.len()],
+        }
+    });
+    domain.focused_leaf = Some(leaf(&format!("leaf-{}", ids[0])));
+    domain.last_active = Some(leaf(&format!("leaf-{}", ids[0])));
+    domain
 }
 
 /// Port of `ghostty_like_short_frame_accepts_client_clamp_without_reassert`:
@@ -256,4 +306,116 @@ fn update_gaps_repair_settles_focus_and_prunes_stale_provenance() {
         !retained.admission_order.contains_key(&window("ghost")),
         "stale order pruned"
     );
+}
+
+/// Port of `relocate_moves_seeded_topology_with_outer_gap`: a unique same-workspace
+/// source is relocated into the absent target at the requested outer gap,
+/// preserving revision and focus history. Every home derives from the new map
+/// key: the projected geometry and exception snapshot both name the target.
+#[test]
+fn reconcile_relocates_source_preserving_revision_history_and_key_derived_home() {
+    let source_key = key_for("out", "ws");
+    let target_key = key_for("out-2", "ws");
+    let bounds = rect(0, 0, 800, 600);
+    let mut layout = WorldLayout::new();
+    let mut source = seeded_domain(rect(0, 0, 400, 300), 0, 3, &["win-1"]);
+    source.accepted_revision = 11;
+    source.exceptions.insert(
+        window("float"),
+        DomainException {
+            flags: ExceptionFlags {
+                floating: true,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+            },
+            floating_geometry: None,
+        },
+    );
+    let history = source.focus_history.clone();
+    layout.domains.insert(source_key.clone(), source);
+
+    let observed = vec![
+        observed_window("win-1", "out-2", "ws", false),
+        observed_window("float", "out-2", "ws", true),
+    ];
+    let out = layout
+        .reconcile_retained(&target_key, bounds, 0, 3, &window("win-1"), &observed, &[])
+        .expect("relocation succeeds")
+        .expect("relocation, not fresh routing");
+
+    assert_eq!(out.base_revision, 11);
+    assert_eq!(out.focus_leaf, Some(leaf("leaf-win-1")));
+    assert_eq!(out.geometry.len(), 1, "only the tiled member projects");
+    assert_eq!(out.geometry[0].output, OutputId("out-2".to_owned()));
+    assert_eq!(out.geometry[0].workspace, WorkspaceId("ws".to_owned()));
+    assert!(layout.domain(&source_key).is_none(), "source removed");
+    let moved = layout.domain(&target_key).expect("target present");
+    assert_eq!(moved.accepted_revision, 11);
+    assert_eq!(moved.focus_history, history, "history preserved");
+    assert_eq!(moved.outer_gap, 3, "requested outer gap adopted");
+    assert_eq!(
+        layout
+            .exception_record(&target_key, &window("float"))
+            .expect("exception homed on target")
+            .output,
+        OutputId("out-2".to_owned())
+    );
+}
+
+/// Port of `relocated_target_skew_rejects_partial_observation_with_rollback`:
+/// the relocated target missed convergence, so an observation that is not the
+/// exact tiled-plus-exception set is refused and the whole source returns.
+#[test]
+fn reconcile_relocation_exact_set_skew_rolls_back_source() {
+    let source_key = key_for("out", "ws");
+    let target_key = key_for("out-2", "ws");
+    let bounds = rect(0, 0, 800, 600);
+    let mut layout = WorldLayout::new();
+    let source = seeded_domain(rect(0, 0, 400, 300), 0, 3, &["win-1", "win-2"]);
+    layout.domains.insert(source_key.clone(), source);
+    let revision = layout.domain(&source_key).unwrap().accepted_revision;
+
+    let observed = vec![observed_window("win-1", "out-2", "ws", false)];
+    let err = layout
+        .reconcile_retained(&target_key, bounds, 0, 3, &window("win-1"), &observed, &[])
+        .unwrap_err();
+    assert_eq!(
+        err,
+        RetainedReconcileFailure::from(LayoutFailure::Semantics(RefusalKind::PartialObservation))
+    );
+
+    assert!(layout.domain(&target_key).is_none(), "target stays absent");
+    let restored = layout.domain(&source_key).expect("source restored");
+    assert_eq!(restored.accepted_revision, revision);
+    assert!(restored.leaves.contains_key(&window("win-1")));
+    assert!(restored.leaves.contains_key(&window("win-2")));
+    assert_eq!(restored.outer_gap, 3);
+}
+
+/// Outer-layer `domain-mismatch` precedence: a retained target reports the
+/// inner-gap mismatch first, then the outer-gap mismatch, leaving state
+/// untouched on both refusals.
+#[test]
+fn reconcile_retained_gap_mismatch_precedes_outer_gap_mismatch() {
+    let k = key();
+    let mut layout = WorldLayout::new();
+    let mut domain = seeded_domain(rect(0, 0, 800, 600), 8, 2, &["win-1"]);
+    domain.accepted_revision = 4;
+    layout.domains.insert(k.clone(), domain);
+
+    let err = layout
+        .reconcile_retained(&k, rect(0, 0, 800, 600), 4, 9, &window("win-1"), &[], &[])
+        .unwrap_err();
+    assert_eq!(err, RetainedReconcileFailure::InnerGapMismatch);
+
+    let err = layout
+        .reconcile_retained(&k, rect(0, 0, 800, 600), 8, 9, &window("win-1"), &[], &[])
+        .unwrap_err();
+    assert_eq!(err, RetainedReconcileFailure::OuterGapMismatch);
+
+    let retained = layout.domain(&k).expect("domain untouched");
+    assert_eq!(retained.gap, 8);
+    assert_eq!(retained.outer_gap, 2);
+    assert_eq!(retained.accepted_revision, 4);
 }

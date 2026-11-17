@@ -20,6 +20,7 @@ mod orientation;
 mod outcome;
 mod projection;
 mod queries;
+mod relocation;
 mod restore;
 mod retained;
 mod state;
@@ -31,6 +32,7 @@ mod query_focus_tests;
 
 pub(crate) use outcome::{
     AdmissionOutcome, LayoutFailure, OrientationOutcome, RetainedProjectionOutcome,
+    RetainedReconcileFailure,
 };
 pub(crate) use projection::ProjectionFailure;
 pub(crate) use state::WorldLayout;
