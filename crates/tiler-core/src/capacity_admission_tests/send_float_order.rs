@@ -4,9 +4,7 @@
 //! holds only `#[test]` fns.
 
 use super::*;
-use crate::world_layout::{
-    FreshOutcomeKind, LayoutFailure, PairOperationContext, PairOperationFailure, PairSendKind,
-};
+use crate::world_layout::{FreshOutcomeKind, PairOperationContext, PairSendKind};
 
 #[test]
 fn send_exhausted_floats_mover_with_exact_frame() {
@@ -504,53 +502,220 @@ fn send_to_float_cross_output_stages_no_source_coordinate_claim() {
 
 #[test]
 fn send_to_output_refused_when_target_unknown_source_preserved() {
-    // Unavailable remap target: the output send refuses UnknownDomain
-    // with the source exactly preserved and no re-sequencing.
-    let mut layout = WorldLayout::new();
-    let d1 = domain("o1", "ws", 120, 80, 0);
-    let d2 = domain("o2", "ws", 120, 80, 0);
-    let d9 = domain("o9", "ws", 120, 80, 0);
-    let key1 = d1.key();
-    let key2 = d2.key();
-    admit_into(&mut layout, &d1, "a", placement(120, 40));
-    admit_into(&mut layout, &d1, "b", placement(120, 40));
-    admit_into(&mut layout, &d2, "c", placement(120, 40));
-    let seq_b = layout.admission_sequence(&key1, &WindowId("b".to_owned()));
-    assert!(layout.sync_focus_from_window(&key1, &WindowId("b".to_owned())));
-    let (tree_before, focus_before, rev_before) = (
-        layout.tree(&key1).cloned(),
-        layout.focus_leaf(&key1).cloned(),
-        layout.accepted_revision(&key1),
-    );
-    let obs = complete_engine_obs(&layout, &[&key1, &key2]);
-    let ctx = PairOperationContext {
-        source_domain: &d1,
-        source_outer_gap: 0,
-        target_domain: &d9,
-        target_outer_gap: Some(0),
-        observed_focus: &WindowId("b".to_owned()),
-        observed: &obs,
-        closed: &[],
+    use crate::boundary::CoreCommand;
+    use crate::size_hints::WindowSizeHints;
+    use crate::world_engine::{WorldEngine, WorldOutcome};
+    use crate::world_report::{
+        ActivationPolicy, CommandRejectKind, CommandResult, NativeWorkspaceFact, OutputIdentity,
+        PresentationIngressV4, PresentationRowV4, ScreenReport, VisibilityFact,
+        WORLD_CONTRACT_VERSION_V4, WindowFact, WindowType, WorldCommand, WorldReportV4,
     };
-    let err = layout
-        .run_pair_send(&ctx, &WindowId("b".to_owned()), true, true)
-        .expect_err("unknown target refuses");
-    assert_eq!(
-        err,
-        PairOperationFailure::Layout(LayoutFailure::Semantics(
-            crate::session::RefusalKind::UnknownDomain
-        ))
+
+    let make_screen = |output: &str, x: i32| ScreenReport {
+        output: OutputId(output.to_owned()),
+        full_rect: Some(Rect {
+            x,
+            y: 0,
+            w: 120,
+            h: 80,
+        }),
+        work_area: Some(Rect {
+            x,
+            y: 0,
+            w: 120,
+            h: 80,
+        }),
+        complete: true,
+        scale: 1.0,
+        identity: OutputIdentity {
+            manufacturer: Some("SynthMfg".to_owned()),
+            model: Some(format!("SynthModel-{output}")),
+            serial: Some(format!("serial-{output}")),
+            connector: None,
+        },
+    };
+    let make_fact = |window: &str, output: &str, rect: Rect| WindowFact {
+        window: WindowId(window.to_owned()),
+        output: Some(OutputId(output.to_owned())),
+        rect: Some(rect),
+        fullscreen: Some(false),
+        maximized: Some(false),
+        sticky: Some(false),
+        hints: Some(WindowSizeHints::none()),
+        minimized: Some(false),
+        native_workspace: NativeWorkspaceFact::Omitted,
+        host_hidden: Some(false),
+        privileged: Some(false),
+        managed: Some(true),
+        accepts_input: Some(true),
+        activation_inhibited: Some(false),
+        tool_window: Some(false),
+        owned: Some(false),
+        transient: Some(false),
+        modal: Some(false),
+        resizable: Some(true),
+        above: Some(false),
+        below: Some(false),
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: Some("synthetic.exe".to_owned()),
+        process_id: Some("foreign-pid".to_owned()),
+        class: Some("Synthetic".to_owned()),
+        title: None,
+        window_type: Some(WindowType::Normal),
+        activation_policy: Some(ActivationPolicy::Regular),
+        layer: Some(0),
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        suppression_available: None,
+        visibility: VisibilityFact {
+            visible: Some(true),
+            suppression_owned: None,
+        },
+        last_write: None,
+    };
+    let make_report = |seq: u64,
+                       screens: Vec<ScreenReport>,
+                       windows: Vec<WindowFact>,
+                       focused: &str,
+                       cmd_seq: Option<u64>,
+                       command: Option<WorldCommand>| WorldReportV4 {
+        contract_version: WORLD_CONTRACT_VERSION_V4,
+        adapter_incarnation: "adapter-1".to_owned(),
+        core_generation: "gen-1".to_owned(),
+        observation_seq: seq,
+        request_seq: seq,
+        request_id: format!("req-{seq}"),
+        command_seq: cmd_seq,
+        command,
+        screens,
+        held_screens: Vec::new(),
+        windows,
+        held_windows: Vec::new(),
+        closed: Vec::new(),
+        native: Vec::new(),
+        held_native: Vec::new(),
+        cursor: None,
+        cursor_hit: None,
+        focused_global: focused.to_owned(),
+        foreground_known: !focused.is_empty(),
+        action_foreground: None,
+        action_cached: None,
+        action_outputs: Vec::new(),
+        primary_output: None,
+        inventory_complete: true,
+        gesture_barrier: false,
+        gesture: None,
+        monotonic_ms: 0,
+        frames: Vec::new(),
+        member_attempts: Vec::new(),
+        view_attempts: Vec::new(),
+        clear_attempts: Vec::new(),
+        creation_attempts: Vec::new(),
+        held_attempts: Vec::new(),
+        state_attempts: Vec::new(),
+        focus_feedback: Vec::new(),
+        presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
+        intent_records: Vec::new(),
+        renderer_input: None,
+    };
+
+    // Unavailable remap target: the output send refuses SendTargetUnknown
+    // with the source exactly preserved and no re-sequencing.
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let screens = vec![make_screen("o1", 0), make_screen("o2", 120)];
+    let windows = vec![
+        make_fact(
+            "a",
+            "o1",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 120,
+                h: 40,
+            },
+        ),
+        make_fact(
+            "b",
+            "o1",
+            Rect {
+                x: 0,
+                y: 40,
+                w: 120,
+                h: 40,
+            },
+        ),
+        make_fact(
+            "c",
+            "o2",
+            Rect {
+                x: 120,
+                y: 0,
+                w: 120,
+                h: 40,
+            },
+        ),
+    ];
+    let (outcome, _) = engine.handle_report(
+        &make_report(1, screens.clone(), windows.clone(), "b", None, None),
+        &[],
     );
-    assert_eq!(layout.tree(&key1), tree_before.as_ref(), "source preserved");
-    assert_eq!(layout.focus_leaf(&key1), focus_before.as_ref());
-    assert_eq!(layout.accepted_revision(&key1), rev_before);
+    assert!(matches!(outcome, WorldOutcome::Accepted(_)));
+    let key1 = engine
+        .layout
+        .domain_keys()
+        .into_iter()
+        .find(|k| k.output.0 == "o1")
+        .expect("o1 domain");
+    let seq_b = engine
+        .layout
+        .admission_sequence(&key1, &WindowId("b".to_owned()));
+    let (tree_before, focus_before, rev_before) = (
+        engine.layout.tree(&key1).cloned(),
+        engine.layout.focus_leaf(&key1).cloned(),
+        engine.layout.accepted_revision(&key1),
+    );
+    let (outcome, settlements) = engine.handle_report(
+        &make_report(
+            2,
+            screens,
+            windows,
+            "b",
+            Some(1),
+            Some(WorldCommand::Operation(CoreCommand::SendToOutput {
+                window: "b".to_owned(),
+                target_output: "o9".to_owned(),
+                target_workspace: "ws-1".to_owned(),
+                follow: true,
+            })),
+        ),
+        &[],
+    );
+    assert!(matches!(outcome, WorldOutcome::Accepted(_)));
     assert_eq!(
-        layout.admission_sequence(&key1, &WindowId("b".to_owned())),
+        settlements.first().and_then(|s| s.result.clone()),
+        Some(CommandResult::Rejected {
+            kind: CommandRejectKind::SendTargetUnknown
+        })
+    );
+    assert_eq!(
+        engine.layout.tree(&key1),
+        tree_before.as_ref(),
+        "source preserved"
+    );
+    assert_eq!(engine.layout.focus_leaf(&key1), focus_before.as_ref());
+    assert_eq!(engine.layout.accepted_revision(&key1), rev_before);
+    assert_eq!(
+        engine
+            .layout
+            .admission_sequence(&key1, &WindowId("b".to_owned())),
         seq_b,
         "refusal never re-sequences"
     );
     assert!(
-        layout.all_exception_windows().next().is_none(),
+        engine.layout.all_exception_windows().next().is_none(),
         "no fake float staged"
     );
 }

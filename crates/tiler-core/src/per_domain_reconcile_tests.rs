@@ -72,6 +72,9 @@ fn reconcile(
     let key = domain.key();
     let observed = engine_windows(domain, windows);
     let focus = focused.cloned().unwrap_or_else(|| WindowId(String::new()));
+    layout
+        .converge_retained_observation(&key, &observed, &focus, &[])
+        .expect("observation convergence succeeds");
     match layout
         .reconcile_retained(
             &key,

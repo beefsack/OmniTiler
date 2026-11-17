@@ -84,8 +84,22 @@ fn committed_pair() -> (WorldLayout, DomainKey) {
         ),
     ];
     layout
-        .reconcile_fresh(&d, 0, &WindowId("win-a".to_owned()), &observed)
+        .reconcile_fresh(&d, 0, &WindowId("win-a".to_owned()), &observed[..1])
         .expect("fit");
+    layout
+        .converge_retained_observation(&key, &observed, &WindowId("win-a".to_owned()), &[])
+        .expect("converge win-b");
+    layout
+        .reconcile_retained(
+            &key,
+            d.bounds,
+            d.gap,
+            0,
+            &WindowId("win-a".to_owned()),
+            &observed,
+            &[],
+        )
+        .expect("reconcile win-b");
     assert_eq!(
         match layout.tree(&key).expect("tree") {
             Node::Group { axis, shares, .. } => (*axis, shares.clone()),

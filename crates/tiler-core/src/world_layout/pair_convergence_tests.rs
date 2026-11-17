@@ -583,3 +583,114 @@ fn pair_capacity_exception_retile_and_absence_clear_capacity_marker() {
         "absent t_cap_absent must not be resurrected into target.capacity_floats"
     );
 }
+
+#[test]
+fn stale_last_active_falls_through_to_stack_then_overlap() {
+    use super::pair_operation::PairOperationContext;
+    use crate::seed::EngineWindow;
+
+    // Closing the last-active leaf on target while source is focused leaves
+    // target `last_active` stale (write-only, never pruned) while the stack
+    // prunes to the survivor. The stale head misses the candidate set, so
+    // selection still reaches the surviving edge leaf.
+    let (s_desc, t_desc) = pair_domains();
+    let source = s_desc.key();
+    let target = t_desc.key();
+
+    let mut world = WorldLayout::new();
+    world.domains.insert(
+        target.clone(),
+        two_leaf_domain(
+            "g-t",
+            ("win-2", "leaf-win-2"),
+            ("win-3", "leaf-win-3"),
+            "leaf-win-3",
+            2,
+        ),
+    );
+    world
+        .domains
+        .insert(source.clone(), single_leaf_domain("win-1", "leaf-win-1", 1));
+
+    let mut pair = world
+        .assemble_directional_pair(&s_desc, &t_desc)
+        .expect("pair assembles");
+    // Source holds global focus on win-1; win-3 closes on target.
+    pair.focused_domain = Some(source.clone());
+    pair.focused_leaf = Some(NodeId("leaf-win-1".to_owned()));
+    let close_obs = vec![obs("win-1", &s_desc, false), obs("win-2", &t_desc, false)];
+    world
+        .converge_pair(
+            &mut pair,
+            &close_obs,
+            Some(&WindowId("win-1".to_owned())),
+            &BTreeSet::new(),
+        )
+        .expect("close converges");
+    world
+        .install_pair(&pair, 0, None)
+        .expect("install converged pair");
+
+    let tiled_target: Vec<String> = world.tiled_windows(&target).map(|w| w.0.clone()).collect();
+    assert_eq!(tiled_target, vec!["win-2"]);
+    let history = world.cross_output_history_newest_first(&target);
+    assert_eq!(
+        history.len(),
+        2,
+        "stale head plus pruned stack: {history:?}"
+    );
+    assert!(
+        world.window_for_leaf(&target, &history[0]).is_none(),
+        "stale head resolves to no link"
+    );
+    assert_eq!(
+        world.remembered_leaf(&target),
+        None,
+        "stale slot never poses as remembered"
+    );
+
+    let engine_obs = vec![
+        EngineWindow {
+            window: WindowId("win-1".to_owned()),
+            output: s_desc.id.clone(),
+            workspace: s_desc.workspace.clone(),
+            rect: bounds_200(),
+            floating: false,
+            fit_excluded: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: WindowSizeHints::none(),
+        },
+        EngineWindow {
+            window: WindowId("win-2".to_owned()),
+            output: t_desc.id.clone(),
+            workspace: t_desc.workspace.clone(),
+            rect: bounds_200(),
+            floating: false,
+            fit_excluded: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: WindowSizeHints::none(),
+        },
+    ];
+    let subject = WindowId("win-1".to_owned());
+    let ctx = PairOperationContext {
+        source_domain: &s_desc,
+        source_outer_gap: 0,
+        target_domain: &t_desc,
+        target_outer_gap: Some(0),
+        observed_focus: &subject,
+        observed: &engine_obs,
+        closed: &[],
+    };
+    let plan = world
+        .run_directional_pair_focus(&ctx, &subject, Direction::Right, false)
+        .expect("cross-output focus selects surviving leaf");
+    assert_eq!(plan.to_window.0, "win-2");
+}

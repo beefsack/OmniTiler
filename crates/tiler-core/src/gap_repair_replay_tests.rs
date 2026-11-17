@@ -7,10 +7,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::directional::{Axis, Node, NodeId, OutputId, WindowId, WorkspaceId};
-use crate::geometry::{project, Rect};
+use crate::geometry::{Rect, project};
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
-use crate::size_hints::{project_with_hints, WindowSizeHints};
+use crate::size_hints::{WindowSizeHints, project_with_hints};
 use crate::world_layout::{LayoutFailure, RetainedProjectionOutcome, WorldLayout};
 
 const OUTPUT: &str = "display-0";
@@ -126,6 +126,9 @@ fn admit_roster(focus: FocusRule) -> WorldLayout {
         let focused = focus
             .admission_focus(i)
             .unwrap_or_else(|| WindowId(String::new()));
+        layout
+            .converge_retained_observation(&key, carried, &focused, &[])
+            .expect("observation convergence succeeds");
         match layout
             .reconcile_retained(&key, domain.bounds, domain.gap, 8, &focused, carried, &[])
             .expect("retained reconcile succeeds")
@@ -202,6 +205,9 @@ fn reconcile(
     let (domain, _) = domain_for(gap);
     let carried = carried_rows();
     let focus = focused.cloned().unwrap_or_else(|| WindowId(String::new()));
+    layout
+        .converge_retained_observation(key, &carried, &focus, &[])
+        .expect("observation convergence succeeds");
     layout
         .reconcile_retained(key, domain.bounds, domain.gap, gap, &focus, &carried, &[])
         .expect("retained reconcile succeeds")
@@ -353,9 +359,9 @@ fn balanced_tree(n: usize) -> Node {
 /// tiled) and is kept as numeric characterization of the old behavior.
 mod hidden_reveal_route {
     use super::{
-        admission_sequences, admit_roster, capacity_victims, domain_for, domain_for_output,
-        newest_suffix, project, reconcile, retained_tree, tiled_links, token, update_gaps,
-        FocusRule, EXPECTED_AT_64, ROSTER,
+        EXPECTED_AT_64, FocusRule, ROSTER, admission_sequences, admit_roster, capacity_victims,
+        domain_for, domain_for_output, newest_suffix, project, reconcile, retained_tree,
+        tiled_links, token, update_gaps,
     };
     use crate::directional::WindowId;
 

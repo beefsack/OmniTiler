@@ -846,50 +846,6 @@ fn tiled_seeded_stack_ranks_without_remembered_target() {
     );
 }
 
-#[test]
-fn stale_last_active_falls_through_to_stack_then_overlap() {
-    // Closing the last-active leaf leaves `last_active` stale (the slot is
-    // write-only, never pruned) while the stack prunes to the survivor.
-    // The stale head misses the candidate set, so selection still reaches
-    // the surviving edge leaf. Uses the production close path only.
-    let (o1, o2) = wide_domains();
-    let mut layout = WorldLayout::new();
-    admit(&mut layout, &o2, "win-2", wide_placement());
-    admit(&mut layout, &o2, "win-3", wide_placement());
-    admit(&mut layout, &o1, "win-1", wide_placement());
-    let source = o1.key();
-    let target = o2.key();
-    assert!(layout.remember_focus(&target, &WindowId("win-3".to_owned())));
-    let close_obs: Vec<ObservedWindow> = complete_observed_for(&layout, &target, Vec::new())
-        .into_iter()
-        .filter(|entry| entry.window.0 != "win-3")
-        .collect();
-    layout
-        .converge_domain(&target, &close_obs, None, &BTreeSet::new())
-        .expect("close converges");
-    assert_eq!(dfs_windows(&layout, &target), vec!["win-2"]);
-    let history = layout.cross_output_history_newest_first(&target);
-    assert_eq!(
-        history.len(),
-        2,
-        "stale head plus pruned stack: {history:?}"
-    );
-    assert!(
-        layout.window_for_leaf(&target, &history[0]).is_none(),
-        "stale head resolves to no link"
-    );
-    assert_eq!(
-        layout.remembered_leaf(&target),
-        None,
-        "stale slot never poses as remembered"
-    );
-    let obs = complete_engine_for_pair(&layout, &source, &target);
-    assert_eq!(
-        cross_window(&mut layout, &o1, &o2, "win-1", Direction::Right, &obs),
-        "win-2"
-    );
-}
-
 // ---- Retained overlay allocation: converge holds the tiled link, ranking uses it. ----
 
 fn converge_flagged_hold(

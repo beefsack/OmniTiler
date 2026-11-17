@@ -143,6 +143,9 @@ fn reconcile_domain(
 ) {
     let dk = d.key();
     let focused_id = WindowId(focused.to_owned());
+    layout
+        .converge_retained_observation(&dk, &windows, &focused_id, &[])
+        .unwrap_or_else(|e| panic!("converge {dk:?}: {e:?}"));
     match layout
         .reconcile_retained(&dk, d.bounds, d.gap, outer_gap, &focused_id, &windows, &[])
         .unwrap_or_else(|e| panic!("retained reconcile {dk:?}: {e:?}"))

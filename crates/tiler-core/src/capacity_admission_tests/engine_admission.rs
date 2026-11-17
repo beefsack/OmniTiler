@@ -333,10 +333,12 @@ fn capacity_float_matches_ordinary_float_with_no_auto_retile() {
     // Raw floating:false means explicit external intent: convergence
     // re-attempts admission instead of silently ignoring.
     let false_cap = echo_observed_for(&layout, &key, &[("b", false)]);
-    assert!(false_cap
-        .iter()
-        .find(|w| w.window.0 == "b")
-        .is_some_and(|w| !w.floating));
+    assert!(
+        false_cap
+            .iter()
+            .find(|w| w.window.0 == "b")
+            .is_some_and(|w| !w.floating)
+    );
     let cap_counts = layout
         .converge_domain(
             &key,
@@ -655,7 +657,6 @@ fn pair_round_trip_preserves_capacity_order_globally() {
 
     // Send b (capacity float) from ws-1 to ws-2, then back to ws-1:
     // capacity origin and sequence partitioning stay intact.
-    assert!(layout.sync_focus_from_window(&key1, &WindowId("b".to_owned())));
     let obs = complete_engine_obs(&layout, &[&key1, &key2]);
     let ctx1 = PairOperationContext {
         source_domain: &d1,

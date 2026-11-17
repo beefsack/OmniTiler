@@ -76,6 +76,9 @@ fn reconcile(layout: &mut WorldLayout, windows: &[EngineWindow]) -> ReconcileOut
         layout.drop_domain(&key);
     }
     let focus = WindowId("win-z-left".into());
+    layout
+        .converge_retained_observation(&key, windows, &focus, &[])
+        .expect("observation convergence");
     match layout
         .reconcile_retained(&key, d.bounds, d.gap, 0, &focus, windows, &[])
         .expect("retained reconcile")

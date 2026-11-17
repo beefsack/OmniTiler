@@ -151,12 +151,16 @@ fn engine_focus_with_floating_skew_converges_before_op() {
     let (mut layout, k, domain_state, base) = seed_layout();
     let obs = focus_windows(true);
     let focus = WindowId("win-c".to_owned());
+    let preconverged = layout
+        .converge_retained_observation(&k, &obs, &focus, &[])
+        .expect("converge before focus")
+        .is_some();
     let ctx = LocalOperationContext {
         domain: &domain_state,
         outer_gap: 0,
         observed_focus: &focus,
         observed: &obs,
-        preconverged: false,
+        preconverged,
     };
     let plan = layout
         .run_local_focus(&ctx, &focus, Direction::Left)
@@ -198,12 +202,16 @@ fn engine_move_with_floating_skew_converges_before_op() {
     let (mut layout, k, domain_state, base) = seed_layout();
     let obs = focus_windows(true);
     let focus = WindowId("win-c".to_owned());
+    let preconverged = layout
+        .converge_retained_observation(&k, &obs, &focus, &[])
+        .expect("converge before move")
+        .is_some();
     let ctx = LocalOperationContext {
         domain: &domain_state,
         outer_gap: 0,
         observed_focus: &focus,
         observed: &obs,
-        preconverged: false,
+        preconverged,
     };
     let plan = layout
         .run_local_move(
@@ -250,12 +258,16 @@ fn engine_resize_with_floating_skew_converges_before_op() {
     let (mut layout, k, domain_state, base) = seed_layout();
     let obs = focus_windows(true);
     let focus = WindowId("win-c".to_owned());
+    let preconverged = layout
+        .converge_retained_observation(&k, &obs, &focus, &[])
+        .expect("converge before resize")
+        .is_some();
     let ctx = LocalOperationContext {
         domain: &domain_state,
         outer_gap: 0,
         observed_focus: &focus,
         observed: &obs,
-        preconverged: false,
+        preconverged,
     };
     let plan = layout
         .run_keyboard_resize(&ctx, &focus, Direction::Left, ResizeMode::Outwards, 0)
@@ -301,6 +313,9 @@ fn engine_reconcile_with_missing_member_converges() {
     let (mut layout, k, domain_state, base) = seed_layout();
     let obs = strip(&[("win-a", false), ("win-c", false)]);
     let focus = WindowId("win-c".to_owned());
+    layout
+        .converge_retained_observation(&k, &obs, &focus, &[])
+        .expect("converge succeeds");
     let plan = layout
         .reconcile_retained(
             &k,
@@ -343,6 +358,9 @@ fn engine_reconcile_with_unexpected_new_member_admits() {
         ("win-n", false),
     ]);
     let focus = WindowId("win-c".to_owned());
+    layout
+        .converge_retained_observation(&k, &obs, &focus, &[])
+        .expect("converge succeeds");
     let plan = layout
         .reconcile_retained(
             &k,
@@ -491,6 +509,9 @@ fn engine_reconcile_with_floating_skew_converges() {
     let (mut layout, k, domain_state, base) = seed_layout();
     let obs = focus_windows(true);
     let focus = WindowId("win-c".to_owned());
+    layout
+        .converge_retained_observation(&k, &obs, &focus, &[])
+        .expect("converge succeeds");
     let plan = layout
         .reconcile_retained(
             &k,
@@ -723,6 +744,9 @@ fn engine_reconcile_valid_exception_only_domain_projects_empty() {
     let (mut layout, k, domain_state, base) = seed_layout();
     let obs = strip(&[("win-a", true), ("win-b", true), ("win-c", true)]);
     let focus = WindowId("win-c".to_owned());
+    layout
+        .converge_retained_observation(&k, &obs, &focus, &[])
+        .expect("exception-only converge succeeds");
     let plan = layout
         .reconcile_retained(
             &k,

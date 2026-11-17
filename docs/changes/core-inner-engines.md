@@ -575,3 +575,13 @@
   source-based triage of migrated setup and operation boundaries; they are not
   established baseline failures. External old-machine rigs, meaningful removed
   embedded coverage and final acceptance remain pending.
+- Source-based triage resolves all 24 failures as migrated test setup or
+  boundary errors, with no production changes or test-count reduction.
+  Old engine tests now include preceding observation convergence; hinted
+  geometry tests retain equal-share rather than fitted-share setup. Unknown
+  target refusals exercise the world-owned catalog. Stale inactive-domain
+  focus history is checked through combined pair convergence, matching the
+  old multi-domain context rather than isolated target convergence.
+  Direct core library execution passes all 2,220 tests. This count reflects
+  removal of 204 embedded tests still awaiting coverage reconciliation and
+  three retired pending-state tests; it is not full-suite acceptance.
