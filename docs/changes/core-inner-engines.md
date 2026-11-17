@@ -465,3 +465,13 @@
   formatting pass; a library/tests diagnostic still fails on 36 library and
   212 test-build errors in unmigrated consumers, with no swap-module/test error.
   Runtime acceptance remains pending.
+- Single-domain and combined pair convergence now share classification, restore,
+  admission and retention phases. Pair convergence preserves global ordering,
+  evolving cross-domain anchors, remapped remembered focus, shared admission
+  counters and global-union revision accounting before atomic installation.
+  Review restores the single-domain retained-world anchor and prevents stale
+  capacity provenance from returning after a successful retile. Eight direct
+  tests are added but unexecuted. Scoped formatting passes; a library/tests
+  diagnostic still fails on 36 library and 212 test-build errors in unmigrated
+  consumers, with no pair-convergence or shared-phase error. Pair callers and
+  runtime acceptance remain pending.

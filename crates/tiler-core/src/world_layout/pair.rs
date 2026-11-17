@@ -65,6 +65,13 @@ impl PairCandidate {
         self.target_domain.key()
     }
 
+    /// Forget any minimized restore slot for `window` on either domain in the
+    /// pair without advancing `pair_revision`.
+    pub(super) fn forget_minimized_slot(&mut self, window: &WindowId) {
+        self.source.minimized_slots.remove(window);
+        self.target.minimized_slots.remove(window);
+    }
+
     /// Source-equivalent pair topology guard (`session.rs::validate_topology`):
     /// validates each domain's tree/shares/bindings against pair-global focus
     /// (never enforcing stale embedded per-domain focus), enforces globally
@@ -592,7 +599,7 @@ fn remap_tree_node_ids(node: &mut Node, mapping: &BTreeMap<NodeId, NodeId>) {
     }
 }
 
-fn repartition_retained_geometry(
+pub(super) fn repartition_retained_geometry(
     source_retained: &BTreeMap<WindowId, Rect>,
     target_retained: &BTreeMap<WindowId, Rect>,
     source: &mut DomainLayout,
@@ -614,7 +621,7 @@ fn repartition_retained_geometry(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn repartition_window_set(
+pub(super) fn repartition_window_set(
     source_set: &BTreeSet<WindowId>,
     target_set: &BTreeSet<WindowId>,
     source_leaves: &BTreeMap<WindowId, NodeId>,
@@ -637,7 +644,7 @@ fn repartition_window_set(
     }
 }
 
-fn repartition_admission_order(
+pub(super) fn repartition_admission_order(
     source_order: &BTreeMap<WindowId, u64>,
     target_order: &BTreeMap<WindowId, u64>,
     source: &mut DomainLayout,

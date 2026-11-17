@@ -15,6 +15,7 @@ mod adoption;
 mod bootstrap;
 mod capacity;
 mod convergence;
+mod convergence_phases;
 mod fit;
 mod float;
 mod focus;
@@ -25,6 +26,7 @@ mod observation;
 mod orientation;
 mod outcome;
 mod pair;
+mod pair_convergence;
 mod projection;
 mod queries;
 mod relocation;
@@ -44,6 +46,8 @@ mod float_tests;
 mod local_directional_tests;
 #[cfg(test)]
 mod local_operation_tests;
+#[cfg(test)]
+mod pair_convergence_tests;
 #[cfg(test)]
 mod pair_tests;
 #[cfg(test)]
