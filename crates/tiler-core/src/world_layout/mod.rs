@@ -90,5 +90,6 @@ pub(crate) use outcome::{
 pub(crate) use pair::PairAssemblyFailure;
 pub(crate) use pair_operation::PairOperationContext;
 pub(crate) use projection::ProjectionFailure;
+pub(crate) use queries::rank_cross_output_edge_candidates;
 pub(crate) use state::WorldLayout;
 pub(crate) use workspace_swap::WorkspaceSwapSide;

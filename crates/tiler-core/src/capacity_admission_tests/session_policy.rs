@@ -1,64 +1,52 @@
-//! Session-side D2/D3/D7 admission policy: defaults, fallback ranking, exhaustion/retry/eviction stability, and no settings reflow.
+//! D2/D3/D7 admission policy over `WorldLayout`: defaults, fallback ranking,
+//! exhaustion/retry/eviction stability, and no settings reflow.
 //!
-//! Shared helpers live in the parent (`capacity_admission.rs`); this module
+//! Shared helpers live in the parent (`capacity_admission_tests.rs`); this module
 //! holds only `#[test]` fns.
 
 use super::*;
+use crate::world_layout::WorldLayout;
 
 #[test]
 fn largest_fallback_tiles_with_dfs_tiebreak() {
     // 12x12 gap 4: H[A,B] halves of 4x12. A wide-placed newcomer fails
     // the ordinary horizontal wrap of B (4 - 4 < 2), then the largest
     // fallback splits A: equal 4x12 areas tie, DFS order picks A first.
-    let mut session = Session::new(
-        owner(),
-        generation(),
-        0,
-        7,
-        vec![domain("o", "w", 12, 12, 4)],
-    )
-    .expect("session");
-    admit_and_commit(&mut session, "a", "o", "w", placement(12, 4), "c-1");
-    admit_and_commit(&mut session, "b", "o", "w", placement(12, 4), "c-2");
-    let key = DomainKey {
-        output: OutputId("o".to_owned()),
-        workspace: WorkspaceId("w".to_owned()),
-    };
-    assert_eq!(
-        session.focus(),
-        (Some(key.clone()), Some(leaf_of(&session, "b")))
-    );
-    let plan = admit_and_commit(&mut session, "c", "o", "w", placement(12, 4), "c-3");
-    assert_eq!(plan.desired_geometry.len(), 3);
+    let d = domain("o", "w", 12, 12, 4);
+    let key = d.key();
+    let mut layout = WorldLayout::new();
+    admit_into(&mut layout, &d, "a", placement(12, 4));
+    admit_into(&mut layout, &d, "b", placement(12, 4));
+    assert_eq!(layout.focus_leaf(&key), Some(&leaf_of(&layout, &key, "b")));
+    let geometry = admit_into(&mut layout, &d, "c", placement(12, 4));
+    assert_eq!(geometry.len(), 3);
     assert!(
-        plan.desired_geometry
-            .iter()
-            .all(|g| g.rect.w > 0 && g.rect.h > 0),
+        geometry.iter().all(|g| g.rect.w > 0 && g.rect.h > 0),
         "every tile stays positive"
     );
-    let tree = session.tree_for(&key).expect("tree").clone();
-    let c_leaf = leaf_of(&session, "c");
+    let tree = layout.tree(&key).expect("tree").clone();
+    let c_leaf = leaf_of(&layout, &key, "c");
     let siblings = siblings_of(&tree, &c_leaf).expect("c has leaf siblings");
     assert!(
-        siblings.contains(&leaf_of(&session, "a")),
+        siblings.contains(&leaf_of(&layout, &key, "a")),
         "DFS tiebreak splits A, not the ordinary anchor B: {siblings:?}"
     );
     assert_eq!(
-        session.focus(),
-        (Some(key), Some(c_leaf)),
+        layout.focus_leaf(&key),
+        Some(&c_leaf),
         "successful admission focuses the newcomer"
     );
     // First-successful-tiled-admission order tracks a, b, c.
     assert_eq!(
-        session.admission_sequence(&WindowId("a".to_owned())),
+        layout.admission_sequence(&key, &WindowId("a".to_owned())),
         Some(0)
     );
     assert_eq!(
-        session.admission_sequence(&WindowId("b".to_owned())),
+        layout.admission_sequence(&key, &WindowId("b".to_owned())),
         Some(1)
     );
     assert_eq!(
-        session.admission_sequence(&WindowId("c".to_owned())),
+        layout.admission_sequence(&key, &WindowId("c".to_owned())),
         Some(2)
     );
 }
@@ -68,323 +56,285 @@ fn b6_minimum_overlap_never_blocks_search_or_float() {
     // Declared minima alone never count as exhaustion (D1): an
     // unsatisfiable minimum keeps its proportional tile flagged
     // overconstrained, and later admissions still tile.
-    let mut session = Session::new(
-        owner(),
-        generation(),
-        0,
-        7,
-        vec![domain("o", "w", 100, 100, 0)],
-    )
-    .expect("session");
-    let mut hints = tiled_observed("a", "o", "w");
-    hints.hints = WindowSizeHints {
+    let d = domain("o", "w", 100, 100, 0);
+    let key = d.key();
+    let mut layout = WorldLayout::new();
+    let mut a_entry = engine_window("a", "o", "w", placement(100, 100));
+    a_entry.hints = WindowSizeHints {
         min_w: Some(200),
         min_h: None,
         max_w: None,
         max_h: None,
     };
-    let obs = complete_observation(&session, vec![hints]);
-    let plan = session
-        .propose(
-            &admit_command("a", "o", "w", placement(100, 100)),
-            &obs,
-            &correlation("c-1"),
-            &LifecycleCapabilities::full(),
-        )
+    layout
+        .reconcile_fresh(&d, 0, &WindowId("a".to_owned()), &[a_entry])
         .expect("single leaf always tiles");
-    commit_plan(&mut session, &plan, "c-1");
-    assert!(!session.is_exception(&WindowId("a".to_owned())));
-    admit_and_commit(&mut session, "b", "o", "w", placement(100, 100), "c-2");
+    assert!(!layout.is_exception(&key, &WindowId("a".to_owned())));
+    admit_into(&mut layout, &d, "b", placement(100, 100));
     assert_eq!(
-        tiled_windows(&session),
+        tiled_windows(&layout),
         vec!["a".to_string(), "b".to_string()]
     );
     assert!(
-        !session.is_capacity_float(&WindowId("b".to_owned())),
+        !layout.is_capacity_float(&key, &WindowId("b".to_owned())),
         "minimum overlap alone never floats"
     );
 }
 
 #[test]
 fn one_by_one_exhaustion_floats_with_stable_replay_and_close_clear() {
-    let mut session = Session::new(
-        owner(),
-        generation(),
-        0,
-        7,
-        vec![domain("tiny", "ws", 1, 1, 0)],
-    )
-    .expect("session");
-    admit_and_commit(&mut session, "a", "tiny", "ws", placement(1, 1), "c-1");
-    let obs = complete_observation(&session, vec![tiled_observed("b", "tiny", "ws")]);
-    let base = session.accepted_revision();
-    let plan = session
-        .propose(
-            &admit_command("b", "tiny", "ws", placement(1, 1)),
+    let d = domain("tiny", "ws", 1, 1, 0);
+    let key = d.key();
+    let mut layout = WorldLayout::new();
+    admit_into(&mut layout, &d, "a", placement(1, 1));
+    let obs = complete_observed_for(&layout, &key, vec![tiled_observed("b", "tiny", "ws")]);
+    let base = layout.accepted_revision(&key);
+    let outcome = layout
+        .admit_window(
+            &key,
+            &WindowId("b".to_owned()),
+            ExceptionFlags::none(),
+            None,
+            placement(1, 1),
+            false,
+            false,
             &obs,
-            &correlation("c-2"),
-            &LifecycleCapabilities::full(),
         )
         .expect("1x1 exhausts to float");
-    assert!(plan.desired_geometry.is_empty());
-    commit_plan(&mut session, &plan, "c-2");
-    assert_eq!(session.accepted_revision(), base + 1);
-    assert!(session.is_capacity_float(&WindowId("b".to_owned())));
+    assert!(outcome.geometry.is_empty());
+    assert_eq!(layout.accepted_revision(&key), base + 1);
+    assert!(layout.is_capacity_float(&key, &WindowId("b".to_owned())));
     assert!(
-        !session.is_automatic_fixed_float(&WindowId("b".to_owned())),
+        !layout.is_automatic_fixed_float(&key, &WindowId("b".to_owned())),
         "capacity origin stays distinct from fixed auto"
     );
     // Stable replay: the identical accepted observation converges
     // exactly with no new revision, focus change, or re-tile.
-    let replay = complete_observation(&session, Vec::new());
-    let revision = session.accepted_revision();
-    let focus = session.focus();
-    let counts = session
-        .converge_observation(&replay, Some(&WindowId("a".to_owned())))
+    let replay = complete_observed_for(&layout, &key, Vec::new());
+    let revision = layout.accepted_revision(&key);
+    let focus = layout.focus_leaf(&key).cloned();
+    let counts = layout
+        .converge_domain(
+            &key,
+            &replay,
+            Some(&WindowId("a".to_owned())),
+            &BTreeSet::new(),
+        )
         .expect("replay converges");
     assert_eq!(
         (counts.removed, counts.admitted, counts.flags_adopted),
         (0, 0, 0)
     );
-    assert_eq!(session.accepted_revision(), revision);
-    assert_eq!(session.focus(), focus);
-    assert!(session.is_capacity_float(&WindowId("b".to_owned())));
+    assert_eq!(layout.accepted_revision(&key), revision);
+    assert_eq!(layout.focus_leaf(&key).cloned(), focus);
+    assert!(layout.is_capacity_float(&key, &WindowId("b".to_owned())));
     // Close clears origin and order (D5).
-    let obs = complete_observation(&session, Vec::new());
-    let plan = session
-        .propose(
-            &SessionCommand::Remove {
-                window: WindowId("b".to_owned()),
-            },
-            &obs,
-            &correlation("c-3"),
-            &LifecycleCapabilities::full(),
+    let close_obs: Vec<ObservedWindow> = complete_observed_for(&layout, &key, Vec::new())
+        .into_iter()
+        .filter(|w| w.window.0 != "b")
+        .collect();
+    layout
+        .converge_domain(
+            &key,
+            &close_obs,
+            Some(&WindowId("a".to_owned())),
+            &BTreeSet::new(),
         )
-        .expect("remove floats");
-    commit_plan(&mut session, &plan, "c-3");
-    assert!(!session.is_capacity_float(&WindowId("b".to_owned())));
-    assert_eq!(session.admission_sequence(&WindowId("b".to_owned())), None);
+        .expect("close converges");
+    assert!(!layout.is_capacity_float(&key, &WindowId("b".to_owned())));
     assert_eq!(
-        session.admission_sequence(&WindowId("a".to_owned())),
+        layout.admission_sequence(&key, &WindowId("b".to_owned())),
+        None
+    );
+    assert_eq!(
+        layout.admission_sequence(&key, &WindowId("a".to_owned())),
         Some(0)
     );
 }
 
 #[test]
 fn explicit_unfloat_retries_once_without_false_override() {
-    let mut session = Session::new(
-        owner(),
-        generation(),
-        0,
-        7,
-        vec![domain("tiny", "ws", 1, 1, 0)],
-    )
-    .expect("session");
-    admit_and_commit(&mut session, "a", "tiny", "ws", placement(1, 1), "c-1");
-    let obs = complete_observation(&session, vec![tiled_observed("b", "tiny", "ws")]);
-    let plan = session
-        .propose(
-            &admit_command("b", "tiny", "ws", placement(1, 1)),
+    let d = domain("tiny", "ws", 1, 1, 0);
+    let key = d.key();
+    let mut layout = WorldLayout::new();
+    admit_into(&mut layout, &d, "a", placement(1, 1));
+    let obs = complete_observed_for(&layout, &key, vec![tiled_observed("b", "tiny", "ws")]);
+    layout
+        .admit_window(
+            &key,
+            &WindowId("b".to_owned()),
+            ExceptionFlags::none(),
+            None,
+            placement(1, 1),
+            false,
+            false,
             &obs,
-            &correlation("c-2"),
-            &LifecycleCapabilities::full(),
         )
         .expect("floats");
-    commit_plan(&mut session, &plan, "c-2");
-    assert!(session.is_capacity_float(&WindowId("b".to_owned())));
+    assert!(layout.is_capacity_float(&key, &WindowId("b".to_owned())));
     // Explicit unfloat retries once against still-insufficient space:
     // b stays floated with capacity origin and no tile override.
-    let mut floated = session.exception_observed();
-    assert!(floated.iter().any(|w| w.window.0 == "b"));
-    let obs = complete_observation(&session, Vec::new());
-    let base = session.accepted_revision();
-    let plan = session
-        .propose(
-            &SessionCommand::ToggleFloat {
-                window: WindowId("b".to_owned()),
-                float_geometry: None,
-            },
-            &obs,
-            &correlation("c-3"),
-            &LifecycleCapabilities::full(),
-        )
-        .expect("retry proposes");
-    assert!(
-        session.pending_stages_capacity_float(&WindowId("b".to_owned())),
-        "re-float reports no-space while staged"
+    assert!(layout.is_exception(&key, &WindowId("b".to_owned())));
+    let obs = complete_observed_for(&layout, &key, Vec::new());
+    let base = layout.accepted_revision(&key);
+    let outcome = layout
+        .toggle_float(&key, &WindowId("b".to_owned()), None, &obs)
+        .expect("retry succeeds as capacity no-space re-float");
+    assert_eq!(
+        outcome.float_window,
+        Some(WindowId("b".to_owned())),
+        "re-float reports no-space target"
     );
-    commit_plan(&mut session, &plan, "c-3");
-    assert_eq!(session.accepted_revision(), base + 1);
+    assert_eq!(outcome.float_rect, None);
+    assert_eq!(layout.accepted_revision(&key), base + 1);
     assert!(
-        session.is_capacity_float(&WindowId("b".to_owned())),
+        layout.is_capacity_float(&key, &WindowId("b".to_owned())),
         "stays floated"
     );
     assert!(
-        !session.has_fixed_tile_override(&WindowId("b".to_owned())),
+        !layout.has_fixed_tile_override(&key, &WindowId("b".to_owned())),
         "no false fixed-tile override on a non-fixed re-float"
     );
-    assert_eq!(tiled_windows(&session), vec!["a".to_string()]);
-    let _ = &mut floated;
+    assert_eq!(tiled_windows(&layout), vec!["a".to_string()]);
 }
 
 #[test]
 fn shrink_evicts_newest_first_with_protections_and_mru_focus() {
     // Settle a/b/c in 120x80 gap 0, then shrink to 2x80: H[a,H[b,c]]
     // needs width 3, so the newest victim (c) floats alone.
-    let mut session = Session::new(
-        owner(),
-        generation(),
-        0,
-        7,
-        vec![domain("o", "w", 120, 80, 0)],
-    )
-    .expect("session");
-    admit_and_commit(&mut session, "a", "o", "w", placement(120, 40), "c-1");
-    admit_and_commit(&mut session, "b", "o", "w", placement(120, 40), "c-2");
-    admit_and_commit(&mut session, "c", "o", "w", placement(120, 40), "c-3");
-    let key = DomainKey {
-        output: OutputId("o".to_owned()),
-        workspace: WorkspaceId("w".to_owned()),
+    let d = domain("o", "w", 120, 80, 0);
+    let key = d.key();
+    let mut layout = WorldLayout::new();
+    admit_into(&mut layout, &d, "a", placement(120, 40));
+    admit_into(&mut layout, &d, "b", placement(120, 40));
+    admit_into(&mut layout, &d, "c", placement(120, 40));
+    let live_rect = Rect {
+        x: 1,
+        y: 2,
+        w: 30,
+        h: 30,
     };
-    assert!(session.update_domain_gaps(
-        &key,
-        Rect {
-            x: 0,
-            y: 0,
-            w: 2,
-            h: 80
-        },
-        0
-    ));
-    let live: BTreeMap<WindowId, Rect> = ["a", "b", "c"]
+    let live_obs: Vec<EngineWindow> = ["a", "b", "c"]
         .into_iter()
-        .map(|w| {
-            (
-                WindowId(w.to_owned()),
-                Rect {
-                    x: 1,
-                    y: 2,
-                    w: 30,
-                    h: 30,
-                },
-            )
-        })
+        .map(|w| engine_window(w, "o", "w", live_rect))
         .collect();
-    assert!(session.repair_infeasible_domain(
-        &key,
-        &BTreeMap::new(),
-        &BTreeSet::new(),
-        &live,
-        true,
-    ));
+    layout
+        .update_domain_gaps(
+            &key,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 2,
+                h: 80,
+            },
+            0,
+            0,
+            &WindowId("c".to_owned()),
+            &live_obs,
+        )
+        .expect("shrink repairs c to float");
     assert_eq!(
-        tiled_windows(&session),
+        tiled_windows(&layout),
         vec!["a".to_string(), "b".to_string()]
     );
-    assert!(session.is_capacity_float(&WindowId("c".to_owned())));
+    assert!(layout.is_capacity_float(&key, &WindowId("c".to_owned())));
     assert_eq!(
-        session.retained_float_geometry(&WindowId("c".to_owned())),
-        Some(Rect {
-            x: 1,
-            y: 2,
-            w: 30,
-            h: 30
-        }),
+        layout.retained_float_geometry(&key, &WindowId("c".to_owned())),
+        Some(live_rect),
         "eviction keeps the last live frame"
     );
     assert_eq!(
-        session.focus(),
-        (Some(key.clone()), Some(leaf_of(&session, "b"))),
+        layout.focus_leaf(&key),
+        Some(&leaf_of(&layout, &key, "b")),
         "tiled focus falls back to the surviving MRU, never the floated window"
     );
     // An explicit fixed-tile override protects c: the next victim is b.
-    let mut guarded = Session::new(
-        owner(),
-        generation(),
-        0,
-        7,
-        vec![domain("o", "w", 120, 80, 0)],
-    )
-    .expect("session");
-    admit_and_commit(&mut guarded, "a", "o", "w", placement(120, 40), "c-1");
-    admit_and_commit(&mut guarded, "b", "o", "w", placement(120, 40), "c-2");
-    // Admit c with an explicit user tile win (unfloat origin).
-    let obs = complete_observation(&guarded, vec![tiled_observed("c", "o", "w")]);
-    let mut cmd = admit_command("c", "o", "w", placement(120, 40));
-    if let SessionCommand::Admit {
-        suppress_fixed_float,
-        ..
-    } = &mut cmd
-    {
-        *suppress_fixed_float = true;
-    }
-    let plan = guarded
-        .propose(
-            &cmd,
+    let mut guarded = WorldLayout::new();
+    admit_into(&mut guarded, &d, "a", placement(120, 40));
+    admit_into(&mut guarded, &d, "b", placement(120, 40));
+    // Admit c with an explicit user tile win (suppress_fixed_float = true).
+    let obs = complete_observed_for(&guarded, &key, vec![tiled_observed("c", "o", "w")]);
+    guarded
+        .admit_window(
+            &key,
+            &WindowId("c".to_owned()),
+            ExceptionFlags::none(),
+            None,
+            placement(120, 40),
+            true,
+            false,
             &obs,
-            &correlation("c-3"),
-            &LifecycleCapabilities::full(),
         )
         .expect("c tiles");
-    commit_plan(&mut guarded, &plan, "c-3");
-    assert!(guarded.has_fixed_tile_override(&WindowId("c".to_owned())));
-    assert!(guarded.update_domain_gaps(
-        &key,
-        Rect {
-            x: 0,
-            y: 0,
-            w: 2,
-            h: 80
-        },
-        0
-    ));
-    assert!(guarded.repair_infeasible_domain(
-        &key,
-        &BTreeMap::new(),
-        &BTreeSet::new(),
-        &live,
-        true,
-    ));
+    assert!(guarded.has_fixed_tile_override(&key, &WindowId("c".to_owned())));
+    guarded
+        .update_domain_gaps(
+            &key,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 2,
+                h: 80,
+            },
+            0,
+            0,
+            &WindowId("c".to_owned()),
+            &live_obs,
+        )
+        .expect("shrink repairs b to float while c is protected");
     assert_eq!(
         tiled_windows(&guarded),
         vec!["a".to_string(), "c".to_string()]
     );
-    assert!(guarded.is_capacity_float(&WindowId("b".to_owned())));
+    assert!(guarded.is_capacity_float(&key, &WindowId("b".to_owned())));
     assert!(
-        !guarded.is_exception(&WindowId("c".to_owned())),
+        !guarded.is_exception(&key, &WindowId("c".to_owned())),
         "explicit override never evicts"
     );
     // A protected-only impossible tree holds truthfully without mutation:
     // shrink until even the protected pair cannot project, then repair
     // with every survivor protected.
-    assert!(guarded.update_domain_gaps(
-        &key,
-        Rect {
-            x: 0,
-            y: 0,
-            w: 1,
-            h: 80
-        },
-        0
-    ));
-    let before = guarded.snapshot();
-    let before_revision = guarded.accepted_revision();
-    assert!(!guarded.repair_infeasible_domain(
-        &key,
-        &BTreeMap::new(),
-        &BTreeSet::from([WindowId("a".to_owned()), WindowId("c".to_owned()),]),
-        &live,
-        true,
-    ));
-    assert_eq!(guarded.snapshot(), before, "hold mutates nothing");
-    assert_eq!(guarded.accepted_revision(), before_revision);
-    // Untracked lifetimes evict last: drop the order bookkeeping for a
-    // survivor and shrink again with only tracked-newest eligible. Here
-    // both survivors are tracked (a older than c), so newest-first
-    // would evict c if it were eligible; it is override-protected, so b
-    // (already floated) stays floated and a keeps its tile.
+    let before_tree = guarded.tree(&key).cloned();
+    let before_revision = guarded.accepted_revision(&key);
+    let protected_obs: Vec<EngineWindow> = ["a", "c"]
+        .into_iter()
+        .map(|w| {
+            let mut e = engine_window(w, "o", "w", live_rect);
+            e.sticky = true;
+            e
+        })
+        .chain(std::iter::once({
+            let mut b = engine_window("b", "o", "w", live_rect);
+            b.floating = true;
+            b
+        }))
+        .collect();
+    assert!(
+        guarded
+            .update_domain_gaps(
+                &key,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1,
+                    h: 80,
+                },
+                0,
+                0,
+                &WindowId("c".to_owned()),
+                &protected_obs,
+            )
+            .is_err(),
+        "protected-only impossible tree refuses without mutation"
+    );
     assert_eq!(
-        guarded.admission_sequence(&WindowId("a".to_owned())),
+        guarded.tree(&key),
+        before_tree.as_ref(),
+        "hold mutates nothing"
+    );
+    assert_eq!(guarded.accepted_revision(&key), before_revision);
+    assert_eq!(
+        guarded.admission_sequence(&key, &WindowId("a".to_owned())),
         Some(0)
     );
 }

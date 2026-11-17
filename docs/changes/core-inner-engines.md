@@ -566,3 +566,12 @@
   Scoped formatting passes. Internal migrated tests are not yet executed:
   other standalone and integration rigs still prevent full test compilation.
   Removed embedded coverage also still requires semantic reconciliation.
+- Remaining internal standalone rigs now compile against typed focus, resize,
+  send and gesture operations; their test counts are unchanged. Deleted
+  inner-focus capability-handshake assertions retire, while ranking, fallback,
+  topology, geometry and atomicity checks remain. A direct keyboard-resize
+  spot check passes all seven tests. Reported full core library execution has
+  2,196 passes and 24 failures after test migration. These failures require
+  source-based triage of migrated setup and operation boundaries; they are not
+  established baseline failures. External old-machine rigs, meaningful removed
+  embedded coverage and final acceptance remain pending.

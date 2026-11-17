@@ -2702,11 +2702,11 @@ fn perpendicular_descent_accepted_hover_not_overwritten_by_lagging_foreground() 
 
 #[test]
 fn perpendicular_descent_closed_mru_falls_through_to_next_candidate() {
-    use crate::contract::{FocusCapabilities, Observation};
-    use crate::directional::{Direction, FocusPlan, WorkspaceId};
+    use crate::directional::{Direction, WorkspaceId};
     use crate::geometry::Rect;
-    use crate::ids::{CorrelationId, GenerationId};
-    use crate::session::{ObservedWindow, OutputDomain, Session, SessionObservation};
+    use crate::seed::EngineWindow;
+    use crate::session::{ObservedWindow, OutputDomain};
+    use crate::world_layout::WorldLayout;
 
     // H[V[A, H2[B, D]], C*]: focus A, B, D, C, then close D -> tree collapses
     // to H[V[A, B], C*], MRU in V is B (not first child A).
@@ -2723,17 +2723,33 @@ fn perpendicular_descent_closed_mru_falls_through_to_next_candidate() {
         adjacent: std::collections::BTreeMap::new(),
     };
     let key = domain.key();
-    let mut session = Session::new(
-        OwnerId::parse("adapter-1").unwrap(),
-        GenerationId::parse("gen-1").unwrap(),
-        0,
-        100,
-        vec![domain],
-    )
-    .expect("session");
-    let make_obs = |session: &Session, wins: &[&str]| {
-        let windows = wins
-            .iter()
+    let mut layout = WorldLayout::new();
+    let make_engine_obs = |wins: &[&str]| -> Vec<EngineWindow> {
+        wins.iter()
+            .enumerate()
+            .map(|(i, id)| EngineWindow {
+                window: WindowId((*id).to_owned()),
+                output: key.output.clone(),
+                workspace: key.workspace.clone(),
+                rect: Rect {
+                    x: (i as i32) * 100,
+                    y: 0,
+                    w: 100,
+                    h: 560,
+                },
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            })
+            .collect()
+    };
+    let make_obs = |wins: &[&str]| -> Vec<ObservedWindow> {
+        wins.iter()
             .map(|id| ObservedWindow {
                 window: WindowId((*id).to_owned()),
                 output: key.output.clone(),
@@ -2746,65 +2762,61 @@ fn perpendicular_descent_closed_mru_falls_through_to_next_candidate() {
                 fixed_suppress: false,
                 hints: crate::size_hints::WindowSizeHints::none(),
             })
-            .collect();
-        let rev = session.accepted_revision();
-        SessionObservation {
-            observation: Observation::new(
-                OwnerId::parse("adapter-1").unwrap(),
-                GenerationId::parse("gen-1").unwrap(),
-                rev,
-                rev + 100,
-            ),
-            windows,
-        }
+            .collect()
     };
-    let obs1 = make_obs(&session, &["win-a", "win-c"]);
-    session
-        .converge_observation(&obs1, Some(&WindowId("win-a".to_owned())))
+    layout
+        .reconcile_fresh(
+            &domain,
+            0,
+            &WindowId("win-a".to_owned()),
+            &make_engine_obs(&["win-a", "win-c"]),
+        )
         .unwrap();
-    let obs2 = make_obs(&session, &["win-a", "win-b", "win-c"]);
-    session
-        .converge_observation(&obs2, Some(&WindowId("win-b".to_owned())))
+    layout
+        .converge_domain(
+            &key,
+            &make_obs(&["win-a", "win-b", "win-c"]),
+            Some(&WindowId("win-b".to_owned())),
+            &std::collections::BTreeSet::new(),
+        )
         .unwrap();
-    let obs3 = make_obs(&session, &["win-a", "win-b", "win-c", "win-d"]);
-    session
-        .converge_observation(&obs3, Some(&WindowId("win-d".to_owned())))
+    layout
+        .converge_domain(
+            &key,
+            &make_obs(&["win-a", "win-b", "win-c", "win-d"]),
+            Some(&WindowId("win-d".to_owned())),
+            &std::collections::BTreeSet::new(),
+        )
         .unwrap();
     for w in ["win-a", "win-b", "win-d", "win-c"] {
-        assert!(session.remember_focus(&key, &WindowId(w.to_owned())));
+        assert!(layout.remember_focus(&key, &WindowId(w.to_owned())));
     }
-    let obs4 = make_obs(&session, &["win-a", "win-b", "win-c"]);
-    session
-        .converge_observation(&obs4, Some(&WindowId("win-c".to_owned())))
+    let obs_after_close = make_obs(&["win-a", "win-b", "win-c"]);
+    layout
+        .converge_domain(
+            &key,
+            &obs_after_close,
+            Some(&WindowId("win-c".to_owned())),
+            &std::collections::BTreeSet::new(),
+        )
         .unwrap();
-    let obs_after_close = make_obs(&session, &["win-a", "win-b", "win-c"]);
-    let plan = session
-        .propose_focus(
+    let outcome = layout
+        .local_focus(
             &key,
             &WindowId("win-c".to_owned()),
             Direction::Left,
+            &WindowId("win-c".to_owned()),
             &obs_after_close,
-            &CorrelationId::parse("corr-closed-mru").unwrap(),
-            &FocusCapabilities::full(),
         )
-        .expect("propose_focus");
-    let b_leaf = session
-        .snapshot()
-        .windows
-        .iter()
-        .find(|w| w.window.0 == "win-b")
+        .expect("local_focus");
+    let b_leaf = layout
+        .bindings(&key)
+        .find(|(w, _)| w.0 == "win-b")
         .unwrap()
-        .leaf
+        .1
         .clone();
     assert_eq!(
-        plan.focus_plan,
-        FocusPlan::Focused {
-            leaf: b_leaf,
-            route: match &plan.focus_plan {
-                FocusPlan::Focused { route, .. } => route.clone(),
-                FocusPlan::Edge => panic!("expected Focused"),
-            },
-        },
+        outcome.to_leaf, b_leaf,
         "closed MRU D must fall through to next MRU candidate B, not first child A"
     );
 

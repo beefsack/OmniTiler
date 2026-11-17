@@ -5,44 +5,30 @@
 //! workspace switches and directional move/send are unaffected.
 //!
 //! Failing-first regressions: fullscreen tiled/floating subjects must not
-//! take same-output siblings (Session `propose_focus` refuses `Unchanged`
-//! in every direction; the Session cross leg skips the local-exhaustion
-//! gate; the shared WorldCommand entry skips the float lattice and marks
+//! take same-output siblings (`WorldLayout::local_focus` refuses `Unchanged`
+//! in every direction; `run_directional_pair_focus` skips the local-exhaustion
+//! gate; the shared `WorldCommand` entry skips the float lattice and marks
 //! the cross command float-origin when the subject floats).
 
-use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
 use crate::connection::{HostCapabilities, RawSettingValue};
-use crate::contract::{
-    AckOutcome, AdapterAck, FocusCapabilities, FocusPostObservation, LifecycleCapabilities,
-    Observation,
-};
 use crate::directional::{Direction, OutputId, WindowId, WorkspaceId};
-use crate::engine::Engine;
 use crate::geometry::Rect;
-use crate::ids::{CorrelationId, GenerationId, OwnerId};
+use crate::ids::{CorrelationId, OwnerId};
 use crate::seed::EngineWindow;
-use crate::session::{
-    DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, ProposeError, RefusalKind, Session,
-    SessionCommand, SessionObservation,
-};
+use crate::session::{DomainKey, ObservedWindow, OutputDomain, RefusalKind};
 use crate::settings_catalog::{FIELD_INNER_GAP, FIELD_OUTER_GAP};
 use crate::settings_state::EffectiveSetting;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_layout::{LayoutFailure, PairOperationContext, PairOperationFailure, WorldLayout};
 use crate::world_report::{
     PresentationIngressV4, PresentationRowV4, ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact,
     WorldCommand, WorldReportV4,
 };
 use std::collections::BTreeMap;
 
-// ---- Session fixtures (mirrors maximized_focus_send_tests.rs). ----
+// ---- WorldLayout fixtures (mirrors maximized_focus_send_tests.rs). ----
 
-fn owner() -> OwnerId {
-    OwnerId::parse("owner-1").expect("valid")
-}
-fn generation() -> GenerationId {
-    GenerationId::parse("gen-1").expect("valid")
-}
 fn corr(v: &str) -> CorrelationId {
     CorrelationId::parse(v).expect("valid")
 }
@@ -85,6 +71,22 @@ fn tiled(w: &str, o: &str, ws: &str) -> ObservedWindow {
         hints: WindowSizeHints::none(),
     }
 }
+fn engine_row(w: &str, o: &str, ws: &str, rect: Rect) -> EngineWindow {
+    EngineWindow {
+        window: WindowId(w.to_owned()),
+        output: OutputId(o.to_owned()),
+        workspace: WorkspaceId(ws.to_owned()),
+        rect,
+        floating: false,
+        fit_excluded: false,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress: false,
+        hints: WindowSizeHints::none(),
+    }
+}
 fn fullscreen_flag(base: &ObservedWindow) -> ObservedWindow {
     let mut entry = base.clone();
     entry.fullscreen = true;
@@ -96,182 +98,162 @@ fn fullscreen_maximized_flag(base: &ObservedWindow) -> ObservedWindow {
     entry.maximized = true;
     entry
 }
-fn obs(s: &Session, overrides: &BTreeMap<String, ObservedWindow>) -> SessionObservation {
-    let mut wins: Vec<ObservedWindow> = s
-        .snapshot()
-        .windows
-        .iter()
-        .map(|l| {
-            if let Some(entry) = overrides.get(&l.window.0) {
+fn obs_for(
+    layout: &WorldLayout,
+    domain: &DomainKey,
+    overrides: &BTreeMap<String, ObservedWindow>,
+) -> Vec<ObservedWindow> {
+    let mut wins: Vec<ObservedWindow> = layout
+        .tiled_windows(domain)
+        .map(|w| {
+            if let Some(entry) = overrides.get(&w.0) {
                 entry.clone()
             } else {
-                tiled(&l.window.0, &l.output.0, &l.workspace.0)
+                tiled(&w.0, &domain.output.0, &domain.workspace.0)
             }
         })
         .collect();
-    wins.extend(s.exception_observed());
-    SessionObservation {
-        observation: Observation::new(owner(), generation(), s.accepted_revision(), 100),
-        windows: wins,
+    for (w, flags) in layout.exception_windows_with_flags(domain) {
+        let mut entry = tiled(&w.0, &domain.output.0, &domain.workspace.0);
+        entry.floating = flags.floating;
+        entry.fullscreen = flags.fullscreen;
+        entry.maximized = flags.maximized;
+        entry.sticky = flags.sticky;
+        entry.fixed_auto = layout.is_automatic_fixed_float(domain, &w);
+        wins.push(entry);
     }
+    wins
 }
-fn admit(s: &mut Session, w: &str, o: &str, ws: &str, c: &str) {
-    let o0 = obs(s, &BTreeMap::new());
-    let mut with_new = o0.windows.clone();
-    with_new.push(tiled(w, o, ws));
-    let o0 = SessionObservation {
-        observation: o0.observation,
-        windows: with_new,
+fn engine_obs_for_pair(
+    layout: &WorldLayout,
+    k1: &DomainKey,
+    k2: &DomainKey,
+    overrides: &BTreeMap<String, ObservedWindow>,
+) -> Vec<EngineWindow> {
+    let mut wins = Vec::new();
+    for k in [k1, k2] {
+        for o in obs_for(layout, k, overrides) {
+            let mut row = engine_row(
+                &o.window.0,
+                &o.output.0,
+                &o.workspace.0,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 100,
+                    h: 100,
+                },
+            );
+            row.floating = o.floating;
+            row.fullscreen = o.fullscreen;
+            row.maximized = o.maximized;
+            row.sticky = o.sticky;
+            row.fixed_auto = o.fixed_auto;
+            wins.push(row);
+        }
+    }
+    wins
+}
+fn admit(layout: &mut WorldLayout, d: &OutputDomain, w: &str) {
+    let k = d.key();
+    let win_id = WindowId(w.to_owned());
+    let placement = Rect {
+        x: 0,
+        y: 0,
+        w: 400,
+        h: 300,
     };
-    let cmd = SessionCommand::Admit {
-        window: WindowId(w.to_owned()),
-        output: OutputId(o.to_owned()),
-        workspace: WorkspaceId(ws.to_owned()),
-        exceptions: ExceptionFlags::none(),
-        exception_behavior: None,
-        placement_bounds: Rect {
-            x: 0,
-            y: 0,
-            w: 400,
-            h: 300,
-        },
-        suppress_fixed_float: false,
-    };
-    let plan = s
-        .propose(&cmd, &o0, &corr(c), &LifecycleCapabilities::full())
+    if !layout.contains_domain(&k) {
+        layout
+            .reconcile_fresh(
+                d,
+                0,
+                &win_id,
+                &[engine_row(w, &d.id.0, &d.workspace.0, placement)],
+            )
+            .expect("fresh admit");
+        return;
+    }
+    let mut o0 = obs_for(layout, &k, &BTreeMap::new());
+    o0.push(tiled(w, &d.id.0, &d.workspace.0));
+    layout
+        .admit_window(
+            &k,
+            &win_id,
+            crate::session::ExceptionFlags::none(),
+            None,
+            placement,
+            false,
+            false,
+            &o0,
+        )
         .expect("admit");
-    let base = s.accepted_revision();
-    s.acknowledge(&AdapterAck::new(
-        corr(c),
-        owner(),
-        generation(),
-        base,
-        AckOutcome::Accepted,
-    ))
-    .expect("ack");
-    s.verify_lifecycle(&crate::contract::LifecyclePostObservation::new(
-        Observation::new(owner(), generation(), base, 200),
-        corr(c),
-        true,
-        plan.dispatch.preconditions.clone(),
-        plan.dispatch.operation.clone(),
-    ))
-    .expect("commit");
 }
-fn focused_window(s: &Session, domain: &DomainKey) -> WindowId {
-    let (d, l) = s.focus();
-    let d = d.expect("focused domain");
-    let l = l.expect("focused leaf");
-    assert_eq!(&d, domain);
-    s.snapshot()
-        .windows
-        .iter()
-        .find(|w| w.leaf == l && w.output == domain.output && w.workspace == domain.workspace)
-        .expect("focused link")
-        .window
-        .clone()
-}
-fn commit_focus(s: &mut Session, plan: &crate::session::SessionFocusPlan, c: &str) {
-    let base = s.accepted_revision();
-    s.acknowledge(&AdapterAck::new(
-        corr(c),
-        owner(),
-        generation(),
-        base,
-        AckOutcome::Accepted,
-    ))
-    .expect("ack");
-    let post = FocusPostObservation::new(
-        Observation::new(owner(), generation(), base, 950 + base),
-        corr(c),
-        true,
-        plan.dispatch.preconditions.clone(),
-        plan.dispatch.operation.clone(),
-    );
-    let commit = s.verify_focus(&post).expect("verify focus");
-    assert_eq!(commit.revision, base + 1);
+fn focused_window(layout: &WorldLayout, domain: &DomainKey) -> WindowId {
+    let l = layout.focus_leaf(domain).expect("focused leaf");
+    layout.window_for_leaf(domain, l).expect("focused link")
 }
 
 /// Two tiles on one output, focused on win-2 (win-1 left of win-2).
 /// Fixed-size admission is on so the fullscreen overlay observation binds
 /// (same lane as the maximized-fence fixtures).
-fn two_tile() -> (Session, DomainKey) {
-    let mut s = Session::new(owner(), generation(), 0, 7, vec![dom("out-1", "ws-1")]).expect("s");
-    s.set_fixed_size_admission(true);
-    admit(&mut s, "win-1", "out-1", "ws-1", "corr-admit-1");
-    admit(&mut s, "win-2", "out-1", "ws-1", "corr-admit-2");
-    let domain = key("out-1", "ws-1");
-    assert_eq!(focused_window(&s, &domain).0, "win-2");
-    (s, domain)
+fn two_tile() -> (WorldLayout, OutputDomain, DomainKey) {
+    let mut layout = WorldLayout::new();
+    layout.set_fixed_size_admission(true);
+    let d = dom("out-1", "ws-1");
+    admit(&mut layout, &d, "win-1");
+    admit(&mut layout, &d, "win-2");
+    let domain = d.key();
+    assert_eq!(focused_window(&layout, &domain).0, "win-2");
+    (layout, d, domain)
 }
 
 /// Two adjacent outputs. Fixed-size admission is on for the fullscreen
 /// overlay binding (see `two_tile`).
-fn two_output() -> Session {
-    let mut s = Session::new(
-        owner(),
-        generation(),
-        0,
-        7,
-        vec![
-            dom_adjacent("out-1", "ws-1", Direction::Right, "out-2"),
-            dom_adjacent("out-2", "ws-1", Direction::Left, "out-1"),
-        ],
-    )
-    .expect("s");
-    s.set_fixed_size_admission(true);
-    s
+fn two_output() -> (WorldLayout, OutputDomain, OutputDomain) {
+    let mut layout = WorldLayout::new();
+    layout.set_fixed_size_admission(true);
+    let o1 = dom_adjacent("out-1", "ws-1", Direction::Right, "out-2");
+    let o2 = dom_adjacent("out-2", "ws-1", Direction::Left, "out-1");
+    (layout, o1, o2)
 }
 
 #[test]
 fn fullscreen_tiled_subject_propose_focus_refuses_unchanged_all_directions() {
-    let (mut s, domain) = two_tile();
-    let focused = focused_window(&s, &domain);
+    let (mut layout, _, domain) = two_tile();
+    let focused = focused_window(&layout, &domain);
     let mut flags = BTreeMap::new();
     flags.insert(
         focused.0.clone(),
         fullscreen_flag(&tiled(&focused.0, "out-1", "ws-1")),
     );
-    let o0 = obs(&s, &flags);
+    let o0 = obs_for(&layout, &domain, &flags);
     // A local sibling waits in Left; Up/Down have no local target either.
-    // Every direction must refuse as Unchanged (no plan, no pending) so the
+    // Every direction must refuse as Unchanged (no plan, no mutation) so the
     // caller continues to the adjacent output or stays.
+    let rev_before = layout.accepted_revision(&domain);
     for direction in [
         Direction::Left,
         Direction::Right,
         Direction::Up,
         Direction::Down,
     ] {
-        let err = s
-            .propose_focus(
-                &domain,
-                &focused,
-                direction,
-                &o0,
-                &corr("corr-rmax02-focus"),
-                &FocusCapabilities::full(),
-            )
+        let err = layout
+            .local_focus(&domain, &focused, direction, &focused, &o0)
             .expect_err("fullscreen focus must skip same-output siblings");
-        assert_eq!(err, ProposeError::Refused(RefusalKind::Unchanged));
-        assert!(!s.has_pending(), "fence stages no pending");
-        assert!(!s.has_pending_desired(), "fence stages no desired state");
+        assert_eq!(err, LayoutFailure::Semantics(RefusalKind::Unchanged));
+        assert_eq!(layout.accepted_revision(&domain), rev_before);
     }
 }
 
 #[test]
 fn non_fullscreen_control_still_plans_local_sibling() {
-    let (mut s, domain) = two_tile();
-    let focused = focused_window(&s, &domain);
-    let o0 = obs(&s, &BTreeMap::new());
-    s.propose_focus(
-        &domain,
-        &focused,
-        Direction::Left,
-        &o0,
-        &corr("corr-rmax02-control"),
-        &FocusCapabilities::full(),
-    )
-    .expect("ordinary focus still plans the local sibling");
+    let (mut layout, _, domain) = two_tile();
+    let focused = focused_window(&layout, &domain);
+    let o0 = obs_for(&layout, &domain, &BTreeMap::new());
+    layout
+        .local_focus(&domain, &focused, Direction::Left, &focused, &o0)
+        .expect("ordinary focus still plans the local sibling");
 }
 
 fn maximized_flag(base: &ObservedWindow) -> ObservedWindow {
@@ -283,36 +265,27 @@ fn maximized_flag(base: &ObservedWindow) -> ObservedWindow {
 #[test]
 fn maximized_tiled_subject_propose_focus_refuses_unchanged_all_directions() {
     // Nov 1 rule (2026-11-01): the maximized origin skips same-output
-    // siblings in every direction with no fence profile. This session
-    // carries no fence opt-in, so the refusal must come from the shared
-    // rule itself.
-    let (mut s, domain) = two_tile();
-    let focused = focused_window(&s, &domain);
+    // siblings in every direction with no fence profile.
+    let (mut layout, _, domain) = two_tile();
+    let focused = focused_window(&layout, &domain);
     let mut flags = BTreeMap::new();
     flags.insert(
         focused.0.clone(),
         maximized_flag(&tiled(&focused.0, "out-1", "ws-1")),
     );
-    let o0 = obs(&s, &flags);
+    let o0 = obs_for(&layout, &domain, &flags);
+    let rev_before = layout.accepted_revision(&domain);
     for direction in [
         Direction::Left,
         Direction::Right,
         Direction::Up,
         Direction::Down,
     ] {
-        let err = s
-            .propose_focus(
-                &domain,
-                &focused,
-                direction,
-                &o0,
-                &corr("corr-nov1-focus"),
-                &FocusCapabilities::full(),
-            )
+        let err = layout
+            .local_focus(&domain, &focused, direction, &focused, &o0)
             .expect_err("maximized focus must skip same-output siblings");
-        assert_eq!(err, ProposeError::Refused(RefusalKind::Unchanged));
-        assert!(!s.has_pending(), "skip stages no pending");
-        assert!(!s.has_pending_desired(), "skip stages no desired state");
+        assert_eq!(err, LayoutFailure::Semantics(RefusalKind::Unchanged));
+        assert_eq!(layout.accepted_revision(&domain), rev_before);
     }
 }
 
@@ -331,172 +304,164 @@ fn maximized_tiled_subject_crosses_to_adjacent_output() {
             Direction::Down => 600,
             _ => 0,
         };
-        let mut s = Session::new(
-            owner(),
-            generation(),
-            0,
-            7,
-            vec![dom_adjacent("out-1", "ws-1", dir, "out-2"), out_2],
-        )
-        .expect("s");
-        s.set_fixed_size_admission(true);
-        admit(&mut s, "win-t", "out-2", "ws-1", "corr-admit-t");
-        admit(&mut s, "win-a", "out-1", "ws-1", "corr-admit-a");
-        admit(&mut s, "win-b", "out-1", "ws-1", "corr-admit-b");
-        let source = key("out-1", "ws-1");
-        assert_eq!(focused_window(&s, &source).0, "win-b");
-        let plain = obs(&s, &BTreeMap::new());
-        let plan = s
-            .propose_focus(
+        let out_1 = dom_adjacent("out-1", "ws-1", dir, "out-2");
+        let mut layout = WorldLayout::new();
+        layout.set_fixed_size_admission(true);
+        admit(&mut layout, &out_2, "win-t");
+        admit(&mut layout, &out_1, "win-a");
+        admit(&mut layout, &out_1, "win-b");
+        let source = out_1.key();
+        let target = out_2.key();
+        assert_eq!(focused_window(&layout, &source).0, "win-b");
+        let plain = obs_for(&layout, &source, &BTreeMap::new());
+        layout
+            .local_focus(
                 &source,
                 &WindowId("win-b".to_owned()),
                 Direction::Left,
+                &WindowId("win-b".to_owned()),
                 &plain,
-                &corr("corr-nov1-seed"),
-                &FocusCapabilities::full(),
             )
             .expect("seed focus plans");
-        commit_focus(&mut s, &plan, "corr-nov1-seed");
-        assert_eq!(focused_window(&s, &source).0, "win-a");
+        assert_eq!(focused_window(&layout, &source).0, "win-a");
         // Maximized win-a pressing dir must skip win-b and cross to win-t.
         let mut flags = BTreeMap::new();
         flags.insert(
             "win-a".to_owned(),
             maximized_flag(&tiled("win-a", "out-1", "ws-1")),
         );
-        let o1 = obs(&s, &flags);
-        let plan = s
-            .propose_cross_output_focus(
-                &source,
-                &WindowId("win-a".to_owned()),
-                dir,
-                &o1,
-                &corr("corr-nov1-cross"),
-                &FocusCapabilities::full(),
-            )
+        let o1 = engine_obs_for_pair(&layout, &source, &target, &flags);
+        let subject = WindowId("win-a".to_owned());
+        let ctx = PairOperationContext {
+            source_domain: &out_1,
+            target_domain: &out_2,
+            source_outer_gap: 0,
+            target_outer_gap: Some(0),
+            observed_focus: &subject,
+            observed: &o1,
+            closed: &[],
+        };
+        let outcome = layout
+            .run_directional_pair_focus(&ctx, &subject, dir, false)
             .expect("maximized subject crosses despite the local sibling");
-        assert_eq!(plan.desired_focus_domain, key("out-2", "ws-1"));
+        assert!(outcome.crossed);
+        assert_eq!(outcome.target_output, OutputId("out-2".to_owned()));
+        assert_eq!(outcome.target_workspace, WorkspaceId("ws-1".to_owned()));
     }
 }
 
 #[test]
 fn fullscreen_tiled_subject_crosses_to_adjacent_output() {
-    let mut s = two_output();
-    admit(&mut s, "win-t", "out-2", "ws-1", "corr-admit-t");
-    admit(&mut s, "win-a", "out-1", "ws-1", "corr-admit-a");
-    admit(&mut s, "win-b", "out-1", "ws-1", "corr-admit-b");
-    let source = key("out-1", "ws-1");
-    assert_eq!(focused_window(&s, &source).0, "win-b");
+    let (mut layout, out_1, out_2) = two_output();
+    admit(&mut layout, &out_2, "win-t");
+    admit(&mut layout, &out_1, "win-a");
+    admit(&mut layout, &out_1, "win-b");
+    let source = out_1.key();
+    let target = out_2.key();
+    assert_eq!(focused_window(&layout, &source).0, "win-b");
     // Move logical focus onto win-a so a same-output sibling (win-b) waits
     // in the press direction.
-    let plain = obs(&s, &BTreeMap::new());
-    let plan = s
-        .propose_focus(
+    let plain = obs_for(&layout, &source, &BTreeMap::new());
+    layout
+        .local_focus(
             &source,
             &WindowId("win-b".to_owned()),
             Direction::Left,
+            &WindowId("win-b".to_owned()),
             &plain,
-            &corr("corr-rmax02-seed"),
-            &FocusCapabilities::full(),
         )
         .expect("seed focus plans");
-    commit_focus(&mut s, &plan, "corr-rmax02-seed");
-    assert_eq!(focused_window(&s, &source).0, "win-a");
+    assert_eq!(focused_window(&layout, &source).0, "win-a");
     // Fullscreen win-a pressing Right must skip win-b and cross to win-t.
     let mut flags = BTreeMap::new();
     flags.insert(
         "win-a".to_owned(),
         fullscreen_flag(&tiled("win-a", "out-1", "ws-1")),
     );
-    let o1 = obs(&s, &flags);
-    let plan = s
-        .propose_cross_output_focus(
-            &source,
-            &WindowId("win-a".to_owned()),
-            Direction::Right,
-            &o1,
-            &corr("corr-rmax02-cross"),
-            &FocusCapabilities::full(),
-        )
+    let o1 = engine_obs_for_pair(&layout, &source, &target, &flags);
+    let subject = WindowId("win-a".to_owned());
+    let ctx = PairOperationContext {
+        source_domain: &out_1,
+        target_domain: &out_2,
+        source_outer_gap: 0,
+        target_outer_gap: Some(0),
+        observed_focus: &subject,
+        observed: &o1,
+        closed: &[],
+    };
+    let outcome = layout
+        .run_directional_pair_focus(&ctx, &subject, Direction::Right, false)
         .expect("fullscreen subject crosses despite the local sibling");
-    assert_eq!(plan.desired_focus_domain, key("out-2", "ws-1"));
-    let target_window = plan
-        .desired_snapshot
-        .windows
-        .iter()
-        .find(|l| {
-            l.leaf == plan.desired_focus_leaf
-                && l.output == key("out-2", "ws-1").output
-                && l.workspace == key("out-2", "ws-1").workspace
-        })
-        .expect("cross target link")
-        .window
-        .clone();
-    assert_eq!(target_window.0, "win-t");
+    assert!(outcome.crossed);
+    assert_eq!(outcome.target_output, OutputId("out-2".to_owned()));
+    assert_eq!(outcome.target_workspace, WorkspaceId("ws-1".to_owned()));
+    assert_eq!(outcome.to_window.0, "win-t");
 }
 
 #[test]
 fn fullscreen_single_output_cross_refuses_without_pending() {
-    let (mut s, domain) = two_tile();
+    let (mut layout, _, domain) = two_tile();
     // Focus win-1 so the press direction holds a sibling; there is still no
     // adjacent output to continue to.
-    let plain = obs(&s, &BTreeMap::new());
-    let focused = focused_window(&s, &domain);
-    let plan = s
-        .propose_focus(
-            &domain,
-            &focused,
-            Direction::Left,
-            &plain,
-            &corr("corr-rmax02-seed2"),
-            &FocusCapabilities::full(),
-        )
+    let plain = obs_for(&layout, &domain, &BTreeMap::new());
+    let focused = focused_window(&layout, &domain);
+    layout
+        .local_focus(&domain, &focused, Direction::Left, &focused, &plain)
         .expect("seed focus plans");
-    commit_focus(&mut s, &plan, "corr-rmax02-seed2");
-    assert_eq!(focused_window(&s, &domain).0, "win-1");
+    assert_eq!(focused_window(&layout, &domain).0, "win-1");
     let mut flags = BTreeMap::new();
     flags.insert(
         "win-1".to_owned(),
         fullscreen_flag(&tiled("win-1", "out-1", "ws-1")),
     );
-    let o1 = obs(&s, &flags);
-    let err = s
-        .propose_cross_output_focus(
+    let o1 = obs_for(&layout, &domain, &flags);
+    let rev_before = layout.accepted_revision(&domain);
+    let err = layout
+        .local_focus(
             &domain,
             &WindowId("win-1".to_owned()),
             Direction::Right,
+            &WindowId("win-1".to_owned()),
             &o1,
-            &corr("corr-rmax02-noadj"),
-            &FocusCapabilities::full(),
         )
         .expect_err("no adjacent output must retain");
-    assert_eq!(err, ProposeError::Refused(RefusalKind::Unchanged));
-    assert!(!s.has_pending(), "no pending on retain");
+    assert_eq!(err, LayoutFailure::Semantics(RefusalKind::Unchanged));
+    assert_eq!(layout.accepted_revision(&domain), rev_before);
 }
 
 #[test]
 fn vertical_fullscreen_cross_refuses() {
-    let (mut s, domain) = two_tile();
-    let focused = focused_window(&s, &domain);
+    let (mut layout, out_1, out_2) = two_output();
+    admit(&mut layout, &out_1, "win-1");
+    admit(&mut layout, &out_1, "win-2");
+    admit(&mut layout, &out_2, "win-3");
+    let domain = out_1.key();
+    let target = out_2.key();
+    let focused = focused_window(&layout, &domain);
     let mut flags = BTreeMap::new();
     flags.insert(
         focused.0.clone(),
         fullscreen_flag(&tiled(&focused.0, "out-1", "ws-1")),
     );
-    let o0 = obs(&s, &flags);
+    let o0 = engine_obs_for_pair(&layout, &domain, &target, &flags);
     // Left/Right-only crossings stay: Up/Down fullscreen is a no-op.
     for direction in [Direction::Up, Direction::Down] {
-        let err = s
-            .propose_cross_output_focus(
-                &domain,
-                &focused,
-                direction,
-                &o0,
-                &corr("corr-rmax02-vert"),
-                &FocusCapabilities::full(),
-            )
+        let ctx = PairOperationContext {
+            source_domain: &out_1,
+            target_domain: &out_2,
+            source_outer_gap: 0,
+            target_outer_gap: Some(0),
+            observed_focus: &focused,
+            observed: &o0,
+            closed: &[],
+        };
+        let err = layout
+            .run_directional_pair_focus(&ctx, &focused, direction, false)
             .expect_err("vertical fullscreen must not cross");
-        assert_eq!(err, ProposeError::Refused(RefusalKind::Unchanged));
+        assert_eq!(
+            err,
+            PairOperationFailure::Layout(LayoutFailure::Semantics(RefusalKind::Unchanged))
+        );
     }
 }
 
@@ -504,56 +469,60 @@ fn vertical_fullscreen_cross_refuses() {
 fn both_flags_follow_fullscreen_local_skip_and_cross() {
     // Fullscreen (even with maximize also set) follows the R-MAX-02
     // skip-local and cross rule.
-    let mut s = two_output();
-    admit(&mut s, "win-t", "out-2", "ws-1", "corr-admit-t");
-    admit(&mut s, "win-a", "out-1", "ws-1", "corr-admit-a");
-    admit(&mut s, "win-b", "out-1", "ws-1", "corr-admit-b");
-    let source = key("out-1", "ws-1");
-    let plain = obs(&s, &BTreeMap::new());
-    let plan = s
-        .propose_focus(
+    let (mut layout, out_1, out_2) = two_output();
+    admit(&mut layout, &out_2, "win-t");
+    admit(&mut layout, &out_1, "win-a");
+    admit(&mut layout, &out_1, "win-b");
+    let source = out_1.key();
+    let target = out_2.key();
+    let plain = obs_for(&layout, &source, &BTreeMap::new());
+    layout
+        .local_focus(
             &source,
             &WindowId("win-b".to_owned()),
             Direction::Left,
+            &WindowId("win-b".to_owned()),
             &plain,
-            &corr("corr-rmax02-seed3"),
-            &FocusCapabilities::full(),
         )
         .expect("seed focus plans");
-    commit_focus(&mut s, &plan, "corr-rmax02-seed3");
     let mut flags = BTreeMap::new();
     flags.insert(
         "win-a".to_owned(),
         fullscreen_maximized_flag(&tiled("win-a", "out-1", "ws-1")),
     );
-    let o1 = obs(&s, &flags);
-    // Local propose refuses Unchanged (fullscreen rule, all directions)...
-    let err = s
-        .propose_focus(
+    let o_local = obs_for(&layout, &source, &flags);
+    // Local focus refuses Unchanged (fullscreen rule, all directions)...
+    let err = layout
+        .local_focus(
             &source,
             &WindowId("win-a".to_owned()),
             Direction::Right,
-            &o1,
-            &corr("corr-rmax02-both"),
-            &FocusCapabilities::full(),
+            &WindowId("win-a".to_owned()),
+            &o_local,
         )
         .expect_err("both flags must not take the local sibling");
-    assert_eq!(err, ProposeError::Refused(RefusalKind::Unchanged));
+    assert_eq!(err, LayoutFailure::Semantics(RefusalKind::Unchanged));
     // ...while the cross leg proceeds.
-    let plan = s
-        .propose_cross_output_focus(
-            &source,
-            &WindowId("win-a".to_owned()),
-            Direction::Right,
-            &o1,
-            &corr("corr-rmax02-both-cross"),
-            &FocusCapabilities::full(),
-        )
+    let o_pair = engine_obs_for_pair(&layout, &source, &target, &flags);
+    let subject = WindowId("win-a".to_owned());
+    let ctx = PairOperationContext {
+        source_domain: &out_1,
+        target_domain: &out_2,
+        source_outer_gap: 0,
+        target_outer_gap: Some(0),
+        observed_focus: &subject,
+        observed: &o_pair,
+        closed: &[],
+    };
+    let outcome = layout
+        .run_directional_pair_focus(&ctx, &subject, Direction::Right, false)
         .expect("both flags cross like fullscreen");
-    assert_eq!(plan.desired_focus_domain, key("out-2", "ws-1"));
+    assert!(outcome.crossed);
+    assert_eq!(outcome.target_output, OutputId("out-2".to_owned()));
+    assert_eq!(outcome.target_workspace, WorkspaceId("ws-1".to_owned()));
 }
 
-// ---- Raw Engine: local fullscreen focus refuses through `handle`. ----
+// ---- Raw WorldLayout: local fullscreen focus refuses. ----
 
 fn engine_window(id: &str, x: i32, fullscreen: bool) -> EngineWindow {
     EngineWindow {
@@ -577,81 +546,44 @@ fn engine_window(id: &str, x: i32, fullscreen: bool) -> EngineWindow {
     }
 }
 
-fn focus_event(
-    windows: Vec<EngineWindow>,
-    focused: &str,
-    correlation: &str,
-    fingerprint: u64,
-) -> CoreEvent {
-    CoreEvent {
-        owner: owner(),
-        generation: generation(),
-        correlation: corr(correlation),
-        revision: 0,
-        fingerprint,
-        domain: dom("out-1", "ws-1"),
-        domain_key: key("out-1", "ws-1"),
-        outer_gap: 0,
-        focused_window: WindowId(focused.to_owned()),
-        windows,
-        directional: None,
-        directional_target_outer_gap: None,
-        target_domain: None,
-        target_windows: vec![],
-        closed_windows: vec![],
-        command: CoreCommand::Focus {
-            window: focused.to_owned(),
-            direction: "left".to_owned(),
-            cross_output_transfer: false,
-            float_subject: false,
-        },
-    }
-}
-
-fn seed_engine() -> Engine {
-    let mut engine = Engine::new();
-    engine.sync_binding(&owner(), &generation());
+fn seed_layout() -> (WorldLayout, OutputDomain) {
+    let mut layout = WorldLayout::new();
     // Fixed-size admission so the fullscreen overlay observation binds
     // (same lane as the maximized-fence engine fixtures).
-    engine.set_fixed_size_admission(true);
-    let seed = focus_event(
-        vec![
-            engine_window("win-1", 0, false),
-            engine_window("win-2", 200, false),
-        ],
-        "win-2",
-        "corr-rmax02-seed",
-        7,
-    );
-    let seed = CoreEvent {
-        command: CoreCommand::Reconcile,
-        ..seed
-    };
-    match engine.handle(&seed) {
-        CoreReply::Projection(_) | CoreReply::Tiled(_) => {}
-        other => panic!("seed must project, got {other:?}"),
-    }
-    engine
+    layout.set_fixed_size_admission(true);
+    let d = dom("out-1", "ws-1");
+    layout
+        .reconcile_fresh(
+            &d,
+            0,
+            &WindowId("win-2".to_owned()),
+            &[
+                engine_window("win-1", 0, false),
+                engine_window("win-2", 200, false),
+            ],
+        )
+        .expect("seed must project");
+    (layout, d)
 }
 
 #[test]
 fn engine_fullscreen_local_focus_refuses_unchanged() {
-    let mut engine = seed_engine();
-    let event = focus_event(
-        vec![
-            engine_window("win-1", 0, false),
-            engine_window("win-2", 200, true),
-        ],
-        "win-2",
-        "corr-rmax02-engine",
-        7,
-    );
-    match engine.handle(&event) {
-        CoreReply::Rejected { kind, .. } => {
-            assert_eq!(kind, "unchanged", "fullscreen local focus refuses")
-        }
-        other => panic!("fullscreen focus must not plan locally, got {other:?}"),
-    }
+    let (mut layout, d) = seed_layout();
+    let domain = d.key();
+    let obs = vec![
+        tiled("win-1", "out-1", "ws-1"),
+        fullscreen_flag(&tiled("win-2", "out-1", "ws-1")),
+    ];
+    let err = layout
+        .local_focus(
+            &domain,
+            &WindowId("win-2".to_owned()),
+            Direction::Left,
+            &WindowId("win-2".to_owned()),
+            &obs,
+        )
+        .expect_err("fullscreen focus must not plan locally");
+    assert_eq!(err, LayoutFailure::Semantics(RefusalKind::Unchanged));
 }
 
 // ---- Shared WorldCommand entry (WorldEngine). ----

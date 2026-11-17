@@ -3,8 +3,10 @@ use std::collections::BTreeMap;
 use crate::contract::MAX_REVISION;
 use crate::directional::{Axis, Node, NodeId, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
-use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, RefusalKind, centered_float_rect};
+use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, RefusalKind};
 use crate::size_hints::WindowSizeHints;
+
+use super::centered_float_rect;
 
 use super::outcome::LayoutFailure;
 use super::state::{DomainException, DomainLayout, WorldLayout};
