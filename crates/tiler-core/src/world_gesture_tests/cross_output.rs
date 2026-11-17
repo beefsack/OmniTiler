@@ -928,3 +928,219 @@ fn cross_release_to_empty_destination_keeps_send_admission() {
         "arrival receipt retires the empty-destination transfer"
     );
 }
+
+#[test]
+fn cross_output_sticky_scope_survives_same_dest_and_clears_on_dest_change() {
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities {
+            native_sticky: true,
+            maximize: true,
+            ..Default::default()
+        },
+        vec![
+            (
+                "gap".to_owned(),
+                crate::connection::RawSettingValue::Number(8.0),
+            ),
+            (
+                "outer".to_owned(),
+                crate::connection::RawSettingValue::Number(0.0),
+            ),
+        ],
+    )
+    .expect("valid generation");
+    let screens = vec![
+        ScreenReport {
+            output: OutputId("out-a".to_owned()),
+            full_rect: Some(rect(0, 0, 800, 600)),
+            work_area: Some(rect(0, 0, 800, 600)),
+            complete: true,
+            scale: 1.0,
+            identity: crate::world_report::OutputIdentity::unknown(),
+        },
+        ScreenReport {
+            output: OutputId("out-b".to_owned()),
+            full_rect: Some(rect(800, 0, 800, 600)),
+            work_area: Some(rect(800, 0, 800, 600)),
+            complete: true,
+            scale: 1.0,
+            identity: crate::world_report::OutputIdentity::unknown(),
+        },
+        ScreenReport {
+            output: OutputId("out-c".to_owned()),
+            full_rect: Some(rect(1600, 0, 800, 600)),
+            work_area: Some(rect(1600, 0, 800, 600)),
+            complete: true,
+            scale: 1.0,
+            identity: crate::world_report::OutputIdentity::unknown(),
+        },
+    ];
+    // out-a: H[win-1, win-2]; out-b: H[win-3, win-4] first, then admit win-5 under tall win-4 -> H[win-3, V[win-4, win-5]]; out-c: win-6.
+    let initial_facts = vec![
+        fact("win-1", "out-a", rect(0, 0, 400, 600)),
+        fact("win-2", "out-a", rect(400, 0, 400, 600)),
+        fact("win-3", "out-b", rect(800, 0, 400, 600)),
+        fact("win-4", "out-b", rect(1200, 0, 400, 600)),
+        fact("win-6", "out-c", rect(1600, 0, 800, 600)),
+    ];
+    accepted(
+        &mut engine,
+        &report_on(
+            screens.clone(),
+            1,
+            1,
+            initial_facts.clone(),
+            "win-4",
+            None,
+            vec![],
+            true,
+        ),
+    );
+    let seed_facts = vec![
+        fact("win-1", "out-a", rect(0, 0, 400, 600)),
+        fact("win-2", "out-a", rect(400, 0, 400, 600)),
+        fact("win-3", "out-b", rect(800, 0, 400, 600)),
+        fact("win-4", "out-b", rect(1200, 0, 400, 600)),
+        fact("win-5", "out-b", rect(1200, 0, 200, 600)),
+        fact("win-6", "out-c", rect(1600, 0, 800, 600)),
+    ];
+    accepted(
+        &mut engine,
+        &report_on(
+            screens.clone(),
+            2,
+            2,
+            seed_facts.clone(),
+            "win-4",
+            None,
+            vec![],
+            true,
+        ),
+    );
+    let seeded = accepted(
+        &mut engine,
+        &report_on(
+            screens.clone(),
+            3,
+            3,
+            seed_facts.clone(),
+            "win-2",
+            None,
+            vec![],
+            true,
+        ),
+    );
+
+    let r3 = row_of(&seeded, "win-3").allocation.expect("win-3 alloc");
+    let r4 = row_of(&seeded, "win-4").allocation.expect("win-4 alloc");
+    let r5 = row_of(&seeded, "win-5").allocation.expect("win-5 alloc");
+    let inner_x = r4.x.min(r5.x);
+    let inner_y = r4.y.min(r5.y);
+    let inner_b = (r4.y + r4.h).max(r5.y + r5.h);
+    let inner_cx = inner_x + r4.w.max(r5.w) / 2;
+    let contains =
+        |r: &Rect, x: i32, y: i32| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+    let gy = (inner_y..inner_b)
+        .find(|&y| {
+            !contains(&r3, inner_cx, y)
+                && !contains(&r4, inner_cx, y)
+                && !contains(&r5, inner_cx, y)
+                && y - inner_y >= 32
+                && inner_b - y > 32
+        })
+        .expect("inner V gap row on out-b");
+    let gx = inner_x + 5;
+    let sticky_x = inner_x + 50;
+    assert!(gx >= 800, "gx={gx} gy={gy} r3={r3:?} r4={r4:?} r5={r5:?}");
+    let r2 = row_of(&seeded, "win-2").allocation.expect("win-2 alloc");
+
+    // 1) Hover on out-b inner V left strip arms sticky Left prior.
+    let edge = accepted(
+        &mut engine,
+        &report_on(
+            screens.clone(),
+            4,
+            4,
+            seed_facts.clone(),
+            "win-2",
+            Some(ingress(
+                "win-2",
+                GestureKind::Move,
+                Some((gx, gy)),
+                GesturePhase::Updated,
+                r2,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    let edge_preview = edge.drag_preview.expect("edge preview on out-b");
+    assert_eq!(edge_preview.domain.output.0, "out-b");
+    let edge_prior = edge_preview
+        .hover
+        .as_ref()
+        .and_then(|h| h.prior.clone())
+        .expect("arms sticky group edge prior");
+    assert_eq!(edge_prior.edge, crate::contract::DragSide::Left);
+
+    // 2) Probe 50px inside out-b inner V group: same destination keeps sticky Left.
+    let sticky = accepted(
+        &mut engine,
+        &report_on(
+            screens.clone(),
+            5,
+            5,
+            seed_facts.clone(),
+            "win-2",
+            Some(ingress(
+                "win-2",
+                GestureKind::Move,
+                Some((sticky_x, gy)),
+                GesturePhase::Updated,
+                r2,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    let sticky_preview = sticky.drag_preview.expect("sticky preview on out-b");
+    assert_eq!(sticky_preview.domain.output.0, "out-b");
+    assert_eq!(sticky_preview.rect, edge_preview.rect);
+    assert_eq!(
+        sticky_preview.hover.as_ref().and_then(|h| h.prior.clone()),
+        Some(edge_prior)
+    );
+
+    // 3) Moving to out-c resolves out-c cleanly without out-b's prior steering it.
+    let other_dest = accepted(
+        &mut engine,
+        &report_on(
+            screens,
+            6,
+            6,
+            seed_facts,
+            "win-2",
+            Some(ingress(
+                "win-2",
+                GestureKind::Move,
+                Some((1610, 300)),
+                GesturePhase::Updated,
+                r2,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    let other_preview = other_dest.drag_preview.expect("out-c preview");
+    assert_eq!(other_preview.domain.output.0, "out-c");
+    assert_eq!(other_preview.target.0, "win-6");
+    assert!(
+        other_preview
+            .hover
+            .as_ref()
+            .and_then(|h| h.prior.as_ref())
+            .is_none()
+    );
+}

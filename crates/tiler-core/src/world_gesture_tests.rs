@@ -4128,6 +4128,362 @@ fn omitted_ingress_clears_drag_preview_when_destination_effective_view_changes_w
     );
 }
 
+#[test]
+fn center_drop_refuses_without_commit_and_retains_session() {
+    let (mut engine, ra, _) = rig();
+    let before = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![
+                fact("win-a", "out-a", rect(0, 0, 400, 600)),
+                fact("win-b", "out-a", rect(400, 0, 400, 600)),
+            ],
+            "win-a",
+            None,
+            vec![],
+            true,
+        ),
+    );
+    let before_a = row_of(&before, "win-a").allocation.expect("win-a alloc");
+    let before_b = row_of(&before, "win-b").allocation.expect("win-b alloc");
+
+    // Preview over center of win-b (600, 300) refuses without overlay and retains session.
+    let center_preview = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![
+                fact("win-a", "out-a", before_a),
+                fact("win-b", "out-a", before_b),
+            ],
+            "win-a",
+            Some(ingress(
+                "win-a",
+                GestureKind::Move,
+                Some((600, 300)),
+                GesturePhase::Updated,
+                ra,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert!(center_preview.drag_preview.is_none());
+
+    // Session is still active: edge update over win-b previews.
+    let edge_preview = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![
+                fact("win-a", "out-a", before_a),
+                fact("win-b", "out-a", before_b),
+            ],
+            "win-a",
+            Some(ingress(
+                "win-a",
+                GestureKind::Move,
+                Some((before_b.x + before_b.w - 5, before_b.y + before_b.h / 2)),
+                GesturePhase::Updated,
+                ra,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert!(edge_preview.drag_preview.is_some());
+
+    // Release over center of win-b refuses without commit and clears the session.
+    let center_release = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            vec![
+                fact("win-a", "out-a", before_a),
+                fact("win-b", "out-a", before_b),
+            ],
+            "win-a",
+            Some(ingress(
+                "win-a",
+                GestureKind::Move,
+                Some((before_b.x + before_b.w / 2, before_b.y + before_b.h / 2)),
+                GesturePhase::Released,
+                ra,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert!(center_release.drag_preview.is_none());
+    assert_eq!(
+        center_release.gesture_settled.map(|t| (t.id, t.committed)),
+        Some((1, false))
+    );
+    assert_eq!(row_of(&center_release, "win-a").allocation, Some(before_a));
+    assert_eq!(row_of(&center_release, "win-b").allocation, Some(before_b));
+}
+
+#[test]
+fn deterministic_move_replay_produces_identical_preview_and_commit() {
+    let run_once = || {
+        let (mut engine, ra, _) = rig();
+        let seeded = accepted(
+            &mut engine,
+            &report(
+                2,
+                2,
+                vec![
+                    fact("win-a", "out-a", rect(0, 0, 400, 600)),
+                    fact("win-b", "out-a", rect(400, 0, 400, 600)),
+                ],
+                "win-a",
+                None,
+                vec![],
+                true,
+            ),
+        );
+        let a0 = row_of(&seeded, "win-a").allocation.expect("win-a alloc");
+        let b0 = row_of(&seeded, "win-b").allocation.expect("win-b alloc");
+        let previewed = accepted(
+            &mut engine,
+            &report(
+                3,
+                3,
+                vec![fact("win-a", "out-a", a0), fact("win-b", "out-a", b0)],
+                "win-a",
+                Some(ingress(
+                    "win-a",
+                    GestureKind::Move,
+                    Some((790, 300)),
+                    GesturePhase::Updated,
+                    ra,
+                )),
+                vec![],
+                true,
+            ),
+        );
+        let released = accepted(
+            &mut engine,
+            &report(
+                4,
+                4,
+                vec![fact("win-a", "out-a", a0), fact("win-b", "out-a", b0)],
+                "win-a",
+                Some(ingress(
+                    "win-a",
+                    GestureKind::Move,
+                    Some((790, 300)),
+                    GesturePhase::Released,
+                    ra,
+                )),
+                vec![],
+                true,
+            ),
+        );
+        (
+            previewed.drag_preview,
+            released.gesture_settled,
+            row_of(&released, "win-a").allocation,
+            row_of(&released, "win-b").allocation,
+        )
+    };
+    assert_eq!(run_once(), run_once());
+}
+
+#[test]
+fn failed_center_preview_retains_group_edge_stickiness() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+    let seed = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![
+                fact("win-a", "out-a", rect(0, 0, 200, 600)),
+                fact("win-b", "out-a", rect(200, 0, 200, 600)),
+                fact("win-c", "out-a", rect(400, 0, 200, 600)),
+            ],
+            "win-c",
+            None,
+            vec![],
+            true,
+        ),
+    );
+    let a0 = row_of(&seed, "win-a").allocation.expect("win-a alloc");
+    let b0 = row_of(&seed, "win-b").allocation.expect("win-b alloc");
+    let c0 = row_of(&seed, "win-c").allocation.expect("win-c alloc");
+    let nested = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![
+                fact("win-a", "out-a", a0),
+                fact("win-b", "out-a", b0),
+                fact("win-c", "out-a", c0),
+            ],
+            "win-c",
+            Some(ingress_id(
+                "win-c",
+                GestureKind::Move,
+                Some((b0.x + b0.w / 2, b0.y + b0.h - 2)),
+                GesturePhase::Released,
+                c0,
+                1,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    let a1 = row_of(&nested, "win-a").allocation.expect("win-a nested");
+    let b1 = row_of(&nested, "win-b").allocation.expect("win-b nested");
+    let c1 = row_of(&nested, "win-c").allocation.expect("win-c nested");
+    assert!(b1.y + b1.h < c1.y, "vertical group must have an inner gap");
+    let inner_x = b1.x.min(c1.x);
+    let gx = inner_x + 5;
+    let gy = (b1.y + b1.h + c1.y) / 2;
+    let sticky_x = inner_x + 50;
+    let center_x = b1.x + b1.w / 2;
+    let center_y = b1.y + b1.h / 2;
+
+    let edge_reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            vec![
+                fact("win-a", "out-a", a1),
+                fact("win-b", "out-a", b1),
+                fact("win-c", "out-a", c1),
+            ],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                Some((gx, gy)),
+                GesturePhase::Updated,
+                a1,
+                2,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    let edge = edge_reply
+        .drag_preview
+        .as_ref()
+        .expect("group edge preview");
+    assert_eq!(
+        edge.hover
+            .as_ref()
+            .and_then(|h| h.prior.as_ref())
+            .map(|p| p.edge),
+        Some(crate::contract::DragSide::Left)
+    );
+
+    let center_reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![
+                fact("win-a", "out-a", a1),
+                fact("win-b", "out-a", b1),
+                fact("win-c", "out-a", c1),
+            ],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                Some((center_x, center_y)),
+                GesturePhase::Updated,
+                a1,
+                2,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert!(center_reply.drag_preview.is_none());
+    assert!(center_reply.transfers.is_empty());
+    assert_eq!(row_of(&center_reply, "win-a").allocation, Some(a1));
+    assert_eq!(row_of(&center_reply, "win-b").allocation, Some(b1));
+    assert_eq!(row_of(&center_reply, "win-c").allocation, Some(c1));
+    assert_eq!(
+        engine
+            .gesture
+            .as_ref()
+            .and_then(|g| g.hover.as_ref())
+            .and_then(|h| h.prior.as_ref())
+            .map(|p| p.edge),
+        Some(crate::contract::DragSide::Left)
+    );
+
+    let sticky_reply = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            vec![
+                fact("win-a", "out-a", a1),
+                fact("win-b", "out-a", b1),
+                fact("win-c", "out-a", c1),
+            ],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                Some((sticky_x, gy)),
+                GesturePhase::Updated,
+                a1,
+                2,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    let sticky = sticky_reply
+        .drag_preview
+        .as_ref()
+        .expect("sticky edge preview");
+    assert_eq!(sticky.rect, edge.rect);
+    assert_eq!(sticky.hover, edge.hover);
+
+    let cancelled = accepted(
+        &mut engine,
+        &report(
+            6,
+            6,
+            vec![
+                fact("win-a", "out-a", a1),
+                fact("win-b", "out-a", b1),
+                fact("win-c", "out-a", c1),
+            ],
+            "win-a",
+            Some(ingress_id(
+                "win-a",
+                GestureKind::Move,
+                Some((sticky_x, gy)),
+                GesturePhase::Cancelled,
+                a1,
+                2,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert!(cancelled.drag_preview.is_none());
+    assert!(cancelled.transfers.is_empty());
+    assert_eq!(row_of(&cancelled, "win-a").allocation, Some(a1));
+    assert_eq!(row_of(&cancelled, "win-b").allocation, Some(b1));
+    assert_eq!(row_of(&cancelled, "win-c").allocation, Some(c1));
+}
+
 // Cross-output gesture release suite: pair-targeted slot agreement,
 // retained transfer fences, and gap bookkeeping live in the child;
 // shared rig helpers above are used via `super::*`.

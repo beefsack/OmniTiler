@@ -1291,3 +1291,876 @@ fn local_drop_perpendicular_edge_wraps_root_and_self_drop_refuses() {
         }
     );
 }
+
+#[test]
+fn drag_sides_map_to_axis_and_order_across_horizontal_and_vertical_parents() {
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 600,
+        h: 400,
+    };
+    let key = ws_key("out-1", "ws-1");
+    let desc = domain_desc(&key, bounds, 0);
+
+    // 1) Two-wide H[w1, w2], drag w2 left onto w1 -> collapses root to w1, wraps H[w2, w1].
+    let mut layout = WorldLayout::new();
+    let d2 = two_tile_domain(bounds, 0, "g-root", "w1", "l1", "w2", "l2", 1);
+    layout.domains.insert(key.clone(), d2);
+    let obs2 = vec![eng("w1", &key, 0, 300), eng("w2", &key, 300, 300)];
+    let left = layout
+        .run_local_drag_preview(&desc, 0, &win("w2"), &win("w2"), &obs2, 10, 200, None)
+        .expect("left preview");
+    assert_eq!(left.target_window, win("w1"));
+    assert_eq!(
+        left.proposed_rect,
+        Rect {
+            x: 0,
+            y: 0,
+            w: 300,
+            h: 400
+        }
+    );
+
+    // 2) Three-wide H[w1, w2, w3], drag w3 right onto w1 -> H[w1, w3, w2] (same-axis, no wrap).
+    let mut layout3 = WorldLayout::new();
+    let mut d3 = DomainLayout::new(bounds, 0, 0);
+    d3.tree = Some(Node::Group {
+        id: nid("g-root"),
+        axis: Axis::Horizontal,
+        children: vec![leaf("l1"), leaf("l2"), leaf("l3")],
+        shares: vec![1, 1, 1],
+    });
+    d3.leaves.insert(win("w1"), nid("l1"));
+    d3.leaves.insert(win("w2"), nid("l2"));
+    d3.leaves.insert(win("w3"), nid("l3"));
+    d3.focused_leaf = Some(nid("l3"));
+    d3.focus_stack = vec![nid("l1"), nid("l2"), nid("l3")];
+    d3.accepted_revision = 1;
+    layout3.domains.insert(key.clone(), d3);
+    let obs3 = vec![
+        eng("w1", &key, 0, 200),
+        eng("w2", &key, 200, 200),
+        eng("w3", &key, 400, 200),
+    ];
+    let right_drop = layout3
+        .run_local_drag_drop(&desc, 0, &win("w3"), &win("w3"), &obs3, 190, 200, None)
+        .expect("right drop");
+    assert_eq!(right_drop.revision, 2);
+    match layout3.domain(&key).unwrap().tree.as_ref().unwrap() {
+        Node::Group {
+            axis: Axis::Horizontal,
+            children,
+            ..
+        } => {
+            assert_eq!(children, &vec![leaf("l1"), leaf("l3"), leaf("l2")]);
+        }
+        other => panic!("expected H group, got {other:?}"),
+    }
+
+    // 3) Nested H[w1, V[w2, w3, w4]], drag w4 top/bottom onto w2 -> stays in V parent.
+    let mut layout4 = WorldLayout::new();
+    let mut d4 = DomainLayout::new(bounds, 0, 0);
+    d4.tree = Some(Node::Group {
+        id: nid("g-root"),
+        axis: Axis::Horizontal,
+        children: vec![
+            leaf("l1"),
+            Node::Group {
+                id: nid("g-v"),
+                axis: Axis::Vertical,
+                children: vec![leaf("l2"), leaf("l3"), leaf("l4")],
+                shares: vec![1, 1, 1],
+            },
+        ],
+        shares: vec![1, 1],
+    });
+    d4.leaves.insert(win("w1"), nid("l1"));
+    d4.leaves.insert(win("w2"), nid("l2"));
+    d4.leaves.insert(win("w3"), nid("l3"));
+    d4.leaves.insert(win("w4"), nid("l4"));
+    d4.focused_leaf = Some(nid("l4"));
+    d4.focus_stack = vec![nid("l1"), nid("l2"), nid("l3"), nid("l4")];
+    d4.accepted_revision = 1;
+    layout4.domains.insert(key.clone(), d4);
+    let obs4 = vec![
+        eng("w1", &key, 0, 300),
+        eng("w2", &key, 300, 300),
+        eng("w3", &key, 300, 300),
+        eng("w4", &key, 300, 300),
+    ];
+    let top = layout4
+        .run_local_drag_preview(&desc, 0, &win("w4"), &win("w4"), &obs4, 450, 10, None)
+        .expect("top preview");
+    assert_eq!(top.target_window, win("w2"));
+    assert_eq!(
+        top.proposed_rect,
+        Rect {
+            x: 300,
+            y: 0,
+            w: 300,
+            h: 133
+        }
+    );
+    let bottom_drop = layout4
+        .run_local_drag_drop(&desc, 0, &win("w4"), &win("w4"), &obs4, 450, 120, None)
+        .expect("bottom drop");
+    assert_eq!(bottom_drop.revision, 2);
+    match layout4.domain(&key).unwrap().tree.as_ref().unwrap() {
+        Node::Group { children, .. } => match &children[1] {
+            Node::Group {
+                id,
+                axis: Axis::Vertical,
+                children,
+                ..
+            } => {
+                assert_eq!(id, &nid("g-v"));
+                assert_eq!(children, &vec![leaf("l2"), leaf("l4"), leaf("l3")]);
+            }
+            other => panic!("expected V group, got {other:?}"),
+        },
+        other => panic!("expected H root, got {other:?}"),
+    }
+}
+
+#[test]
+fn drag_same_axis_nary_reorder_and_focus_preserved() {
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 600,
+        h: 400,
+    };
+    let key = ws_key("out-1", "ws-1");
+    let desc = domain_desc(&key, bounds, 0);
+
+    let mut layout = WorldLayout::new();
+    let mut d = DomainLayout::new(bounds, 0, 0);
+    d.tree = Some(Node::Group {
+        id: nid("g-root"),
+        axis: Axis::Horizontal,
+        children: vec![leaf("l1"), leaf("l2"), leaf("l3")],
+        shares: vec![1, 1, 1],
+    });
+    d.leaves.insert(win("w1"), nid("l1"));
+    d.leaves.insert(win("w2"), nid("l2"));
+    d.leaves.insert(win("w3"), nid("l3"));
+    d.focused_leaf = Some(nid("l3"));
+    d.focus_stack = vec![nid("l1"), nid("l2"), nid("l3")];
+    d.accepted_revision = 1;
+    layout.domains.insert(key.clone(), d);
+    let obs = vec![
+        eng("w1", &key, 0, 200),
+        eng("w2", &key, 200, 200),
+        eng("w3", &key, 400, 200),
+    ];
+
+    layout
+        .run_local_drag_drop(&desc, 0, &win("w3"), &win("w3"), &obs, 10, 200, None)
+        .expect("reorder drop");
+    let dom = layout.domain(&key).unwrap();
+    assert_eq!(dom.focused_leaf, Some(nid("l3")));
+    match dom.tree.as_ref().unwrap() {
+        Node::Group {
+            axis: Axis::Horizontal,
+            children,
+            ..
+        } => {
+            assert_eq!(children, &vec![leaf("l3"), leaf("l1"), leaf("l2")]);
+        }
+        other => panic!("expected H root, got {other:?}"),
+    }
+}
+
+#[test]
+fn drag_perpendicular_wraps_only_target_subtree() {
+    // H[w1, w2, w3] focus w3 top onto w1: remove w3 -> H[w1, w2], wrap w1 in V[w3, w1];
+    // w2 untouched at slot 1 with original share.
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 600,
+        h: 400,
+    };
+    let key = ws_key("out-1", "ws-1");
+    let desc = domain_desc(&key, bounds, 0);
+
+    let mut layout = WorldLayout::new();
+    let mut d = DomainLayout::new(bounds, 0, 0);
+    d.tree = Some(Node::Group {
+        id: nid("g-root"),
+        axis: Axis::Horizontal,
+        children: vec![leaf("l1"), leaf("l2"), leaf("l3")],
+        shares: vec![1, 1, 1],
+    });
+    d.leaves.insert(win("w1"), nid("l1"));
+    d.leaves.insert(win("w2"), nid("l2"));
+    d.leaves.insert(win("w3"), nid("l3"));
+    d.focused_leaf = Some(nid("l3"));
+    d.focus_stack = vec![nid("l1"), nid("l2"), nid("l3")];
+    d.accepted_revision = 1;
+    layout.domains.insert(key.clone(), d);
+    let obs = vec![
+        eng("w1", &key, 0, 200),
+        eng("w2", &key, 200, 200),
+        eng("w3", &key, 400, 200),
+    ];
+
+    layout
+        .run_local_drag_drop(&desc, 0, &win("w3"), &win("w3"), &obs, 100, 10, None)
+        .expect("perpendicular wrap drop");
+    let dom = layout.domain(&key).unwrap();
+    assert_eq!(dom.focused_leaf, Some(nid("l3")));
+    match dom.tree.as_ref().unwrap() {
+        Node::Group {
+            axis: Axis::Horizontal,
+            children,
+            shares,
+            ..
+        } => {
+            assert_eq!(shares, &vec![1, 1]);
+            assert_eq!(children.len(), 2);
+            assert_eq!(children[1], leaf("l2"));
+            match &children[0] {
+                Node::Group {
+                    axis: Axis::Vertical,
+                    children,
+                    shares,
+                    ..
+                } => {
+                    assert_eq!(shares, &vec![1, 1]);
+                    assert_eq!(children, &vec![leaf("l3"), leaf("l1")]);
+                }
+                other => panic!("expected V wrapper, got {other:?}"),
+            }
+        }
+        other => panic!("expected H root, got {other:?}"),
+    }
+}
+
+#[test]
+fn drag_deep_nesting_collapse_and_wrap() {
+    // H[w1, V[w2, w3, w4]] focus w4 left onto w2:
+    // remove w4 -> V[w2, w3], wrap w2 in H[w4, w2] at V index 0; w1 and w3 untouched.
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 600,
+        h: 400,
+    };
+    let key = ws_key("out-1", "ws-1");
+    let desc = domain_desc(&key, bounds, 0);
+
+    let mut layout = WorldLayout::new();
+    let mut d = DomainLayout::new(bounds, 0, 0);
+    d.tree = Some(Node::Group {
+        id: nid("g-root"),
+        axis: Axis::Horizontal,
+        children: vec![
+            leaf("l1"),
+            Node::Group {
+                id: nid("g-v"),
+                axis: Axis::Vertical,
+                children: vec![leaf("l2"), leaf("l3"), leaf("l4")],
+                shares: vec![1, 1, 1],
+            },
+        ],
+        shares: vec![1, 1],
+    });
+    d.leaves.insert(win("w1"), nid("l1"));
+    d.leaves.insert(win("w2"), nid("l2"));
+    d.leaves.insert(win("w3"), nid("l3"));
+    d.leaves.insert(win("w4"), nid("l4"));
+    d.focused_leaf = Some(nid("l4"));
+    d.focus_stack = vec![nid("l1"), nid("l2"), nid("l3"), nid("l4")];
+    d.accepted_revision = 1;
+    layout.domains.insert(key.clone(), d);
+    let obs = vec![
+        eng("w1", &key, 0, 300),
+        eng("w2", &key, 300, 300),
+        eng("w3", &key, 300, 300),
+        eng("w4", &key, 300, 300),
+    ];
+
+    layout
+        .run_local_drag_drop(&desc, 0, &win("w4"), &win("w4"), &obs, 310, 60, None)
+        .expect("deep collapse and wrap drop");
+    match layout.domain(&key).unwrap().tree.as_ref().unwrap() {
+        Node::Group { children, .. } => {
+            assert_eq!(children.len(), 2);
+            assert_eq!(children[0], leaf("l1"));
+            match &children[1] {
+                Node::Group {
+                    children, shares, ..
+                } => {
+                    assert_eq!(shares, &vec![1, 1]);
+                    assert_eq!(children.len(), 2);
+                    assert_eq!(children[1], leaf("l3"));
+                    match &children[0] {
+                        Node::Group {
+                            axis: Axis::Horizontal,
+                            children,
+                            shares,
+                            ..
+                        } => {
+                            assert_eq!(shares, &vec![1, 1]);
+                            assert_eq!(children, &vec![leaf("l4"), leaf("l2")]);
+                        }
+                        other => panic!("expected H wrapper, got {other:?}"),
+                    }
+                }
+                other => panic!("expected V inner, got {other:?}"),
+            }
+        }
+        other => panic!("expected H root, got {other:?}"),
+    }
+}
+
+#[test]
+fn drag_preview_and_drop_refuse_center_and_bounds_without_mutation() {
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 600,
+        h: 400,
+    };
+    let key = ws_key("out-1", "ws-1");
+    let desc = domain_desc(&key, bounds, 0);
+
+    let mut layout = WorldLayout::new();
+    let d = two_tile_domain(bounds, 0, "g-root", "w1", "l1", "w2", "l2", 3);
+    let original_tree = d.tree.clone();
+    layout.domains.insert(key.clone(), d);
+    let obs = vec![eng("w1", &key, 0, 300), eng("w2", &key, 300, 300)];
+
+    // Self drop refuses Unchanged.
+    assert_eq!(
+        layout
+            .run_local_drag_preview(&desc, 0, &win("w2"), &win("w2"), &obs, 450, 200, None)
+            .unwrap_err(),
+        LayoutFailure::Semantics(RefusalKind::Unchanged)
+    );
+    // Target center refuses UnsupportedCapability.
+    assert_eq!(
+        layout
+            .run_local_drag_preview(&desc, 0, &win("w2"), &win("w2"), &obs, 150, 200, None)
+            .unwrap_err(),
+        LayoutFailure::Semantics(RefusalKind::UnsupportedCapability)
+    );
+    assert_eq!(
+        layout
+            .run_local_drag_drop(&desc, 0, &win("w2"), &win("w2"), &obs, 150, 200, None)
+            .unwrap_err(),
+        LayoutFailure::Semantics(RefusalKind::UnsupportedCapability)
+    );
+    // Outside work area refuses CrossDomainMismatch.
+    assert_eq!(
+        layout
+            .run_local_drag_preview(&desc, 0, &win("w2"), &win("w2"), &obs, 700, 200, None)
+            .unwrap_err(),
+        LayoutFailure::Semantics(RefusalKind::CrossDomainMismatch)
+    );
+    assert_eq!(
+        layout
+            .run_local_drag_preview(&desc, 0, &win("w2"), &win("w2"), &obs, -1, 200, None)
+            .unwrap_err(),
+        LayoutFailure::Semantics(RefusalKind::CrossDomainMismatch)
+    );
+
+    let dom = layout.domain(&key).unwrap();
+    assert_eq!(dom.accepted_revision, 3);
+    assert_eq!(dom.tree, original_tree);
+}
+
+#[test]
+fn drag_bounded_invariant_loop_preserves_domain_isolation() {
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 120,
+        h: 80,
+    };
+    let key_a = ws_key("out-1", "ws-1");
+    let key_b = ws_key("out-2", "ws-1");
+    let desc_a = domain_desc(&key_a, bounds, 0);
+
+    let mut layout = WorldLayout::new();
+    let mut d_a = DomainLayout::new(bounds, 0, 0);
+    d_a.tree = Some(Node::Group {
+        id: nid("g-root"),
+        axis: Axis::Horizontal,
+        children: vec![leaf("l1"), leaf("l2"), leaf("l3")],
+        shares: vec![1, 1, 1],
+    });
+    d_a.leaves.insert(win("w1"), nid("l1"));
+    d_a.leaves.insert(win("w2"), nid("l2"));
+    d_a.leaves.insert(win("w3"), nid("l3"));
+    d_a.focused_leaf = Some(nid("l3"));
+    d_a.focus_stack = vec![nid("l1"), nid("l2"), nid("l3")];
+    d_a.accepted_revision = 2;
+    let orig_tree = d_a.tree.clone();
+    layout.domains.insert(key_a.clone(), d_a);
+    layout
+        .domains
+        .insert(key_b.clone(), DomainLayout::new(bounds, 0, 0));
+
+    let obs = vec![
+        eng("w1", &key_a, 0, 40),
+        eng("w2", &key_a, 40, 40),
+        eng("w3", &key_a, 80, 40),
+    ];
+    let mut ok = 0u32;
+    let mut refused = 0u32;
+    for x in (0..120).step_by(10) {
+        for y in (0..80).step_by(10) {
+            match layout.run_local_drag_preview(
+                &desc_a,
+                0,
+                &win("w3"),
+                &win("w3"),
+                &obs,
+                x,
+                y,
+                None,
+            ) {
+                Ok(preview) => {
+                    ok += 1;
+                    assert_eq!(preview.domain, key_a);
+                    assert_eq!(preview.source_domain, key_a);
+                    assert_ne!(preview.target_window, win("w3"));
+                    assert!(preview.proposed_rect.w > 0 && preview.proposed_rect.h > 0);
+                }
+                Err(LayoutFailure::Semantics(_)) => refused += 1,
+                Err(other) => panic!("preview must not fail with {other:?}"),
+            }
+            assert_eq!(layout.domain(&key_a).unwrap().tree, orig_tree);
+            assert_eq!(layout.domain(&key_a).unwrap().accepted_revision, 2);
+            assert!(layout.domain(&key_b).unwrap().tree.is_none());
+        }
+    }
+    assert!(ok > 0);
+    assert!(refused > 0);
+}
+
+fn gap_nested_layout() -> (WorldLayout, OutputDomain, DomainKey, Vec<EngineWindow>) {
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 800,
+        h: 600,
+    };
+    let key = ws_key("out-1", "ws-1");
+    let desc = domain_desc(&key, bounds, 8);
+    let mut layout = WorldLayout::new();
+    let mut d = DomainLayout::new(bounds, 8, 0);
+    d.tree = Some(Node::Group {
+        id: nid("g-root"),
+        axis: Axis::Horizontal,
+        children: vec![
+            leaf("l1"),
+            Node::Group {
+                id: nid("g-v"),
+                axis: Axis::Vertical,
+                children: vec![leaf("l2"), leaf("l3")],
+                shares: vec![1, 1],
+            },
+        ],
+        shares: vec![1, 1],
+    });
+    d.leaves.insert(win("w1"), nid("l1"));
+    d.leaves.insert(win("w2"), nid("l2"));
+    d.leaves.insert(win("w3"), nid("l3"));
+    d.focused_leaf = Some(nid("l1"));
+    d.focus_stack = vec![nid("l2"), nid("l3"), nid("l1")];
+    d.accepted_revision = 1;
+    layout.domains.insert(key.clone(), d);
+    let obs = vec![
+        eng("w1", &key, 0, 400),
+        eng("w2", &key, 400, 400),
+        eng("w3", &key, 400, 400),
+    ];
+    (layout, desc, key, obs)
+}
+
+fn inner_v_group_geom(layout: &WorldLayout, key: &DomainKey) -> (Rect, Vec<i64>, Vec<Rect>) {
+    let geom = layout
+        .project_domain_geometry(key, &BTreeMap::new())
+        .expect("project");
+    let r2 = geom.iter().find(|g| g.window == win("w2")).unwrap().rect;
+    let r3 = geom.iter().find(|g| g.window == win("w3")).unwrap().rect;
+    let min_x = r2.x.min(r3.x);
+    let min_y = r2.y.min(r3.y);
+    let max_r = (r2.x + r2.w).max(r3.x + r3.w);
+    let max_b = (r2.y + r2.h).max(r3.y + r3.h);
+    let group_rect = Rect {
+        x: min_x,
+        y: min_y,
+        w: max_r - min_x,
+        h: max_b - min_y,
+    };
+    let leaf_rects: Vec<Rect> = geom.into_iter().map(|g| g.rect).collect();
+    (
+        group_rect,
+        vec![i64::from(r2.y), i64::from(r3.y)],
+        leaf_rects,
+    )
+}
+
+fn rect_contains(r: &Rect, x: i32, y: i32) -> bool {
+    x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
+}
+
+#[test]
+fn drag_prior_carry_validates_source_and_restores_sticky_edge() {
+    let (mut layout, desc, key, obs) = gap_nested_layout();
+    let (inner_rect, _, leaf_rects) = inner_v_group_geom(&layout, &key);
+    let cx = inner_rect.x + inner_rect.w / 2;
+    let gy = (inner_rect.y..inner_rect.y + inner_rect.h)
+        .find(|&y| {
+            !leaf_rects.iter().any(|r| rect_contains(r, cx, y))
+                && y - inner_rect.y >= 32
+                && inner_rect.y + inner_rect.h - y > 32
+        })
+        .expect("inner gap row");
+    let gx = inner_rect.x + 5;
+    let sticky_x = inner_rect.x + 50;
+    assert!(!leaf_rects.iter().any(|r| rect_contains(r, gx, gy)));
+    assert!(!leaf_rects.iter().any(|r| rect_contains(r, sticky_x, gy)));
+
+    let edge = layout
+        .run_local_drag_preview(&desc, 0, &win("w1"), &win("w1"), &obs, gx, gy, None)
+        .expect("edge preview");
+    let prior = edge
+        .hover
+        .prior
+        .clone()
+        .expect("group edge hover arms sticky prior");
+    assert_eq!(prior.group, nid("g-v"));
+    assert_eq!(prior.edge, crate::contract::DragSide::Left);
+
+    // Without prior, sticky_x (50px inside) misses the Left edge (32px default depth).
+    let missed = layout
+        .run_local_drag_preview(&desc, 0, &win("w1"), &win("w1"), &obs, sticky_x, gy, None)
+        .expect("uncarried probe");
+    assert_ne!(
+        missed.hover.prior.map(|p| (p.group, p.edge)),
+        Some((nid("g-v"), crate::contract::DragSide::Left))
+    );
+
+    // Mismatched carried priors (wrong revision / wrong source_window / wrong prior_domain)
+    // are ignored without steering.
+    let mut bad_rev = edge.hover.clone();
+    bad_rev.revision += 1;
+    let missed_rev = layout
+        .run_local_drag_preview(
+            &desc,
+            0,
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            sticky_x,
+            gy,
+            Some(&bad_rev),
+        )
+        .expect("bad revision ignored");
+    assert_eq!(missed_rev.proposed_rect, missed.proposed_rect);
+
+    let mut bad_src = edge.hover.clone();
+    bad_src.source_window = win("w2");
+    let missed_src = layout
+        .run_local_drag_preview(
+            &desc,
+            0,
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            sticky_x,
+            gy,
+            Some(&bad_src),
+        )
+        .expect("bad source ignored");
+    assert_eq!(missed_src.proposed_rect, missed.proposed_rect);
+
+    let mut bad_dom = edge.hover.clone();
+    bad_dom.prior_domain = ws_key("out-9", "ws-1");
+    let missed_dom = layout
+        .run_local_drag_preview(
+            &desc,
+            0,
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            sticky_x,
+            gy,
+            Some(&bad_dom),
+        )
+        .expect("bad prior_domain ignored");
+    assert_eq!(missed_dom.proposed_rect, missed.proposed_rect);
+
+    // Exact carried prior restores the 80px sticky Left edge for preview and drop.
+    let sticky = layout
+        .run_local_drag_preview(
+            &desc,
+            0,
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            sticky_x,
+            gy,
+            Some(&edge.hover),
+        )
+        .expect("sticky preview");
+    assert_eq!(
+        sticky.hover.prior.map(|p| (p.group, p.edge)),
+        Some((nid("g-v"), crate::contract::DragSide::Left))
+    );
+    layout
+        .run_local_drag_drop(
+            &desc,
+            0,
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            sticky_x,
+            gy,
+            Some(&edge.hover),
+        )
+        .expect("sticky drop");
+    let geom = layout
+        .project_domain_geometry(&key, &BTreeMap::new())
+        .expect("post-drop geometry");
+    let w1_rect = geom.iter().find(|g| g.window == win("w1")).unwrap().rect;
+    assert_eq!(w1_rect, sticky.proposed_rect);
+}
+
+#[test]
+fn drag_group_interior_predecessor_agreement_and_invariants() {
+    let (mut layout, desc, key, obs) = gap_nested_layout();
+    let (inner_rect, child_starts, leaf_rects) = inner_v_group_geom(&layout, &key);
+    let cx = inner_rect.x + inner_rect.w / 2;
+    let gy = (inner_rect.y..inner_rect.y + inner_rect.h)
+        .find(|&y| {
+            !leaf_rects.iter().any(|r| rect_contains(r, cx, y))
+                && y - inner_rect.y >= 32
+                && inner_rect.y + inner_rect.h - y > 32
+        })
+        .expect("inner interior gap row");
+
+    let preview = layout
+        .run_local_drag_preview(&desc, 0, &win("w1"), &win("w1"), &obs, cx, gy, None)
+        .expect("group interior preview");
+    let pred = crate::cosmic_v1::insertion_index_for_offset(&child_starts, i64::from(gy));
+    assert_eq!(pred, 0);
+
+    layout
+        .run_local_drag_drop(&desc, 0, &win("w1"), &win("w1"), &obs, cx, gy, None)
+        .expect("group interior drop");
+    let dom = layout.domain(&key).unwrap();
+    assert_eq!(dom.focused_leaf, Some(nid("l1")));
+    match dom.tree.as_ref().unwrap() {
+        Node::Group {
+            id,
+            axis: Axis::Vertical,
+            children,
+            ..
+        } => {
+            assert_eq!(id, &nid("g-v"));
+            assert_eq!(children, &vec![leaf("l2"), leaf("l1"), leaf("l3")]);
+        }
+        other => panic!("expected collapsed V root, got {other:?}"),
+    }
+    let geom = layout
+        .project_domain_geometry(&key, &BTreeMap::new())
+        .expect("post-drop geometry");
+    assert_eq!(geom.len(), 3);
+    assert_eq!(
+        geom.iter().find(|g| g.window == win("w1")).unwrap().rect,
+        preview.proposed_rect
+    );
+}
+
+#[test]
+fn drag_group_edge_perpendicular_wraps_and_sticky_prior() {
+    let (mut layout, desc, key, obs) = gap_nested_layout();
+    let (inner_rect, _, leaf_rects) = inner_v_group_geom(&layout, &key);
+    let cx = inner_rect.x + inner_rect.w / 2;
+    let gy = (inner_rect.y..inner_rect.y + inner_rect.h)
+        .find(|&y| !leaf_rects.iter().any(|r| rect_contains(r, cx, y)))
+        .expect("inner gap row");
+    let gx = inner_rect.x + 5;
+    assert!(!leaf_rects.iter().any(|r| rect_contains(r, gx, gy)));
+
+    let preview = layout
+        .run_local_drag_preview(&desc, 0, &win("w1"), &win("w1"), &obs, gx, gy, None)
+        .expect("group edge preview");
+    assert_eq!(
+        preview
+            .hover
+            .prior
+            .as_ref()
+            .map(|p| (p.group.clone(), p.edge)),
+        Some((nid("g-v"), crate::contract::DragSide::Left))
+    );
+
+    let sticky = layout
+        .run_local_drag_preview(
+            &desc,
+            0,
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            gx,
+            gy + 2,
+            Some(&preview.hover),
+        )
+        .expect("sticky edge preview");
+    assert_eq!(sticky.proposed_rect, preview.proposed_rect);
+
+    layout
+        .run_local_drag_drop(
+            &desc,
+            0,
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            gx,
+            gy + 2,
+            Some(&preview.hover),
+        )
+        .expect("group edge drop");
+    let geom = layout
+        .project_domain_geometry(&key, &BTreeMap::new())
+        .expect("post-drop geometry");
+    assert_eq!(
+        geom.iter().find(|g| g.window == win("w1")).unwrap().rect,
+        sticky.proposed_rect
+    );
+}
+
+#[test]
+fn drag_group_edge_same_axis_nary_first_last_and_interior_placement() {
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 800,
+        h: 600,
+    };
+    let key = ws_key("out-1", "ws-1");
+    let desc = domain_desc(&key, bounds, 8);
+
+    let make_layout = || {
+        let mut layout = WorldLayout::new();
+        let mut d = DomainLayout::new(bounds, 8, 0);
+        d.tree = Some(Node::Group {
+            id: nid("g-root"),
+            axis: Axis::Vertical,
+            children: vec![
+                Node::Group {
+                    id: nid("g-h"),
+                    axis: Axis::Horizontal,
+                    children: vec![leaf("la"), leaf("lb"), leaf("lc")],
+                    shares: vec![1, 1, 1],
+                },
+                leaf("lm"),
+            ],
+            shares: vec![1, 1],
+        });
+        d.leaves.insert(win("wa"), nid("la"));
+        d.leaves.insert(win("wb"), nid("lb"));
+        d.leaves.insert(win("wc"), nid("lc"));
+        d.leaves.insert(win("wm"), nid("lm"));
+        d.focused_leaf = Some(nid("lm"));
+        d.focus_stack = vec![nid("la"), nid("lb"), nid("lc"), nid("lm")];
+        d.accepted_revision = 1;
+        layout.domains.insert(key.clone(), d);
+        layout
+    };
+
+    let obs = vec![
+        eng("wa", &key, 0, 260),
+        eng("wb", &key, 270, 260),
+        eng("wc", &key, 540, 260),
+        eng("wm", &key, 0, 800),
+    ];
+
+    let base = make_layout();
+    let geom = base
+        .project_domain_geometry(&key, &BTreeMap::new())
+        .expect("project");
+    let ra = geom.iter().find(|g| g.window == win("wa")).unwrap().rect;
+    let rc = geom.iter().find(|g| g.window == win("wc")).unwrap().rect;
+    let h_rect = Rect {
+        x: ra.x,
+        y: ra.y,
+        w: (rc.x + rc.w) - ra.x,
+        h: ra.h,
+    };
+    let leaf_rects: Vec<Rect> = geom.into_iter().map(|g| g.rect).collect();
+    let cy = h_rect.y + h_rect.h / 2;
+    let gx_interior = (h_rect.x..h_rect.x + h_rect.w)
+        .find(|&x| {
+            !leaf_rects.iter().any(|r| rect_contains(r, x, cy))
+                && x - h_rect.x >= 32
+                && h_rect.x + h_rect.w - x > 32
+        })
+        .expect("inner H interior gap col");
+    let gx_left_gap = (ra.x + ra.w..h_rect.x + h_rect.w)
+        .find(|&x| !leaf_rects.iter().any(|r| rect_contains(r, x, cy)))
+        .expect("gap col");
+
+    // 1) Top strip on H group gap wraps whole group in V[m, H[a,b,c]] -> collapses V[g-h, m] then wraps g-h.
+    let mut top_layout = make_layout();
+    top_layout
+        .run_local_drag_drop(
+            &desc,
+            0,
+            &win("wm"),
+            &win("wm"),
+            &obs,
+            gx_left_gap,
+            h_rect.y + 5,
+            None,
+        )
+        .expect("top wrap drop");
+    match top_layout.domain(&key).unwrap().tree.as_ref().unwrap() {
+        Node::Group {
+            axis: Axis::Vertical,
+            children,
+            ..
+        } => {
+            assert_eq!(children[0], leaf("lm"));
+            assert!(matches!(&children[1], Node::Group { id, .. } if id == &nid("g-h")));
+        }
+        other => panic!("expected V wrapper, got {other:?}"),
+    }
+
+    // 2) Interior gap col inserts into g-h at min(3, pred+1) = 1 -> H[a, m, b, c].
+    let mut int_layout = make_layout();
+    int_layout
+        .run_local_drag_drop(
+            &desc,
+            0,
+            &win("wm"),
+            &win("wm"),
+            &obs,
+            gx_interior,
+            cy,
+            None,
+        )
+        .expect("interior drop");
+    match int_layout.domain(&key).unwrap().tree.as_ref().unwrap() {
+        Node::Group {
+            id,
+            axis: Axis::Horizontal,
+            children,
+            ..
+        } => {
+            assert_eq!(id, &nid("g-h"));
+            assert_eq!(
+                children,
+                &vec![leaf("la"), leaf("lm"), leaf("lb"), leaf("lc")]
+            );
+        }
+        other => panic!("expected collapsed g-h root, got {other:?}"),
+    }
+}
