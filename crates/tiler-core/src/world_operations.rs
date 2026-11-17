@@ -9,8 +9,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::boundary::{CoreCommand, CoreEvent, CoreReply, TiledKind};
-use crate::directional::{Direction, OutputId, SameAxisMove, WindowId, WorkspaceId};
+use crate::bounds::is_opaque_id;
+use crate::contract::{DivergenceKind, ResizeMode};
+use crate::directional::{Axis, Direction, OutputId, SameAxisMove, WindowId, WorkspaceId};
 use crate::engine::Engine;
+use crate::geometry::Rect;
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain, RefusalKind};
 use crate::world_engine::{
@@ -18,6 +21,7 @@ use crate::world_engine::{
     KIND_SEND_WINDOW, MSG_DIRECTION, MSG_MIGRATION_TOPOLOGY, MSG_MIGRATION_TOPOLOGY_UNREADABLE,
     MSG_OPERATION, MSG_SCOPE_HELD, MSG_SEND_TARGET, MSG_SEND_WINDOW, RetainedTransfer, WorldEngine,
 };
+use crate::world_layout::{LayoutFailure, LocalOperationContext, LocalOperationFailure};
 use crate::world_report::{
     CommandResult, OneShotEffect, TransferKind, TransferTarget, WorldCommand,
 };
@@ -58,15 +62,11 @@ impl WorldEngine {
         {
             return subject;
         }
-        if let Some(session) = self.engine.session(domain) {
-            let (focus_domain, focus_leaf) = session.focus();
-            let current = match (focus_domain, focus_leaf) {
-                (Some(focus_domain), Some(focus_leaf)) if &focus_domain == domain => {
-                    session.focused_window_for(&focus_leaf, &focus_domain)
-                }
-                _ => None,
-            }
-            .filter(|window| self.staged.homing.get(window).as_ref() == Some(&domain));
+        if let Some(focus_leaf) = self.layout.focus_leaf(domain) {
+            let current = self
+                .layout
+                .window_for_leaf(domain, focus_leaf)
+                .filter(|window| self.staged.homing.get(window).as_ref() == Some(&domain));
             // Batch-only baseline: only an entry snapped for the active
             // batch counts. No entry means no active batch, so fall back
             // to the staged capture - never treat a missing entry as a
@@ -106,19 +106,11 @@ impl WorldEngine {
         // Provenance starts empty every capture: only commands in THIS
         // batch may mark, never admission or a previous run.
         self.batch_command_focus.clear();
-        for key in self.engine.domain_keys() {
+        for key in self.layout.domain_keys() {
             let resolved = self
-                .engine
-                .session(&key)
-                .and_then(|session| {
-                    let (focus_domain, focus_leaf) = session.focus();
-                    match (focus_domain, focus_leaf) {
-                        (Some(focus_domain), Some(focus_leaf)) if focus_domain == key => {
-                            session.focused_window_for(&focus_leaf, &focus_domain)
-                        }
-                        _ => None,
-                    }
-                })
+                .layout
+                .focus_leaf(&key)
+                .and_then(|focus_leaf| self.layout.window_for_leaf(&key, focus_leaf))
                 .filter(|window| self.staged.homing.get(window).as_ref() == Some(&&key));
             base.insert(key, resolved);
         }
@@ -738,13 +730,7 @@ impl WorldEngine {
             self.note_command(command_seq);
             return CommandApplied::NoEffect;
         }
-        let local_command = CoreCommand::Focus {
-            window: window.0.clone(),
-            direction: direction.to_owned(),
-            cross_output_transfer: false,
-            float_subject: false,
-        };
-        self.run_local_operation(issue, command_seq, &local_command, by_id, held_scopes)
+        self.run_local_focus_typed(command_seq, window, direction_parsed, held_scopes)
     }
 
     /// Direction-only focus with no focused window (empty window): start
@@ -1212,13 +1198,13 @@ impl WorldEngine {
                 held_scopes,
             )
         } else {
-            let local_command = CoreCommand::Move {
-                window: window.0.clone(),
-                direction: direction.to_owned(),
-                cross_output_transfer: false,
-                same_axis_move: same_axis,
-            };
-            self.run_local_operation(issue, command_seq, &local_command, by_id, held_scopes)
+            self.run_local_move_typed(
+                command_seq,
+                window,
+                direction_parsed,
+                same_axis,
+                held_scopes,
+            )
         };
         if composed_overlay && matches!(applied, CommandApplied::Rejected { .. }) {
             self.composed_maximized.insert(window.clone());
@@ -1661,7 +1647,7 @@ impl WorldEngine {
                 };
             }
         };
-        self.engine.remove(&domain_key);
+        self.layout.drop_domain(&domain_key);
         self.note_command(command_seq);
         CommandApplied::NoEffect
     }
@@ -1765,13 +1751,6 @@ impl WorldEngine {
                 };
             }
         };
-        let owner = issue.owner.clone();
-        let correlation = issue.correlation.clone();
-        let accepted = self
-            .engine
-            .session(&domain_key)
-            .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
-        let (revision, fingerprint) = accepted.unwrap_or((0, 0));
         let staged_output = OutputDomain {
             id: domain_key.output.clone(),
             workspace: domain_key.workspace.clone(),
@@ -1791,25 +1770,248 @@ impl WorldEngine {
         if composed_should_clear && let CoreCommand::ToggleFloat { window, .. } = command {
             composed_cleared = self.composed_maximized.remove(&WindowId(window.clone()));
         }
-        let event = CoreEvent {
-            owner,
-            generation: self.core_generation.clone(),
-            correlation,
-            revision,
-            fingerprint,
-            domain: Engine::canonical_component_domain(&inset),
-            domain_key: domain_key.clone(),
-            outer_gap: domain_report.outer_gap,
-            focused_window: self.effective_operation_focus(&domain_key, &domain_report.focused),
-            windows: self.shielded_windows(&domain_key, &domain_report.windows),
-            closed_windows: domain_report.closed.clone(),
-            directional: None,
-            directional_target_outer_gap: None,
-            target_domain: None,
-            target_windows: Vec::new(),
-            command: command.clone(),
+        let applied = if is_local_typed_command(command) {
+            match self.converge_local_observation(&domain_key, &domain_report) {
+                Err(rejected) => rejected,
+                Ok((focused_window, windows, preconverged)) => {
+                    let ctx = LocalOperationContext {
+                        domain: &inset,
+                        outer_gap: domain_report.outer_gap,
+                        observed_focus: &focused_window,
+                        observed: &windows,
+                        preconverged,
+                    };
+                    match command {
+                        CoreCommand::ToggleFloat { window, float_rect } => {
+                            let subject = WindowId(window.clone());
+                            match self.layout.run_toggle_float(&ctx, &subject, *float_rect) {
+                                Ok(outcome) => {
+                                    let no_space = outcome.float_window.is_some()
+                                        && outcome.float_rect.is_none();
+                                    let window = outcome.float_window.unwrap_or(subject);
+                                    let rect = outcome.float_rect;
+                                    self.command_result = Some(CommandResult::Float {
+                                        window: window.clone(),
+                                        rect,
+                                        no_space,
+                                    });
+                                    self.settle_float_retention(
+                                        command_seq,
+                                        &domain_key,
+                                        &windows,
+                                        window,
+                                        rect,
+                                        no_space,
+                                    );
+                                    self.note_command(command_seq);
+                                    CommandApplied::NoEffect
+                                }
+                                Err(err) => reject_local_operation_failure(err),
+                            }
+                        }
+                        CoreCommand::ToggleOrientation { window } => {
+                            if !is_opaque_id(window) {
+                                CommandApplied::Rejected {
+                                    kind: "toggle-orient-window-invalid",
+                                    message: OPAQUE_ID_MESSAGE,
+                                }
+                            } else {
+                                match self
+                                    .layout
+                                    .run_toggle_orientation(&ctx, &WindowId(window.clone()))
+                                {
+                                    Ok(_) => {
+                                        self.note_command(command_seq);
+                                        CommandApplied::NoEffect
+                                    }
+                                    Err(err) => reject_local_operation_failure(err),
+                                }
+                            }
+                        }
+                        CoreCommand::Move {
+                            window,
+                            direction,
+                            same_axis_move,
+                            ..
+                        } => {
+                            if !is_opaque_id(window) {
+                                CommandApplied::Rejected {
+                                    kind: "move-window-invalid",
+                                    message: OPAQUE_ID_MESSAGE,
+                                }
+                            } else if let Some(dir) = parse_direction_token(direction) {
+                                self.run_local_move_with_ctx(
+                                    command_seq,
+                                    &ctx,
+                                    &WindowId(window.clone()),
+                                    dir,
+                                    *same_axis_move,
+                                )
+                            } else {
+                                CommandApplied::Rejected {
+                                    kind: KIND_DIRECTION,
+                                    message: MSG_DIRECTION,
+                                }
+                            }
+                        }
+                        CoreCommand::Focus {
+                            window, direction, ..
+                        } => {
+                            if !is_opaque_id(window) {
+                                CommandApplied::Rejected {
+                                    kind: "focus-window-invalid",
+                                    message: OPAQUE_ID_MESSAGE,
+                                }
+                            } else if let Some(dir) = parse_direction_token(direction) {
+                                self.run_local_focus_with_ctx(
+                                    command_seq,
+                                    &ctx,
+                                    &WindowId(window.clone()),
+                                    dir,
+                                    held_scopes,
+                                )
+                            } else {
+                                CommandApplied::Rejected {
+                                    kind: KIND_DIRECTION,
+                                    message: MSG_DIRECTION,
+                                }
+                            }
+                        }
+                        CoreCommand::Resize {
+                            window,
+                            direction,
+                            mode,
+                            press_index,
+                        } => {
+                            if !is_opaque_id(window) {
+                                CommandApplied::Rejected {
+                                    kind: "resize-window-invalid",
+                                    message: OPAQUE_ID_MESSAGE,
+                                }
+                            } else if let Some(dir) = parse_direction_token(direction) {
+                                if let Some(parsed_mode) = parse_resize_mode(mode) {
+                                    match self.layout.run_keyboard_resize(
+                                        &ctx,
+                                        &WindowId(window.clone()),
+                                        dir,
+                                        parsed_mode,
+                                        *press_index,
+                                    ) {
+                                        Ok(_) => {
+                                            self.note_command(command_seq);
+                                            CommandApplied::NoEffect
+                                        }
+                                        Err(err) => reject_local_operation_failure(err),
+                                    }
+                                } else {
+                                    CommandApplied::Rejected {
+                                        kind: KIND_DIRECTION,
+                                        message: MSG_DIRECTION,
+                                    }
+                                }
+                            } else {
+                                CommandApplied::Rejected {
+                                    kind: KIND_DIRECTION,
+                                    message: MSG_DIRECTION,
+                                }
+                            }
+                        }
+                        CoreCommand::PointerResize {
+                            window,
+                            direction,
+                            boundary,
+                            direction2,
+                            boundary2,
+                        } => {
+                            if !is_opaque_id(window) {
+                                CommandApplied::Rejected {
+                                    kind: "pointer-resize-window-invalid",
+                                    message: OPAQUE_ID_MESSAGE,
+                                }
+                            } else if let Some(dir) = parse_direction_token(direction) {
+                                let subject = WindowId(window.clone());
+                                match (direction2, boundary2) {
+                                    (None, None) => match self
+                                        .layout
+                                        .run_pointer_resize(&ctx, &subject, dir, *boundary)
+                                    {
+                                        Ok(_) => {
+                                            self.note_command(command_seq);
+                                            CommandApplied::NoEffect
+                                        }
+                                        Err(err) => reject_local_operation_failure(err),
+                                    },
+                                    (Some(raw), Some(second)) => {
+                                        if let Some(parsed) = parse_direction_token(raw) {
+                                            if Axis::for_direction(dir)
+                                                == Axis::for_direction(parsed)
+                                            {
+                                                CommandApplied::Rejected {
+                                                    kind: KIND_DIRECTION,
+                                                    message: MSG_DIRECTION,
+                                                }
+                                            } else {
+                                                match self.layout.run_pointer_resize_corner(
+                                                    &ctx, &subject, dir, *boundary, parsed, *second,
+                                                ) {
+                                                    Ok(_) => {
+                                                        self.note_command(command_seq);
+                                                        CommandApplied::NoEffect
+                                                    }
+                                                    Err(err) => reject_local_operation_failure(err),
+                                                }
+                                            }
+                                        } else {
+                                            CommandApplied::Rejected {
+                                                kind: KIND_DIRECTION,
+                                                message: MSG_DIRECTION,
+                                            }
+                                        }
+                                    }
+                                    _ => CommandApplied::Rejected {
+                                        kind: UNKNOWN_VALUE_KIND,
+                                        message: UNKNOWN_VALUE_MESSAGE,
+                                    },
+                                }
+                            } else {
+                                CommandApplied::Rejected {
+                                    kind: KIND_DIRECTION,
+                                    message: MSG_DIRECTION,
+                                }
+                            }
+                        }
+                        _ => unreachable!("guarded by is_local_typed_command"),
+                    }
+                }
+            }
+        } else {
+            let owner = issue.owner.clone();
+            let correlation = issue.correlation.clone();
+            let accepted = self
+                .engine
+                .session(&domain_key)
+                .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
+            let (revision, fingerprint) = accepted.unwrap_or((0, 0));
+            let event = CoreEvent {
+                owner,
+                generation: self.core_generation.clone(),
+                correlation,
+                revision,
+                fingerprint,
+                domain: Engine::canonical_component_domain(&inset),
+                domain_key: domain_key.clone(),
+                outer_gap: domain_report.outer_gap,
+                focused_window: self.effective_operation_focus(&domain_key, &domain_report.focused),
+                windows: self.shielded_windows(&domain_key, &domain_report.windows),
+                closed_windows: domain_report.closed.clone(),
+                directional: None,
+                directional_target_outer_gap: None,
+                target_domain: None,
+                target_windows: Vec::new(),
+                command: command.clone(),
+            };
+            self.finish_operation_event(command_seq, &event, held_scopes)
         };
-        let applied = self.finish_operation_event(command_seq, &event, held_scopes);
         if composed_cleared
             && matches!(applied, CommandApplied::Rejected { .. })
             && let CoreCommand::ToggleFloat { window, .. } = command
@@ -1934,46 +2136,14 @@ impl WorldEngine {
             no_space,
         }) = self.command_result.clone()
         {
-            match rect {
-                Some(target) => {
-                    let source = event
-                        .windows
-                        .iter()
-                        .find(|entry| entry.window == window)
-                        .map(|entry| entry.rect);
-                    let (output, workspace) = event
-                        .windows
-                        .iter()
-                        .find(|entry| entry.window == window)
-                        .map(|entry| (entry.output.clone(), entry.workspace.0.clone()))
-                        .unwrap_or_else(|| {
-                            (
-                                event.domain_key.output.clone(),
-                                event.domain_key.workspace.0.clone(),
-                            )
-                        });
-                    self.retained_floats.retain(|held| held.window != window);
-                    self.reset_frame_burst(&window);
-                    self.retained_floats
-                        .push(crate::world_engine::RetainedFloat {
-                            operation_id: format!("op-{command_seq}"),
-                            command_seq,
-                            window,
-                            target,
-                            source,
-                            output,
-                            workspace,
-                            ambiguous: false,
-                            pending: None,
-                        });
-                }
-                None => {
-                    if !no_space {
-                        self.retained_floats.retain(|held| held.window != window);
-                        self.reset_frame_burst(&window);
-                    }
-                }
-            }
+            self.settle_float_retention(
+                command_seq,
+                &event.domain_key,
+                &event.windows,
+                window,
+                rect,
+                no_space,
+            );
         }
         match reply {
             CoreReply::Tiled(_)
@@ -2122,6 +2292,209 @@ impl WorldEngine {
         }
     }
 
+    fn settle_float_retention(
+        &mut self,
+        command_seq: u64,
+        domain_key: &DomainKey,
+        windows: &[EngineWindow],
+        window: WindowId,
+        rect: Option<Rect>,
+        no_space: bool,
+    ) {
+        match rect {
+            Some(target) => {
+                let source = windows
+                    .iter()
+                    .find(|entry| entry.window == window)
+                    .map(|entry| entry.rect);
+                let (output, workspace) = windows
+                    .iter()
+                    .find(|entry| entry.window == window)
+                    .map(|entry| (entry.output.clone(), entry.workspace.0.clone()))
+                    .unwrap_or_else(|| (domain_key.output.clone(), domain_key.workspace.0.clone()));
+                self.retained_floats.retain(|held| held.window != window);
+                self.reset_frame_burst(&window);
+                self.retained_floats
+                    .push(crate::world_engine::RetainedFloat {
+                        operation_id: format!("op-{command_seq}"),
+                        command_seq,
+                        window,
+                        target,
+                        source,
+                        output,
+                        workspace,
+                        ambiguous: false,
+                        pending: None,
+                    });
+            }
+            None => {
+                if !no_space {
+                    self.retained_floats.retain(|held| held.window != window);
+                    self.reset_frame_burst(&window);
+                }
+            }
+        }
+    }
+
+    fn prepare_local_domain_and_inset(
+        &self,
+        window: Option<&WindowId>,
+        is_move: bool,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> Result<(DomainKey, crate::world_engine::StagedDomain, OutputDomain), CommandApplied> {
+        let (domain_key, domain_report) = self
+            .operation_domain_staged_for(window, is_move, held_scopes)
+            .ok_or(CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            })?;
+        let staged_output = OutputDomain {
+            id: domain_key.output.clone(),
+            workspace: domain_key.workspace.clone(),
+            bounds: domain_report.bounds,
+            gap: domain_report.gap,
+            adjacent: BTreeMap::new(),
+        };
+        let Some(inset) =
+            crate::world_engine::inset_world_domain(&staged_output, domain_report.outer_gap)
+        else {
+            return Err(CommandApplied::Rejected {
+                kind: KIND_SCOPE_HELD,
+                message: MSG_SCOPE_HELD,
+            });
+        };
+        Ok((domain_key, domain_report, inset))
+    }
+
+    fn converge_local_observation(
+        &mut self,
+        domain_key: &DomainKey,
+        domain_report: &crate::world_engine::StagedDomain,
+    ) -> Result<(WindowId, Vec<EngineWindow>, bool), CommandApplied> {
+        let focused_window = self.effective_operation_focus(domain_key, &domain_report.focused);
+        let windows = self.shielded_windows(domain_key, &domain_report.windows);
+        self.command_result = None;
+        let preconverged = match self.layout.converge_retained_observation(
+            domain_key,
+            &windows,
+            &focused_window,
+            &domain_report.closed,
+        ) {
+            Ok(convergence) => convergence.is_some(),
+            Err(err) => return Err(reject_layout_failure(err)),
+        };
+        Ok((focused_window, windows, preconverged))
+    }
+
+    fn run_local_focus_with_ctx(
+        &mut self,
+        command_seq: u64,
+        ctx: &LocalOperationContext<'_>,
+        window: &WindowId,
+        direction: Direction,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        if !is_opaque_id(&window.0) {
+            return CommandApplied::Rejected {
+                kind: "focus-window-invalid",
+                message: OPAQUE_ID_MESSAGE,
+            };
+        }
+        match self.layout.run_local_focus(ctx, window, direction) {
+            Ok(outcome) => {
+                self.note_command(command_seq);
+                let _ = self.record_command_focus(&outcome.to_window, held_scopes);
+                CommandApplied::Effect(OneShotEffect::explicit_focus(
+                    command_seq,
+                    outcome.to_window,
+                    self.state_revision + 1,
+                ))
+            }
+            Err(err) => reject_local_operation_failure(err),
+        }
+    }
+
+    fn run_local_move_with_ctx(
+        &mut self,
+        command_seq: u64,
+        ctx: &LocalOperationContext<'_>,
+        window: &WindowId,
+        direction: Direction,
+        same_axis_move: SameAxisMove,
+    ) -> CommandApplied {
+        if !is_opaque_id(&window.0) {
+            return CommandApplied::Rejected {
+                kind: "move-window-invalid",
+                message: OPAQUE_ID_MESSAGE,
+            };
+        }
+        match self
+            .layout
+            .run_local_move(ctx, window, direction, same_axis_move)
+        {
+            Ok(_) => {
+                self.note_command(command_seq);
+                CommandApplied::NoEffect
+            }
+            Err(err) => reject_local_operation_failure(err),
+        }
+    }
+
+    fn run_local_focus_typed(
+        &mut self,
+        command_seq: u64,
+        window: &WindowId,
+        direction: Direction,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        let (domain_key, domain_report, inset) =
+            match self.prepare_local_domain_and_inset(Some(window), false, held_scopes) {
+                Ok(found) => found,
+                Err(rejected) => return rejected,
+            };
+        let (focused_window, windows, preconverged) =
+            match self.converge_local_observation(&domain_key, &domain_report) {
+                Ok(found) => found,
+                Err(rejected) => return rejected,
+            };
+        let ctx = LocalOperationContext {
+            domain: &inset,
+            outer_gap: domain_report.outer_gap,
+            observed_focus: &focused_window,
+            observed: &windows,
+            preconverged,
+        };
+        self.run_local_focus_with_ctx(command_seq, &ctx, window, direction, held_scopes)
+    }
+
+    fn run_local_move_typed(
+        &mut self,
+        command_seq: u64,
+        window: &WindowId,
+        direction: Direction,
+        same_axis_move: SameAxisMove,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        let (domain_key, domain_report, inset) =
+            match self.prepare_local_domain_and_inset(Some(window), true, held_scopes) {
+                Ok(found) => found,
+                Err(rejected) => return rejected,
+            };
+        let (focused_window, windows, preconverged) =
+            match self.converge_local_observation(&domain_key, &domain_report) {
+                Ok(found) => found,
+                Err(rejected) => return rejected,
+            };
+        let ctx = LocalOperationContext {
+            domain: &inset,
+            outer_gap: domain_report.outer_gap,
+            observed_focus: &focused_window,
+            observed: &windows,
+            preconverged,
+        };
+        self.run_local_move_with_ctx(command_seq, &ctx, window, direction, same_axis_move)
+    }
+
     /// Pointer-target staged domain for a drag preview/drop: the active
     /// (visible), readable, non-held staged domain whose work area contains
     /// the pointer. The mover still homes the source, so homing the window
@@ -2181,10 +2554,19 @@ impl WorldEngine {
             | CoreCommand::MigrateWorkspace { .. }
             | CoreCommand::ReleaseDomain => None,
         };
+        self.operation_domain_staged_for(window.as_ref(), is_move, held_scopes)
+    }
+
+    fn operation_domain_staged_for(
+        &self,
+        window: Option<&WindowId>,
+        is_move: bool,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> Option<(DomainKey, crate::world_engine::StagedDomain)> {
         if let Some(window) = window {
             let preferred = if is_move {
                 self.retained.iter().find_map(|r| match &r.target.kind {
-                    TransferKind::Window(w) if w == &window => Some(DomainKey {
+                    TransferKind::Window(w) if w == window => Some(DomainKey {
                         output: r.target.target_output.clone(),
                         workspace: crate::directional::WorkspaceId(
                             r.target.target_workspace.clone(),
@@ -2196,7 +2578,7 @@ impl WorldEngine {
                 None
             };
             let key = preferred
-                .or_else(|| self.staged_homing(&window))
+                .or_else(|| self.staged_homing(window))
                 .filter(|key| !held_scopes.contains(key));
             if let Some(key) = key
                 && let Some(domain) = self
@@ -2214,6 +2596,58 @@ impl WorldEngine {
             .filter(|d| d.readable && !held_scopes.contains(&d.key))
             .map(|d| (d.key.clone(), d.clone()))
             .next()
+    }
+}
+
+const OPAQUE_ID_MESSAGE: &str = "opaque id is invalid";
+const OBSERVATION_MESSAGE: &str = "observation does not cover the known window set";
+const UNKNOWN_VALUE_KIND: &str = "unknown-value";
+const UNKNOWN_VALUE_MESSAGE: &str = "request contains an unknown value";
+
+fn is_local_typed_command(command: &CoreCommand) -> bool {
+    matches!(
+        command,
+        CoreCommand::ToggleFloat { .. }
+            | CoreCommand::ToggleOrientation { .. }
+            | CoreCommand::Move { .. }
+            | CoreCommand::Focus { .. }
+            | CoreCommand::Resize { .. }
+            | CoreCommand::PointerResize { .. }
+    )
+}
+
+fn parse_resize_mode(mode: &str) -> Option<ResizeMode> {
+    match mode {
+        "inwards" => Some(ResizeMode::Inwards),
+        "outwards" => Some(ResizeMode::Outwards),
+        _ => None,
+    }
+}
+
+fn reject_layout_failure(err: LayoutFailure) -> CommandApplied {
+    match err {
+        LayoutFailure::Semantics(kind) => CommandApplied::Rejected {
+            kind: kind.as_str(),
+            message: kind.message(),
+        },
+        LayoutFailure::RevisionLimit { .. } => CommandApplied::Rejected {
+            kind: DivergenceKind::RevisionExhausted.as_str(),
+            message: DivergenceKind::RevisionExhausted.message(),
+        },
+    }
+}
+
+fn reject_local_operation_failure(err: LocalOperationFailure) -> CommandApplied {
+    match err {
+        LocalOperationFailure::Layout(err) => reject_layout_failure(err),
+        LocalOperationFailure::AmbiguousPlacement => CommandApplied::Rejected {
+            kind: "missing-seed-order",
+            message: OBSERVATION_MESSAGE,
+        },
+        LocalOperationFailure::SeedFailed => CommandApplied::Rejected {
+            kind: "seed-failed",
+            message: OBSERVATION_MESSAGE,
+        },
     }
 }
 

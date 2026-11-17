@@ -405,3 +405,13 @@
   scaled outer gaps and makes seed-policy and ambiguous-order tests
   discriminating. Scoped formatting passes; global compilation and runtime
   acceptance remain pending.
+- Local world commands now call typed layout operations directly after one
+  retained-observation convergence, before ordinary command validation.
+  Direction-only move/focus paths carry their already-parsed direction;
+  batch focus and release also use layout queries directly. Float placement
+  retention, composed-maximize rollback, command sequencing and focus effects
+  retain their prior ordering. Two direct world tests cover convergence
+  persistence after invalid input and post-inset refusal handling; initial test
+  compilation errors are corrected. Scoped formatting passes. A library/tests
+  diagnostic still fails on 79 library and 264 test-build errors in unmigrated
+  consumers, with no new local-path/test error; runtime acceptance is pending.

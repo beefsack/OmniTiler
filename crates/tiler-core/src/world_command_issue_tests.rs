@@ -1773,3 +1773,169 @@ fn hidden_directional_source_refuses_stale_complete_and_incomplete() {
         );
     }
 }
+
+#[test]
+fn local_preconvergence_persists_after_invalid_direction_refusal() {
+    let mut engine = new_engine();
+    let mut bootstrap = focus_report_v4();
+    bootstrap.focused_global = "win-a".to_owned();
+    bootstrap.foreground_known = true;
+    accepted_v4(&mut engine, &bootstrap);
+    stage_v4(&mut engine, &bootstrap);
+    seed_ring_views(&mut engine);
+    engine.build_staged_domains();
+
+    let issue = test_issue(&bootstrap);
+    let owned: Vec<EngineWindow> = engine
+        .staged
+        .domains
+        .iter()
+        .flat_map(|domain| domain.windows.iter().cloned())
+        .collect();
+    let by_id: BTreeMap<&WindowId, &EngineWindow> =
+        owned.iter().map(|row| (&row.window, row)).collect();
+    let initial = engine.run_local_operation(
+        &issue,
+        1,
+        &CoreCommand::ToggleOrientation {
+            window: "win-a".to_owned(),
+        },
+        &by_id,
+        &BTreeSet::new(),
+    );
+    assert!(matches!(initial, CommandApplied::NoEffect));
+    assert_eq!(engine.command_highwater, Some(1));
+
+    let domain = &mut engine.staged.domains[0];
+    domain.windows.push(EngineWindow {
+        window: WindowId("win-c".to_owned()),
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId("ws-1".to_owned()),
+        rect: rect(400, 0, 200, 560),
+        floating: false,
+        fit_excluded: false,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress: false,
+        hints: WindowSizeHints::none(),
+    });
+    engine
+        .staged
+        .homing
+        .insert(WindowId("win-c".to_owned()), home_key_ws("out-a", "ws-1"));
+
+    let owned: Vec<EngineWindow> = engine
+        .staged
+        .domains
+        .iter()
+        .flat_map(|d| d.windows.iter().cloned())
+        .collect();
+    let by_id: BTreeMap<&WindowId, &EngineWindow> =
+        owned.iter().map(|row| (&row.window, row)).collect();
+    let refused = engine.run_local_operation(
+        &issue,
+        2,
+        &CoreCommand::Move {
+            window: "win-a".to_owned(),
+            direction: "bogus".to_owned(),
+            cross_output_transfer: false,
+            same_axis_move: SameAxisMove::SwapWithNeighbor,
+        },
+        &by_id,
+        &BTreeSet::new(),
+    );
+    match refused {
+        CommandApplied::Rejected { kind, message } => {
+            assert_eq!(kind, "direction-invalid");
+            assert_eq!(message, "direction is invalid");
+        }
+        _ => panic!("expected invalid-direction refusal"),
+    }
+    assert_eq!(engine.command_highwater, Some(1));
+    assert!(engine.command_result.is_none());
+    assert!(
+        engine
+            .layout
+            .is_tiled_window(&home_key_ws("out-a", "ws-1"), &WindowId("win-c".to_owned())),
+        "accepted preconvergence must persist after later command validation refusal"
+    );
+}
+
+#[test]
+fn local_composed_maximize_rollback_and_pointer_half_pair_refusal() {
+    let mut engine = new_composed_engine();
+    let mut bootstrap = focus_report_v4();
+    bootstrap.focused_global = "win-a".to_owned();
+    bootstrap.foreground_known = true;
+    accepted_v4(&mut engine, &bootstrap);
+    stage_v4(&mut engine, &bootstrap);
+    seed_ring_views(&mut engine);
+    engine.build_staged_domains();
+
+    let issue = test_issue(&bootstrap);
+    let owned: Vec<EngineWindow> = engine
+        .staged
+        .domains
+        .iter()
+        .flat_map(|domain| domain.windows.iter().cloned())
+        .collect();
+    let by_id: BTreeMap<&WindowId, &EngineWindow> =
+        owned.iter().map(|row| (&row.window, row)).collect();
+
+    let floated = engine.run_local_operation(
+        &issue,
+        1,
+        &CoreCommand::ToggleFloat {
+            window: "win-a".to_owned(),
+            float_rect: Some(rect(10, 20, 300, 200)),
+        },
+        &by_id,
+        &BTreeSet::new(),
+    );
+    assert!(matches!(floated, CommandApplied::NoEffect));
+    assert!(!engine.retained_floats.is_empty());
+
+    let win_a = WindowId("win-a".to_owned());
+    engine.composed_maximized.insert(win_a.clone());
+    engine.staged.domains[0].windows.clear();
+    engine.staged.domains[0].focused = WindowId(String::new());
+    let empty_by_id = BTreeMap::new();
+    let refused = engine.run_local_operation(
+        &issue,
+        2,
+        &CoreCommand::ToggleFloat {
+            window: "win-a".to_owned(),
+            float_rect: None,
+        },
+        &empty_by_id,
+        &BTreeSet::new(),
+    );
+    assert!(matches!(refused, CommandApplied::Rejected { .. }));
+    assert!(
+        engine.composed_maximized.contains(&win_a),
+        "composed_maximized bit must be restored on post-inset rejection"
+    );
+
+    let half_pair = engine.run_local_operation(
+        &issue,
+        3,
+        &CoreCommand::PointerResize {
+            window: "win-b".to_owned(),
+            direction: "right".to_owned(),
+            boundary: 250,
+            direction2: Some("up".to_owned()),
+            boundary2: None,
+        },
+        &empty_by_id,
+        &BTreeSet::new(),
+    );
+    match half_pair {
+        CommandApplied::Rejected { kind, message } => {
+            assert_eq!(kind, "unknown-value");
+            assert_eq!(message, "request contains an unknown value");
+        }
+        _ => panic!("expected unknown-value refusal"),
+    }
+}
