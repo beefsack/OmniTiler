@@ -594,3 +594,19 @@
   execution passes 2,291 tests, and a direct workspace-send spot check passes
   all 15. Movement/focus/resize external rigs and removed embedded coverage
   remain to migrate before final gates.
+- The last six external rigs are now migrated: float focus 4/4, orientation
+  9/9, cross-output 20/17, movement 35/31, keyboard resize 25/20, pointer
+  resize 18/17 (old/new). The 13 retired cases exercised removed capability,
+  identity, pending/verification and constructor contracts; edge and fixed
+  minima behavior remain covered. Partial-observation checks distinguish a
+  raw local operation from pair or world observation convergence. Typed
+  refusal, topology, geometry and focus assertions remain. Reported core
+  library execution passes all 2,389 tests; direct spots pass the cross-output
+  and both resize suites. Embedded coverage reconciliation remains open.
+- Frozen fixture trees and native adapter trees are unchanged from
+  `9c18d8e0`. Portable Windows library checks pass on both revisions.
+  Portable macOS library checks fail on both with the same seven diagnostics
+  at the same source locations (removed command-result reply fields and a
+  frame-setter type mismatch), so this is pre-existing. Native-target
+  compilation was not checked because the target standard libraries are
+  unavailable; Linux host checks cannot substitute for it.
