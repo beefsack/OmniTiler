@@ -1094,7 +1094,7 @@ fn pending_window_transfer_holds_fullscreen_publication() {
             window: WindowId("win-a".to_owned()),
             target_output: crate::directional::OutputId("out-a".to_owned()),
             target_workspace: ring[1].clone(),
-            setter: FrameSetter::Accepted,
+            setter: FrameSetter::Accepted.into(),
             pre: None,
             post: Some(crate::world_report::WorkspaceRef::Logical {
                 output: crate::directional::OutputId("out-a".to_owned()),
@@ -1247,7 +1247,12 @@ fn lost_issued_reply_republish_accepts_republished_stamp() {
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding retained");
     assert!(binding.spent);
-    assert_eq!(binding.pending.as_ref(), Some(&row));
+    assert_eq!(
+        binding.pending.as_ref(),
+        Some(&crate::world_attempts::PropertyAttempt::from_state_attempt(
+            &row
+        ))
+    );
     assert_eq!(binding.disposition, AttemptOutcome::Applied);
 }
 
@@ -1311,7 +1316,12 @@ fn initial_hold_publication_attempt_records_evidence() {
         .expect("binding retained");
     assert_eq!(binding.target.revision, rev);
     assert!(binding.spent);
-    assert_eq!(binding.pending.as_ref(), Some(&row));
+    assert_eq!(
+        binding.pending.as_ref(),
+        Some(&crate::world_attempts::PropertyAttempt::from_state_attempt(
+            &row
+        ))
+    );
     assert_eq!(binding.disposition, AttemptOutcome::PossiblyExecuted);
     assert_eq!(engine.retained_states.len(), before);
     // Later healthy report proves from the evidence with no new attempt.
@@ -1320,7 +1330,12 @@ fn initial_hold_publication_attempt_records_evidence() {
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding retained");
-    assert_eq!(binding.pending.as_ref(), Some(&row));
+    assert_eq!(
+        binding.pending.as_ref(),
+        Some(&crate::world_attempts::PropertyAttempt::from_state_attempt(
+            &row
+        ))
+    );
     assert_eq!(binding.disposition, AttemptOutcome::Applied);
 }
 
@@ -1375,7 +1390,12 @@ fn earlier_controlled_evidence_under_held_receipt() {
         .expect("binding retained");
     assert_eq!(binding.target.revision, rev);
     assert!(binding.spent);
-    assert_eq!(binding.pending.as_ref(), Some(&row));
+    assert_eq!(
+        binding.pending.as_ref(),
+        Some(&crate::world_attempts::PropertyAttempt::from_state_attempt(
+            &row
+        ))
+    );
     assert_eq!(binding.disposition, AttemptOutcome::PossiblyExecuted);
     assert_eq!(engine.retained_states.len(), before);
     // Healthy recovery proves from the held evidence with no new attempt.
@@ -1384,7 +1404,12 @@ fn earlier_controlled_evidence_under_held_receipt() {
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding retained");
-    assert_eq!(binding.pending.as_ref(), Some(&row));
+    assert_eq!(
+        binding.pending.as_ref(),
+        Some(&crate::world_attempts::PropertyAttempt::from_state_attempt(
+            &row
+        ))
+    );
     assert_eq!(binding.disposition, AttemptOutcome::Applied);
     // A held redelivery of the same earlier evidence keeps the proof.
     let mut redelivered = fs_fact("win-a", None, true);
@@ -1399,7 +1424,12 @@ fn earlier_controlled_evidence_under_held_receipt() {
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding retained");
-    assert_eq!(binding.pending.as_ref(), Some(&row));
+    assert_eq!(
+        binding.pending.as_ref(),
+        Some(&crate::world_attempts::PropertyAttempt::from_state_attempt(
+            &row
+        ))
+    );
     assert_eq!(binding.disposition, AttemptOutcome::Applied);
     assert_eq!(engine.retained_states.len(), before);
 }
@@ -1461,7 +1491,12 @@ fn held_republish_accepts_republished_stamp_without_authority() {
         .expect("binding retained");
     assert_eq!(binding.target.revision, rev);
     assert!(binding.spent);
-    assert_eq!(binding.pending.as_ref(), Some(&row));
+    assert_eq!(
+        binding.pending.as_ref(),
+        Some(&crate::world_attempts::PropertyAttempt::from_state_attempt(
+            &row
+        ))
+    );
     assert_eq!(binding.disposition, AttemptOutcome::PossiblyExecuted);
     assert_eq!(engine.retained_states.len(), before);
 }

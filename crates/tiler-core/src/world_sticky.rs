@@ -1479,7 +1479,7 @@ impl WorldEngine {
         *self = staged;
     }
 
-    /// One-time native dependent followup after generic `settle_states`.
+    /// One-time native dependent followup after generic `settle_property_attempts`.
     /// Runs before the ordinary sweep with fresh `floating_scopes` and the
     /// staged held scopes. Only exact-tuple `Applied`/`RefusedProven`
     /// bindings with retained proof run; ambiguous

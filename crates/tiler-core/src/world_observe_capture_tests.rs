@@ -146,7 +146,7 @@ fn member_row(operation: &str, window: &str) -> MemberAttempt {
         window: WindowId(window.to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: "ws-9".to_owned(),
-        setter: FrameSetter::Accepted,
+        setter: FrameSetter::Accepted.into(),
         pre: None,
         post: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
@@ -518,39 +518,91 @@ fn assert_conservation(captured: &StagedObservation, lanes: &RichLanes, seq: u64
     assert_eq!(captured.primary_output, lanes.primary);
     assert_eq!(captured.gesture, lanes.gesture);
     assert_eq!(captured.monotonic_ms, lanes.monotonic);
-    assert_eq!(captured.frames, lanes.frames);
+    let canonical_frames: Vec<crate::world_attempts::PropertyAttempt> = captured
+        .property_attempts
+        .iter()
+        .filter(|attempt| attempt.as_frame().is_some())
+        .cloned()
+        .collect();
     assert_eq!(
-        captured
+        canonical_frames,
+        lanes
             .frames
             .iter()
-            .map(|row| row.window.0.clone())
+            .map(crate::world_attempts::PropertyAttempt::from_frame_attempt)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        canonical_frames
+            .iter()
+            .filter_map(crate::world_attempts::PropertyAttempt::as_frame)
+            .map(|evidence| evidence.window.0.clone())
             .collect::<Vec<_>>(),
         vec!["win-a".to_owned(), "win-b".to_owned()]
     );
-    assert_eq!(captured.member_attempts, lanes.member);
+    let canonical_members: Vec<crate::world_attempts::PropertyAttempt> = captured
+        .property_attempts
+        .iter()
+        .filter(|attempt| attempt.as_member().is_some())
+        .cloned()
+        .collect();
     assert_eq!(
-        captured
-            .member_attempts
+        canonical_members,
+        lanes
+            .member
             .iter()
-            .map(|row| row.operation_id.clone())
+            .map(crate::world_attempts::PropertyAttempt::from_member_attempt)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        canonical_members
+            .iter()
+            .filter_map(crate::world_attempts::PropertyAttempt::as_member)
+            .map(|evidence| evidence.operation_id.clone())
             .collect::<Vec<_>>(),
         vec!["op-11".to_owned(), "op-12".to_owned()]
     );
-    assert_eq!(captured.view_attempts, lanes.view);
+    let canonical_views: Vec<crate::world_attempts::PropertyAttempt> = captured
+        .property_attempts
+        .iter()
+        .filter(|attempt| attempt.as_view().is_some())
+        .cloned()
+        .collect();
     assert_eq!(
-        captured
-            .view_attempts
+        canonical_views,
+        lanes
+            .view
             .iter()
-            .map(|row| row.operation_id.clone())
+            .map(crate::world_attempts::PropertyAttempt::from_view_attempt)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        canonical_views
+            .iter()
+            .filter_map(crate::world_attempts::PropertyAttempt::as_view)
+            .map(|evidence| evidence.operation_id.clone())
             .collect::<Vec<_>>(),
         vec!["op-view-1".to_owned(), "op-view-2".to_owned()]
     );
-    assert_eq!(captured.clear_attempts, lanes.clear);
+    let canonical_clears: Vec<crate::world_attempts::PropertyAttempt> = captured
+        .property_attempts
+        .iter()
+        .filter(|attempt| attempt.as_clear().is_some())
+        .cloned()
+        .collect();
     assert_eq!(
-        captured
-            .clear_attempts
+        canonical_clears,
+        lanes
+            .clear
             .iter()
-            .map(|row| row.operation_id.clone())
+            .map(crate::world_attempts::PropertyAttempt::from_clear_attempt)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        canonical_clears
+            .iter()
+            .filter_map(crate::world_attempts::PropertyAttempt::as_clear)
+            .map(|evidence| evidence.operation_id.clone())
             .collect::<Vec<_>>(),
         vec!["op-3".to_owned(), "op-4".to_owned()]
     );
@@ -563,12 +615,25 @@ fn assert_conservation(captured: &StagedObservation, lanes: &RichLanes, seq: u64
             .collect::<Vec<_>>(),
         vec!["op-native-1".to_owned(), "op-native-2".to_owned()]
     );
-    assert_eq!(captured.state_attempts, lanes.state);
+    let canonical_states: Vec<crate::world_attempts::PropertyAttempt> = captured
+        .property_attempts
+        .iter()
+        .filter(|attempt| attempt.as_state().is_some())
+        .cloned()
+        .collect();
     assert_eq!(
-        captured
-            .state_attempts
+        canonical_states,
+        lanes
+            .state
             .iter()
-            .map(|row| row.window.0.clone())
+            .map(crate::world_attempts::PropertyAttempt::from_state_attempt)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        canonical_states
+            .iter()
+            .filter_map(crate::world_attempts::PropertyAttempt::as_state)
+            .map(|evidence| evidence.window.0.clone())
             .collect::<Vec<_>>(),
         vec!["win-a".to_owned(), "win-b".to_owned()]
     );
@@ -2119,6 +2184,8 @@ fn assert_state(
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
         .expect("binding retained");
+    let pending =
+        pending.map(|raw| crate::world_attempts::PropertyAttempt::from_state_attempt(&raw));
     assert_eq!(
         (got.spent, got.pending.clone(), got.disposition),
         (spent, pending, disposition),
@@ -2174,7 +2241,7 @@ fn settle_state_gates_latch_first_evidence_then_recovers() {
         false,
         Vec::new(),
     );
-    engine.settle_states();
+    engine.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::States);
     assert_state(
         &engine,
         false,
@@ -2194,7 +2261,7 @@ fn settle_state_gates_latch_first_evidence_then_recovers() {
         false,
         Vec::new(),
     );
-    engine.settle_states();
+    engine.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::States);
     assert_state(
         &engine,
         true,
@@ -2232,7 +2299,7 @@ fn settle_state_gates_latch_first_evidence_then_recovers() {
             barrier,
             held,
         );
-        gated.settle_states();
+        gated.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::States);
         assert_state(
             &gated,
             true,
@@ -2252,7 +2319,7 @@ fn settle_state_gates_latch_first_evidence_then_recovers() {
         false,
         Vec::new(),
     );
-    engine.settle_states();
+    engine.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::States);
     assert_state(
         &engine,
         true,
@@ -2271,7 +2338,7 @@ fn settle_state_gates_latch_first_evidence_then_recovers() {
         false,
         Vec::new(),
     );
-    engine.settle_states();
+    engine.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::States);
     assert_state(
         &engine,
         true,
@@ -2361,9 +2428,17 @@ fn settle_frames_replay_never_renews_suppression_or_budget() {
     let attempt = frame_attempt(target, Some(observed), FrameSetter::Accepted, 1000);
     stage_frames(&mut engine, 1, observed, vec![attempt.clone()], 1000);
     engine.settle_frames();
+    let captured_frames: Vec<crate::world_attempts::FrameAttemptEvidence> = engine
+        .staged
+        .observation
+        .property_attempts
+        .iter()
+        .filter_map(crate::world_attempts::PropertyAttempt::as_frame)
+        .cloned()
+        .collect();
     assert_eq!(
-        engine.staged.observation.frames,
-        vec![attempt.clone()],
+        captured_frames,
+        vec![crate::world_attempts::frame_evidence(&attempt)],
         "current capture"
     );
     let memory = engine
@@ -2731,7 +2806,9 @@ fn settle_selection_feedback_first_exact_tuples_latch_from_staged_capture() {
             .expect("binding")
             .view_raw
             .get(&OutputId("out-a".to_owned())),
-        Some(&view_row("op-3")),
+        Some(&crate::world_attempts::PropertyAttempt::from_view_attempt(
+            &view_row("op-3")
+        )),
         "exact view tuple"
     );
     assert_selection(&engine, 1, Some(matched.clone()), true, true, "hold latch");
@@ -2769,7 +2846,9 @@ fn settle_selection_feedback_first_exact_tuples_latch_from_staged_capture() {
             .expect("binding")
             .view_raw
             .get(&OutputId("out-a".to_owned())),
-        Some(&view_row("op-3")),
+        Some(&crate::world_attempts::PropertyAttempt::from_view_attempt(
+            &view_row("op-3")
+        )),
         "original view row kept"
     );
     // Same-lane focus ordering: the first exact row wins within one
@@ -2906,7 +2985,9 @@ fn settle_selection_feedback_view_receipts_independent_focusless_and_host_owned(
             .expect("binding");
         assert_eq!(
             binding.view_raw.get(&OutputId("out-a".to_owned())),
-            Some(&view_row("op-4")),
+            Some(&crate::world_attempts::PropertyAttempt::from_view_attempt(
+                &view_row("op-4")
+            )),
             "out-a latched"
         );
         assert!(
@@ -2935,12 +3016,16 @@ fn settle_selection_feedback_view_receipts_independent_focusless_and_host_owned(
             .expect("binding");
         assert_eq!(
             binding.view_raw.get(&OutputId("out-a".to_owned())),
-            Some(&view_row("op-4")),
+            Some(&crate::world_attempts::PropertyAttempt::from_view_attempt(
+                &view_row("op-4")
+            )),
             "original out-a kept"
         );
         assert_eq!(
             binding.view_raw.get(&OutputId("out-b".to_owned())),
-            Some(&exact_b),
+            Some(&crate::world_attempts::PropertyAttempt::from_view_attempt(
+                &exact_b
+            )),
             "out-b latched"
         );
     }
@@ -2965,7 +3050,9 @@ fn settle_selection_feedback_view_receipts_independent_focusless_and_host_owned(
             .expect("binding")
             .view_raw
             .get(&OutputId("out-a".to_owned())),
-        Some(&view_row("op-4")),
+        Some(&crate::world_attempts::PropertyAttempt::from_view_attempt(
+            &view_row("op-4")
+        )),
         "original out-a survives redelivery"
     );
     // Host-owned native-map translation: the mapped native home proves
@@ -3853,7 +3940,7 @@ fn member_4b2d(
         window: WindowId(window.to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: target_workspace.to_owned(),
-        setter,
+        setter: setter.into(),
         pre,
         post,
         attempt_ms: 7,
@@ -3952,6 +4039,7 @@ fn seed_window_transfer_4b2d(engine: &mut WorldEngine, operation: &str) {
         migration_terminal: None,
         migration_selection_rev: None,
         pending_member: None,
+        member_predecessors: Vec::new(),
         pending_members: BTreeMap::new(),
         pending_view: None,
     });
@@ -3980,6 +4068,7 @@ fn seed_view_transfer_4b2d(engine: &mut WorldEngine, operation: &str) {
         migration_terminal: None,
         migration_selection_rev: None,
         pending_member: None,
+        member_predecessors: Vec::new(),
         pending_members: BTreeMap::new(),
         pending_view: None,
     });
@@ -4021,6 +4110,7 @@ fn seed_migration_4b2d(engine: &mut WorldEngine, operation: &str) {
         migration_terminal: None,
         migration_selection_rev: None,
         pending_member: None,
+        member_predecessors: Vec::new(),
         pending_members: BTreeMap::new(),
         pending_view: None,
     });
@@ -4046,6 +4136,7 @@ fn seed_migration_4b2d(engine: &mut WorldEngine, operation: &str) {
         migration_terminal: None,
         migration_selection_rev: None,
         pending_member: None,
+        member_predecessors: Vec::new(),
         pending_members: BTreeMap::new(),
         pending_view: None,
     });
@@ -4075,7 +4166,7 @@ fn member_out_4b2d(
         window: WindowId(window.to_owned()),
         target_output: OutputId(output.to_owned()),
         target_workspace: target_workspace.to_owned(),
-        setter,
+        setter: setter.into(),
         pre,
         post,
         attempt_ms: 7,
@@ -4223,11 +4314,11 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
     );
     seed_join_4b2d(&mut engine, "win-a", "ws-1");
     seed_clear_4b2d(&mut engine, "op-1");
-    engine.settle_clears(
-        passed_report_v4_4b2d(90).command.as_ref(),
-        &test_issue(&passed_report_v4_4b2d(90)),
-        false,
-    );
+    engine.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Clears {
+        current_command: passed_report_v4_4b2d(90).command.as_ref(),
+        issue: &test_issue(&passed_report_v4_4b2d(90)),
+        consumed: false,
+    });
     assert!(
         engine.retained_clears.is_empty(),
         "staged refusal retires despite contradictory report"
@@ -4284,10 +4375,12 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
         );
         seed_join_4b2d(&mut forged_engine, "win-a", "ws-1");
         seed_clear_4b2d(&mut forged_engine, "op-1");
-        forged_engine.settle_clears(
-            passed_report_v4_4b2d(90).command.as_ref(),
-            &test_issue(&passed_report_v4_4b2d(90)),
-            false,
+        forged_engine.settle_property_attempts(
+            crate::world_attempts::PropertyAttemptPhase::Clears {
+                current_command: passed_report_v4_4b2d(90).command.as_ref(),
+                issue: &test_issue(&passed_report_v4_4b2d(90)),
+                consumed: false,
+            },
         );
         assert_eq!(forged_engine.retained_clears.len(), 1, "{what} holds");
         assert!(
@@ -4348,11 +4441,11 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
         );
         seed_join_4b2d(&mut gated, "win-a", "ws-1");
         seed_clear_4b2d(&mut gated, "op-1");
-        gated.settle_clears(
-            passed_report_v4_4b2d(90).command.as_ref(),
-            &test_issue(&passed_report_v4_4b2d(90)),
-            false,
-        );
+        gated.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Clears {
+            current_command: passed_report_v4_4b2d(90).command.as_ref(),
+            issue: &test_issue(&passed_report_v4_4b2d(90)),
+            consumed: false,
+        });
         assert_eq!(gated.retained_clears.len(), 1, "{what} holds");
         assert!(gated.operation_settled.is_empty(), "{what} emits nothing");
         assert!(
@@ -4377,11 +4470,11 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
             Vec::new(),
         );
         seed_join_4b2d(&mut gated, "win-a", "ws-1");
-        gated.settle_clears(
-            passed_report_v4_4b2d(91).command.as_ref(),
-            &test_issue(&passed_report_v4_4b2d(91)),
-            false,
-        );
+        gated.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Clears {
+            current_command: passed_report_v4_4b2d(91).command.as_ref(),
+            issue: &test_issue(&passed_report_v4_4b2d(91)),
+            consumed: false,
+        });
         assert!(gated.retained_clears.is_empty(), "{what} recovers readable");
         assert!(
             gated
@@ -4423,7 +4516,11 @@ fn settle_born_uses_staged_lane_with_gates_and_recovery() {
     );
     seed_join_4b2d(&mut engine, "win-a", "ws-1");
     seed_born_4b2d(&mut engine, "op-born-1");
-    engine.settle_born_clears();
+    engine.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Clears {
+        current_command: None,
+        issue: &test_issue(&passed_report_v4_4b2d(90)),
+        consumed: false,
+    });
     assert!(engine.retained_born.is_empty(), "staged refusal retires");
     assert!(
         engine
@@ -4475,7 +4572,13 @@ fn settle_born_uses_staged_lane_with_gates_and_recovery() {
         );
         seed_join_4b2d(&mut forged_engine, "win-a", "ws-1");
         seed_born_4b2d(&mut forged_engine, "op-born-1");
-        forged_engine.settle_born_clears();
+        forged_engine.settle_property_attempts(
+            crate::world_attempts::PropertyAttemptPhase::Clears {
+                current_command: None,
+                issue: &test_issue(&passed_report_v4_4b2d(90)),
+                consumed: false,
+            },
+        );
         assert_eq!(forged_engine.retained_born.len(), 1, "{what} holds");
         assert!(
             forged_engine.operation_settled.is_empty(),
@@ -4529,7 +4632,11 @@ fn settle_born_uses_staged_lane_with_gates_and_recovery() {
         );
         seed_join_4b2d(&mut gated, "win-a", "ws-1");
         seed_born_4b2d(&mut gated, "op-born-1");
-        gated.settle_born_clears();
+        gated.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Clears {
+            current_command: None,
+            issue: &test_issue(&passed_report_v4_4b2d(90)),
+            consumed: false,
+        });
         assert_eq!(gated.retained_born.len(), 1, "{what} holds");
         assert!(
             gated.retained_born[0].pending.is_some(),
@@ -4551,7 +4658,11 @@ fn settle_born_uses_staged_lane_with_gates_and_recovery() {
             Vec::new(),
         );
         seed_join_4b2d(&mut gated, "win-a", "ws-1");
-        gated.settle_born_clears();
+        gated.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Clears {
+            current_command: None,
+            issue: &test_issue(&passed_report_v4_4b2d(90)),
+            consumed: false,
+        });
         assert!(gated.retained_born.is_empty(), "{what} recovers readable");
     }
 }
@@ -4968,9 +5079,10 @@ fn settle_float_uses_staged_frames_with_replay_dpi_and_close() {
         Vec::new(),
     );
     seed_float(&mut replayed);
-    replayed
-        .consumed_frames
-        .insert(WindowId("win-a".to_owned()), prior);
+    replayed.consumed_frames.insert(
+        WindowId("win-a".to_owned()),
+        crate::world_attempts::PropertyAttempt::from_frame_attempt(&prior),
+    );
     replayed.settle_floats();
     assert!(
         replayed.retained_floats.is_empty(),
@@ -5004,7 +5116,12 @@ fn settle_float_uses_staged_frames_with_replay_dpi_and_close() {
     seed_float(&mut fresh);
     fresh.consumed_frames.insert(
         WindowId("win-a".to_owned()),
-        frame_4b2d(target, FrameSetter::Accepted, 5, (None, None)),
+        crate::world_attempts::PropertyAttempt::from_frame_attempt(&frame_4b2d(
+            target,
+            FrameSetter::Accepted,
+            5,
+            (None, None),
+        )),
     );
     fresh.settle_floats();
     assert_eq!(fresh.retained_floats.len(), 1, "fresh evidence holds");
@@ -5607,18 +5724,22 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
         parent_of(&gated)
             .pending_members
             .get(&WindowId("win-a".to_owned())),
-        Some(&arrival()),
+        Some(&crate::world_attempts::PropertyAttempt::from_member_attempt(&arrival())),
         "member receipt latches before the hold"
     );
     assert_eq!(
         parent_of(&gated).pending_view,
-        Some(parent_view()),
+        Some(crate::world_attempts::PropertyAttempt::from_view_attempt(
+            &parent_view()
+        )),
         "parent view receipt latches before the hold"
     );
     assert!(parent_of(&gated).target.held, "latched receipt marks held");
     assert_eq!(
         child_of(&gated).pending_view,
-        Some(refill_view()),
+        Some(crate::world_attempts::PropertyAttempt::from_view_attempt(
+            &refill_view()
+        )),
         "refill receipt latches before the hold"
     );
     let replacement = crate::world_report::MemberAttempt {
@@ -5655,7 +5776,7 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
         parent_of(&gated)
             .pending_members
             .get(&WindowId("win-a".to_owned())),
-        Some(&replacement),
+        Some(&crate::world_attempts::PropertyAttempt::from_member_attempt(&replacement)),
         "later tuple replaces, never first-wins"
     );
     stage_attempts_4b2d(
@@ -5721,7 +5842,9 @@ fn settle_views_pre_refused_reads_staged_screens_not_passed_report() {
         assert_eq!(engine.retained.len(), 1, "{what} holds");
         assert_eq!(
             engine.retained[0].pending_view,
-            Some(refused()),
+            Some(crate::world_attempts::PropertyAttempt::from_view_attempt(
+                &refused()
+            )),
             "{what} latches before the hold"
         );
         stage_views_pre_4b2d(
@@ -5832,11 +5955,11 @@ fn settle_clear_focus_view_home_read_staged_not_passed_report() {
     let mut proving_focus = passed_report_v4_4b2d(90);
     proving_focus.focused_global = "win-a".to_owned();
     proving_focus.foreground_known = true;
-    engine.settle_clears(
-        proving_focus.command.as_ref(),
-        &test_issue(&proving_focus),
-        false,
-    );
+    engine.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Clears {
+        current_command: proving_focus.command.as_ref(),
+        issue: &test_issue(&proving_focus),
+        consumed: false,
+    });
     assert!(
         engine.retained_clears.is_empty(),
         "staged focus divergence retires"
@@ -5873,11 +5996,11 @@ fn settle_clear_focus_view_home_read_staged_not_passed_report() {
     seed_join_4b2d(&mut viewed, "win-a", "ws-1");
     viewed.views.insert("out-a".to_owned(), "ws-9".to_owned());
     seed_clear_4b2d(&mut viewed, "op-1");
-    viewed.settle_clears(
-        passed_report_v4_4b2d(90).command.as_ref(),
-        &test_issue(&passed_report_v4_4b2d(90)),
-        false,
-    );
+    viewed.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Clears {
+        current_command: passed_report_v4_4b2d(90).command.as_ref(),
+        issue: &test_issue(&passed_report_v4_4b2d(90)),
+        consumed: false,
+    });
     assert!(
         viewed.retained_clears.is_empty(),
         "staged view divergence retires"
@@ -5910,11 +6033,11 @@ fn settle_clear_focus_view_home_read_staged_not_passed_report() {
     );
     seed_join_4b2d(&mut homed, "win-a", "ws-9");
     seed_clear_4b2d(&mut homed, "op-1");
-    homed.settle_clears(
-        passed_report_v4_4b2d(90).command.as_ref(),
-        &test_issue(&passed_report_v4_4b2d(90)),
-        false,
-    );
+    homed.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Clears {
+        current_command: passed_report_v4_4b2d(90).command.as_ref(),
+        issue: &test_issue(&passed_report_v4_4b2d(90)),
+        consumed: false,
+    });
     assert!(
         homed.retained_clears.is_empty(),
         "staged home divergence retires"
@@ -5963,7 +6086,11 @@ fn settle_clear_float_continuation_uses_staged_geometry() {
     let mut crossed_screen = screen("out-a", 0);
     crossed_screen.work_area = Some(rect(0, 0, 400, 300));
     crossed.screens = vec![crossed_screen];
-    engine.settle_clears(crossed.command.as_ref(), &test_issue(&crossed), false);
+    engine.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Clears {
+        current_command: crossed.command.as_ref(),
+        issue: &test_issue(&crossed),
+        consumed: false,
+    });
     assert!(engine.retained_clears.is_empty(), "proven clear continues");
     assert!(
         engine
@@ -6559,6 +6686,7 @@ fn touching_migration() -> RetainedTransfer {
         migration_terminal: None,
         migration_selection_rev: None,
         pending_member: None,
+        member_predecessors: Vec::new(),
         pending_members: BTreeMap::new(),
         pending_view: None,
     }
@@ -6838,6 +6966,135 @@ fn staged_switch_receipt_and_close_win_over_passed_report() {
         1,
         "passed-only close changes nothing"
     );
+}
+
+#[test]
+fn visibility_normalization_keeps_healthy_over_held() {
+    // A healthy staged fact's raw last_write wins per window even when a held
+    // row for the same lifetime carries a different, otherwise-matching raw.
+    // The held row must not become a second (or replacement) canonical
+    // attempt: the exact old healthy-first precedence is preserved.
+    let mut engine = engine();
+    let mut v4report = v4_report(
+        2,
+        vec![fact_with_lw("win-a", confirm_last_write(false, 1, 2))],
+        Vec::new(),
+    );
+    v4report.held_windows = vec![HeldWindowRow {
+        window: WindowId("win-a".to_owned()),
+        ordinal: 1,
+        output: Some(OutputId("out-a".to_owned())),
+        fields: crate::world_report::retained_window_fields(&fact_with_lw(
+            "win-a",
+            confirm_last_write(true, 1, 2),
+        )),
+        diagnostic: None,
+        kind: RowDiagnosticKind::InvalidFact,
+    }];
+    stage_v4_ingested(&mut engine, &v4report);
+    let targets: Vec<bool> = engine
+        .staged
+        .observation
+        .property_attempts
+        .iter()
+        .filter_map(crate::world_attempts::PropertyAttempt::as_visibility)
+        .filter(|evidence| evidence.window == WindowId("win-a".to_owned()))
+        .map(|evidence| evidence.target)
+        .collect();
+    assert_eq!(
+        targets,
+        vec![false],
+        "healthy fact wins; held row is not a fallback attempt"
+    );
+}
+
+#[test]
+fn visibility_normalization_falls_back_to_first_decodable_held_row() {
+    // With no healthy last_write, the first losslessly decodable held row by
+    // lifetime supplies the single canonical attempt. Malformed held raw
+    // (missing lastWrite) is skipped, never latched and never a failure.
+    let mut engine = engine();
+    let mut v4report = v4_report(2, vec![fact("win-a", "out-a", 0)], Vec::new());
+    let malformed = HeldWindowRow {
+        window: WindowId("win-a".to_owned()),
+        ordinal: 1,
+        output: Some(OutputId("out-a".to_owned())),
+        fields: Vec::new(),
+        diagnostic: None,
+        kind: RowDiagnosticKind::InvalidFact,
+    };
+    let decodable = HeldWindowRow {
+        window: WindowId("win-a".to_owned()),
+        ordinal: 2,
+        output: Some(OutputId("out-a".to_owned())),
+        fields: crate::world_report::retained_window_fields(&fact_with_lw(
+            "win-a",
+            confirm_last_write(true, 1, 2),
+        )),
+        diagnostic: None,
+        kind: RowDiagnosticKind::ConflictingFact,
+    };
+    v4report.held_windows = vec![malformed, decodable];
+    stage_v4_ingested(&mut engine, &v4report);
+    let targets: Vec<bool> = engine
+        .staged
+        .observation
+        .property_attempts
+        .iter()
+        .filter_map(crate::world_attempts::PropertyAttempt::as_visibility)
+        .filter(|evidence| evidence.window == WindowId("win-a".to_owned()))
+        .map(|evidence| evidence.target)
+        .collect();
+    assert_eq!(
+        targets,
+        vec![true],
+        "malformed held skipped; first decodable held row latches once"
+    );
+}
+
+#[test]
+fn visibility_normalization_is_once_across_restage_even_at_zero() {
+    // Zero visibility evidence still marks the report normalized, so later
+    // classification restages cannot re-ingest. With evidence, exactly one
+    // canonical row survives repeated restages with no duplicates.
+    let mut engine = engine();
+    let zero = v4_report(2, vec![fact("win-a", "out-a", 0)], Vec::new());
+    stage_v4_ingested(&mut engine, &zero);
+    assert!(engine.staged.observation.visibility_normalized);
+    assert!(
+        engine
+            .staged
+            .observation
+            .property_attempts
+            .iter()
+            .all(|attempt| attempt.as_visibility().is_none())
+    );
+    let before = engine.staged.observation.property_attempts.clone();
+    engine.restage_classification();
+    engine.restage_classification();
+    assert!(engine.staged.observation.visibility_normalized);
+    assert_eq!(engine.staged.observation.property_attempts, before);
+
+    let mut witness = engine;
+    let with_evidence = v4_report(
+        2,
+        vec![fact_with_lw("win-a", confirm_last_write(true, 1, 2))],
+        Vec::new(),
+    );
+    stage_v4_ingested(&mut witness, &with_evidence);
+    let count = |engine: &WorldEngine| {
+        engine
+            .staged
+            .observation
+            .property_attempts
+            .iter()
+            .filter(|attempt| attempt.as_visibility().is_some())
+            .count()
+    };
+    assert_eq!(count(&witness), 1);
+    witness.restage_classification();
+    witness.restage_classification();
+    assert_eq!(count(&witness), 1, "restage never re-normalizes");
 }
 
 /// Stage one topology report through the real v4 intake: raw screens, held
@@ -10092,6 +10349,72 @@ fn staged_selection_native_proof_success_refusal_and_latched_hold() {
     );
 }
 
+#[test]
+fn selection_native_proof_fresh_fallback_scans_past_unrelated_first_view() {
+    // The unlatched fresh proof must scan every canonical view arm for the
+    // exact (op, output, workspace) tuple: an unrelated view reported first
+    // cannot hide a later exact refusal. Regression for the find_map-then-
+    // filter mistake that selected only the first view of any identity.
+    let mut engine = engine_settle_host();
+    seed_selection_binding(&mut engine, "op-4", false, &["out-a"]);
+    engine.mapping.insert(
+        "out-a".to_owned(),
+        vec!["ws-1".to_owned(), "ws-2".to_owned()],
+    );
+    engine
+        .native_map
+        .insert(("out-a".to_owned(), "n0".to_owned()), "ws-2".to_owned());
+    let exact = ViewAttempt {
+        operation_id: "op-4".to_owned(),
+        target_output: OutputId("out-a".to_owned()),
+        target_workspace: "ws-1".to_owned(),
+        setter: FrameSetter::Refused,
+        pre: Some(WorkspaceRef::Native {
+            output: OutputId("out-a".to_owned()),
+            workspace: crate::ids::NativeWorkspaceId::parse("n0").expect("native id"),
+        }),
+        post: Some(WorkspaceRef::Native {
+            output: OutputId("out-a".to_owned()),
+            workspace: crate::ids::NativeWorkspaceId::parse("n0").expect("native id"),
+        }),
+        baseline: None,
+        attempt_ms: 7,
+    };
+    let unrelated = ViewAttempt {
+        operation_id: "op-unrelated".to_owned(),
+        ..exact.clone()
+    };
+    stage_native_5a(
+        &mut engine,
+        2,
+        vec![native_lane_5a("out-a", vec!["n0"], "n0")],
+        vec![unrelated, exact],
+        true,
+    );
+    // Feedback staging is intentionally skipped: view_raw stays empty so the
+    // fresh fallback is the only path that can prove the native obligation.
+    assert!(
+        engine
+            .retained_selection
+            .get(&OutputId("out-a".to_owned()))
+            .expect("binding")
+            .view_raw
+            .is_empty(),
+        "no latched view"
+    );
+    engine.settle_selection_switch();
+    assert_eq!(engine.switch_settled.len(), 1, "later exact view proves");
+    assert_eq!(
+        engine
+            .switch_settled
+            .values()
+            .next()
+            .map(|event| event.outcome),
+        Some(SwitchOutcome::CompletedWithFailures),
+        "exact refusal still terminates"
+    );
+}
+
 fn native_occ_5a(
     output: &str,
     order: &[&str],
@@ -10666,7 +10989,8 @@ fn staged_selection_feedback_first_latch_across_restage() {
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
             .and_then(|binding| binding.view_raw.get(&OutputId("out-a".to_owned())))
-            .map(|attempt| attempt.attempt_ms),
+            .and_then(crate::world_attempts::PropertyAttempt::as_view)
+            .map(|evidence| evidence.attempt_ms),
         Some(7),
         "first raw latches"
     );
@@ -10741,7 +11065,8 @@ fn staged_selection_feedback_first_latch_across_restage() {
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
             .and_then(|binding| binding.view_raw.get(&OutputId("out-a".to_owned())))
-            .map(|attempt| attempt.attempt_ms),
+            .and_then(crate::world_attempts::PropertyAttempt::as_view)
+            .map(|evidence| evidence.attempt_ms),
         Some(7),
         "first raw kept"
     );
@@ -11914,6 +12239,7 @@ fn settle_policy_hold_ignores_value_without_capability() {
         migration_terminal: None,
         migration_selection_rev: None,
         pending_member: None,
+        member_predecessors: Vec::new(),
         pending_members: BTreeMap::new(),
         pending_view: None,
     });

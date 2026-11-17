@@ -742,6 +742,43 @@ impl FrameSetter {
     }
 }
 
+/// Mechanical outcome of one native membership write attempt. Pure actuator
+/// disposition, never a policy conclusion: `Accepted` means the setter
+/// reported success, `Refused` is an explicit native refusal, `Threw` is a
+/// throwing/ambiguous call that may have executed, and `AlreadyAtTarget`
+/// is a consumed operation whose matching readback already proves the
+/// target with no native call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MemberDisposition {
+    Accepted,
+    Refused,
+    Threw,
+    AlreadyAtTarget,
+}
+
+impl MemberDisposition {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Refused => "refused",
+            Self::Threw => "threw",
+            Self::AlreadyAtTarget => "already-at-target",
+        }
+    }
+}
+
+impl From<FrameSetter> for MemberDisposition {
+    fn from(value: FrameSetter) -> Self {
+        match value {
+            FrameSetter::Accepted => Self::Accepted,
+            FrameSetter::Refused => Self::Refused,
+            FrameSetter::Threw => Self::Threw,
+        }
+    }
+}
+
 /// One normalized raw frame attempt: the mechanical facts behind a single
 /// native frame write, reported on the next report for the core-owned
 /// anti-fighting policy (see [`crate::world_frames`]) and explicit
@@ -802,21 +839,25 @@ pub struct FrameAttempt {
 ///   correlation so the core matches the attempt to its desire.
 /// - `setter` is the mechanical disposition (`Accepted` never proves
 ///   arrival by itself, `Refused` is an explicit native refusal, `Threw`
-///   is a throwing/ambiguous call).
+///   is a throwing/ambiguous call, `AlreadyAtTarget` is a consumed
+///   operation whose matching readback already proves the target with
+///   no native call).
 /// - `pre`/`post` are namespaced references observed immediately before and
 ///   after the write (`None` = unreadable). Member refs are logical on the
 ///   native-free route and native on the host-owned route. The embedded
 ///   output is authoritative for affinity and native translation. Only an
 ///   explicit refusal with an unchanged readable preimage proves refusal.
-/// - `attempt_ms` is the adapter monotonic clock at the write, matching
-///   [`FrameAttempt::attempt_ms`] idempotency.
+/// - `attempt_ms` is the adapter monotonic clock at the write. For
+///   `AlreadyAtTarget` it is the call/no-call consumption stamp, in the
+///   same arbitrary-epoch milliseconds as the report `monotonic_ms`,
+///   matching [`FrameAttempt::attempt_ms`] idempotency.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemberAttempt {
     pub operation_id: String,
     pub window: WindowId,
     pub target_output: OutputId,
     pub target_workspace: String,
-    pub setter: FrameSetter,
+    pub setter: MemberDisposition,
     pub pre: Option<WorkspaceRef>,
     pub post: Option<WorkspaceRef>,
     pub attempt_ms: u64,

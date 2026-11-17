@@ -60,6 +60,33 @@ fn dpi_attempt(
     }
 }
 
+// Canonical drop-in helpers for the pure policy helpers: the raw wire row is
+// normalized once into the closed typed evidence the policy now consumes.
+fn canonical(raw: &FrameAttempt) -> crate::world_attempts::FrameAttemptEvidence {
+    crate::world_attempts::frame_evidence(raw)
+}
+
+fn attempt_c(
+    window: &str,
+    target: Rect,
+    setter: FrameSetter,
+    readback: Option<Rect>,
+    ms: u64,
+) -> crate::world_attempts::FrameAttemptEvidence {
+    canonical(&attempt(window, target, setter, readback, ms))
+}
+
+fn dpi_attempt_c(
+    window: &str,
+    target: Rect,
+    readback: Option<Rect>,
+    before: Option<u32>,
+    after: Option<u32>,
+    ms: u64,
+) -> crate::world_attempts::FrameAttemptEvidence {
+    canonical(&dpi_attempt(window, target, readback, before, after, ms))
+}
+
 // --- pure backoff shape ---
 
 #[test]
@@ -89,7 +116,7 @@ fn clamp_suppresses_identical_pair_and_rearms_on_change() {
     let observed = rect(0, 0, 700, 600);
     let memory = consume_attempt(
         None,
-        &attempt("w1", desired, FrameSetter::Accepted, Some(observed), 100),
+        &attempt_c("w1", desired, FrameSetter::Accepted, Some(observed), 100),
         Some(observed),
     )
     .expect("clamp records");
@@ -113,7 +140,7 @@ fn mismatched_readback_with_changed_staged_fact_clears_without_clamp() {
     assert!(
         consume_attempt(
             None,
-            &attempt("w1", desired, FrameSetter::Accepted, Some(readback), 4318),
+            &attempt_c("w1", desired, FrameSetter::Accepted, Some(readback), 4318),
             Some(staged),
         )
         .is_none()
@@ -122,7 +149,7 @@ fn mismatched_readback_with_changed_staged_fact_clears_without_clamp() {
     // either: the same unproven pairing clears instead of re-keying.
     let prior = consume_attempt(
         None,
-        &attempt("w1", desired, FrameSetter::Accepted, Some(readback), 4318),
+        &attempt_c("w1", desired, FrameSetter::Accepted, Some(readback), 4318),
         Some(readback),
     )
     .expect("old-pair clamp records");
@@ -130,7 +157,7 @@ fn mismatched_readback_with_changed_staged_fact_clears_without_clamp() {
     assert!(
         consume_attempt(
             Some(prior),
-            &attempt("w1", desired, FrameSetter::Accepted, Some(readback), 4318),
+            &attempt_c("w1", desired, FrameSetter::Accepted, Some(readback), 4318),
             Some(staged),
         )
         .is_none()
@@ -143,14 +170,14 @@ fn exact_readback_clears_both_lanes() {
     let held = rect(0, 0, 700, 600);
     let clamped = consume_attempt(
         None,
-        &attempt("w1", desired, FrameSetter::Accepted, Some(held), 100),
+        &attempt_c("w1", desired, FrameSetter::Accepted, Some(held), 100),
         Some(held),
     )
     .expect("clamp records");
     assert!(
         consume_attempt(
             Some(clamped),
-            &attempt("w1", desired, FrameSetter::Accepted, Some(desired), 200),
+            &attempt_c("w1", desired, FrameSetter::Accepted, Some(desired), 200),
             Some(desired),
         )
         .is_none()
@@ -158,14 +185,14 @@ fn exact_readback_clears_both_lanes() {
     // Exact arrival with no write behind it clears too.
     let transient = consume_attempt(
         None,
-        &attempt("w1", desired, FrameSetter::Refused, Some(held), 100),
+        &attempt_c("w1", desired, FrameSetter::Refused, Some(held), 100),
         Some(held),
     )
     .expect("transient records");
     assert!(
         consume_attempt(
             Some(transient),
-            &attempt("w1", desired, FrameSetter::Refused, Some(desired), 200),
+            &attempt_c("w1", desired, FrameSetter::Refused, Some(desired), 200),
             Some(desired),
         )
         .is_none()
@@ -180,7 +207,7 @@ fn transient_backoff_uses_reported_time_and_rearms_on_change() {
     let observed = rect(0, 0, 700, 600);
     let first = consume_attempt(
         None,
-        &attempt("w1", desired, FrameSetter::Refused, Some(observed), 1000),
+        &attempt_c("w1", desired, FrameSetter::Refused, Some(observed), 1000),
         Some(observed),
     )
     .expect("transient records");
@@ -192,7 +219,7 @@ fn transient_backoff_uses_reported_time_and_rearms_on_change() {
     // Same-pair repeat doubles the backoff.
     let second = consume_attempt(
         Some(first),
-        &attempt("w1", desired, FrameSetter::Threw, Some(observed), 1600),
+        &attempt_c("w1", desired, FrameSetter::Threw, Some(observed), 1600),
         Some(observed),
     )
     .expect("transient repeats");
@@ -212,7 +239,7 @@ fn transient_backoff_caps_and_never_pins() {
     for round in 0..11 {
         memory = consume_attempt(
             memory,
-            &attempt(
+            &attempt_c(
                 "w1",
                 desired,
                 FrameSetter::Refused,
@@ -233,15 +260,15 @@ fn transient_backoff_caps_and_never_pins() {
 fn stale_replay_guard_ignores_only_real_redeliveries() {
     let desired = rect(0, 0, 800, 600);
     let held = rect(0, 0, 700, 600);
-    let prior = attempt("w1", desired, FrameSetter::Accepted, Some(held), 1000);
+    let prior = attempt_c("w1", desired, FrameSetter::Accepted, Some(held), 1000);
     // Older stamp, same or different pair: stale either way.
     assert!(is_stale_replay(
         &prior,
-        &attempt("w1", desired, FrameSetter::Accepted, Some(held), 999),
+        &attempt_c("w1", desired, FrameSetter::Accepted, Some(held), 999),
     ));
     assert!(is_stale_replay(
         &prior,
-        &attempt(
+        &attempt_c(
             "w1",
             rect(0, 0, 900, 600),
             FrameSetter::Refused,
@@ -252,13 +279,13 @@ fn stale_replay_guard_ignores_only_real_redeliveries() {
     // Exact duplicate at the same stamp: the same write reported twice.
     assert!(is_stale_replay(
         &prior,
-        &attempt("w1", desired, FrameSetter::Accepted, Some(held), 1000),
+        &attempt_c("w1", desired, FrameSetter::Accepted, Some(held), 1000),
     ));
     // Changed pair at an equal-or-newer stamp always processes: time is
     // not a unique attempt identity.
     assert!(!is_stale_replay(
         &prior,
-        &attempt(
+        &attempt_c(
             "w1",
             rect(0, 0, 900, 600),
             FrameSetter::Refused,
@@ -268,10 +295,10 @@ fn stale_replay_guard_ignores_only_real_redeliveries() {
     ));
     assert!(!is_stale_replay(
         &prior,
-        &attempt("w1", desired, FrameSetter::Accepted, Some(held), 1001),
+        &attempt_c("w1", desired, FrameSetter::Accepted, Some(held), 1001),
     ));
     // Unreported clock never dedups: no ordering claim is possible.
-    let clockless = attempt("w1", desired, FrameSetter::Refused, Some(held), 0);
+    let clockless = attempt_c("w1", desired, FrameSetter::Refused, Some(held), 0);
     assert!(!is_stale_replay(&prior, &clockless));
     assert!(!is_stale_replay(&clockless, &clockless));
 }
@@ -282,13 +309,13 @@ fn stale_redelivery_never_renews_backoff() {
     let observed = rect(0, 0, 700, 600);
     let first = consume_attempt(
         None,
-        &attempt("w1", desired, FrameSetter::Refused, Some(observed), 1000),
+        &attempt_c("w1", desired, FrameSetter::Refused, Some(observed), 1000),
         Some(observed),
     )
     .expect("records");
     let second = consume_attempt(
         Some(first.clone()),
-        &attempt("w1", desired, FrameSetter::Refused, Some(observed), 1600),
+        &attempt_c("w1", desired, FrameSetter::Refused, Some(observed), 1600),
         Some(observed),
     )
     .expect("repeats");
@@ -296,7 +323,7 @@ fn stale_redelivery_never_renews_backoff() {
     // The lost-ack redelivery of the first attempt changes nothing.
     let replayed = consume_attempt(
         Some(second.clone()),
-        &attempt("w1", desired, FrameSetter::Refused, Some(observed), 1000),
+        &attempt_c("w1", desired, FrameSetter::Refused, Some(observed), 1000),
         Some(observed),
     )
     .expect("entry survives");
@@ -309,7 +336,7 @@ fn unknown_clock_never_suppresses_transient_but_keeps_clamp() {
     let observed = rect(0, 0, 700, 600);
     let transient = consume_attempt(
         None,
-        &attempt("w1", desired, FrameSetter::Refused, Some(observed), 0),
+        &attempt_c("w1", desired, FrameSetter::Refused, Some(observed), 0),
         Some(observed),
     )
     .expect("records");
@@ -317,7 +344,7 @@ fn unknown_clock_never_suppresses_transient_but_keeps_clamp() {
     assert!(!transient.suppressed(&desired, &observed, 9999));
     let clamped = consume_attempt(
         None,
-        &attempt("w1", desired, FrameSetter::Accepted, Some(observed), 0),
+        &attempt_c("w1", desired, FrameSetter::Accepted, Some(observed), 0),
         Some(observed),
     )
     .expect("records");
@@ -332,7 +359,7 @@ fn unreadable_evidence_records_nothing() {
     assert!(
         consume_attempt(
             None,
-            &attempt("w1", desired, FrameSetter::Accepted, None, 100),
+            &attempt_c("w1", desired, FrameSetter::Accepted, None, 100),
             None,
         )
         .is_none()
@@ -340,7 +367,7 @@ fn unreadable_evidence_records_nothing() {
     assert!(
         consume_attempt(
             None,
-            &attempt("w1", desired, FrameSetter::Threw, None, 100),
+            &attempt_c("w1", desired, FrameSetter::Threw, None, 100),
             None,
         )
         .is_none()
@@ -350,7 +377,7 @@ fn unreadable_evidence_records_nothing() {
     assert!(
         consume_attempt(
             None,
-            &attempt("w1", desired, FrameSetter::Threw, None, 100),
+            &attempt_c("w1", desired, FrameSetter::Threw, None, 100),
             fact,
         )
         .is_some()
@@ -366,7 +393,7 @@ fn accepted_unreadable_proof_retries_with_backoff() {
     let observed = rect(0, 0, 700, 600);
     let first = consume_attempt(
         None,
-        &attempt("w1", desired, FrameSetter::Accepted, None, 1000),
+        &attempt_c("w1", desired, FrameSetter::Accepted, None, 1000),
         Some(observed),
     )
     .expect("transient records");
@@ -377,7 +404,7 @@ fn accepted_unreadable_proof_retries_with_backoff() {
     assert!(!first.suppressed(&desired, &observed, 1600));
     let second = consume_attempt(
         Some(first),
-        &attempt("w1", desired, FrameSetter::Accepted, None, 1600),
+        &attempt_c("w1", desired, FrameSetter::Accepted, None, 1600),
         Some(observed),
     )
     .expect("transient repeats");
@@ -397,21 +424,21 @@ fn resolved_exact_observation_clears() {
     assert!(
         consume_attempt(
             None,
-            &attempt("w1", desired, FrameSetter::Accepted, None, 100),
+            &attempt_c("w1", desired, FrameSetter::Accepted, None, 100),
             Some(desired),
         )
         .is_none()
     );
     let clamped = consume_attempt(
         None,
-        &attempt("w1", desired, FrameSetter::Accepted, Some(held), 100),
+        &attempt_c("w1", desired, FrameSetter::Accepted, Some(held), 100),
         Some(held),
     )
     .expect("clamp records");
     assert!(
         consume_attempt(
             Some(clamped),
-            &attempt("w1", desired, FrameSetter::Refused, None, 200),
+            &attempt_c("w1", desired, FrameSetter::Refused, None, 200),
             Some(desired),
         )
         .is_none()
@@ -425,7 +452,7 @@ fn changed_dpi_never_becomes_a_stable_clamp() {
     assert!(
         consume_attempt(
             None,
-            &dpi_attempt("w1", desired, Some(readback), Some(96), Some(120), 100),
+            &dpi_attempt_c("w1", desired, Some(readback), Some(96), Some(120), 100),
             Some(readback),
         )
         .is_none()
@@ -434,7 +461,7 @@ fn changed_dpi_never_becomes_a_stable_clamp() {
     assert!(
         consume_attempt(
             None,
-            &dpi_attempt("w1", desired, Some(readback), None, Some(120), 100),
+            &dpi_attempt_c("w1", desired, Some(readback), None, Some(120), 100),
             Some(readback),
         )
         .expect("stable lane")
@@ -446,7 +473,7 @@ fn changed_dpi_never_becomes_a_stable_clamp() {
     assert!(
         consume_attempt(
             None,
-            &dpi_attempt("w1", desired, None, Some(96), Some(120), 100),
+            &dpi_attempt_c("w1", desired, None, Some(96), Some(120), 100),
             Some(readback),
         )
         .is_none()
@@ -1774,7 +1801,7 @@ fn inverse_fact_at_target_with_mismatched_readback_clears_without_learning() {
     assert!(
         consume_attempt(
             None,
-            &attempt("w1", desired, FrameSetter::Accepted, Some(overshoot), 100),
+            &attempt_c("w1", desired, FrameSetter::Accepted, Some(overshoot), 100),
             Some(desired),
         )
         .is_none()

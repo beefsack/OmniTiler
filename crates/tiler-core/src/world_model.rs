@@ -1193,6 +1193,7 @@ impl WorldEngine {
                 migration_terminal: None,
                 migration_selection_rev: None,
                 pending_member: None,
+                member_predecessors: Vec::new(),
                 pending_members: BTreeMap::new(),
                 pending_view: None,
             });
@@ -1903,8 +1904,8 @@ impl WorldEngine {
                 if self.retained.iter().any(|r| match &r.target.kind {
                     TransferKind::Window(w) => {
                         w.0 == window.window.0
-                            && r.source_output == key.output
-                            && r.source_workspace == key.workspace.0
+                            && !(r.target.target_output == key.output
+                                && r.target.target_workspace == key.workspace.0)
                     }
                     TransferKind::View | TransferKind::Migration => false,
                 }) {

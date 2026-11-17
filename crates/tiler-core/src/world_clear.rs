@@ -10,43 +10,9 @@
 use crate::directional::WindowId;
 use crate::seed::EngineWindow;
 use crate::session::DomainKey;
+use crate::world_attempts::{PropertyAttempt, clear_accepted, clear_refused};
 use crate::world_engine::{RetainedClear, RetainedFloat, WorldEngine};
-use crate::world_report::{
-    ClearAttempt, FrameSetter, OperationEvent, OperationOutcome, WorldCommand,
-};
-
-/// Exact-correlated raw clear evidence for one retained clear operation.
-/// Forged rows (operation or window mismatch) are never evidence: they
-/// read as absent.
-fn clear_attempt_for<'a>(
-    attempts: &'a [ClearAttempt],
-    operation_id: &str,
-    window: &WindowId,
-) -> Option<&'a ClearAttempt> {
-    attempts
-        .iter()
-        .find(|attempt| attempt.operation_id == operation_id && attempt.window == *window)
-}
-
-/// Proven clear refusal: an explicit native refusal with an unchanged
-/// readable maximized preimage. Anything else (accepted mismatch, throw,
-/// unreadable proof, moved preimage) latches ambiguity, never refusal.
-fn clear_refused(attempt: &ClearAttempt) -> bool {
-    matches!(attempt.setter, FrameSetter::Refused)
-        && attempt.pre_maximized == Some(true)
-        && attempt.post_maximized == Some(true)
-}
-
-/// Proven clear dispatch: the setter ran (accepted, possibly completing
-/// asynchronously) against a readable maximized preimage. Never proof on
-/// its own: the staged observation must also show complete readable
-/// unmaximized facts (checked by the caller). An async completion that
-/// lands after the report still resumes: the attempt proves the core
-/// dispatched this clear (never an external clear), and the later
-/// unmaximized observation proves the result.
-fn clear_accepted(attempt: &ClearAttempt) -> bool {
-    matches!(attempt.setter, FrameSetter::Accepted) && attempt.pre_maximized == Some(true)
-}
+use crate::world_report::{OperationEvent, OperationOutcome, WorldCommand};
 
 impl WorldEngine {
     /// One reused terminal-event emitter for every retained-operation
@@ -150,8 +116,9 @@ impl WorldEngine {
 
 impl WorldEngine {
     /// Settle outstanding directional maximize-clears against
-    /// operation-correlated raw clear attempts plus the staged observation.
-    /// Runs first in [`WorldEngine::settle_rest`] so a proven clear resumes
+    /// operation-correlated canonical clear evidence plus the staged
+    /// observation, staged by the shared clear phase. Runs first in
+    /// [`WorldEngine::settle_rest`] so a proven clear resumes
     /// its original intent in the same pass (tiled engine move or retained
     /// float half); the sweep and publish below then apply the continuation
     /// coherently in one reply under the ORIGINAL operation id. No second
@@ -220,14 +187,8 @@ impl WorldEngine {
                 );
                 continue;
             }
-            // Stage exact-correlated raw evidence before any hold.
-            if let Some(attempt) = clear_attempt_for(
-                &self.staged.observation.clear_attempts,
-                &retained.operation_id,
-                &retained.window,
-            ) {
-                retained.pending = Some(attempt.clone());
-            }
+            // Exact-correlated canonical evidence was staged by the clear
+            // phase before any hold; close pruned above before intake.
             // Same-report supersession before continuation: a fresh
             // same-window intent drops the old binding (evidence already
             // staged above) and re-evaluates fresh in the command path.
@@ -422,7 +383,12 @@ impl WorldEngine {
             if derived_clear.overlay_maximized {
                 // Still maximized: never success. Proven refusal retires
                 // with no loop; anything else holds.
-                if retained.pending.as_ref().is_some_and(clear_refused) {
+                if retained
+                    .pending
+                    .as_ref()
+                    .and_then(PropertyAttempt::as_clear)
+                    .is_some_and(clear_refused)
+                {
                     self.emit_operation(
                         retained.operation_id.clone(),
                         retained.window.clone(),
@@ -442,7 +408,12 @@ impl WorldEngine {
             // staged attempt at all) abandons, never continues. Ambiguous
             // staged evidence (throw, accepted mismatch, unreadable proof)
             // holds with no retry below: it may yet be our own clear.
-            let Some(pending) = retained.pending.clone() else {
+            let Some(pending) = retained
+                .pending
+                .as_ref()
+                .and_then(PropertyAttempt::as_clear)
+                .cloned()
+            else {
                 self.emit_operation(
                     retained.operation_id.clone(),
                     retained.window.clone(),
@@ -468,8 +439,8 @@ impl WorldEngine {
                 // staged evidence unchanged, and a fresh same-window intent
                 // supersedes it independently. Never inferred as an external
                 // clear: the correlated attempt may yet be our own clear
-                // completing asynchronously.
-                retained.pending = Some(pending);
+                // completing asynchronously. The canonical evidence already
+                // sits in the retained slot; only ambiguity is latched.
                 retained.ambiguous = true;
                 keep.push(retained);
                 continue;

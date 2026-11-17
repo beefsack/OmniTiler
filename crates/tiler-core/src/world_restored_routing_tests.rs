@@ -549,12 +549,10 @@ fn world_migration_selects_largest_edge_despite_window_centre() {
 }
 
 #[test]
-fn flight_fences_second_move_pre_engine_without_rerank() {
-    // After an exhausted move retains its identity-pinned flight, a second
-    // move for the same window refuses as transfer-in-flight pre-engine
-    // (no re-rank, no second transfer, no mutation; the refused sequence
-    // still consumes). Covers both the lagging cross path and the gap-topology
-    // local fallback path, which shares the same fence.
+fn latest_home_edge_refuses_without_replacing_retained_move() {
+    // A second up move evaluates the retained top output, where there is
+    // no neighbor. Its semantic refusal preserves the previous transfer,
+    // including when fresh topology forces the local fallback.
     let mover = fact_rect("win-a", "src", rect(860, 1150, 200, 200));
     let (mut engine, _) = bootstrap_stacked(mover);
     let cmd = report(
@@ -575,8 +573,7 @@ fn flight_fences_second_move_pre_engine_without_rerank() {
     assert_eq!(transfer.target_output.0, "u2");
     assert_eq!(transfer.operation_id, "op-112");
     let settled_revision = engine.state_revision();
-    // Lagging observation (mover still at the source) with a fresh move
-    // command: pre-engine fence, never a re-rank.
+    // Native lag must not re-rank the mover from its old lower output.
     let mut again = report(
         3,
         3,
@@ -590,19 +587,18 @@ fn flight_fences_second_move_pre_engine_without_rerank() {
         (WorldOutcome::Accepted(_), settlements) => assert_eq!(
             settlements.first().and_then(|s| s.result.clone()),
             Some(CommandResult::Rejected {
-                kind: CommandRejectKind::TransferInFlight
+                kind: CommandRejectKind::OperationRefused
             }),
-            "second move while flight outstanding refuses"
+            "up from the latest top output has no neighbor"
         ),
-        (other, _) => panic!("second move while flight outstanding refuses, got {other:?}"),
+        (other, _) => panic!("latest-home edge move must refuse, got {other:?}"),
     }
     assert_eq!(
         engine.state_revision(),
         settled_revision + 1,
-        "pre-engine refusal issues"
+        "edge refusal issues"
     );
-    // Gap topology forcing the no-candidate local fallback under the same
-    // lagging window: the same fence fires before any local mutation.
+    // Gap topology still has no up neighbor from the latest home.
     let gap = vec![
         screen_full("src", rect(0, 2000, 800, 600)),
         screen_full("u1", rect(0, 0, 800, 600)),
@@ -621,11 +617,11 @@ fn flight_fences_second_move_pre_engine_without_rerank() {
         (WorldOutcome::Accepted(_), settlements) => assert_eq!(
             settlements.first().and_then(|s| s.result.clone()),
             Some(CommandResult::Rejected {
-                kind: CommandRejectKind::TransferInFlight
+                kind: CommandRejectKind::OperationRefused
             }),
-            "gap-path move while flight outstanding refuses"
+            "gap-path latest-home edge move refuses"
         ),
-        (other, _) => panic!("gap-path move while flight outstanding refuses, got {other:?}"),
+        (other, _) => panic!("gap-path latest-home edge move must refuse, got {other:?}"),
     }
     assert_eq!(
         engine.state_revision(),
@@ -1520,7 +1516,7 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
         window: WindowId("win-f".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: ring[1].clone(),
-        setter: FrameSetter::Accepted,
+        setter: FrameSetter::Accepted.into(),
         pre: None,
         post: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),

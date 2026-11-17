@@ -1974,7 +1974,7 @@ fn selection_follow_send_home_invalidates_stale_hide() {
         window: WindowId("w2".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
-        setter: FrameSetter::Accepted,
+        setter: FrameSetter::Accepted.into(),
         pre: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(home.clone()),
@@ -2139,7 +2139,7 @@ fn follow_send_settles_membership_before_selection_terminal() {
         window: WindowId("w2".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
-        setter: FrameSetter::Accepted,
+        setter: FrameSetter::Accepted.into(),
         pre: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(home.clone()),
@@ -2197,7 +2197,7 @@ fn follow_send_settles_membership_before_selection_terminal() {
         window: WindowId("w2".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: home.clone(),
-        setter: FrameSetter::Accepted,
+        setter: FrameSetter::Accepted.into(),
         pre: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(away.clone()),
@@ -2684,7 +2684,7 @@ fn follow_binding_superseded_then_close_drops_without_event() {
         window: WindowId("w2".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
-        setter: FrameSetter::Accepted,
+        setter: FrameSetter::Accepted.into(),
         pre: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(home.clone()),
@@ -2816,7 +2816,7 @@ fn native_free_follow_source_echo_survives_then_proves() {
         window: WindowId("w2".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
-        setter: FrameSetter::Accepted,
+        setter: FrameSetter::Accepted.into(),
         pre: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(home.clone()),
@@ -2900,7 +2900,7 @@ fn native_free_follow_source_echo_survives_then_proves() {
         window: WindowId("w1".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
-        setter: FrameSetter::Accepted,
+        setter: FrameSetter::Accepted.into(),
         pre: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(home.clone()),
@@ -3020,7 +3020,7 @@ fn native_free_follow_source_echo_survives_then_proves() {
         window: WindowId("w2".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: third_away.clone(),
-        setter: FrameSetter::Accepted,
+        setter: FrameSetter::Accepted.into(),
         pre: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(third_home.clone()),
@@ -3088,7 +3088,7 @@ fn native_free_follow_source_echo_survives_then_proves() {
         window: WindowId("w2".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: sup_away.clone(),
-        setter: FrameSetter::Accepted,
+        setter: FrameSetter::Accepted.into(),
         pre: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(sup_home.clone()),
@@ -3307,7 +3307,7 @@ fn host_owned_follow_binds_native_obligation_and_settles_window_first() {
         window: WindowId("w0".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
-        setter: FrameSetter::Accepted,
+        setter: FrameSetter::Accepted.into(),
         pre: Some(WorkspaceRef::Native {
             output: OutputId("out-a".to_owned()),
             workspace: crate::ids::NativeWorkspaceId::parse("n0").expect("native id"),
@@ -11633,7 +11633,7 @@ fn migration_rollback_revokes_exact_rev_and_keeps_newer_selection() {
         window: WindowId("w2".to_owned()),
         target_output: OutputId("out-b".to_owned()),
         target_workspace: home.clone(),
-        setter: FrameSetter::Refused,
+        setter: FrameSetter::Refused.into(),
         pre: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(home.clone()),

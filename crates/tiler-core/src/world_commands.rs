@@ -56,9 +56,18 @@ impl WorldEngine {
         // Staged carrier index for command planning: homed Engine
         // carriers keyed by lifetime. Owned locally so planning borrows
         // nothing from `self`.
+        let directional_move = matches!(
+            command,
+            WorldCommand::MoveDirectional { .. }
+                | WorldCommand::Operation(CoreCommand::Move { .. })
+        );
         let mut owned: Vec<EngineWindow> = Vec::new();
         for domain in &self.staged.domains {
-            owned.extend(domain.windows.iter().cloned());
+            if directional_move {
+                owned.extend(self.shielded_windows(&domain.key, &domain.windows));
+            } else {
+                owned.extend(domain.windows.iter().cloned());
+            }
         }
         let mut by_id: BTreeMap<&WindowId, &EngineWindow> = BTreeMap::new();
         for window in &owned {
@@ -581,6 +590,7 @@ impl WorldEngine {
                                 migration_terminal: None,
                                 migration_selection_rev: None,
                                 pending_member: None,
+                                member_predecessors: Vec::new(),
                                 pending_members: BTreeMap::new(),
                                 pending_view: None,
                             });
@@ -608,6 +618,7 @@ impl WorldEngine {
                                 migration_terminal: None,
                                 migration_selection_rev: None,
                                 pending_member: None,
+                                member_predecessors: Vec::new(),
                                 pending_members: BTreeMap::new(),
                                 pending_view: None,
                             });
@@ -1698,6 +1709,7 @@ impl WorldEngine {
                 migration_terminal: None,
                 migration_selection_rev: None,
                 pending_member: None,
+                member_predecessors: Vec::new(),
                 pending_members: BTreeMap::new(),
                 pending_view: None,
             });
@@ -1734,6 +1746,7 @@ impl WorldEngine {
                 migration_terminal: None,
                 migration_selection_rev: selection_rev,
                 pending_member: None,
+                member_predecessors: Vec::new(),
                 pending_members: BTreeMap::new(),
                 pending_view: None,
             });

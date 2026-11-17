@@ -179,6 +179,7 @@ impl WorldEngine {
             migration_terminal: None,
             migration_selection_rev: None,
             pending_member: None,
+            member_predecessors: Vec::new(),
             pending_members: BTreeMap::new(),
             pending_view: None,
         });

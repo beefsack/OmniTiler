@@ -605,7 +605,7 @@ export class WorldAdapterState {
         if (
             !isOpaqueId(attempt.op) || !isOpaqueId(attempt.win) ||
             !isOpaqueId(attempt.out) || !isOpaqueId(attempt.ws) ||
-            !isSetter(attempt.setter) || !isStamp(attempt.attemptMs) ||
+            !(isSetter(attempt.setter) || attempt.setter === "already-at-target") || !isStamp(attempt.attemptMs) ||
             !refOk(attempt.pre) || !refOk(attempt.post)
         ) {
             return false;

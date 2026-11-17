@@ -687,7 +687,12 @@ mod tests {
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("binding retained");
         assert!(binding.spent);
-        assert_eq!(binding.pending.as_ref(), Some(&attempt_row));
+        assert_eq!(
+            binding.pending.as_ref(),
+            Some(&crate::world_attempts::PropertyAttempt::from_state_attempt(
+                &attempt_row
+            ))
+        );
         assert_eq!(binding.disposition, AttemptOutcome::Applied);
     }
 

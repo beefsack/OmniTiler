@@ -5,10 +5,11 @@
 //! Split from [`crate::world_engine`]: same `impl WorldEngine` ownership,
 //! only relocated for source size. No behavior change.
 //!
-//! Completion is core-owned over raw mechanical attempt facts
-//! ([`MemberAttempt`](crate::world_report::MemberAttempt) setter plus
-//! pre/post homing, [`ViewAttempt`](crate::world_report::ViewAttempt)
-//! setter plus pre/post/baseline views) plus the staged observation. The
+//! Completion is core-owned over canonical mechanical attempt facts
+//! ([`MemberAttemptEvidence`](crate::world_attempts::MemberAttemptEvidence)
+//! disposition plus pre/post homing,
+//! [`ViewAttemptEvidence`](crate::world_attempts::ViewAttemptEvidence)
+//! disposition plus pre/post/baseline views) plus the staged observation. The
 //! adapter reports write/re-read facts only and stages no verdict: every
 //! confirmation, proven refusal, ambiguity latch, and external
 //! supersession below is derived here. External transfer/view verdict
@@ -19,50 +20,18 @@ use std::collections::BTreeSet;
 
 use crate::directional::{OutputId, WindowId};
 use crate::session::DomainKey;
-use crate::world_engine::{RetainedFloat, RetainedTransfer, WorldEngine};
-use crate::world_report::{
-    AttemptOutcome, FrameSetter, MemberAttempt, TransferKind, ViewAttempt, WorkspaceRef,
-    WorldCommand,
+use crate::world_attempts::{
+    AttemptDisposition, MemberAttemptDisposition, MemberAttemptEvidence, RetentionPolicy,
+    ViewAttemptEvidence, retain_matching_attempt, view_evidence_matches,
 };
-
-/// Exact-correlated raw membership evidence for one retained operation
-/// window plus target. Forged rows (operation, window, or target mismatch)
-/// are never evidence: they read as absent.
-fn member_attempt_for<'a>(
-    attempts: &'a [MemberAttempt],
-    operation_id: &str,
-    window: &WindowId,
-    target_output: &OutputId,
-    target_workspace: &str,
-) -> Option<&'a MemberAttempt> {
-    attempts.iter().find(|attempt| {
-        attempt.operation_id == operation_id
-            && attempt.window == *window
-            && attempt.target_output == *target_output
-            && attempt.target_workspace == target_workspace
-    })
-}
-
-/// Exact-correlated raw view evidence for one owning phase plus target.
-/// Same forged-row rule as [`member_attempt_for`].
-fn view_attempt_for<'a>(
-    attempts: &'a [ViewAttempt],
-    operation_id: &str,
-    target_output: &OutputId,
-    target_workspace: &str,
-) -> Option<&'a ViewAttempt> {
-    attempts.iter().find(|attempt| {
-        attempt.operation_id == operation_id
-            && attempt.target_output == *target_output
-            && attempt.target_workspace == target_workspace
-    })
-}
+use crate::world_engine::{RetainedFloat, RetainedTransfer, WorldEngine};
+use crate::world_report::{AttemptOutcome, TransferKind, WorkspaceRef, WorldCommand};
 
 impl WorldEngine {
     /// Effective logical pre homing for one member attempt, capability-gated
     /// to a single evidence lane (never a logical-or-native precedence):
     /// host-owned reports ignore the logical fields and translate only the
-    /// native readback through this engine's own bindings on the retained
+    /// native readback through this engine's own bindings on the supplied
     /// source output (where the window sat before the write); tiler-owned
     /// reports use only the logical pre and ignore natives (rejected
     /// without the capability, so accepted tiler-owned rows never carry
@@ -70,7 +39,7 @@ impl WorldEngine {
     /// never an adapter table.
     fn effective_member_pre(
         &self,
-        attempt: &MemberAttempt,
+        attempt: &MemberAttemptEvidence,
         source_output: &OutputId,
         host_owned: bool,
     ) -> Option<(OutputId, String)> {
@@ -95,7 +64,7 @@ impl WorldEngine {
     /// the logical post. Unmapped or unreadable natives stay unknown.
     fn effective_member_post_on(
         &self,
-        attempt: &MemberAttempt,
+        attempt: &MemberAttemptEvidence,
         output: &OutputId,
         host_owned: bool,
     ) -> Option<(OutputId, String)> {
@@ -121,7 +90,7 @@ impl WorldEngine {
     /// capability gate as [`WorldEngine::effective_member_pre`].
     fn effective_member_post(
         &self,
-        attempt: &MemberAttempt,
+        attempt: &MemberAttemptEvidence,
         host_owned: bool,
     ) -> Option<(OutputId, String)> {
         match attempt.post.as_ref()? {
@@ -142,7 +111,7 @@ impl WorldEngine {
     /// pre. Unmapped or unreadable natives stay unknown.
     pub(crate) fn effective_view_pre(
         &self,
-        attempt: &ViewAttempt,
+        attempt: &ViewAttemptEvidence,
         host_owned: bool,
     ) -> Option<String> {
         if !host_owned {
@@ -158,7 +127,11 @@ impl WorldEngine {
 
     /// Effective logical post view for one view attempt: same capability
     /// gate and translation rule as [`WorldEngine::effective_view_pre`].
-    fn effective_view_post(&self, attempt: &ViewAttempt, host_owned: bool) -> Option<String> {
+    fn effective_view_post(
+        &self,
+        attempt: &ViewAttemptEvidence,
+        host_owned: bool,
+    ) -> Option<String> {
         if !host_owned {
             return None;
         }
@@ -172,7 +145,11 @@ impl WorldEngine {
 
     /// Effective logical baseline view for one view attempt: same capability
     /// gate and translation rule as [`WorldEngine::effective_view_pre`].
-    fn effective_view_baseline(&self, attempt: &ViewAttempt, host_owned: bool) -> Option<String> {
+    fn effective_view_baseline(
+        &self,
+        attempt: &ViewAttemptEvidence,
+        host_owned: bool,
+    ) -> Option<String> {
         if !host_owned {
             return None;
         }
@@ -191,8 +168,9 @@ impl WorldEngine {
     /// logical route is unchanged (natives ignored there; host-owned ignores
     /// logical fields).
     ///
-    /// The refusal post translates on the retained SOURCE output (where the
-    /// window sat before the write), never the target: a refused
+    /// The refusal post translates on the supplied source output (the exact
+    /// current call preimage for window transfers, retained source for migration),
+    /// never the target: a refused
     /// cross-output write leaves the window on the source, so its unchanged
     /// native post still names the source desktop. Translating that post on
     /// the target would unmap (or mismap a repeated global id) and could
@@ -207,13 +185,13 @@ impl WorldEngine {
     /// staged source homing rather than settling refusal.
     fn member_refused(
         &self,
-        attempt: &MemberAttempt,
+        attempt: &MemberAttemptEvidence,
         source_output: &OutputId,
         target_output: &OutputId,
         target_workspace: &str,
         host_owned: bool,
     ) -> bool {
-        matches!(attempt.setter, FrameSetter::Refused) && {
+        attempt.disposition == MemberAttemptDisposition::Called(AttemptDisposition::Refused) && {
             let pre = self.effective_member_pre(attempt, source_output, host_owned);
             // Refusal-only source-side post: the unchanged readback still
             // names the source desktop.
@@ -232,11 +210,11 @@ impl WorldEngine {
     /// ambiguous instead of settling refusal.
     pub(crate) fn view_refused(
         &self,
-        attempt: &ViewAttempt,
+        attempt: &ViewAttemptEvidence,
         target_workspace: &str,
         host_owned: bool,
     ) -> bool {
-        matches!(attempt.setter, FrameSetter::Refused) && {
+        attempt.disposition == AttemptDisposition::Refused && {
             let pre = self.effective_view_pre(attempt, host_owned);
             let post = self.effective_view_post(attempt, host_owned);
             pre.is_some() && pre == post && pre.as_deref() != Some(target_workspace)
@@ -248,8 +226,12 @@ impl WorldEngine {
     /// without it) names the target. The immediate post-write readback proves
     /// the write landed even when the current observation already moved on;
     /// that departure is newer external input, never a reason to re-actuate.
-    pub(crate) fn view_post_proves_target(&self, attempt: &ViewAttempt, host_owned: bool) -> bool {
-        matches!(attempt.setter, FrameSetter::Accepted)
+    pub(crate) fn view_post_proves_target(
+        &self,
+        attempt: &ViewAttemptEvidence,
+        host_owned: bool,
+    ) -> bool {
+        attempt.disposition == AttemptDisposition::Accepted
             && self.effective_view_post(attempt, host_owned).as_deref()
                 == Some(attempt.target_workspace.as_str())
     }
@@ -394,20 +376,31 @@ impl WorldEngine {
         adopted.into_iter().map(|(_, fresh)| fresh).collect()
     }
 
-    /// Whether one accepted member attempt proves arrival at its retained
+    /// Whether one raw member attempt proves arrival at its retained
     /// target: the effective post (native-only under the capability,
     /// translated on the target output; logical-only without it) names the
     /// target homing. A stale staged reading (delayed capture) never vetoes
     /// this proof; a different known staged homing stays newer external
     /// input and wins elsewhere.
-    fn member_post_proves_target(&self, attempt: &MemberAttempt, host_owned: bool) -> bool {
-        matches!(attempt.setter, FrameSetter::Accepted)
-            && self
-                .effective_member_post(attempt, host_owned)
-                .as_ref()
-                .is_some_and(|(output, workspace)| {
-                    output == &attempt.target_output && workspace == &attempt.target_workspace
-                })
+    fn member_post_proves_target(&self, attempt: &MemberAttemptEvidence, host_owned: bool) -> bool {
+        let post_proves = self
+            .effective_member_post(attempt, host_owned)
+            .as_ref()
+            .is_some_and(|(output, workspace)| {
+                output == &attempt.target_output && workspace == &attempt.target_workspace
+            });
+        match attempt.disposition {
+            MemberAttemptDisposition::Called(AttemptDisposition::Accepted) => post_proves,
+            MemberAttemptDisposition::AlreadyAtTarget => {
+                // No-call consumption proves only with non-null equal raw
+                // pre/post references AND the effective post translating to
+                // the attempt target.
+                attempt.pre.is_some() && attempt.pre == attempt.post && post_proves
+            }
+            MemberAttemptDisposition::Called(
+                AttemptDisposition::Refused | AttemptDisposition::Threw,
+            ) => false,
+        }
     }
 
     /// Proven abandonment of one retained view flight: the correlated attempt
@@ -418,7 +411,7 @@ impl WorldEngine {
     /// forever or re-actuating a settled write.
     fn view_proven_then_abandoned(
         &self,
-        attempt: &ViewAttempt,
+        attempt: &ViewAttemptEvidence,
         target_workspace: &str,
         echo: Option<&str>,
         host_owned: bool,
@@ -445,7 +438,7 @@ impl WorldEngine {
     /// overrides an exact target proof.
     fn view_third_location(
         &self,
-        attempt: &ViewAttempt,
+        attempt: &ViewAttemptEvidence,
         target_workspace: &str,
         host_owned: bool,
     ) -> bool {
@@ -492,6 +485,9 @@ impl WorldEngine {
     /// Runs before [`WorldEngine::build_staged`] so homing assigns against
     /// adapter truth, never a stale desire.
     pub(crate) fn settle_views_pre(&mut self) {
+        // Canonical view correlation/retention: exact (op, output, workspace)
+        // evidence stages into every retained view slot before any hold.
+        self.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Views);
         // Migration parents live in the same vec: refill children with a
         // live parent settle with the parent, never alone.
         let parent_ops: std::collections::BTreeSet<String> = self
@@ -502,7 +498,7 @@ impl WorldEngine {
             .collect();
         let native_free = !self.host_owned_workspace_domains();
         let mut keep: Vec<RetainedTransfer> = Vec::new();
-        for mut retained in std::mem::take(&mut self.retained) {
+        for retained in std::mem::take(&mut self.retained) {
             if !matches!(&retained.target.kind, TransferKind::View) {
                 keep.push(retained);
                 continue;
@@ -520,18 +516,10 @@ impl WorldEngine {
                 keep.push(retained);
                 continue;
             }
-            // Stage exact-correlated raw evidence before any hold so a
-            // gapped report never erases knowledge the sequencer pending
-            // map forgets after acknowledgement.
-            if let Some(attempt) = view_attempt_for(
-                &self.staged.observation.view_attempts,
-                &retained.target.operation_id,
-                &retained.target.target_output,
-                &retained.target.target_workspace,
-            ) {
-                retained.pending_view = Some(attempt.clone());
-            }
             let raw = retained.pending_view.clone();
+            let raw_view = raw
+                .as_ref()
+                .and_then(crate::world_attempts::PropertyAttempt::as_view);
             // Proof echo: the staged native-derived echo under the
             // host-owned capability. Unknown holds.
             let echo = self.native_echo_for(&retained.target.target_output);
@@ -552,7 +540,7 @@ impl WorldEngine {
                     &retained.target.target_workspace,
                     &ring,
                 );
-            } else if raw.as_ref().is_some_and(|attempt| {
+            } else if raw_view.is_some_and(|attempt| {
                 self.view_refused(
                     attempt,
                     &retained.target.target_workspace,
@@ -582,7 +570,7 @@ impl WorldEngine {
                     keep.push(retained);
                     continue;
                 }
-                let pre_matches = raw.as_ref().and_then(|attempt| {
+                let pre_matches = raw_view.and_then(|attempt| {
                     self.effective_view_pre(attempt, self.host_owned_workspace_domains())
                 });
                 if echo.is_some() && echo == pre_matches.as_deref() {
@@ -590,7 +578,7 @@ impl WorldEngine {
                 } else {
                     keep.push(retained);
                 }
-            } else if raw.as_ref().is_some_and(|attempt| {
+            } else if raw_view.is_some_and(|attempt| {
                 self.view_proven_then_abandoned(
                     attempt,
                     &retained.target.target_workspace,
@@ -616,7 +604,7 @@ impl WorldEngine {
                     self.history
                         .observe(&retained.target.target_output.0, &current, &ring);
                 }
-            } else if raw.as_ref().is_some_and(|attempt| {
+            } else if raw_view.is_some_and(|attempt| {
                 self.view_third_location(
                     attempt,
                     &retained.target.target_workspace,
@@ -691,37 +679,49 @@ impl WorldEngine {
         // half) in this same pass: the sweep and publish below then apply
         // the continuation coherently in one reply. Born clears settle
         // next: a proven born clear retires before the sweep publishes the
-        // next reply, so the desire drops exactly when proof lands.
-        self.settle_clears(current_command, issue, consumed);
-        self.settle_born_clears();
+        // next reply, so the desire drops exactly when proof lands. The
+        // explicit clear phase does both at this former two-call position,
+        // before member continuation below.
+        self.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Clears {
+            current_command,
+            issue,
+            consumed,
+        });
+        // Canonical membership correlation/retention: exact (op, window,
+        // target) evidence stages into every retained member/predecessor/
+        // migration slot before any hold. Window transfers gate membership
+        // independently of the frozen selection binding's destination
+        // visibility/focus completion.
+        self.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Members);
         let mut keep: Vec<RetainedTransfer> = Vec::new();
         for mut retained in std::mem::take(&mut self.retained) {
-            // Stage exact-correlated raw membership evidence before any
-            // hold so gapped reports never erase knowledge the sequencer
-            // pending map forgets after acknowledgement. Window transfers
-            // stage membership evidence only; the follow view gate is
-            // removed (membership settles independently while the common
-            // frozen selection binding owns destination visibility and
-            // focus through the existing selection completion).
-            if let TransferKind::Window(window) = &retained.target.kind {
-                let target_output = retained.target.target_output.clone();
-                let target_workspace = retained.target.target_workspace.clone();
-                if let Some(attempt) = member_attempt_for(
-                    &self.staged.observation.member_attempts,
-                    &retained.target.operation_id,
-                    window,
-                    &target_output,
-                    &target_workspace,
-                ) {
-                    retained.pending_member = Some(attempt.clone());
-                }
-            }
             let raw = retained.pending_member.clone();
+            let raw_member = raw
+                .as_ref()
+                .and_then(crate::world_attempts::PropertyAttempt::as_member);
+            // Effective current call source: the exact raw pre names where the
+            // window actually sat before this call, kept as an Option so an
+            // unreadable pre is not mistaken for proof. Absent, unmapped, or
+            // wrong-namespace pre falls back to the retained source.
+            let call_source = raw_member.and_then(|attempt| {
+                let output = match attempt.pre.as_ref()? {
+                    WorkspaceRef::Logical { output, .. } | WorkspaceRef::Native { output, .. } => {
+                        output
+                    }
+                };
+                self.effective_member_pre(attempt, output, self.host_owned_workspace_domains())
+            });
+            let (call_output, call_workspace) = call_source.clone().unwrap_or_else(|| {
+                (
+                    retained.source_output.clone(),
+                    retained.source_workspace.clone(),
+                )
+            });
             let raw_refused = match &retained.target.kind {
-                TransferKind::Window(_) => raw.as_ref().is_some_and(|attempt| {
+                TransferKind::Window(_) => raw_member.is_some_and(|attempt| {
                     self.member_refused(
                         attempt,
-                        &retained.source_output,
+                        &call_output,
                         &retained.target.target_output,
                         &retained.target.target_workspace,
                         self.host_owned_workspace_domains(),
@@ -735,20 +735,46 @@ impl WorldEngine {
             // this engine's own bindings). The immediate readback proves
             // the write landed even when the staged capture is intermediate.
             let raw_arrival_proves = match &retained.target.kind {
-                TransferKind::Window(_) => raw.as_ref().is_some_and(|attempt| {
+                TransferKind::Window(_) => raw_member.is_some_and(|attempt| {
                     self.member_post_proves_target(attempt, self.host_owned_workspace_domains())
                 }),
                 _ => false,
             };
+            // Consumption spends the operation, not settlement. Calls always
+            // spend; no-call requires exact target proof.
+            let host_owned = self.host_owned_workspace_domains();
+            let latest_consumed = match &retained.target.kind {
+                TransferKind::Window(_) => {
+                    raw_member.is_some_and(|attempt| match attempt.disposition {
+                        MemberAttemptDisposition::Called(_) => true,
+                        MemberAttemptDisposition::AlreadyAtTarget => {
+                            self.member_post_proves_target(attempt, host_owned)
+                        }
+                    })
+                }
+                _ => false,
+            };
+            // Only a consumed latest with a readable current source or a
+            // proven target write may erase own-write correlation: consumed
+            // with an unreadable source and no target proof is not evidence
+            // of external input, so predecessor own-write knowledge survives
+            // to protect the latest over an exact old own arrival.
+            if latest_consumed && (call_source.is_some() || raw_arrival_proves) {
+                retained.member_predecessors.clear();
+            }
+            let outstanding_predecessors = !retained.member_predecessors.is_empty();
+            // Without latest consumption, and with any outstanding
+            // predecessor, a bare independent target fact must not retire
+            // the latest transfer. `raw_arrival_proves` above is left
+            // untouched so an exact valid raw arrival still settles.
+            let independent_blocked_by_predecessors = !latest_consumed && outstanding_predecessors;
             match &retained.target.kind {
                 TransferKind::Window(window) => {
                     let homing = self.staged_homing(window);
                     let closed = self.staged.closes.contains(window);
                     let source_key = DomainKey {
-                        output: retained.source_output.clone(),
-                        workspace: crate::directional::WorkspaceId(
-                            retained.source_workspace.clone(),
-                        ),
+                        output: call_output.clone(),
+                        workspace: crate::directional::WorkspaceId(call_workspace.clone()),
                     };
                     let target_key = DomainKey {
                         output: retained.target.target_output.clone(),
@@ -760,7 +786,7 @@ impl WorldEngine {
                     // is neither proof nor proven refusal) holds the
                     // target without re-actuation; no raw at all holds
                     // plainly so a later report can still dispatch.
-                    let ambiguous = raw.is_some() && !raw_refused;
+                    let ambiguous = raw_member.is_some() && !raw_refused;
                     if homing.as_ref() == Some(&target_key) {
                         // Target observation wins over stale refusal: arrival
                         // proves before any raw refusal reconciles.
@@ -768,8 +794,7 @@ impl WorldEngine {
                         if closed {
                             // Explicit close settles; the sweep forgets it.
                         } else {
-                            let same_output =
-                                retained.source_output == retained.target.target_output;
+                            let same_output = call_output == retained.target.target_output;
                             // Native-derived receipt proof (host-owned only;
                             // native-free carries no receipt vocabulary).
                             let observed_proves = self
@@ -809,6 +834,13 @@ impl WorldEngine {
                                     !self.host_owned_workspace_domains() || observed_proves;
                                 (fact_at_target && receipt_ok) || raw_arrival_proves
                             };
+                            // With an outstanding predecessor and no latest
+                            // consumption, a bare independent target fact
+                            // never retires the latest transfer; an exact
+                            // raw arrival (`raw_arrival_proves`) still
+                            // settles via the untouched lane above.
+                            let independent_proves = independent_proves
+                                && !(independent_blocked_by_predecessors && !raw_arrival_proves);
                             if !independent_proves {
                                 let mut held = retained;
                                 if ambiguous {
@@ -828,7 +860,7 @@ impl WorldEngine {
                         // the raw staged (as floats do), never settling from
                         // absence. Minimized/unreadable facts hold.
                         let gapped = !self.staged.observation.inventory_complete
-                            || self.screen_complete(&retained.source_output) != Some(true)
+                            || self.screen_complete(&call_output) != Some(true)
                             || self.screen_complete(&retained.target.target_output) != Some(true)
                             || self.staged.gesture_barrier;
                         if gapped {
@@ -841,10 +873,10 @@ impl WorldEngine {
                                     && fact.minimized != Some(true)
                                     && !self.staged.closes.contains(window)
                             });
-                            let pre_key = raw.as_ref().and_then(|attempt| {
+                            let pre_key = raw_member.and_then(|attempt| {
                                 self.effective_member_pre(
                                     attempt,
-                                    &retained.source_output,
+                                    &call_output,
                                     self.host_owned_workspace_domains(),
                                 )
                                 .map(|(out, ws)| DomainKey {
@@ -888,22 +920,82 @@ impl WorldEngine {
                             // Confirmed: the flight drops without
                             // re-actuation.
                         } else if key != source_key {
-                            // Newer external input off both transfer screens
-                            // wins; a contradictory receipt on either screen
-                            // holds (never proves arrival, never fought).
-                            // Hotplug policy intents are the exception: the
-                            // screen vanished under the member (no newer
-                            // user input), so the intent holds instead of
-                            // dropping, and the outstanding flight keeps the
-                            // member homed until arrival proves it. SOURCE
-                            // provenance narrows the hold: a fact still on
-                            // a retained source native (or with unknown
-                            // native) is stale topology evidence and holds;
-                            // a fact on a different genuine native is newer
-                            // external input and supersedes the flight
-                            // (drop, so reconcile adopts the receipt through
-                            // the existing path; no new ledger).
-                            if retained.policy {
+                            // When the current homing exactly matches a
+                            // predecessor target backed by
+                            // possibly-executed own evidence, the latest
+                            // transfer is preserved: the window may
+                            // have been left there by our own earlier write,
+                            // so the location is not proven external
+                            // supersession. No raw historical correlation
+                            // falls through to the untouched external
+                            // supersession below. Unconsumed/no-raw evidence
+                            // keeps it unheld; ambiguous raw evidence latches
+                            // held so spent calls cannot reauthorize
+                            // actuation.
+                            let predecessor_own_write =
+                                retained.member_predecessors.iter().any(
+                                    |(pred_target, pred_attempt)| {
+                                        pred_target.target_output == key.output
+                                        && pred_target.target_workspace == key.workspace.0.as_str()
+                                        && pred_attempt.as_ref().and_then(
+                                            crate::world_attempts::PropertyAttempt::as_member
+                                        ).is_some_and(|attempt| {
+                                            match attempt.disposition {
+                                                MemberAttemptDisposition::Called(
+                                                    AttemptDisposition::Accepted
+                                                    | AttemptDisposition::Threw,
+                                                ) => true,
+                                                MemberAttemptDisposition::Called(
+                                                    AttemptDisposition::Refused,
+                                                ) => {
+                                                    // Unknown pre/post cannot prove no write.
+                                                    let Some(pre) = attempt.pre.as_ref() else {
+                                                        return true;
+                                                    };
+                                                    let source_output = match pre {
+                                                        WorkspaceRef::Logical {
+                                                            output, ..
+                                                        }
+                                                        | WorkspaceRef::Native { output, .. } => {
+                                                            output
+                                                        }
+                                                    };
+                                                    !self.member_refused(
+                                                        attempt,
+                                                        source_output,
+                                                        &attempt.target_output,
+                                                        &attempt.target_workspace,
+                                                        host_owned,
+                                                    )
+                                                }
+                                                MemberAttemptDisposition::AlreadyAtTarget => false,
+                                            }
+                                        })
+                                    },
+                                );
+                            if predecessor_own_write {
+                                retained.source_output = key.output.clone();
+                                retained.source_workspace = key.workspace.0.clone();
+                                if ambiguous {
+                                    retained.target.held = true;
+                                }
+                                keep.push(retained);
+                            } else if retained.policy {
+                                // Newer external input off both transfer screens
+                                // wins; a contradictory receipt on either screen
+                                // holds (never proves arrival, never fought).
+                                // Hotplug policy intents are the exception: the
+                                // screen vanished under the member (no newer
+                                // user input), so the intent holds instead of
+                                // dropping, and the outstanding flight keeps the
+                                // member homed until arrival proves it. SOURCE
+                                // provenance narrows the hold: a fact still on
+                                // a retained source native (or with unknown
+                                // native) is stale topology evidence and holds;
+                                // a fact on a different genuine native is newer
+                                // external input and supersedes the flight
+                                // (drop, so reconcile adopts the receipt through
+                                // the existing path; no new ledger).
                                 // Capability-gated SOURCE narrowing: without
                                 // host-owned evidence no Value ever proves
                                 // external input, so the policy holds.
@@ -1028,34 +1120,29 @@ impl WorldEngine {
         mut retained: RetainedTransfer,
         keep: &mut Vec<RetainedTransfer>,
     ) {
-        // Stage exact-correlated raw evidence before any hold so gapped
-        // reports never erase knowledge the sequencer pending maps forget
-        // after acknowledgement.
+        // Canonical member evidence was staged by the ordered Members phase
+        // before any hold; the migration parent's view proof rides this entry
+        // and stages here through the shared primitive (native-free included),
+        // then policy reconciles it.
         let target_out = retained.target.target_output.clone();
         let target_ws = retained.target.target_workspace.clone();
         let op = retained.target.operation_id.clone();
-        for member in retained.members.clone() {
-            if let Some(attempt) = member_attempt_for(
-                &self.staged.observation.member_attempts,
-                &op,
-                &member,
-                &target_out,
-                &target_ws,
-            ) {
-                retained.pending_members.insert(member, attempt.clone());
-            }
-        }
+        let attempts = &self.staged.observation.property_attempts;
+        let mut parent_slot = retained.pending_view.take();
+        retain_matching_attempt(
+            attempts,
+            |attempt| {
+                attempt.as_view().is_some_and(|evidence| {
+                    view_evidence_matches(evidence, &op, &target_out, &target_ws)
+                })
+            },
+            &mut parent_slot,
+            RetentionPolicy::ReplacePending,
+        );
+        retained.pending_view = parent_slot;
         retained
             .pending_members
             .retain(|member, _| retained.members.contains(member));
-        if let Some(attempt) = view_attempt_for(
-            &self.staged.observation.view_attempts,
-            &op,
-            &target_out,
-            &target_ws,
-        ) {
-            retained.pending_view = Some(attempt.clone());
-        }
         // Settle the paired refill child here: settle_views_pre skips
         // `{parent}-refill` children with a live parent so the two phases
         // reconcile together. An orphan child (no live parent) is never
@@ -1066,19 +1153,26 @@ impl WorldEngine {
         }) {
             let child_out = keep[pos].target.target_output.clone();
             let child_ws = keep[pos].target.target_workspace.clone();
-            if let Some(attempt) = view_attempt_for(
-                &self.staged.observation.view_attempts,
-                &refill_child_op,
-                &child_out,
-                &child_ws,
-            ) {
-                keep[pos].pending_view = Some(attempt.clone());
-            }
+            let mut child_slot = keep[pos].pending_view.take();
+            retain_matching_attempt(
+                attempts,
+                |attempt| {
+                    attempt.as_view().is_some_and(|evidence| {
+                        view_evidence_matches(evidence, &refill_child_op, &child_out, &child_ws)
+                    })
+                },
+                &mut child_slot,
+                RetentionPolicy::ReplacePending,
+            );
+            keep[pos].pending_view = child_slot;
             let child_raw = keep[pos].pending_view.clone();
+            let child_view = child_raw
+                .as_ref()
+                .and_then(crate::world_attempts::PropertyAttempt::as_view);
             let echo = self.staged.echoes.get(&child_out.0).map(String::as_str);
             if echo == Some(child_ws.as_str()) {
                 keep.remove(pos);
-            } else if child_raw.as_ref().is_some_and(|attempt| {
+            } else if child_view.is_some_and(|attempt| {
                 self.view_refused(attempt, &child_ws, self.host_owned_workspace_domains())
             }) {
                 // A refused refill never retries: the spent view-phase fence
@@ -1090,7 +1184,7 @@ impl WorldEngine {
                 // refused preimage) settles the parent instead of holding
                 // forever: drop the child so the source-echo check below
                 // reconciles as external. Unknown/gap echoes hold.
-                let pre = child_raw.as_ref().and_then(|attempt| {
+                let pre = child_view.and_then(|attempt| {
                     self.effective_view_pre(attempt, self.host_owned_workspace_domains())
                 });
                 let known_third = echo.is_some_and(|current| {
@@ -1106,7 +1200,7 @@ impl WorldEngine {
                 } else {
                     keep[pos].target.held = true;
                 }
-            } else if child_raw.as_ref().is_some_and(|attempt| {
+            } else if child_view.is_some_and(|attempt| {
                 self.view_proven_then_abandoned(
                     attempt,
                     &child_ws,
@@ -1125,7 +1219,7 @@ impl WorldEngine {
                     self.views.insert(child_out.0.clone(), current);
                 }
                 keep.remove(pos);
-            } else if child_raw.as_ref().is_some_and(|attempt| {
+            } else if child_view.is_some_and(|attempt| {
                 self.view_third_location(attempt, &child_ws, self.host_owned_workspace_domains())
                     && self
                         .effective_view_post(attempt, self.host_owned_workspace_domains())
@@ -1162,13 +1256,17 @@ impl WorldEngine {
             .collect();
         if !live_members.is_empty()
             && live_members.iter().all(|member| {
-                retained.pending_members.get(member).is_some_and(|attempt| {
+                retained.pending_members.get(member).and_then(
+                    crate::world_attempts::PropertyAttempt::as_member
+                ).is_some_and(|attempt| {
                     self.member_refused(attempt, &retained.source_output, &target_out, &target_ws, self.host_owned_workspace_domains())
                 })
             })
         {
             retained.migration_terminal = Some(AttemptOutcome::RefusedProven);
-        } else if retained.pending_view.as_ref().is_some_and(|attempt| {
+        } else if retained.pending_view.as_ref().and_then(
+            crate::world_attempts::PropertyAttempt::as_view
+        ).is_some_and(|attempt| {
             self.view_third_location(attempt, &target_ws, self.host_owned_workspace_domains())
                 && self.effective_view_post(attempt, self.host_owned_workspace_domains()).as_deref().is_some_and(|post| {
                     self.mapping
@@ -1865,8 +1963,12 @@ impl WorldEngine {
     ///   external supersession, close) emits one `operation_settled` event
     ///   with the original op/window/outcome; holds emit nothing.
     pub(crate) fn settle_floats(&mut self) {
-        use crate::world_frames::{dpi_basis_changed, is_stale_replay};
-        use crate::world_report::{FrameSetter, OperationOutcome};
+        use crate::world_attempts::{
+            AttemptDisposition, PropertyAttempt, RetentionPolicy, frame_evidence_matches,
+            frame_watermark_stale, retain_candidate,
+        };
+        use crate::world_frames::dpi_basis_changed;
+        use crate::world_report::OperationOutcome;
         let mut keep: Vec<RetainedFloat> = Vec::new();
         for mut retained in std::mem::take(&mut self.retained_floats) {
             if self.staged.closes.contains(&retained.window) {
@@ -1887,22 +1989,37 @@ impl WorldEngine {
             // latches below and reconciles from later stable observations.
             let mut fresh_evidence = false;
             let mut fresh_dpi_flip = false;
-            for attempt in self.staged.observation.frames.iter().filter(|attempt| {
-                attempt.window == retained.window
-                    && attempt.target == retained.target
-                    && attempt.operation_id.as_deref() == Some(retained.operation_id.as_str())
-            }) {
-                if self
-                    .consumed_frames
-                    .get(&retained.window)
-                    .is_some_and(|prior| is_stale_replay(prior, attempt))
-                {
+            for attempt in self
+                .staged
+                .observation
+                .property_attempts
+                .iter()
+                .filter(|attempt| {
+                    attempt.as_frame().is_some_and(|evidence| {
+                        frame_evidence_matches(
+                            evidence,
+                            &retained.window,
+                            &retained.target,
+                            Some(retained.operation_id.as_str()),
+                        )
+                    })
+                })
+            {
+                let evidence = attempt.as_frame().expect("filtered frame attempt");
+                if frame_watermark_stale(&self.consumed_frames, evidence) {
                     continue;
                 }
-                if dpi_basis_changed(attempt.dpi_before, attempt.dpi_after) {
+                if dpi_basis_changed(evidence.dpi_before, evidence.dpi_after) {
                     fresh_dpi_flip = true;
                 }
-                retained.pending = Some(attempt.clone());
+                // Clone only the actually retained exact-correlated row; the
+                // shared primitive preserves report order (last fresh row
+                // wins) and never stages a forged or replayed attempt.
+                retain_candidate(
+                    attempt,
+                    &mut retained.pending,
+                    RetentionPolicy::ReplacePending,
+                );
                 fresh_evidence = true;
             }
             // Safety exclusions hold: pending placement work must not
@@ -1961,9 +2078,12 @@ impl WorldEngine {
                 );
                 continue;
             }
-            if let Some(pending) = retained.pending.as_ref()
+            if let Some(pending) = retained
+                .pending
+                .as_ref()
+                .and_then(PropertyAttempt::as_frame)
                 && !dpi_basis_changed(pending.dpi_before, pending.dpi_after)
-                && matches!(pending.setter, FrameSetter::Refused)
+                && pending.disposition == AttemptDisposition::Refused
                 && let (Some(pre), Some(readback)) = (pending.prewrite, pending.readback)
                 && pre != retained.target
                 && readback == pre
@@ -1997,22 +2117,26 @@ impl WorldEngine {
             // An already-issued older world can land after this target was
             // retained. Its latest mechanical attempt is self-echo evidence,
             // not a float completion or permission to repeat either write.
-            let prior = self.consumed_frames.get(&retained.window);
             let latest = self
                 .staged
                 .observation
-                .frames
+                .property_attempts
                 .iter()
-                .find(|attempt| {
-                    attempt.window == retained.window
-                        && !prior.is_some_and(|prior| is_stale_replay(prior, attempt))
+                .filter_map(PropertyAttempt::as_frame)
+                .find(|evidence| {
+                    evidence.window == retained.window
+                        && !frame_watermark_stale(&self.consumed_frames, evidence)
                 })
-                .or(prior);
-            if latest.is_some_and(|attempt| {
-                attempt.attempt_ms != 0
-                    && attempt.setter == FrameSetter::Accepted
-                    && !dpi_basis_changed(attempt.dpi_before, attempt.dpi_after)
-                    && attempt.target == current
+                .or_else(|| {
+                    self.consumed_frames
+                        .get(&retained.window)
+                        .and_then(PropertyAttempt::as_frame)
+                });
+            if latest.is_some_and(|evidence| {
+                evidence.attempt_ms != 0
+                    && evidence.disposition == AttemptDisposition::Accepted
+                    && !dpi_basis_changed(evidence.dpi_before, evidence.dpi_after)
+                    && evidence.target == current
             }) {
                 keep.push(retained);
                 continue;

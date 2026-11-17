@@ -3515,7 +3515,7 @@ fn composed_move_fullscreen_refuses_without_clear() {
 }
 
 #[test]
-fn composed_move_in_flight_restores_bit() {
+fn composed_move_latest_home_refusal_restores_bit() {
     let mut engine = engine();
     let windows = || {
         vec![
@@ -3565,16 +3565,16 @@ fn composed_move_in_flight_restores_bit() {
         (WorldOutcome::Accepted(_), settlements) => assert_eq!(
             settlements.first().and_then(|s| s.result.as_ref()),
             Some(&CommandResult::Rejected {
-                kind: CommandRejectKind::TransferInFlight
+                kind: CommandRejectKind::OperationRefused
             })
         ),
-        (other, _) => panic!("move under a flight refuses, got {other:?}"),
+        (other, _) => panic!("latest-home move must refuse, got {other:?}"),
     }
     assert!(
         engine
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
-        "in-flight refusal restores the cleared bit"
+        "latest-home refusal restores the cleared bit"
     );
 }
 

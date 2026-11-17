@@ -216,10 +216,10 @@ impl WorldEngine {
         self.gesture_bind(&BTreeSet::new());
         self.settle_rest(report.command.as_ref(), issue, consumed);
         self.build_staged_domains();
-        self.settle_states();
+        self.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::States);
         self.settle_selection_feedback();
-        self.settle_selection_switch();
-        self.settle_frames();
+        self.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Visibility);
+        self.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Frames);
         self.prev_cursor = self.last_cursor;
         self.last_cursor = self.staged.observation.cursor;
         self.engine.set_fresh_cursor(self.staged.observation.cursor);

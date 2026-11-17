@@ -7,9 +7,8 @@
 //! from first-seen maximized/fullscreen facts through the shared stateless
 //! [`crate::window_policy`] predicates (never reimplemented inline),
 //! publishing the one-shot `clear_operation` desire, and settling over the
-//! correlated raw [`ClearAttempt`](crate::world_report::ClearAttempt) plus
-//! the staged observation. No behavior change to the directional lane in
-//! [`crate::world_clear`].
+//! shared engine's canonical clear evidence plus the staged observation. No
+//! behavior change to the directional lane in [`crate::world_clear`].
 //!
 //! Two lanes, one binding shape:
 //! - Born lane: a post-startup first-seen maximized, non-fullscreen window on a
@@ -54,38 +53,9 @@ use crate::window_policy::{
     FirstExitDisposition, born_keep_latch, classify_born_fullscreen_exit,
     should_clear_maximize_at_admission_with_born_mode, should_hold_born_fullscreen,
 };
+use crate::world_attempts::{PropertyAttempt, clear_accepted, clear_refused};
 use crate::world_engine::{RetainedBornClear, WorldEngine};
-use crate::world_report::{ClearAttempt, FrameSetter, OperationOutcome, TilingMode};
-
-/// Exact-correlated raw clear evidence for one retained born operation.
-/// Forged rows (operation or window mismatch) are never evidence: they
-/// read as absent.
-fn born_attempt_for<'a>(
-    attempts: &'a [ClearAttempt],
-    operation_id: &str,
-    window: &WindowId,
-) -> Option<&'a ClearAttempt> {
-    attempts
-        .iter()
-        .find(|attempt| attempt.operation_id == operation_id && attempt.window == *window)
-}
-
-/// Proven clear refusal: an explicit native refusal with an unchanged
-/// readable maximized preimage. Anything else (accepted mismatch, throw,
-/// unreadable proof) latches ambiguity, never refusal.
-fn born_refused(attempt: &ClearAttempt) -> bool {
-    matches!(attempt.setter, FrameSetter::Refused)
-        && attempt.pre_maximized == Some(true)
-        && attempt.post_maximized == Some(true)
-}
-
-/// Proven clear dispatch: the setter ran (accepted, possibly completing
-/// asynchronously) against a readable maximized preimage. Never proof on
-/// its own: the staged observation must also show complete readable
-/// unmaximized facts (checked by the caller).
-fn born_accepted(attempt: &ClearAttempt) -> bool {
-    matches!(attempt.setter, FrameSetter::Accepted) && attempt.pre_maximized == Some(true)
-}
+use crate::world_report::{OperationOutcome, TilingMode};
 
 impl WorldEngine {
     /// Next born operation identity. Monotonic within the generation, never
@@ -534,7 +504,8 @@ impl WorldEngine {
     }
 
     /// Settle outstanding born maximize-clears against
-    /// operation-correlated raw clear attempts plus the staged observation.
+    /// operation-correlated canonical clear evidence plus the staged
+    /// observation, staged by the shared clear phase.
     /// Runs in [`WorldEngine::settle_rest`] after the directional lane so a
     /// proven born clear retires before the sweep publishes the next reply.
     ///
@@ -568,14 +539,8 @@ impl WorldEngine {
                 self.prune_born_lifetime(&retained.window);
                 continue;
             }
-            // Stage exact-correlated raw evidence before any hold.
-            if let Some(attempt) = born_attempt_for(
-                &self.staged.observation.clear_attempts,
-                &retained.operation_id,
-                &retained.window,
-            ) {
-                retained.pending = Some(attempt.clone());
-            }
+            // Exact-correlated canonical evidence was staged by the clear
+            // phase before any hold; close pruned above before intake.
             // Gap bars hold with identities preserved, never settling from
             // absence and never erasing staged evidence.
             if !self.staged.observation.inventory_complete || self.staged.gesture_barrier {
@@ -749,7 +714,12 @@ impl WorldEngine {
             if derived_settle.overlay_maximized {
                 // Still maximized: never success. Proven refusal retires
                 // with no loop; anything else holds.
-                if retained.pending.as_ref().is_some_and(born_refused) {
+                if retained
+                    .pending
+                    .as_ref()
+                    .and_then(PropertyAttempt::as_clear)
+                    .is_some_and(clear_refused)
+                {
                     self.born_attempted.insert(retained.window.clone());
                     self.emit_operation(
                         retained.operation_id.clone(),
@@ -771,7 +741,12 @@ impl WorldEngine {
             // staged evidence (throw, accepted mismatch, unreadable proof)
             // holds with no retry: it may yet be our own clear completing
             // asynchronously.
-            let Some(pending) = retained.pending.clone() else {
+            let Some(pending) = retained
+                .pending
+                .as_ref()
+                .and_then(PropertyAttempt::as_clear)
+                .cloned()
+            else {
                 self.born_attempted.insert(retained.window.clone());
                 self.emit_operation(
                     retained.operation_id.clone(),
@@ -781,7 +756,7 @@ impl WorldEngine {
                 );
                 continue;
             };
-            if born_refused(&pending) {
+            if clear_refused(&pending) {
                 self.born_attempted.insert(retained.window.clone());
                 self.emit_operation(
                     retained.operation_id.clone(),
@@ -791,8 +766,9 @@ impl WorldEngine {
                 );
                 continue;
             }
-            if !born_accepted(&pending) {
-                retained.pending = Some(pending);
+            if !clear_accepted(&pending) {
+                // Canonical evidence already sits in the retained slot; only
+                // ambiguity is latched.
                 retained.ambiguous = true;
                 keep.push(retained);
                 continue;

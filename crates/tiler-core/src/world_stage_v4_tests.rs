@@ -866,8 +866,13 @@ fn v4_unsupported_attempt_does_not_settle() {
     engine.stage_facts_v4(&report);
     // The real staged v4 attempt is present in the capture; settlement
     // still ignores it for the unsupported property.
-    assert_eq!(engine.staged.observation.state_attempts, vec![attempt]);
-    engine.settle_states();
+    assert_eq!(
+        engine.staged.observation.property_attempts,
+        vec![crate::world_attempts::PropertyAttempt::from_state_attempt(
+            &attempt
+        )]
+    );
+    engine.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::States);
     let binding = engine
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))

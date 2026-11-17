@@ -221,7 +221,7 @@ fn contradictory_receipt_never_proves_send_arrival() {
                 window: WindowId("win-a".to_owned()),
                 target_output: OutputId("out-a".to_owned()),
                 target_workspace: target.clone(),
-                setter: FrameSetter::Accepted,
+                setter: FrameSetter::Accepted.into(),
                 pre: None,
                 post: Some(WorkspaceRef::Logical {
                     output: OutputId("out-a".to_owned()),
@@ -346,7 +346,7 @@ fn migration_contradictory_receipt_does_not_settle() {
                 window: WindowId("win-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
                 target_workspace: view_a.clone(),
-                setter: FrameSetter::Accepted,
+                setter: FrameSetter::Accepted.into(),
                 pre: None,
                 post: Some(WorkspaceRef::Logical {
                     output: OutputId("out-b".to_owned()),
@@ -819,7 +819,7 @@ fn possibly_executed_persists_held_across_disappearance() {
                 window: WindowId("win-a".to_owned()),
                 target_output: OutputId("out-a".to_owned()),
                 target_workspace: target.clone(),
-                setter: FrameSetter::Threw,
+                setter: FrameSetter::Threw.into(),
                 pre: Some(WorkspaceRef::Logical {
                     output: OutputId("out-a".to_owned()),
                     workspace: WorkspaceId(source.clone()),

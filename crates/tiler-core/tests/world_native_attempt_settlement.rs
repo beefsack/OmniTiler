@@ -659,7 +659,7 @@ fn ask5_late_send_with_intermediate_readings_settles_transfer() {
                 window: WindowId("win-a".to_owned()),
                 target_output: OutputId("out-a".to_owned()),
                 target_workspace: target_ws.clone(),
-                setter: FrameSetter::Accepted,
+                setter: FrameSetter::Accepted.into(),
                 pre: Some(WorkspaceRef::Native {
                     output: OutputId("out-a".to_owned()),
                     workspace: native_id(UA1),
@@ -836,7 +836,7 @@ fn host_owned_ignores_conflicting_logical_and_proves_via_native() {
                 window: WindowId("win-a".to_owned()),
                 target_output: OutputId("out-a".to_owned()),
                 target_workspace: target_ws.clone(),
-                setter: FrameSetter::Accepted,
+                setter: FrameSetter::Accepted.into(),
                 pre: Some(WorkspaceRef::Native {
                     output: OutputId("out-a".to_owned()),
                     workspace: native_id(UA1),
@@ -936,7 +936,7 @@ fn host_owned_unknown_native_holds_despite_conflicting_logical() {
                 window: WindowId("win-a".to_owned()),
                 target_output: OutputId("out-a".to_owned()),
                 target_workspace: target_ws.clone(),
-                setter: FrameSetter::Accepted,
+                setter: FrameSetter::Accepted.into(),
                 pre: None,
                 post: Some(WorkspaceRef::Native {
                     output: OutputId("out-b".to_owned()),
@@ -989,7 +989,7 @@ fn cross_output_refused_native_proves_only_with_source_homing() {
                 window: WindowId("win-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
                 target_workspace: migrated.clone(),
-                setter: FrameSetter::Refused,
+                setter: FrameSetter::Refused.into(),
                 pre: Some(WorkspaceRef::Native {
                     output: OutputId("out-a".to_owned()),
                     workspace: native_id(UA1),
@@ -1114,7 +1114,7 @@ fn accepted_target_native_post_with_different_known_staged_homing_holds() {
                 window: WindowId("win-a".to_owned()),
                 target_output: OutputId("out-a".to_owned()),
                 target_workspace: target_ws.clone(),
-                setter: FrameSetter::Accepted,
+                setter: FrameSetter::Accepted.into(),
                 pre: Some(WorkspaceRef::Native {
                     output: OutputId("out-a".to_owned()),
                     workspace: native_id(UA1),
@@ -1777,7 +1777,7 @@ fn redelivered_attempts_after_settle_are_ignored() {
                 window: WindowId("win-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
                 target_workspace: migrated.clone(),
-                setter: FrameSetter::Accepted,
+                setter: FrameSetter::Accepted.into(),
                 pre: Some(WorkspaceRef::Native {
                     output: OutputId("out-a".to_owned()),
                     workspace: native_id(UA1),
@@ -1955,7 +1955,7 @@ fn known_source_echo_never_releases_and_refusal_keeps_backing() {
                 window: WindowId("win-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
                 target_workspace: migrated.clone(),
-                setter: FrameSetter::Refused,
+                setter: FrameSetter::Refused.into(),
                 pre: Some(WorkspaceRef::Native {
                     output: OutputId("out-a".to_owned()),
                     workspace: native_id(UA1),
@@ -2504,7 +2504,7 @@ fn off_output_move_releases_source() {
                 window: WindowId("win-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
                 target_workspace: output_view(&drained, "out-b").expect("out-b shows a workspace"),
-                setter: FrameSetter::Accepted,
+                setter: FrameSetter::Accepted.into(),
                 pre: Some(WorkspaceRef::Native {
                     output: OutputId("out-a".to_owned()),
                     workspace: native_id(UA1),

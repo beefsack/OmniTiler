@@ -5,10 +5,11 @@ use std::collections::BTreeSet;
 use crate::directional::{OutputId, WindowId};
 use crate::intent_data::IntentData;
 use crate::session::DomainKey;
+use crate::world_attempts::{AttemptDisposition, PropertyAttempt, StateAttemptEvidence};
 use crate::world_engine::WorldEngine;
 use crate::world_report::{
-    AttemptOutcome, AuthorityScope, FrameSetter, HeldWindowRow, RowDiagnostic, RowDiagnosticKind,
-    RowDiagnosticLane, StateAttempt, StateProperty, WindowFact,
+    AttemptOutcome, AuthorityScope, HeldWindowRow, RowDiagnostic, RowDiagnosticKind,
+    RowDiagnosticLane, StateProperty, WindowFact,
 };
 
 pub(crate) const MAX_RETAINED_STATE_BINDINGS: usize = crate::world_report::MAX_WORLD_FACTS * 4;
@@ -39,7 +40,7 @@ pub(crate) struct NativeStickyMeta {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RetainedStateBinding {
     pub(crate) target: RetainedStateTarget,
-    pub(crate) pending: Option<StateAttempt>,
+    pub(crate) pending: Option<PropertyAttempt>,
     pub(crate) spent: bool,
     pub(crate) disposition: AttemptOutcome,
     pub(crate) sticky_meta: Option<NativeStickyMeta>,
@@ -146,84 +147,31 @@ impl WorldEngine {
             && self.fullscreen_entry_pending(window)
     }
 
-    pub(crate) fn settle_states(&mut self) {
-        if self.retained_states.len() > MAX_RETAINED_STATE_BINDINGS {
-            return;
-        }
-        // Latest completed publication bounds incoming evidence.
-        let latest = self.state_revision;
-        let attempts = &self.staged.observation.state_attempts;
-        for attempt in attempts {
-            if !state_property_supported(self.capabilities(), attempt.property) {
-                continue;
-            }
-            let key = (attempt.window.clone(), attempt.property);
-            let Some(binding) = self.retained_states.get_mut(&key) else {
-                continue;
-            };
-            if binding.target.window != attempt.window
-                || binding.target.property != attempt.property
-            {
-                continue;
-            }
-            if binding.target.value != attempt.target {
-                continue;
-            }
-            // Revision interval: the binding revision through the latest
-            // completed publication. A lost attempt's republished stamp
-            // still correlates while the binding is retained; an
-            // older-than-binding (superseded replacement) or
-            // newer-than-published (unseen future) stamp reads absent.
-            // Correlation performs no publication-authority check: held
-            // stamps are raw evidence like any other. First raw evidence
-            // wins; spent never reopens.
-            if attempt.revision < binding.target.revision || attempt.revision > latest {
-                continue;
-            }
-            if binding.spent {
-                continue;
-            }
-            binding.pending = Some(attempt.clone());
-            binding.spent = true;
-        }
-        let keys: Vec<(WindowId, StateProperty)> = self.retained_states.keys().cloned().collect();
-        for key in keys {
-            let terminal = self.retained_states.get(&key).is_some_and(|binding| {
-                matches!(
-                    binding.disposition,
-                    AttemptOutcome::Applied | AttemptOutcome::RefusedProven
-                )
-            });
-            if terminal {
-                continue;
-            }
-            let (target, pending) = match self.retained_states.get(&key) {
-                Some(binding) => {
-                    if binding.target.window != key.0 || binding.target.property != key.1 {
-                        continue;
-                    }
-                    match binding.pending.clone() {
-                        Some(pending) => (binding.target.clone(), pending),
-                        None => continue,
-                    }
-                }
-                None => continue,
-            };
-            let next = self.classify_state_attempt(&target, &pending);
-            if let Some(binding) = self.retained_states.get_mut(&key) {
-                binding.disposition = next;
-            }
-        }
+    /// Policy hook for the shared engine: a terminal verdict (applied or
+    /// proven refusal) is stable and never recomputed from a later
+    /// observation. Continuations that need the retained row read it from
+    /// `retained_states` directly.
+    pub(crate) fn state_binding_terminal(&self, key: &(WindowId, StateProperty)) -> bool {
+        self.retained_states.get(key).is_some_and(|binding| {
+            matches!(
+                binding.disposition,
+                AttemptOutcome::Applied | AttemptOutcome::RefusedProven
+            )
+        })
     }
 
-    fn classify_state_attempt(
+    /// Native-state verdict policy. Readability stays here: incomplete
+    /// inventory, gesture, minimize, held/excluded subjects and unreadable
+    /// domains deny current-state proof, while the raw attempt still latches
+    /// first at intake. An accepted setter alone never proves completion.
+    pub(crate) fn classify_state_attempt(
         &self,
         target: &RetainedStateTarget,
-        pending: &StateAttempt,
+        pending: &StateAttemptEvidence,
     ) -> AttemptOutcome {
         let current = self.state_readable_value(&target.window, target.property);
-        match pending.setter {
-            FrameSetter::Refused => match (pending.pre, pending.post, current) {
+        match pending.disposition {
+            AttemptDisposition::Refused => match (pending.pre, pending.post, current) {
                 (Some(pre), Some(post), Some(current))
                     if pre == post && pre != target.value && current == pre =>
                 {
@@ -231,13 +179,13 @@ impl WorldEngine {
                 }
                 _ => AttemptOutcome::PossiblyExecuted,
             },
-            FrameSetter::Accepted => match (pending.post, current) {
+            AttemptDisposition::Accepted => match (pending.post, current) {
                 (Some(post), Some(current)) if post == target.value && current == target.value => {
                     AttemptOutcome::Applied
                 }
                 _ => AttemptOutcome::PossiblyExecuted,
             },
-            FrameSetter::Threw => AttemptOutcome::PossiblyExecuted,
+            AttemptDisposition::Threw => AttemptOutcome::PossiblyExecuted,
         }
     }
 

@@ -57,9 +57,9 @@ use crate::session::{DomainKey, OutputDomain};
 use crate::workspace_scope::ScopeHistory;
 use crate::world_gesture::RetainedGesture;
 use crate::world_report::{
-    AuthorityScope, CommandRejectKind, CommandResult, FrameAttempt, HoldReason, ScopeAuthority,
-    ScopeStatus, TilingMode, TransferKind, TransferTarget, WindowDesire, WorkspaceDesire,
-    WorldCommand, WorldReplyV4, WorldReportV4,
+    AuthorityScope, CommandRejectKind, CommandResult, HoldReason, ScopeAuthority, ScopeStatus,
+    TilingMode, TransferKind, TransferTarget, WindowDesire, WorkspaceDesire, WorldCommand,
+    WorldReplyV4, WorldReportV4,
 };
 use crate::world_run_v4::V4RunOutcome;
 
@@ -853,20 +853,27 @@ pub(crate) struct RetainedTransfer {
     /// same outputs survives a late parent refusal. Survives binding
     /// completion (scopes/targets outlive the finite grant).
     pub(crate) migration_selection_rev: Option<u64>,
-    /// Latest exact-correlated raw membership evidence staged BEFORE any
+    /// Latest exact-correlated canonical membership evidence staged BEFORE any
     /// readability hold (window transfer) or per-member map (migration
     /// parent), mirroring [`RetainedFloat::pending`]: a gapped report never
     /// erases knowledge the sequencer pending map forgets after
     /// acknowledgement. Reconciled against later readable complete
     /// observations; a spent operation is never re-dispatched.
-    pub(crate) pending_member: Option<crate::world_report::MemberAttempt>,
-    /// Per-member latest raw evidence for a migration parent, keyed by
+    pub(crate) pending_member: Option<crate::world_attempts::PropertyAttempt>,
+    /// Superseded published window-transfer correlations plus canonical
+    /// evidence, never native authority; latest consumption with known source
+    /// or arrival retires them.
+    pub(crate) member_predecessors: Vec<(
+        TransferTarget,
+        Option<crate::world_attempts::PropertyAttempt>,
+    )>,
+    /// Per-member latest canonical evidence for a migration parent, keyed by
     /// member window. Latest-wins per member; pruned with the member set.
-    pub(crate) pending_members: BTreeMap<WindowId, crate::world_report::MemberAttempt>,
-    /// Latest exact-correlated raw view evidence for the owning phase
+    pub(crate) pending_members: BTreeMap<WindowId, crate::world_attempts::PropertyAttempt>,
+    /// Latest exact-correlated canonical view evidence for the owning phase
     /// (standalone view id, follow parent, migration-target parent, refill
     /// child id), staged before any hold for the same gap/ack survival.
-    pub(crate) pending_view: Option<crate::world_report::ViewAttempt>,
+    pub(crate) pending_view: Option<crate::world_attempts::PropertyAttempt>,
 }
 
 /// Retained explicit float-placement target: one outstanding authorized
@@ -902,15 +909,15 @@ pub(crate) struct RetainedFloat {
     /// Clears only on settlement (confirmation, explicit close, proven
     /// refusal, or a newer intent replacing it).
     pub(crate) ambiguous: bool,
-    /// Latest exact-correlated raw frame attempt (operation id plus window
-    /// plus target) staged BEFORE any readability or authority hold, so a
-    /// gapped report never erases knowledge the shared consumed-frames
-    /// watermark forgets after acknowledgement. Reconciled against later
-    /// readable complete observations: confirmation and proven refusal
-    /// still require truthful readable data, and no replay is ever issued
-    /// (neither side re-dispatches a spent operation). Replaced by newer
-    /// fresh evidence; dropped with the retained target on settlement.
-    pub(crate) pending: Option<FrameAttempt>,
+    /// Latest exact-correlated canonical frame attempt (optional operation
+    /// id plus window plus target) staged BEFORE any readability or authority
+    /// hold, so a gapped report never erases knowledge the shared
+    /// consumed-frames watermark forgets after acknowledgement. Reconciled
+    /// against later readable complete observations: confirmation and proven
+    /// refusal still require truthful readable data, and no replay is ever
+    /// issued (neither side re-dispatches a spent operation). Replaced by
+    /// newer fresh evidence; dropped with the retained target on settlement.
+    pub(crate) pending: Option<crate::world_attempts::PropertyAttempt>,
 }
 
 /// Retained directional maximize-clear: one outstanding authorized clear
@@ -943,9 +950,9 @@ pub(crate) struct RetainedClear {
     pub(crate) float_route: bool,
     /// Original same-axis mode for the tiled resume path.
     pub(crate) same_axis: crate::directional::SameAxisMove,
-    /// Latest exact-correlated raw clear attempt staged BEFORE any
+    /// Latest exact-correlated canonical clear evidence staged BEFORE any
     /// readability or authority hold, mirroring [`RetainedFloat::pending`].
-    pub(crate) pending: Option<crate::world_report::ClearAttempt>,
+    pub(crate) pending: Option<crate::world_attempts::PropertyAttempt>,
     /// Latched ambiguity from a correlated attempt that neither confirms
     /// nor proves refusal (accepted mismatch, throw, unreadable proof).
     /// Survives acknowledgement; re-evaluated against later readable
@@ -971,9 +978,9 @@ pub(crate) struct RetainedBornClear {
     pub(crate) operation_id: String,
     pub(crate) window: WindowId,
     pub(crate) home: DomainKey,
-    /// Latest exact-correlated raw clear attempt staged BEFORE any
+    /// Latest exact-correlated canonical clear evidence staged BEFORE any
     /// readability or authority hold, mirroring [`RetainedClear::pending`].
-    pub(crate) pending: Option<crate::world_report::ClearAttempt>,
+    pub(crate) pending: Option<crate::world_attempts::PropertyAttempt>,
     /// Latched ambiguity from a correlated attempt that neither confirms
     /// nor proves refusal (accepted mismatch, throw, unreadable proof).
     /// Survives acknowledgement; re-evaluated against later readable
@@ -1071,12 +1078,15 @@ pub(crate) struct StagedObservation {
     pub(crate) primary_output: Option<OutputId>,
     pub(crate) gesture: Option<crate::gesture::GestureIngress>,
     pub(crate) monotonic_ms: u64,
-    pub(crate) frames: Vec<crate::world_report::FrameAttempt>,
-    pub(crate) member_attempts: Vec<crate::world_report::MemberAttempt>,
-    pub(crate) view_attempts: Vec<crate::world_report::ViewAttempt>,
-    pub(crate) clear_attempts: Vec<crate::world_report::ClearAttempt>,
     pub(crate) creation_attempts: Vec<crate::world_report::NativeCreationAttempt>,
-    pub(crate) state_attempts: Vec<crate::world_report::StateAttempt>,
+    pub(crate) property_attempts: Vec<crate::world_attempts::PropertyAttempt>,
+    /// True once wire-bound visibility `LastWrite` evidence has been
+    /// normalized into the canonical attempt lane for this staged report.
+    /// Set after classified staging (even when the report carries zero
+    /// visibility evidence) and cloned unchanged across classification
+    /// restages, so normalization is exactly once per report regardless of
+    /// whether any row produced an attempt.
+    pub(crate) visibility_normalized: bool,
     pub(crate) focus_feedback: Vec<crate::world_report::FocusFeedback>,
     pub(crate) intent_records: Vec<crate::world_report::IntentRecord>,
 }
@@ -1434,14 +1444,14 @@ pub struct WorldEngine {
     /// [`FrameAttempt`](crate::world_report::FrameAttempt) facts. Bounded by
     /// the window inventory itself; pruned every accepted report.
     pub(crate) frames: BTreeMap<WindowId, crate::world_frames::FrameMemory>,
-    /// Last consumed raw frame attempt per lifetime, retained independently
-    /// of [`Self::frames`] so an exact-match clear never forgets what was
-    /// already consumed: a lost-ack redelivery of an older or identical
-    /// attempt is ignored instead of resurrecting stale suppression or
-    /// clobbering newer authority. Same lifetime bound and pruning as
-    /// [`Self::frames`]; cleared on incarnation reset, fresh on a new
-    /// core generation with the engine itself.
-    pub(crate) consumed_frames: BTreeMap<WindowId, crate::world_report::FrameAttempt>,
+    /// Last consumed canonical frame attempt per lifetime, retained
+    /// independently of [`Self::frames`] so an exact-match clear never
+    /// forgets what was already consumed: a lost-ack redelivery of an older
+    /// or identical write is ignored instead of resurrecting stale
+    /// suppression or clobbering newer authority. Same lifetime bound and
+    /// pruning as [`Self::frames`]; cleared on incarnation reset, fresh on a
+    /// new core generation with the engine itself.
+    pub(crate) consumed_frames: BTreeMap<WindowId, crate::world_attempts::PropertyAttempt>,
     /// Tiled burst budget (anti-loop): consumed mechanical attempts per
     /// lifetime and unchanged desired target inside a continuous observed
     /// frame-change burst. Same lifetime bound and pruning as

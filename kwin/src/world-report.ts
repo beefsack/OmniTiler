@@ -316,6 +316,8 @@ export interface WorldCreationAttempt {
 // `refused` is an explicit native refusal, `threw` is a throwing/ambiguous
 // call that may have executed.
 export type FrameSetter = "accepted" | "refused" | "threw";
+// Only membership admits consumed-without-call target confirmation.
+export type MemberSetter = FrameSetter | "already-at-target";
 // One normalized raw frame attempt: the mechanical facts behind a single
 // native frame write. `target` echoes the desired frame as correlation;
 // `readback` is the immediate post-write frame (`null` unreadable);
@@ -350,17 +352,19 @@ export type WorldMemberRef =
     | { kind: "native"; out: string; ws: string };
 export type WorldViewRef = { kind: "native"; out: string; ws: string };
 // One normalized raw membership attempt: the mechanical facts behind a
-// single native membership write for one window under one retained
-// operation. `pre`/`post` are the exact live WorkspaceRefs immediately
-// before/after the write (null when unreadable); the core translates
-// them through its own per-output bindings. At most one latest-wins
-// entry per operation window.
+// single native membership disposition for one window under one retained
+// operation - a real setter call (accepted/refused/threw) or a no-call
+// already-at-target spend when live homing already matched the native
+// target. `pre`/`post` are the exact live WorkspaceRefs immediately
+// before/after the disposition (null when unreadable, never forged equal);
+// the core translates them through its own per-output bindings. At most
+// one latest-wins entry per operation window.
 export interface WorldMemberAttempt {
     op: string;
     win: string;
     out: string;
     ws: string;
-    setter: FrameSetter;
+    setter: MemberSetter;
     pre: WorldMemberRef | null;
     post: WorldMemberRef | null;
     attemptMs: string;

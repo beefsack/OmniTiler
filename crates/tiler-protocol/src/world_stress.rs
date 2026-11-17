@@ -679,7 +679,7 @@ pub(crate) fn member_proof(window: &str, member: &PendingMember) -> MemberAttemp
         window: WindowId(window.to_owned()),
         target_output: member.target_output.clone(),
         target_workspace: member.target_workspace.clone(),
-        setter: FrameSetter::Accepted,
+        setter: FrameSetter::Accepted.into(),
         pre: member.pre.clone(),
         post: Some(WorkspaceRef::Logical {
             output: member.target_output.clone(),

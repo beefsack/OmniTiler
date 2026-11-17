@@ -922,8 +922,9 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
   reversal and multi-pair regression coverage with fence/settlement guards;
   independent source review and all scoped offline gates; then one bounded
   fixture-only empty-target D2 retry with complete accounting/native evidence
-  and receipted teardown. Contract/protocol changes or behavior beyond the
-  selected ordered-core rule are outside this correction.
+   and receipted teardown. The scoped consumption-evidence amendment below is
+   approved; behavior beyond that amendment and the ordered-core rule is outside
+   this correction.
 - Genuine adapter-free RED: `queued_cross_output_moves_drain_in_order_without_transfer_in_flight`
   drives `handle_report` with a real queued right/left pair. The first cross
   succeeds; the second returns `Rejected { kind: TransferInFlight }` instead
@@ -968,3 +969,219 @@ typecheck, all 1183 tests and the unscoped build remain green after these culls.
   failures, three ignored D2 regressions and one unsafe-posture test
   filtered; core reports 2,254 passed and three ignored
   (`d2-ordered-core-20261117/park-{fmt,build,clippy,test}.log`).
+
+## D2 consumption-evidence amendment (2026-11-17)
+
+- User selected raw membership consumption evidence: `already-at-target` in
+  `MemberAttempt.setter`, with operation identity and pre/post membership
+  readbacks, means consumed without a native call. This resolves the parked
+  no-call decision above, not the latest live FAIL.
+- Scope: contract and typed codec/conformance first; core ordered settlement,
+  the three enabled D2 regressions and an adapter-free eight-command burst next;
+  then KDE emission and tests; finally one bounded empty-target live retry.
+  Independent review and all scoped offline gates precede live input.
+- Preserve lifetime, visibility and output fences, truthful settlement and
+  at-most-once ambiguous effects. No general world-applied/delivery
+  acknowledgement, sequence lane, retries or adapter policy. Frozen fixture
+  families stay unchanged; macOS/Windows no-call adoption remains later work.
+- Contract/type/codec unit is implemented: membership has its own disposition
+  type, while other native setter lanes retain their existing vocabulary.
+  Inline conformance tests round-trip both reference namespaces, preserve exact
+  identity/readback/stamp fields, reject malformed shapes and duplicate rows,
+  and refuse the no-call token in the view lane. Existing call producers in
+  the scoped Rust packages receive only mechanical type conversions.
+- Independent contract/codec review reports no findings. Direct verification:
+  workspace format check, scoped all-target build and strict Clippy pass;
+  permitted Rust tests pass 3,462 with the three D2 cases still ignored; KWin
+  typecheck and 1,376 tests pass; launcher 703, native-effect 204 and live-helper
+  tests 58 pass. An earlier KWin run timed out at `DiscoverWorld` while Rust
+  compilation was running; a sequential full rerun passes, without code changes.
+  No timeout root cause is proven. Frozen and active fixture bytes are unchanged.
+- Core ordered settlement, KDE emission and native acceptance remain pending.
+- Core work is incomplete: the three parked regressions reproduced their original
+  `transfer-in-flight` RED with the amended codec. Guard removal alone then failed
+  with `unknown-window` and `canonical-source-unavailable`: it did not supply the
+  next command's latest logical carrier. Move planning now uses the shielded
+  latest-home carrier, including local fallback; all three targeted ordering
+  regressions pass and are enabled. Other command routes retain their old index.
+- The partial state retains predecessor correlation/evidence inside the current
+  transfer, carrying only operations known to have been published or attempted;
+  skipped same-batch targets add no predecessor. This is not yet reviewed or
+  accepted settlement behavior. Two adapter-free consumption/readback regressions
+  independently reproduced premature retirement from the initial target
+  fact (zero transfers instead of one). Candidate settlement now validates
+  equal non-null no-call readbacks, stages exact predecessor evidence before
+  holds and prevents that premature retirement. Source review found misplaced
+  third-location branches; their original policy and contradictory-output
+  handling was restored. The five focused two-output tests pass.
+- Three-output coverage is optional for D2, whose required shape is the original
+  two-output right/left burst. Its two failed paths exposed a latest-carrier
+  defect, not a selected movement-policy refusal: after logical A-B-C, the
+  third move actually planned from A with an empty adjacency map
+  (`unit2-planner-diagnostic.log:3-6` in the private results directory).
+  The new retained transfer had used logical B as its settlement source,
+  misclassifying unchanged observed A as external and dropping C before planning.
+  Superseding transfers now keep the observation-derived settlement baseline;
+  the optional horizontal non-immediate-predecessor discriminator passes without
+  changing adjacency or movement policy.
+- Exact current call preimages supply the actual translated call source for
+  settlement when an older own write moved the native window after that baseline.
+  A correlated older own arrival also refreshes the retained baseline, including
+  its source-output fences. An additional two-output call-proof probe initially
+  expected the attempt to rewrite the captured home. A genuine single-transfer
+  control established the existing rule: target readback can retire the transfer
+  without rewriting captured facts. The corrected probe preserves that rule,
+  checks fresh target observation and replay, and passes.
+- An interim core-library run passed 2,257 and failed three: that new
+  discriminator and two obsolete native-flight refusal expectations. The
+  latter now assert semantic refusal from the latest home while preserving
+  the pinned transfer or composed-maximize bit; both targeted guards pass.
+  Current permitted Rust tests pass 3,469 with no ignored cases across 71
+  summaries, including all three original ordering cases and four new probes.
+  Formatting was repaired mechanically; format check, scoped all-target build
+  and strict Clippy pass. KWin typecheck and 1,376 tests, launcher 703,
+  native-effect 204 and helper 58 checks pass. Unit 2 is not accepted.
+- Independent source review found an ambiguity-latch gap: with an exact but
+  unproven latest no-call row (null `pre`) and a correlated older own arrival,
+  the predecessor-own-write branch retained the latest target without `held`.
+  A genuine two-output regression reproduced that publication with original
+  `op-12` and target intact (`unit2-held-red.log:9-10`). The branch now latches
+  ambiguity like the existing paths; all eight focused crossing cases pass,
+  including held replay (`unit2-held-green.log`). Actual adapter re-actuation
+  was not observed. This narrow repair does not accept the whole unit.
+- A second two-output regression reproduces loss of the latest intent when a
+  prior Refused call has an unreadable post (`unit2-refused-predecessor-red.log`).
+  Possible-write protection now reuses the existing readable unchanged-refusal
+  proof rather than treating unknown post as no write. All nine focused crossing
+  tests pass, including a proven-refusal control that still adopts external input
+  (`unit2-refused-predecessor-green.log`).
+- A third two-output regression confirms that clearing history on latest Threw
+  with null pre/post erases exact prior own arrival and incorrectly drops the
+  latest intent (`unit2-latest-throw-red.log`). Consumption now clears correlation
+  only with readable effective call source or target proof. All ten focused
+  crossing tests pass, including held replay and a readable-source control that
+  preserves existing external adoption (`unit2-latest-throw-green.log`).
+- Original evidence and stamps remain producer-owned under the raw-attempt
+  contract; core's existing latest-wins intake is not a new immutability lane.
+  KDE must preserve earlier call evidence when adding no-call emission, with
+  redelivery coverage in its pending unit.
+- Eight separate lagging captures now cover ordered sequences 11-18, latest-only
+  publication, all seven predecessor correlations, a commandless initial-target
+  fact, exact latest no-call consumption and spent replay. All eleven focused
+  crossing tests pass (`unit2-focused-recheck.log`). Single-use predicate helpers
+  were inlined, the publication snapshot is borrowed rather than cloned, and
+  source/consumption comments were reconciled without changing proof predicates.
+- Retention review confirms no finite history bound: each superseded published
+  transfer adds a predecessor, carried forward until suitable latest consumption
+  or whole-transfer terminal/departure. Repeated valid no-attempt captures have
+  no finite history bound; the broker's 128-command queue bounds each batch, not
+  cumulative history. The eight-capture test retains seven entries, and the same
+  append path continues for later captures. No exhaustion was tested. Retirement
+  from each predecessor's own evidence alone would not bound the no-evidence
+  case. No bounded-compression proof is established, nor is such a redesign
+  proven impossible under the existing contract. No cap, timeout, retry or new
+  retirement policy was selected during that review.
+- User 2026-11-17 accepts retention Option A as is: history grows only on
+  successful published supersession while KDE does not supply qualifying
+  current-latest consumption, then clears on that consumption, whole-transfer
+  terminal or departure. A row for an already-superseded predecessor does not
+  clear it. No pruning, cap, timeout or new row, per Simplicity: ordered commands
+  must not wait for native application, and exact correlation needs no additional
+  retirement policy or machinery. The unbounded retention tradeoff is accepted;
+  carrier review remains necessary before unit acceptance.
+- Latest direct offline checks pass: formatting, scoped all-target build and
+  strict Clippy; 3,473 permitted Rust tests across 71 summaries; KWin typecheck
+  and 1,376 tests; launcher 703, native-effect 204 and helper 58 checks. Diff
+  whitespace/privacy checks and unchanged fixture bytes pass. These gates do
+  not complete carrier review. KDE emission and
+  the bounded native retry have not run. D2 remains FAIL.
+- Unit 2 accepted offline after the retention decision: independent carrier
+  review reports no findings in Move-only shielded indexing, cross/local latest
+  home selection, raw-lifetime injection, readable/held domain gates, preserved
+  send fences and composed-maximize restoration. The earlier settlement findings
+  have targeted passing regressions and the latest offline gates above remain
+  current; subsequent changes are records only. Ordered core behavior is accepted,
+  not KDE emission or a successful native D2 outcome.
+- Unit 3 accepted offline: KDE now spends a fresh unheld already-at-target Window
+  transfer after the existing freshness/lifetime/safety check, recording native
+  pre/post readbacks and the original broker stamp without a membership call.
+  Held or previously dispatched operations keep their original evidence.
+  Membership alone admits the new token. A direct missing-row RED is now green
+  with unchanged-envelope replay and pending-map lost/bound ACK checks.
+  The genuine entry regression verifies serialized no-call bytes and original
+  stamp survive a malformed/lost ACK, a bound reply consumes them, and spent
+  reapplication never recreates evidence. Method and property-assignment counters
+  prove zero native setters, not merely final equality.
+- Additional guards preserve an original Threw call row and stamp at later
+  target convergence and after ACK; held, unlisted and unreadable safety/home
+  cases emit nothing or spend nothing. An unreadable final post stays null,
+  never invented target proof. Independent source review reports no findings.
+- Latest direct gates pass: Rust format, scoped all-target build and strict
+  Clippy, 3,473 permitted Rust tests with no ignored cases; KWin typecheck and
+  1,378 tests; launcher 703, native-effect 204 and helper 58 checks. Whitespace,
+  added-line privacy and unchanged fixture checks pass. The bounded native D2
+  retry has not run; the earlier live FAIL remains historical, not resolved
+   by offline acceptance. The broader rapid-input note stays active.
+
+## D2 bounded native retry (2026-11-17)
+
+- D2 PASS: one fixture-only real-session leg completed a physical Right control,
+  Left control and one eight-chord alternating Right/Left burst. The target was
+  freshly checked empty; hover focus was disabled in isolated settings. The
+  procedure imports the repository lifecycle helpers, with no controller restart
+  or second burst. Final syntax and independent source-only procedure review
+  passed before execution.
+- Producing command: `node docs/changes/kde-rapid-input-latest-world/results/d2-live-20261117-01/run.mjs --live`.
+  Bundle references below are relative to that ignored results directory.
+  Base revision `96ad5635969c508defe430a9a7a9f1842b3f0094` plus the current
+  D2 code diff was exercised, not the unchanged base alone. Code-diff SHA-256
+  (core, protocol and the four changed KDE files):
+  `70b3a1afe0a1ef0a60f57e89eb3077b14d032e58da2048688d5635d8defa7b82`.
+- Controls have distinct callbacks, queued identities and READY terminal results
+  for sequences 1 and 2, with joined native/core agreement after each crossing
+  (`control-right-planner.log:2,14`, `control-left-planner.log:8,20`,
+  `control-*-after-agreement.json`). The burst has exactly eight ordered unique
+  callbacks and queue identities, sequences 3-10, all READY
+  (`burst-accounting.json`, `burst-planner.log:2-110`). The repeated take for
+  sequence 9 returns the same terminal identity; it is not another command.
+  No command failed, was rejected, or hit a native-flight/busy fence.
+- Decisive raw lines (`burst-planner.log:18,110`, `burst-journal.log:132,158`):
+
+  ```text
+  omnitiler:world-summary direction=egress req=kwin-world-adapter-mwjzcvov-12cjacu-3 outcome=ready kind=- rev=3 msg=-
+  omnitiler:world-summary direction=egress req=kwin-world-adapter-mwjzcvov-12cjacu-10 outcome=ready kind=- rev=10 msg=-
+  omnitiler:world:applied rev=16 geom=0 member=0 views=0 mk=0 rm=0 fx=0 held=0
+  omnitiler:world:applied rev=17 geom=0 member=0 views=0 mk=0 rm=0 fx=0 held=0
+  ```
+
+- Superseded intermediate publications were skipped while core continued
+  processing. The final joined fixture output, native desktop membership/current,
+  frame/allocation and active/foreground identity agree at revision 17
+  (`burst-confirmed-agreement.json`). The latest transfer retires:
+  `burst-journal.log:160` has `replyXfers=0`, and `burst-planner.log:115`
+  has `pendingTransfers=0`. This proves final convergence and ordered accounting,
+  not intermediate native rendering or event-to-frame latency.
+- No literal raw `already-at-target` wire token was captured live. The retained
+  and sent member-attempt traces for `op-10` have equal native pre/post, unchanged
+  stamp and `setter=-` (`burst-journal.log:147,172`): the existing
+  `traceDiagSetter` admits only the three native-call outcomes and masks the new
+  token. Together with `member=0`, this supports the source-backed no-call path;
+  literal serialized-token proof remains the genuine offline wire regression,
+  not a fabricated live trace value.
+- Teardown passed: all 14 helper receipts have successful run/unload, false
+  loaded-state and exact child-absence checks; current dev/Planner logs were
+  copied before dev-off (`events.jsonl:315-321`). Controller DOWN and Planner
+  unowned are explicit (`exec-288.json`). Fixture shutdown exited 0; exact owned
+  fixture/input processes and sockets are absent. Final key release, unlocked
+  receipt and daemon stop are recorded (`events.jsonl:324-326,369-377`).
+  The unscoped non-trace bundle rebuild passed (`exec-332.json`).
+- Desktop cleanup is qualified: the exact appended desktop and fixture are
+  absent, but the original current desktop retired during normal lifecycle and
+  could not be restored (`desktop-restore.json`, `native-final.json`). No
+  substitute original desktop was invented, and trailing lifecycle desktops
+  were left alone. No user window was closed or killed, and no display
+  configuration or stored user settings were changed.
+- Existing offline gates remain current; only procedure/evidence records
+  changed. The earlier D2 failure is resolved for this bounded fixture leg.
+  Native-event timing, human-keyboard feel and loaded-effect visual flicker
+  remain open; the broader rapid-input note stays active.

@@ -1392,9 +1392,9 @@ acceptance or adopt the separate close-focus amendment.
 
 | Record | Key | Type | Null/absence | Meaning |
 | --- | --- | --- | --- | --- |
-| `MemberAttempt` | `op,win,out,ws,setter` | Id, WindowId, OutputId, WorkspaceId, SetterOutcome | no | Existing operation/subject/desired target/call disposition. |
+| `MemberAttempt` | `op,win,out,ws,setter` | Id, WindowId, OutputId, WorkspaceId, MemberDisposition | no | Existing operation/subject/desired target/call or no-call disposition. |
 | | `pre,post` | WorkspaceRef | yes | Single logical-or-native reference set, live before/after. |
-| | `attemptMs` | Counter | no | Original monotonic write stamp. |
+| | `attemptMs` | Counter | no | Original monotonic call or no-call consumption stamp. |
 | `ViewAttempt` | `op,out,ws,setter` | Id, OutputId, WorkspaceId, SetterOutcome | no | Native selector evidence for existing parent/phase. |
 | | `pre,post,base` | WorkspaceRef with kind native | yes | Native before/after/observation baseline only. |
 | | `attemptMs` | Counter | no | Original stamp. |
@@ -1420,6 +1420,19 @@ acceptance or adopt the separate close-focus amendment.
   ViewAttempt permits no logical arm; native-free visibility/focus completes
   selection. This is the [G1 technical reconciliation](../changes/v4-migration.md#b-reconciliations-and-open-points),
   approved 2026-11-02, not a new product decision.
+- `MemberDisposition` carries `accepted/refused/threw` for native calls and
+  `already-at-target` for consumption of a transfer operation without a call
+  (User 2026-11-17). The latter reports the exact operation, window and desired
+  target with live `pre`/`post` membership readbacks; it is not setter success.
+  Spend that operation before the no-call, preserve the original evidence on
+  redelivery, and never renew a native call from unchanged reemission.
+  Core derives settlement using this evidence and current facts, preserving
+  lifetime, visibility and output fences and at-most-once ambiguous effects.
+  A target fact alone does not prove that an operation was consumed.
+  This is not a world-applied or delivery acknowledgement and adds no sequence
+  lane, retries or adapter policy; retained settlement outcomes are unchanged.
+  KDE emits the row on its already-at-target transfer branch; macOS and Windows
+  adopt the same row later.
 - FrameAttempt, ClearAttempt, NativeCreationAttempt and NativeCreationDesire
   retain exact baseline keys/nullability and separate lanes, including frame
   target/readback/DPI/prewrite, clear pre/post-maximized and creation

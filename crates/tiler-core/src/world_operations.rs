@@ -14,10 +14,9 @@ use crate::engine::Engine;
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain, RefusalKind};
 use crate::world_engine::{
-    KIND_DIRECTION, KIND_IN_FLIGHT, KIND_MIGRATION, KIND_OPERATION, KIND_SCOPE_HELD,
-    KIND_SEND_TARGET, KIND_SEND_WINDOW, MSG_DIRECTION, MSG_IN_FLIGHT, MSG_MIGRATION_TOPOLOGY,
-    MSG_MIGRATION_TOPOLOGY_UNREADABLE, MSG_OPERATION, MSG_SCOPE_HELD, MSG_SEND_TARGET,
-    MSG_SEND_WINDOW, RetainedTransfer, WorldEngine,
+    KIND_DIRECTION, KIND_MIGRATION, KIND_OPERATION, KIND_SCOPE_HELD, KIND_SEND_TARGET,
+    KIND_SEND_WINDOW, MSG_DIRECTION, MSG_MIGRATION_TOPOLOGY, MSG_MIGRATION_TOPOLOGY_UNREADABLE,
+    MSG_OPERATION, MSG_SCOPE_HELD, MSG_SEND_TARGET, MSG_SEND_WINDOW, RetainedTransfer, WorldEngine,
 };
 use crate::world_report::{
     CommandResult, OneShotEffect, TransferKind, TransferTarget, WorldCommand,
@@ -243,9 +242,7 @@ impl WorldEngine {
     /// the target output's current view, else the first readable domain
     /// there. No resolvable target or no readable target refuses without
     /// mutation: a cross-output request never silently runs as a local
-    /// move/focus. Unreadable topology refuses. A pending window transfer
-    /// for the mover refuses as transfer-in-flight before any engine
-    /// mutation, exactly like the explicit send path.
+    /// move/focus. Unreadable topology refuses.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn operation_directional(
         &mut self,
@@ -273,24 +270,6 @@ impl WorldEngine {
             return CommandApplied::Rejected {
                 kind: KIND_SCOPE_HELD,
                 message: MSG_SCOPE_HELD,
-            };
-        }
-        // Pending-transfer fence (same window, any origin): a newer move
-        // never mutates under an outstanding flight. Observation lag keeps
-        // the mover homed at the source, so without this the engine would
-        // see a plausible second move; the fence refuses before any
-        // convergence or commit, and the retained flight still settles on
-        // arrival proof. Settled arrivals drop the flight before commands
-        // run, so settled retries proceed.
-        if matches!(command, CoreCommand::Move { .. })
-            && self.retained.iter().any(|r| match &r.target.kind {
-                TransferKind::Window(w) => w == &window_id,
-                TransferKind::View | TransferKind::Migration => false,
-            })
-        {
-            return CommandApplied::Rejected {
-                kind: KIND_IN_FLIGHT,
-                message: MSG_IN_FLIGHT,
             };
         }
         let is_move = matches!(command, CoreCommand::Move { .. });
@@ -942,7 +921,7 @@ impl WorldEngine {
             self.note_command(command_seq);
             return CommandApplied::NoEffect;
         };
-        let Some(home) = self.staged.homing.get(window).cloned() else {
+        let Some(staged_home) = self.staged.homing.get(window).cloned() else {
             self.command_result = Some(CommandResult::Directional {
                 outcome: DirectionalOutcome::MoveFloatRefusedStale,
                 target: Some(window.clone()),
@@ -951,6 +930,18 @@ impl WorldEngine {
             });
             self.note_command(command_seq);
             return CommandApplied::NoEffect;
+        };
+        let home = if self
+            .retained
+            .iter()
+            .any(|r| matches!(&r.target.kind, TransferKind::Window(w) if w == window))
+        {
+            DomainKey {
+                output: source_row.output.clone(),
+                workspace: source_row.workspace.clone(),
+            }
+        } else {
+            staged_home
         };
         let source_key = DomainKey {
             output: source_row.output.clone(),
@@ -1564,6 +1555,7 @@ impl WorldEngine {
                             migration_terminal: None,
                             migration_selection_rev: None,
                             pending_member: None,
+                            member_predecessors: Vec::new(),
                             pending_members: BTreeMap::new(),
                             pending_view: None,
                         });
@@ -1676,11 +1668,7 @@ impl WorldEngine {
 
     /// Legacy local operation envelope: homing (or first readable) domain,
     /// no directional pair. Shared by local move/focus, read-only queries,
-    /// resizes, float toggles, and same-domain drag preview/drop. A pending
-    /// window transfer for a move subject refuses as transfer-in-flight
-    /// before any engine mutation, exactly like the cross-output pair and
-    /// the explicit send path (covers the no-candidate local fallback when
-    /// topology turns to a gap under a flight).
+    /// resizes, float toggles, and same-domain drag preview/drop.
     pub(crate) fn run_local_operation(
         &mut self,
         issue: &crate::world_engine::EventIssue,
@@ -1689,18 +1677,6 @@ impl WorldEngine {
         _by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
-        if let CoreCommand::Move { window, .. } = command {
-            let window_id = WindowId(window.clone());
-            if self.retained.iter().any(|r| match &r.target.kind {
-                TransferKind::Window(w) => w == &window_id,
-                TransferKind::View | TransferKind::Migration => false,
-            }) {
-                return CommandApplied::Rejected {
-                    kind: KIND_IN_FLIGHT,
-                    message: MSG_IN_FLIGHT,
-                };
-            }
-        }
         // No convergence on unreadable hints; the carrier `none`
         // never decides admission.
         if let CoreCommand::ToggleFloat { window, .. } = command
@@ -1892,6 +1868,44 @@ impl WorldEngine {
         }
     }
 
+    fn retain_latest_window_transfer(&mut self, mut next: RetainedTransfer) {
+        // Retain the latest window transfer: older same-window entries
+        // are retired into `member_predecessors` so skipped same-batch
+        // publications add no predecessor, while published predecessors
+        // retain raw correlation until latest consumption.
+        let TransferKind::Window(window) = next.target.kind.clone() else {
+            self.retained.push(next);
+            return;
+        };
+        let observed_source = self.staged_homing(&window);
+        let last_reply = self.last_reply_v4.as_ref();
+        self.retained.retain_mut(|old| {
+            let remove = matches!(&old.target.kind, TransferKind::Window(w) if w == &window);
+            if !remove {
+                return true;
+            }
+            // Settlement source is the observation-derived baseline, not the superseded logical home.
+            if let Some(key) = &observed_source {
+                next.source_output = key.output.clone();
+                next.source_workspace = key.workspace.0.clone();
+            }
+            next.member_predecessors
+                .append(&mut old.member_predecessors);
+            let published = last_reply.is_some_and(|reply| {
+                reply
+                    .transfers
+                    .iter()
+                    .any(|transfer| transfer.operation_id == old.target.operation_id)
+            });
+            if old.pending_member.is_some() || published {
+                next.member_predecessors
+                    .push((old.target.clone(), old.pending_member.take()));
+            }
+            false
+        });
+        self.retained.push(next);
+    }
+
     /// Shared reply settlement for operation events: stages the correlated
     /// command result (preview/float only; move/resize/tiled geometry
     /// rides the snapshot), at-most-once focus effects, sequence
@@ -1977,42 +1991,35 @@ impl WorldEngine {
                 // Local R1-R3 plans (no cross) retain nothing: focus
                 // unchanged, no transfer. Uses the existing send transfer
                 // contract (Window kind, follow to the target view). The
-                // same-window pending-transfer fence lives pre-engine in
-                // the pair/local routes; the in-flight skip below is only
-                // a no-double-retain backstop.
+                // latest transfer supersedes older same-window transfers.
                 if let Some(cross) = &plan.cross {
                     let window = cross.intent_window.clone();
-                    let in_flight = self.retained.iter().any(|r| match &r.target.kind {
-                        TransferKind::Window(w) => w == &window,
-                        TransferKind::View | TransferKind::Migration => false,
+                    self.retain_latest_window_transfer(RetainedTransfer {
+                        target: TransferTarget {
+                            operation_id: format!("op-{command_seq}"),
+                            kind: TransferKind::Window(window),
+                            target_output: cross.target_output.clone(),
+                            target_workspace: cross.target_workspace.0.clone(),
+                            follow: true,
+                            held: false,
+                        },
+                        policy: false,
+                        command_seq: Some(command_seq),
+                        source_output: cross.source_output.clone(),
+                        source_workspace: cross.source_workspace.0.clone(),
+                        members: Vec::new(),
+                        migration_refill: None,
+                        migration_initial_empty: false,
+                        migration_source_index: None,
+                        migration_source_view: None,
+                        migration_target_view: None,
+                        migration_terminal: None,
+                        migration_selection_rev: None,
+                        pending_member: None,
+                        member_predecessors: Vec::new(),
+                        pending_members: BTreeMap::new(),
+                        pending_view: None,
                     });
-                    if !in_flight {
-                        self.retained.push(RetainedTransfer {
-                            target: TransferTarget {
-                                operation_id: format!("op-{command_seq}"),
-                                kind: TransferKind::Window(window),
-                                target_output: cross.target_output.clone(),
-                                target_workspace: cross.target_workspace.0.clone(),
-                                follow: true,
-                                held: false,
-                            },
-                            policy: false,
-                            command_seq: Some(command_seq),
-                            source_output: cross.source_output.clone(),
-                            source_workspace: cross.source_workspace.0.clone(),
-                            members: Vec::new(),
-                            migration_refill: None,
-                            migration_initial_empty: false,
-                            migration_source_index: None,
-                            migration_source_view: None,
-                            migration_target_view: None,
-                            migration_terminal: None,
-                            migration_selection_rev: None,
-                            pending_member: None,
-                            pending_members: BTreeMap::new(),
-                            pending_view: None,
-                        });
-                    }
                 }
                 self.note_command(command_seq);
                 CommandApplied::NoEffect
@@ -2030,9 +2037,7 @@ impl WorldEngine {
                 // Pair-route sends that surface here (R4 capacity-float
                 // fallback under a Move command) retain exactly like an
                 // explicit send: one identity-pinned window transfer. The
-                // same-window pending-transfer fence lives pre-engine in
-                // the pair/local routes; the in-flight skip below is only
-                // a no-double-retain backstop.
+                // latest transfer supersedes older same-window transfers.
                 let (window, source_output, source_workspace, target_output, target_workspace) =
                     match &plan.operation {
                         crate::contract::LifecycleOperation::MoveTiled {
@@ -2069,37 +2074,32 @@ impl WorldEngine {
                             return CommandApplied::NoEffect;
                         }
                     };
-                let in_flight = self.retained.iter().any(|r| match &r.target.kind {
-                    TransferKind::Window(w) => w == &window,
-                    TransferKind::View | TransferKind::Migration => false,
+                self.retain_latest_window_transfer(RetainedTransfer {
+                    target: TransferTarget {
+                        operation_id: format!("op-{command_seq}"),
+                        kind: TransferKind::Window(window),
+                        target_output,
+                        target_workspace: target_workspace.0.clone(),
+                        follow: plan.follow,
+                        held: false,
+                    },
+                    policy: false,
+                    command_seq: Some(command_seq),
+                    source_output,
+                    source_workspace: source_workspace.0.clone(),
+                    members: Vec::new(),
+                    migration_refill: None,
+                    migration_initial_empty: false,
+                    migration_source_index: None,
+                    migration_source_view: None,
+                    migration_target_view: None,
+                    migration_terminal: None,
+                    migration_selection_rev: None,
+                    pending_member: None,
+                    member_predecessors: Vec::new(),
+                    pending_members: BTreeMap::new(),
+                    pending_view: None,
                 });
-                if !in_flight {
-                    self.retained.push(RetainedTransfer {
-                        target: TransferTarget {
-                            operation_id: format!("op-{command_seq}"),
-                            kind: TransferKind::Window(window),
-                            target_output,
-                            target_workspace: target_workspace.0.clone(),
-                            follow: plan.follow,
-                            held: false,
-                        },
-                        policy: false,
-                        command_seq: Some(command_seq),
-                        source_output,
-                        source_workspace: source_workspace.0.clone(),
-                        members: Vec::new(),
-                        migration_refill: None,
-                        migration_initial_empty: false,
-                        migration_source_index: None,
-                        migration_source_view: None,
-                        migration_target_view: None,
-                        migration_terminal: None,
-                        migration_selection_rev: None,
-                        pending_member: None,
-                        pending_members: BTreeMap::new(),
-                        pending_view: None,
-                    });
-                }
                 self.note_command(command_seq);
                 CommandApplied::NoEffect
             }
@@ -2164,6 +2164,7 @@ impl WorldEngine {
         command: &CoreCommand,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> Option<(DomainKey, crate::world_engine::StagedDomain)> {
+        let is_move = matches!(command, CoreCommand::Move { .. });
         let window = match command {
             CoreCommand::Move { window, .. }
             | CoreCommand::Focus { window, .. }
@@ -2180,16 +2181,32 @@ impl WorldEngine {
             | CoreCommand::MigrateWorkspace { .. }
             | CoreCommand::ReleaseDomain => None,
         };
-        if let Some(window) = window
-            && let Some(key) = self.staged_homing(&window)
-            && !held_scopes.contains(&key)
-            && let Some(domain) = self
-                .staged
-                .domains
-                .iter()
-                .find(|d| d.readable && d.key == key)
-        {
-            return Some((key, domain.clone()));
+        if let Some(window) = window {
+            let preferred = if is_move {
+                self.retained.iter().find_map(|r| match &r.target.kind {
+                    TransferKind::Window(w) if w == &window => Some(DomainKey {
+                        output: r.target.target_output.clone(),
+                        workspace: crate::directional::WorkspaceId(
+                            r.target.target_workspace.clone(),
+                        ),
+                    }),
+                    _ => None,
+                })
+            } else {
+                None
+            };
+            let key = preferred
+                .or_else(|| self.staged_homing(&window))
+                .filter(|key| !held_scopes.contains(key));
+            if let Some(key) = key
+                && let Some(domain) = self
+                    .staged
+                    .domains
+                    .iter()
+                    .find(|d| d.readable && d.key == key)
+            {
+                return Some((key, domain.clone()));
+            }
         }
         self.staged
             .domains

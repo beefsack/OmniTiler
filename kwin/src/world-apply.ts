@@ -905,6 +905,23 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         // operation with no new native call; the follow view rides the
         // same operation when requested.
         if (liveHome.out === targetOut && liveHome.ws === targetNative) {
+            // Spend a fresh no-call with live target proof, not the lagging
+            // observed source. Held/dispatched confirmations must not replace
+            // earlier call evidence or its stamp.
+            if (!transfer.held && !state.isDispatched(op)) {
+                if (!preSetterOk(env, reply, entryObs, observed, false, liveHome)) {
+                    result.stoppedMidApply = true;
+                    break;
+                }
+                state.markDispatched(op);
+                state.recordMemberAttempt({
+                    op, win: row.win, out: targetOut, ws: targetWs,
+                    setter: "already-at-target",
+                    pre: liveMemberRefOf(liveHome),
+                    post: readMemberRefNow(env, observed.ref),
+                    attemptMs: stamp,
+                });
+            }
             settleFollowView(env, reply, entryObs, transfer, row.win, result);
             continue;
         }

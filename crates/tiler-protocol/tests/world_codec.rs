@@ -982,7 +982,7 @@ fn typed_attempts_decode_v4_nested_witnesses_and_reject_old_or_wrong_arms() {
             window: WindowId("win-a".into()),
             target_output: OutputId("out-a".into()),
             target_workspace: "ws-a".into(),
-            setter: FrameSetter::Accepted,
+            setter: FrameSetter::Accepted.into(),
             pre: Some(WorkspaceRef::Logical {
                 output: OutputId("out-a".into()),
                 workspace: WorkspaceId("ws-a".into()),
@@ -1109,6 +1109,86 @@ fn typed_attempts_decode_v4_nested_witnesses_and_reject_old_or_wrong_arms() {
         decode_member_attempt(&malformed_member).unwrap_err().kind,
         "unknown-field"
     );
+}
+
+#[test]
+fn member_already_at_target_round_trips_both_namespaces() {
+    use tiler_core::world_report::MemberDisposition;
+    use tiler_protocol::world_protocol::{decode_report_v4, encode_report_v4};
+
+    for kind in ["logical", "native"] {
+        let target = if kind == "logical" {
+            "target"
+        } else {
+            "logical-target"
+        };
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("report");
+        let home = serde_json::json!({"kind":kind,"out":"out","ws":"target"});
+        value["memberAttempts"] = serde_json::json!([{
+            "op":"transfer-a","win":"win-a","out":"out","ws":target,
+            "setter":"already-at-target","pre":home,"post":home,"attemptMs":"23"
+        }]);
+        let decoded = decode_report_v4(&value.to_string()).expect("no-call report");
+        let attempt = &decoded.report.member_attempts[0];
+        assert_eq!(attempt.setter, MemberDisposition::AlreadyAtTarget);
+        assert_eq!(attempt.operation_id, "transfer-a");
+        assert_eq!(attempt.window.0, "win-a");
+        assert_eq!(attempt.target_output.0, "out");
+        assert_eq!(attempt.target_workspace, target);
+        assert_eq!(attempt.pre, attempt.post);
+        assert!(attempt.pre.is_some());
+        assert_eq!(attempt.attempt_ms, 23);
+        let encoded = encode_report_v4(&decoded).expect("encode no-call report");
+        let encoded_value: serde_json::Value = serde_json::from_str(&encoded).expect("JSON");
+        assert_eq!(encoded_value["memberAttempts"], value["memberAttempts"]);
+        assert_eq!(
+            decode_report_v4(&encoded).expect("round trip").report,
+            decoded.report
+        );
+    }
+}
+
+#[test]
+fn member_already_at_target_keeps_strict_shape_and_member_only_disposition() {
+    use tiler_protocol::world_protocol::{decode_member_attempt, decode_view_attempt};
+
+    let row = serde_json::json!({
+        "op":"transfer-a","win":"win-a","out":"out","ws":"target",
+        "setter":"already-at-target",
+        "pre":{"kind":"logical","out":"out","ws":"target"},
+        "post":{"kind":"logical","out":"out","ws":"target"},"attemptMs":"23"
+    });
+    for key in [
+        "op",
+        "win",
+        "out",
+        "ws",
+        "setter",
+        "pre",
+        "post",
+        "attemptMs",
+    ] {
+        let mut missing = row.clone();
+        missing.as_object_mut().expect("object").remove(key);
+        assert!(decode_member_attempt(&missing).is_err(), "{key}");
+    }
+    for setter in ["not-called", "consumed", "unknown"] {
+        let mut invalid = row.clone();
+        invalid["setter"] = serde_json::json!(setter);
+        assert!(decode_member_attempt(&invalid).is_err(), "{setter}");
+    }
+    let view = serde_json::json!({
+        "op":"view-a","out":"out","ws":"target","setter":"already-at-target",
+        "pre":null,"post":null,"base":null,"attemptMs":"23"
+    });
+    assert!(decode_view_attempt(&view).is_err());
+
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("report");
+    value["memberAttempts"] = serde_json::json!([row, row]);
+    let error = decode_request(&value.to_string()).expect_err("duplicate no-call row");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "duplicate-member");
 }
 
 #[test]

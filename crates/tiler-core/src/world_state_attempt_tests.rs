@@ -1,6 +1,7 @@
 //! Internal state-attempt settlement.
 
 use crate::directional::{OutputId, WindowId};
+use crate::world_attempts::PropertyAttempt;
 use crate::world_engine::WorldEngine;
 use crate::world_report::{
     AttemptOutcome, FrameSetter, RowDiagnosticKind, RowDiagnosticLane, StateAttempt, StateProperty,
@@ -87,6 +88,10 @@ fn with_attempts(mut report: WorldReportV4, attempts: Vec<StateAttempt>) -> Worl
     report
 }
 
+fn canonical(raw: &StateAttempt) -> PropertyAttempt {
+    PropertyAttempt::from_state_attempt(raw)
+}
+
 fn base_fact_above(
     window: &str,
     output: &str,
@@ -165,8 +170,15 @@ fn exact_match_success_confirms_sticky() {
     };
     let bound = binding(&engine, "win-a", StateProperty::Sticky).expect("binding retained");
     assert!(bound.spent);
-    assert_eq!(bound.pending.as_ref(), Some(&row));
-    assert_eq!(bound.pending.as_ref().map(|row| row.attempt_ms), Some(7));
+    assert_eq!(bound.pending.as_ref(), Some(&canonical(&row)));
+    assert_eq!(
+        bound
+            .pending
+            .as_ref()
+            .and_then(PropertyAttempt::as_state)
+            .map(|evidence| evidence.attempt_ms),
+        Some(7)
+    );
     assert_eq!(bound.disposition, AttemptOutcome::Applied);
     assert!(reply.diagnostics.is_empty());
     assert!(settlements.is_empty());
@@ -615,8 +627,15 @@ fn spent_second_attempt_keeps_first_raw_evidence() {
     );
     let bound = binding(&engine, "win-a", StateProperty::Sticky).expect("binding retained");
     assert!(bound.spent);
-    assert_eq!(bound.pending.as_ref(), Some(&first));
-    assert_eq!(bound.pending.as_ref().map(|row| row.attempt_ms), Some(7));
+    assert_eq!(bound.pending.as_ref(), Some(&canonical(&first)));
+    assert_eq!(
+        bound
+            .pending
+            .as_ref()
+            .and_then(PropertyAttempt::as_state)
+            .map(|evidence| evidence.attempt_ms),
+        Some(7)
+    );
     assert_eq!(bound.disposition, AttemptOutcome::Applied);
 }
 
@@ -684,7 +703,7 @@ fn original_revision_accepts_after_later_publications() {
     );
     let bound = binding(&engine, "win-a", StateProperty::Above).expect("binding retained");
     assert!(bound.spent);
-    assert_eq!(bound.pending.as_ref(), Some(&row));
+    assert_eq!(bound.pending.as_ref(), Some(&canonical(&row)));
     assert_eq!(bound.disposition, AttemptOutcome::Applied);
 }
 
@@ -748,7 +767,7 @@ fn gap_capture_survives_then_recordfree_recovery_confirms() {
         ),
     );
     let bound = binding(&engine, "win-a", StateProperty::Above).expect("binding retained");
-    assert_eq!(bound.pending.as_ref(), Some(&row));
+    assert_eq!(bound.pending.as_ref(), Some(&canonical(&row)));
     assert_eq!(bound.disposition, AttemptOutcome::Applied);
 }
 
@@ -882,7 +901,7 @@ fn exact_redelivery_idempotent_conflicting_repeat_keeps_original() {
         ),
     );
     let bound = binding(&engine, "win-a", StateProperty::Above).expect("binding");
-    assert_eq!(bound.pending.as_ref(), Some(&row));
+    assert_eq!(bound.pending.as_ref(), Some(&canonical(&row)));
     assert_eq!(bound.disposition, AttemptOutcome::Applied);
     accepted(
         &mut engine,
@@ -912,7 +931,7 @@ fn exact_redelivery_idempotent_conflicting_repeat_keeps_original() {
     let bound = binding(&engine, "win-a", StateProperty::Above).expect("binding");
     assert_eq!(
         bound.pending.as_ref(),
-        Some(&row),
+        Some(&canonical(&row)),
         "conflicting repeat keeps original",
     );
     assert_eq!(bound.disposition, AttemptOutcome::Applied);
@@ -1471,7 +1490,7 @@ fn bounds_upsert_and_lifecycle_cleanup() {
         .get(&(WindowId("fill-0".to_owned()), StateProperty::Above))
         .expect("exact-cap binding settles");
     assert!(settled.spent);
-    assert_eq!(settled.pending.as_ref(), Some(&probe));
+    assert_eq!(settled.pending.as_ref(), Some(&canonical(&probe)));
     assert_eq!(settled.disposition, AttemptOutcome::Applied);
     for i in 0..crate::world_state::MAX_RETAINED_STATE_BINDINGS {
         engine

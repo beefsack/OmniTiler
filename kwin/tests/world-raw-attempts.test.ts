@@ -384,6 +384,178 @@ describe("world raw mechanical attempts", () => {
             flow.handle.stop();
         }
     });
+    it("serializes a genuine no-call already-at-target member row and redelivers it across a lost ACK", () => {
+        // Genuine production entry path: startWorldAdapterEntry drives the
+        // real observer/apply/codec/ACK seams. The native home of win-a is
+        // already out-1/d1, which is exactly the binding of logical w1, so
+        // a fresh unheld transfer to out-1/w1 (follow false, frame untouched)
+        // must spend with zero native setters and emit one no-call evidence
+        // row carrying the original broker stamp. We then lose the bound
+        // reply at the transport seam and prove the row redelivers byte-for-
+        // byte unchanged, before a valid bound reply consumes it and a
+        // spent reapply cannot recreate it. No encoder/recordMemberAttempt/
+        // ackDelivered mocking anywhere on this path.
+        const flow = startFlow();
+        try {
+            // Count every method-style native setter at the surface seam;
+            // the setters are looked up dynamically at call time, so
+            // wrapping them here (after entry start) still observes them.
+            let outputSends = 0;
+            let viewSwitches = 0;
+            const surface = flow.surface as {
+                sendClientToScreen: (mover: unknown, out: unknown) => void;
+                setCurrentDesktopForScreen: (deskRef: unknown, screen: { name: string }) => void;
+            };
+            const origSend = surface.sendClientToScreen;
+            const origSwitch = surface.setCurrentDesktopForScreen;
+            surface.sendClientToScreen = (mover: unknown, out: unknown): void => {
+                outputSends += 1;
+                origSend(mover, out);
+            };
+            surface.setCurrentDesktopForScreen = (deskRef: unknown, screen: { name: string }): void => {
+                viewSwitches += 1;
+                origSwitch(deskRef, screen);
+            };
+            // win-a is the subject: the property lanes are written with
+            // Reflect.set (no method to wrap), so intercept the actual
+            // assignments with accessors that keep the real values. This
+            // counts native property setter CALLS, not just final equality.
+            const winA = flow.wins[0] as FakeWindow;
+            let frameWrites = 0;
+            let deskWrites = 0;
+            let frameValue: FakeWindow["frameGeometry"] = winA.frameGeometry;
+            let deskValue: FakeWindow["desktops"] = winA.desktops;
+            Object.defineProperty(winA, "frameGeometry", {
+                configurable: true,
+                get: (): FakeWindow["frameGeometry"] => frameValue,
+                set: (v: FakeWindow["frameGeometry"]): void => { frameWrites += 1; frameValue = v; },
+            });
+            Object.defineProperty(winA, "desktops", {
+                configurable: true,
+                get: (): FakeWindow["desktops"] => deskValue,
+                set: (v: FakeWindow["desktops"]): void => { deskWrites += 1; deskValue = v; },
+            });
+            const frameBefore = { ...frameValue };
+            const homesBefore = deskValue.map((d) => d.id);
+
+            // The v4 codec omits empty attempt lanes, so normalize the
+            // absent field to an empty array. The capture source proves each
+            // read is a genuinely fresh DescribeWorld, not a stale re-read.
+            const lastCapture = (): { source: string; members: Array<Record<string, unknown>> } => {
+                const payload = JSON.parse(lastPayload(flow, "DescribeWorld")) as Record<string, unknown>;
+                const inner = payload["report"] as Record<string, unknown>;
+                const members = inner["memberAttempts"];
+                return {
+                    source: payload["source"] as string,
+                    members: (Array.isArray(members) ? members : []) as Array<Record<string, unknown>>,
+                };
+            };
+            const malformedDescribe = (): void => {
+                const found = [...flow.calls].reverse().find((c) => c.method === "DescribeWorld");
+                assert.ok(found !== undefined, "expected a DescribeWorld to answer malformed");
+                (found as { callback: (reply: unknown) => void }).callback("not-json");
+            };
+            const assertNoNativeWrites = (label: string): void => {
+                assert.equal(outputSends, 0, `${label}: no sendClientToScreen`);
+                assert.equal(viewSwitches, 0, `${label}: no setCurrentDesktopForScreen`);
+                assert.equal(frameWrites, 0, `${label}: zero native frameGeometry assignments`);
+                assert.equal(deskWrites, 0, `${label}: zero native desktops assignments`);
+                assert.deepEqual(winA.frameGeometry, frameBefore, `${label}: frame untouched natively`);
+                assert.deepEqual(winA.desktops.map((d) => d.id), homesBefore, `${label}: membership untouched natively`);
+            };
+
+            answerHandshake(flow, "gen-1");
+            answerSettings(flow, "gen-1");
+            runTimers(flow);
+            // Round 1: converge the bindings (w1->d1 on out-1, w2->d2 on
+            // out-2) so the transfer target resolves natively.
+            accept(flow, "1", (reply) => {
+                reply["outputs"] = [
+                    { out: "out-1", view: "w1", mode: "tiled", hold: "" },
+                    { out: "out-2", view: "w2", mode: "tiled", hold: "" },
+                ];
+                reply["windows"] = [
+                    { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                ];
+            });
+            flow.fire("desktopsChanged");
+            runTimers(flow);
+            // Round 2: one fresh, unheld window transfer of win-a to the
+            // very place it already lives natively (out-1/w1 -> d1), follow
+            // false, frame untouched. The apply must record a no-call
+            // already-at-target member attempt with the original stamp.
+            accept(flow, "2", (reply) => {
+                reply["outputs"] = [
+                    { out: "out-1", view: "w1", mode: "tiled", hold: "" },
+                    { out: "out-2", view: "w2", mode: "tiled", hold: "" },
+                ];
+                reply["windows"] = [
+                    { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                ];
+                reply["transfers"] = [
+                    { op: "op-at-target", kind: "window", win: "win-a", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null },
+                ];
+            });
+            const expected = {
+                op: "op-at-target", win: "win-a", out: "out-1", ws: "w1",
+                setter: "already-at-target",
+                pre: { kind: "native", out: "out-1", ws: "d1" },
+                post: { kind: "native", out: "out-1", ws: "d1" },
+                attemptMs: "1",
+            };
+            const diag = (): string => `logs=${JSON.stringify(flow.logs)}`;
+            // Next capture via native event: the actual serialized report
+            // must carry the exact already-at-target row.
+            flow.fire("desktopsChanged");
+            runTimers(flow);
+            const carrying = lastCapture();
+            assert.deepEqual(carrying.members, [expected], `actual captured report carries the exact no-call row ${diag()}`);
+            const firstBytes = JSON.stringify(carrying.members);
+            assertNoNativeWrites("fresh already-at-target");
+
+            // Lose the bound reply at the transport seam: the malformed
+            // data cannot ACK, so the flight retires without consuming the
+            // delivered row and its original stamp. A genuinely new capture
+            // must then reserialize the same bytes.
+            malformedDescribe();
+            flow.fire("desktopsChanged");
+            runTimers(flow);
+            const redelivered = lastCapture();
+            assert.notEqual(redelivered.source, carrying.source, "lost ACK is followed by a genuinely fresh capture");
+            assert.deepEqual(redelivered.members, [expected], `lost ACK keeps the exact row and stamp ${diag()}`);
+            assert.equal(JSON.stringify(redelivered.members), firstBytes, "lost ACK redelivers the serialized row byte-for-byte unchanged");
+            assertNoNativeWrites("lost-ACK redelivery");
+
+            // A genuine bound valid reply consumes exactly the delivered row.
+            accept(flow, "3", () => undefined);
+            flow.fire("desktopsChanged");
+            runTimers(flow);
+            const consumed = lastCapture();
+            assert.notEqual(consumed.source, redelivered.source, "post-ACK capture is genuinely fresh");
+            assert.deepEqual(consumed.members, [], `bound valid reply consumes the delivered row ${diag()}`);
+            assertNoNativeWrites("post-ack");
+
+            // Reapplying the unchanged, already-spent transfer cannot
+            // recreate the row: the dispatch fence still owns the op.
+            accept(flow, "4", (reply) => {
+                reply["windows"] = [
+                    { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                ];
+                reply["transfers"] = [
+                    { op: "op-at-target", kind: "window", win: "win-a", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null },
+                ];
+            });
+            flow.fire("desktopsChanged");
+            runTimers(flow);
+            const spent = lastCapture();
+            assert.notEqual(spent.source, consumed.source, "spent-reapply capture is genuinely fresh");
+            assert.deepEqual(spent.members, [], `spent transfer reapply never recreates the row ${diag()}`);
+            assertNoNativeWrites("spent reapply");
+        } finally {
+            flow.handle.stop();
+        }
+    });
     it("consumes born clear tokens on held-scope rows with no geometry writes", () => {
         // N6 property authority: the core rides `clear_operation` on held
         // rows while frame/member authority stays held. The clear lane
@@ -1039,16 +1211,38 @@ describe("world setter attempt correspondence", () => {
             desktopById: (id: string): object => ({ id }),
             minDesktops: 1,
         };
-        const result = applyWorldReply(env);
-        assert.equal(setters, 1, "output setter ran once before throwing");
-        assert.deepEqual(state.memberAttemptsForReport(), [{
+        const callRow = {
             op: "op-9", win: "win-a", out: "out-2", ws: "w2",
             setter: "threw",
             pre: { kind: "native", out: "out-1", ws: "d1" },
             post: { kind: "native", out: "out-2", ws: "d2" },
             attemptMs: "9",
-        }], "throw after moving keeps the threw disposition, never accepted");
+        };
+        const result = applyWorldReply(env);
+        assert.equal(setters, 1, "output setter ran once before throwing");
+        assert.deepEqual(state.memberAttemptsForReport(), [callRow], "throw after moving keeps the threw disposition, never accepted");
         assert.equal(result.membershipWrites, 0, "ambiguous throw earns no write credit");
+
+        // The throw already moved the window to the native target. Reapply
+        // the same spent op at a later clock: the already-at-target no-call
+        // path must NOT replace the prior call proof or restamp it.
+        state.recordClock("10");
+        const replay = applyWorldReply(env);
+        assert.equal(setters, 1, "no second output call on the already-at-target replay");
+        assert.equal(replay.membershipWrites, 0, "no-call replay earns no write credit");
+        assert.deepEqual(state.memberAttemptsForReport(), [callRow], "prior threw call proof is never replaced or restamped by a no-call");
+
+        // A bound ACK consumes the delivered call row; a later unchanged
+        // spent apply must not recreate evidence or run any setter.
+        const flight = state.beginCapture("src-1", null);
+        assert.ok(flight !== null);
+        assert.equal(flight.delivered.members.length, 1);
+        assert.equal(state.ackDelivered("src-1", true), 1, "bound ACK retires the delivered threw row");
+        assert.deepEqual(state.memberAttemptsForReport(), [], "bound ACK consumes the row");
+        const afterAck = applyWorldReply(env);
+        assert.equal(setters, 1, "no setter on the spent replay after ACK");
+        assert.equal(afterAck.membershipWrites, 0, "no write credit after ACK");
+        assert.deepEqual(state.memberAttemptsForReport(), [], "spent replay after ACK never recreates evidence");
     });
 
     it("retains the output disposition when migration homing goes unreadable after the send", () => {
@@ -1114,6 +1308,162 @@ describe("world setter attempt correspondence", () => {
             attemptMs: "9",
         }], "superseded flight keeps the real output disposition");
         assert.equal(result.membershipWrites, 0, "superseded flight earns no write credit");
+    });
+
+    it("fresh already-at-target window transfer spends and emits one no-call member attempt with retained evidence", () => {
+        const state = new WorldAdapterState("adapter-a", "owner-a");
+        state.boundGen = "gen-1";
+        state.recordClock("9");
+        const ref = {};
+        // Live homing already at the native target; observation lags behind.
+        const homing = new Map<object, { out: string; ws: string }>([[ref, { out: "out-2", ws: "d2" }]]);
+        let setters = 0;
+        const noSetter = (label: string): boolean => {
+            setters += 1;
+            throw new Error(`no ${label} setter expected`);
+        };
+        const env = {
+            state,
+            observation: setterObservation([{ win: "win-a", ref, out: "out-1", ws: "d1" }]),
+            reply: setterReply(
+                [{
+                    win: "win-a", out: "out-1", ws: "w1", alloc: null, frame: null,
+                    frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
+                    frame_op: "", clear_op: "", floating: false, float_origin: "",
+                    cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
+                }],
+                [{ op: "op-new", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false, cmdSeq: null }],
+                [{ id: "w2", out: "out-2", bind: "d2", scope: { kind: "output", out: "out-2" }, order: 0, mode: "tiled", exist: true, hold: "" }],
+            ),
+            dispatchWatermark: "0",
+            takeResult: null,
+            log: (): void => undefined,
+            isStillListed: (): boolean => true,
+            readLiveRect: (): null => null,
+            readLiveMembership: (r: object): { out: string; ws: string } | null => homing.get(r) ?? null,
+            readLiveSafety: setterSafety,
+            setGeometry: (): boolean => noSetter("frame"),
+            setMembership: (): boolean => noSetter("desktop"),
+            sendToOutput: (): boolean => noSetter("output"),
+            resolveOutput: (out: string): object => ({ name: out }),
+            resolveDesktop: (ws: string): object => ({ id: ws }),
+            switchView: (): boolean => noSetter("view"),
+            createDesktop: (): void => undefined,
+            removeDesktop: (): boolean => false,
+            focusWindow: (): boolean => false,
+            desktopOccupants: () => ({ total: 0, readable: true }),
+            desktopVisible: (): boolean => false,
+            readLiveView: (): string | null => null,
+            desktopById: (id: string): object => ({ id }),
+            minDesktops: 1,
+        };
+        const expected = {
+            op: "op-new", win: "win-a", out: "out-2", ws: "w2",
+            setter: "already-at-target",
+            pre: { kind: "native", out: "out-2", ws: "d2" },
+            post: { kind: "native", out: "out-2", ws: "d2" },
+            attemptMs: "9",
+        };
+        // Gate negatives BEFORE the first successful spend: each must leave
+        // no row, leave the op undispatched, and run zero setters.
+        const assertNoEvidence = (label: string): void => {
+            assert.deepEqual(state.memberAttemptsForReport(), [], `${label}: no row`);
+            assert.equal(state.isDispatched("op-new"), false, `${label}: op stays undispatched`);
+            assert.equal(setters, 0, `${label}: zero setters`);
+        };
+        const heldReply = setterReply(
+            [{
+                win: "win-a", out: "out-1", ws: "w1", alloc: null, frame: null,
+                frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
+                frame_op: "", clear_op: "", floating: false, float_origin: "",
+                cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
+            }],
+            [{ op: "op-new", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: true, cmdSeq: null }],
+            [{ id: "w2", out: "out-2", bind: "d2", scope: { kind: "output", out: "out-2" }, order: 0, mode: "tiled", exist: true, hold: "" }],
+        );
+        applyWorldReply({ ...env, reply: heldReply });
+        assertNoEvidence("held transfer");
+        applyWorldReply({ ...env, isStillListed: () => false });
+        assertNoEvidence("unlisted member");
+        applyWorldReply({ ...env, readLiveSafety: () => null });
+        assertNoEvidence("unreadable safety");
+        let membershipReads = 0;
+        applyWorldReply({
+            ...env,
+            readLiveMembership: (): { out: string; ws: string } | null => {
+                membershipReads += 1;
+                return membershipReads === 1 ? { out: "out-2", ws: "d2" } : null;
+            },
+        });
+        assertNoEvidence("membership unreadable at preSetterOk");
+        assert.equal(membershipReads, 2, "target read then null at the preSetterOk recheck");
+
+        // 1. Fresh unheld transfer with live homing already at target: no
+        // setter runs, one no-call evidence row rides with the original
+        // write stamp, and the op spends its dispatch fence.
+        const first = applyWorldReply(env);
+        assert.equal(setters, 0, "no setter runs when live homing is already at target");
+        assert.equal(first.membershipWrites, 0, "zero membership writes");
+        assert.deepEqual(state.memberAttemptsForReport(), [expected], "one exact already-at-target row");
+        assert.equal(state.isDispatched("op-new"), true, "fresh transfer spends its dispatch fence");
+
+        // 2. Replay the unchanged envelope at a later broker clock: the row
+        // and its original stamp survive untouched, with no new setters.
+        state.recordClock("10");
+        const replay = applyWorldReply(env);
+        assert.equal(setters, 0, "replay runs no setters");
+        assert.equal(replay.membershipWrites, 0, "replay earns no write credit");
+        assert.deepEqual(state.memberAttemptsForReport(), [expected], "replay keeps the original row and stamp");
+
+        // 3. Raw pending evidence survives a lost acknowledgement.
+        const lost = state.beginCapture("src-1", null);
+        assert.ok(lost !== null);
+        assert.equal(lost.delivered.members.length, 1, "flight snapshots the member row");
+        assert.equal(state.ackDelivered("src-1", false), 0, "lost ack retires nothing");
+        assert.deepEqual(state.memberAttemptsForReport(), [expected], "row survives lost ack");
+        assert.equal(state.releaseFlight("src-1"), true, "release the unacknowledged flight");
+
+        // 4. A later capture plus a bound ACK retires the exact delivered row.
+        const acked = state.beginCapture("src-2", null);
+        assert.ok(acked !== null);
+        assert.equal(acked.delivered.members.length, 1);
+        assert.equal(state.ackDelivered("src-2", true), 1, "bound ack retires the delivered row");
+        assert.deepEqual(state.memberAttemptsForReport(), [], "exact delivered equality removes the row");
+
+        // 5. Reapplying the same spent op never recreates the row or setters.
+        const spent = applyWorldReply(env);
+        assert.equal(setters, 0, "spent op runs no setters");
+        assert.equal(spent.membershipWrites, 0, "spent op earns no write credit");
+        assert.deepEqual(state.memberAttemptsForReport(), [], "spent op never recreates the row");
+
+        // 6. Fresh bound state at clock 9: membership readable at both the
+        // target check and preSetterOk recheck, but unreadable at the post
+        // read. The no-call row must store post:null, never a fabricated
+        // equal proof, while still spending its dispatch fence with no
+        // native setter.
+        const state2 = new WorldAdapterState("adapter-a", "owner-a");
+        state2.boundGen = "gen-1";
+        state2.recordClock("9");
+        let lateReads = 0;
+        const env2 = {
+            ...env,
+            state: state2,
+            readLiveMembership: (): { out: string; ws: string } | null => {
+                lateReads += 1;
+                return lateReads <= 2 ? { out: "out-2", ws: "d2" } : null;
+            },
+        };
+        applyWorldReply(env2);
+        assert.equal(lateReads, 3, "membership read at target, at preSetterOk, then at post");
+        assert.deepEqual(state2.memberAttemptsForReport(), [{
+            op: "op-new", win: "win-a", out: "out-2", ws: "w2",
+            setter: "already-at-target",
+            pre: { kind: "native", out: "out-2", ws: "d2" },
+            post: null,
+            attemptMs: "9",
+        }], "unreadable post stores null, never a fabricated equal proof");
+        assert.equal(state2.isDispatched("op-new"), true, "fresh no-call still spends its dispatch fence");
+        assert.equal(setters, 0, "zero setters with an unreadable post read");
     });
 });
 

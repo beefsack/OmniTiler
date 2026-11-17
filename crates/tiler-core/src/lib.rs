@@ -34,6 +34,7 @@ pub mod workspace;
 pub mod workspace_scope;
 pub(crate) mod world_above;
 pub(crate) mod world_admit_v4;
+mod world_attempts;
 pub mod world_born;
 pub mod world_clear;
 pub(crate) mod world_close_focus;

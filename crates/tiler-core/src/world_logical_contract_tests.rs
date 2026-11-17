@@ -802,7 +802,7 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
         window: WindowId("win-a".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: ring_a[1].clone(),
-        setter: FrameSetter::Accepted,
+        setter: FrameSetter::Accepted.into(),
         pre: None,
         post: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
@@ -943,7 +943,6 @@ fn assert_queued_cross_output_final_out_a(reply: &crate::world_report::WorldRepl
 }
 
 #[test]
-#[ignore = "pending no-call consumption-evidence decision"]
 fn queued_cross_output_moves_drain_in_order_without_transfer_in_flight() {
     // Ordered-rapid-input regression (`docs/decisions/commands.md`): a
     // queued move after a retained cross-output flight must evaluate the
@@ -983,7 +982,6 @@ fn queued_cross_output_moves_drain_in_order_without_transfer_in_flight() {
 }
 
 #[test]
-#[ignore = "pending no-call consumption-evidence decision"]
 fn queued_cross_output_moves_split_captures_drain_in_order_without_transfer_in_flight() {
     // Split-capture arm: a later capture still reports the old native source.
     let mut engine = queued_cross_output_bootstrap();
@@ -1024,7 +1022,6 @@ fn queued_cross_output_moves_split_captures_drain_in_order_without_transfer_in_f
 }
 
 #[test]
-#[ignore = "pending no-call consumption-evidence decision"]
 fn queued_cross_output_moves_alternating_eight_drain_in_order_without_transfer_in_flight() {
     // Eight alternating same-batch moves: every command evaluates the
     // preceding latest logical world, so the batch composes net-zero and
@@ -1056,6 +1053,672 @@ fn queued_cross_output_moves_alternating_eight_drain_in_order_without_transfer_i
         );
     }
     assert_queued_cross_output_final_out_a(&reply);
+}
+
+#[test]
+fn queued_cross_output_alternating_eight_separate_captures_drain_and_consume() {
+    // Split-capture arm of the eight alternating R/L regression: commands
+    // 11..18 each land in their own lagging capture (request_seq 2..9), the
+    // native raw fact stays at out-a, and every command therefore evaluates
+    // exactly the latest logical world without a native ack. The batch
+    // composes net-zero back to out-a; all seven published predecessors stay
+    // correlated until the latest is consumed; a spent replay cannot re-mint.
+    use crate::world_report::MemberDisposition;
+
+    let mut engine = queued_cross_output_bootstrap();
+    let mut latest: Option<crate::world_report::TransferTargetV4> = None;
+    let mut last_reply: Option<crate::world_report::WorldReplyV4> = None;
+    for i in 0..8u64 {
+        let seq = 11 + i;
+        let capture_seq = 2 + i;
+        let direction = if i % 2 == 0 { "right" } else { "left" };
+        let expected_output = if i % 2 == 0 { "out-b" } else { "out-a" };
+        let capture = queued_cross_output_lagging_capture(capture_seq);
+        let (outcome, settlements) = engine.handle_report(
+            &capture,
+            &[(seq, queued_cross_output_move_dir("win-a", direction))],
+        );
+        let reply = match outcome {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("separate capture {capture_seq} must accept, got {other:?}"),
+        };
+        assert_eq!(
+            settlements.len(),
+            1,
+            "separate capture {capture_seq} settles once: {settlements:?}"
+        );
+        assert_eq!(settlements[0].seq, seq);
+        assert_eq!(
+            settlements[0].result, None,
+            "move {seq} must settle against the latest logical world, not transfer-in-flight; got {:?}",
+            settlements[0].result
+        );
+        assert_eq!(
+            reply.transfers.len(),
+            1,
+            "separate capture {capture_seq} carries exactly the latest transfer: {:?}",
+            reply.transfers
+        );
+        assert_eq!(reply.transfers[0].operation_id, format!("op-{seq}"));
+        assert_eq!(reply.transfers[0].target_output.0, expected_output);
+        assert!(!reply.transfers[0].held);
+        assert_eq!(window_row(&reply, "win-a").output.0, expected_output);
+        latest = Some(reply.transfers[0].clone());
+        last_reply = Some(reply);
+    }
+    let latest = latest.expect("latest transfer");
+    assert_queued_cross_output_final_out_a(&last_reply.expect("last reply"));
+
+    // Eight moves end at logical out-a: latest op18 targets A unheld, with
+    // all seven earlier published operations retained as predecessors. No
+    // cap is invented, so the full published history must be present.
+    assert_eq!(latest.operation_id, "op-18");
+    assert_eq!(latest.target_output.0, "out-a");
+    assert!(!latest.held);
+    assert_eq!(engine.retained.len(), 1, "one latest retained entry");
+    let predecessor_ops: Vec<String> = engine.retained[0]
+        .member_predecessors
+        .iter()
+        .map(|(target, _)| target.operation_id.clone())
+        .collect();
+    assert_eq!(
+        predecessor_ops,
+        (11..18).map(|s| format!("op-{s}")).collect::<Vec<_>>(),
+        "all seven published earlier moves retained, no cap invented"
+    );
+
+    // Commandless capture10: the raw fact at out-a now matches the latest
+    // target, but seven outstanding predecessors block a bare fact from
+    // retiring the latest. It stays retained unheld.
+    let commandless = accepted(&mut engine, &queued_cross_output_lagging_capture(10));
+    assert_eq!(commandless.transfers.len(), 1, "{commandless:?}");
+    assert_eq!(commandless.transfers[0].operation_id, latest.operation_id);
+    assert_eq!(commandless.transfers[0].target_output.0, "out-a");
+    assert!(!commandless.transfers[0].held);
+
+    // Exact latest AlreadyAtTarget proof with readable logical-A pre/post
+    // consumes op18 and clears both the transfer and its predecessor history.
+    let home_a = WorkspaceRef::Logical {
+        output: latest.target_output.clone(),
+        workspace: WorkspaceId(latest.target_workspace.clone()),
+    };
+    let mut consumed = queued_cross_output_lagging_capture(11);
+    consumed.monotonic_ms = 60;
+    consumed.member_attempts = vec![MemberAttempt {
+        operation_id: latest.operation_id.clone(),
+        window: WindowId("win-a".to_owned()),
+        target_output: latest.target_output.clone(),
+        target_workspace: latest.target_workspace.clone(),
+        setter: MemberDisposition::AlreadyAtTarget,
+        pre: Some(home_a.clone()),
+        post: Some(home_a),
+        attempt_ms: 55,
+    }];
+    let consumed_reply = accepted(&mut engine, &consumed);
+    assert_queued_cross_output_final_out_a(&consumed_reply);
+    assert!(consumed_reply.transfers.is_empty(), "{consumed_reply:?}");
+    assert!(
+        engine.retained_transfers().is_empty(),
+        "consumption clears transfer and all predecessor history: {:?}",
+        engine.retained_transfers()
+    );
+
+    // Fresh replay of the spent evidence cannot re-mint a flight.
+    consumed.request_seq = 12;
+    consumed.observation_seq = 12;
+    consumed.request_id = "req-12".to_owned();
+    let replay = accepted(&mut engine, &consumed);
+    assert!(
+        replay.transfers.is_empty(),
+        "spent latest evidence cannot re-mint on a fresh capture: {replay:?}"
+    );
+}
+
+fn queued_cross_output_published_roundtrip() -> (
+    WorldEngine,
+    crate::world_report::TransferTargetV4,
+    crate::world_report::TransferTargetV4,
+) {
+    let mut engine = queued_cross_output_bootstrap();
+    let (right, first) = engine.handle_report(
+        &queued_cross_output_lagging_capture(2),
+        &[(11, queued_cross_output_move_dir("win-a", "right"))],
+    );
+    assert_eq!(first[0].result, None);
+    let WorldOutcome::Accepted(right) = right else {
+        panic!("right capture");
+    };
+    let prior = right.transfers[0].clone();
+    let (left, second) = engine.handle_report(
+        &queued_cross_output_lagging_capture(3),
+        &[(12, queued_cross_output_move_dir("win-a", "left"))],
+    );
+    assert_eq!(second[0].result, None);
+    let WorldOutcome::Accepted(left) = left else {
+        panic!("left capture");
+    };
+    assert_queued_cross_output_final_out_a(&left);
+    assert_eq!(left.transfers.len(), 1);
+    (engine, prior, left.transfers[0].clone())
+}
+
+#[test]
+fn queued_cross_output_latest_requires_consumption_and_survives_prior_own_arrival() {
+    use crate::world_report::MemberDisposition;
+
+    let (mut engine, prior, latest) = queued_cross_output_published_roundtrip();
+    let unchanged = accepted(&mut engine, &queued_cross_output_lagging_capture(4));
+    assert_eq!(unchanged.transfers.len(), 1);
+    assert_eq!(unchanged.transfers[0].operation_id, latest.operation_id);
+    let home = WorkspaceRef::Logical {
+        output: latest.target_output.clone(),
+        workspace: WorkspaceId(latest.target_workspace.clone()),
+    };
+    let mut older_arrival = queued_cross_output_lagging_capture(5);
+    older_arrival.windows = vec![fact("win-a", "out-b", 800)];
+    older_arrival.monotonic_ms = 50;
+    older_arrival.member_attempts = vec![MemberAttempt {
+        operation_id: prior.operation_id,
+        window: WindowId("win-a".to_owned()),
+        target_output: prior.target_output,
+        target_workspace: prior.target_workspace,
+        setter: MemberDisposition::Accepted,
+        pre: Some(home.clone()),
+        post: Some(home.clone()),
+        attempt_ms: 40,
+    }];
+    let delayed = accepted(&mut engine, &older_arrival);
+    assert_queued_cross_output_final_out_a(&delayed);
+    assert_eq!(delayed.transfers.len(), 1);
+    assert_eq!(delayed.transfers[0].operation_id, latest.operation_id);
+    assert!(!delayed.transfers[0].held);
+
+    let mut consumed = queued_cross_output_lagging_capture(6);
+    consumed.monotonic_ms = 60;
+    consumed.member_attempts = vec![MemberAttempt {
+        operation_id: latest.operation_id,
+        window: WindowId("win-a".to_owned()),
+        target_output: latest.target_output,
+        target_workspace: latest.target_workspace,
+        setter: MemberDisposition::AlreadyAtTarget,
+        pre: Some(home.clone()),
+        post: Some(home),
+        attempt_ms: 55,
+    }];
+    let final_reply = accepted(&mut engine, &consumed);
+    assert_queued_cross_output_final_out_a(&final_reply);
+    assert!(final_reply.transfers.is_empty());
+    consumed.request_seq = 7;
+    consumed.observation_seq = 7;
+    consumed.request_id = "req-7".to_owned();
+    assert!(accepted(&mut engine, &consumed).transfers.is_empty());
+}
+
+#[test]
+fn queued_cross_output_latest_call_proof_survives_lagging_prior_arrival() {
+    use crate::world_report::MemberDisposition;
+
+    let mut control = queued_cross_output_bootstrap();
+    let source = control
+        .staged_homing(&WindowId("win-a".to_owned()))
+        .unwrap();
+    let (outcome, _) = control.handle_report(
+        &queued_cross_output_lagging_capture(2),
+        &[(11, queued_cross_output_move_dir("win-a", "right"))],
+    );
+    let WorldOutcome::Accepted(right) = outcome else {
+        panic!("control right capture must accept");
+    };
+    assert_eq!(right.transfers.len(), 1, "{:?}", right.transfers);
+    let transfer = right.transfers[0].clone();
+    let mut capture3 = queued_cross_output_lagging_capture(3);
+    capture3.monotonic_ms = 40;
+    capture3.member_attempts = vec![MemberAttempt {
+        operation_id: transfer.operation_id.clone(),
+        window: WindowId("win-a".to_owned()),
+        target_output: transfer.target_output.clone(),
+        target_workspace: transfer.target_workspace.clone(),
+        setter: MemberDisposition::Accepted,
+        pre: Some(WorkspaceRef::Logical {
+            output: source.output.clone(),
+            workspace: source.workspace.clone(),
+        }),
+        post: Some(WorkspaceRef::Logical {
+            output: transfer.target_output.clone(),
+            workspace: WorkspaceId(transfer.target_workspace.clone()),
+        }),
+        attempt_ms: 30,
+    }];
+    let settled = accepted(&mut control, &capture3);
+    assert!(settled.transfers.is_empty(), "{:?}", settled.transfers);
+    assert_eq!(
+        window_row(&settled, "win-a").output.0,
+        "out-a",
+        "attempt proof settles the transfer without rewriting the captured source: {settled:?}"
+    );
+
+    let (mut engine, prior, latest) = queued_cross_output_published_roundtrip();
+    let home_a = WorkspaceRef::Logical {
+        output: latest.target_output.clone(),
+        workspace: WorkspaceId(latest.target_workspace.clone()),
+    };
+    let home_b = WorkspaceRef::Logical {
+        output: prior.target_output.clone(),
+        workspace: WorkspaceId(prior.target_workspace.clone()),
+    };
+    let mut capture4 = queued_cross_output_lagging_capture(4);
+    capture4.windows = vec![fact("win-a", "out-b", 800)];
+    capture4.monotonic_ms = 50;
+    capture4.member_attempts = vec![
+        MemberAttempt {
+            operation_id: prior.operation_id.clone(),
+            window: WindowId("win-a".to_owned()),
+            target_output: prior.target_output.clone(),
+            target_workspace: prior.target_workspace.clone(),
+            setter: MemberDisposition::Accepted,
+            pre: Some(home_a.clone()),
+            post: Some(home_a.clone()),
+            attempt_ms: 30,
+        },
+        MemberAttempt {
+            operation_id: latest.operation_id.clone(),
+            window: WindowId("win-a".to_owned()),
+            target_output: latest.target_output.clone(),
+            target_workspace: latest.target_workspace.clone(),
+            setter: MemberDisposition::Accepted,
+            pre: Some(home_b),
+            post: Some(home_a),
+            attempt_ms: 40,
+        },
+    ];
+    let reply = accepted(&mut engine, &capture4);
+    assert_eq!(
+        window_row(&reply, "win-a").output.0,
+        "out-b",
+        "attempt proof settles without rewriting the captured source"
+    );
+    assert!(reply.transfers.is_empty(), "{:?}", reply.transfers);
+
+    capture4.request_seq = 5;
+    capture4.observation_seq = 5;
+    capture4.request_id = "req-5".to_owned();
+    capture4.windows = vec![fact("win-a", "out-a", 0)];
+    let observed = accepted(&mut engine, &capture4);
+    assert_queued_cross_output_final_out_a(&observed);
+    assert!(observed.transfers.is_empty());
+    capture4.request_seq = 6;
+    capture4.observation_seq = 6;
+    capture4.request_id = "req-6".to_owned();
+    let replay = accepted(&mut engine, &capture4);
+    assert!(replay.transfers.is_empty(), "{:?}", replay.transfers);
+}
+
+#[test]
+fn queued_cross_output_no_call_needs_exact_identity_and_matching_readbacks() {
+    use crate::world_report::MemberDisposition;
+
+    for invalid in [
+        "operation",
+        "window",
+        "target",
+        "pre",
+        "post",
+        "different-pre",
+    ] {
+        let (mut engine, _, latest) = queued_cross_output_published_roundtrip();
+        let home = WorkspaceRef::Logical {
+            output: latest.target_output.clone(),
+            workspace: WorkspaceId(latest.target_workspace.clone()),
+        };
+        let mut row = MemberAttempt {
+            operation_id: latest.operation_id.clone(),
+            window: WindowId("win-a".to_owned()),
+            target_output: latest.target_output.clone(),
+            target_workspace: latest.target_workspace.clone(),
+            setter: MemberDisposition::AlreadyAtTarget,
+            pre: Some(home.clone()),
+            post: Some(home),
+            attempt_ms: 30,
+        };
+        match invalid {
+            "operation" => row.operation_id = "unrelated-op".to_owned(),
+            "window" => row.window = WindowId("other-lifetime".to_owned()),
+            "target" => row.target_workspace = "other-target".to_owned(),
+            "pre" => row.pre = None,
+            "post" => row.post = None,
+            "different-pre" => {
+                row.pre = Some(WorkspaceRef::Logical {
+                    output: OutputId("out-b".to_owned()),
+                    workspace: WorkspaceId(latest.target_workspace.clone()),
+                });
+            }
+            _ => unreachable!(),
+        }
+        let mut capture = queued_cross_output_lagging_capture(4);
+        capture.monotonic_ms = 40;
+        capture.member_attempts = vec![row];
+        let reply = accepted(&mut engine, &capture);
+        assert_eq!(reply.transfers.len(), 1, "{invalid}");
+        assert_eq!(
+            reply.transfers[0].operation_id, latest.operation_id,
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn queued_cross_output_spent_latest_evidence_latches_held() {
+    use crate::world_report::MemberDisposition;
+
+    // Public report loop Right11 then Left12, native lagging at out-a: the
+    // latest transfer op12 targets the logical home at out-a (latestA) while
+    // its retained source is also read from that lagging out-a capture.
+    let (mut engine, prior, latest) = queued_cross_output_published_roundtrip();
+    let home_a = WorkspaceRef::Logical {
+        output: latest.target_output.clone(),
+        workspace: WorkspaceId(latest.target_workspace.clone()),
+    };
+    let home_b = WorkspaceRef::Logical {
+        output: prior.target_output.clone(),
+        workspace: WorkspaceId(prior.target_workspace.clone()),
+    };
+    // Next raw fact arrives at out-b (the predecessor's target): the staged
+    // homing now matches op11's own-write target, not op12's lagging source.
+    let mut arrival = queued_cross_output_lagging_capture(4);
+    arrival.windows = vec![fact("win-a", "out-b", 800)];
+    arrival.monotonic_ms = 50;
+    arrival.member_attempts = vec![
+        // Exact prior op11 accepted evidence: the earlier own write to out-b.
+        MemberAttempt {
+            operation_id: prior.operation_id.clone(),
+            window: WindowId("win-a".to_owned()),
+            target_output: prior.target_output.clone(),
+            target_workspace: prior.target_workspace.clone(),
+            setter: MemberDisposition::Accepted,
+            pre: Some(home_a.clone()),
+            post: Some(home_b),
+            attempt_ms: 40,
+        },
+        // Exact latest op12 AlreadyAtTarget, but pre=None makes this no-call
+        // consumption invalid; it cannot reauthorize actuation.
+        MemberAttempt {
+            operation_id: latest.operation_id.clone(),
+            window: WindowId("win-a".to_owned()),
+            target_output: latest.target_output.clone(),
+            target_workspace: latest.target_workspace.clone(),
+            setter: MemberDisposition::AlreadyAtTarget,
+            pre: None,
+            post: Some(home_a),
+            attempt_ms: 45,
+        },
+    ];
+    let reply = accepted(&mut engine, &arrival);
+    // The latest original transfer and its logical out-a target survive, but
+    // the spent/ambiguous latest raw evidence cannot reauthorize actuation:
+    // the flight must latch held, not be retained unheld.
+    assert_eq!(reply.transfers.len(), 1, "{reply:?}");
+    assert_eq!(reply.transfers[0].operation_id, latest.operation_id);
+    assert_eq!(reply.transfers[0].target_output.0, "out-a");
+    assert_eq!(reply.transfers[0].target_workspace, latest.target_workspace);
+    assert!(
+        reply.transfers[0].held,
+        "spent/ambiguous latest raw evidence must latch held, not retain unheld: {reply:?}"
+    );
+    assert_queued_cross_output_final_out_a(&reply);
+
+    // Replay with a fresh sequence and the same spent evidence must not renew
+    // actuation permission: the flight stays held.
+    arrival.request_seq = 5;
+    arrival.observation_seq = 5;
+    arrival.request_id = "req-5".to_owned();
+    let replay = accepted(&mut engine, &arrival);
+    assert_eq!(replay.transfers.len(), 1, "{replay:?}");
+    assert_eq!(replay.transfers[0].operation_id, latest.operation_id);
+    assert!(
+        replay.transfers[0].held,
+        "replay must not renew actuation permission: {replay:?}"
+    );
+}
+
+#[test]
+fn queued_cross_output_latest_threw_without_source_keeps_own_arrival_held() {
+    use crate::world_report::MemberDisposition;
+
+    // Public Right11/Left12 loop: prior op11 -> out-b (B), latest op12 -> out-a
+    // (targetA), with the lagging source also read from out-a. A later raw fact
+    // at B carries exact prior op11 Accepted preA/postB plus latest op12 Threw
+    // without a readback; only the latest pre differs between the two arms.
+    for readable_source in [true, false] {
+        let (mut engine, prior, latest) = queued_cross_output_published_roundtrip();
+        // Preconditions: the helper is the exact Right11/Left12 loop.
+        assert_eq!(prior.operation_id, "op-11");
+        assert_eq!(latest.operation_id, "op-12");
+        assert_eq!(prior.target_output.0, "out-b");
+        assert_eq!(latest.target_output.0, "out-a");
+        let home_a = WorkspaceRef::Logical {
+            output: latest.target_output.clone(),
+            workspace: WorkspaceId(latest.target_workspace.clone()),
+        };
+        let home_b = WorkspaceRef::Logical {
+            output: prior.target_output.clone(),
+            workspace: WorkspaceId(prior.target_workspace.clone()),
+        };
+        let mut arrival = queued_cross_output_lagging_capture(4);
+        arrival.windows = vec![fact("win-a", "out-b", 800)];
+        arrival.monotonic_ms = 50;
+        arrival.member_attempts = vec![
+            // Exact prior op11 accepted evidence: the earlier own write to B.
+            MemberAttempt {
+                operation_id: prior.operation_id.clone(),
+                window: WindowId("win-a".to_owned()),
+                target_output: prior.target_output.clone(),
+                target_workspace: prior.target_workspace.clone(),
+                setter: MemberDisposition::Accepted,
+                pre: Some(home_a.clone()),
+                post: Some(home_b),
+                attempt_ms: 40,
+            },
+            // Latest op12 Threw, post=None: possibly-executed with no proof.
+            MemberAttempt {
+                operation_id: latest.operation_id.clone(),
+                window: WindowId("win-a".to_owned()),
+                target_output: latest.target_output.clone(),
+                target_workspace: latest.target_workspace.clone(),
+                setter: MemberDisposition::Threw,
+                pre: if readable_source {
+                    Some(home_a.clone())
+                } else {
+                    None
+                },
+                post: None,
+                attempt_ms: 45,
+            },
+        ];
+        let reply = accepted(&mut engine, &arrival);
+        if readable_source {
+            // Control: a readable current sourceA is legitimate clearance to
+            // erase correlation, so B is outside source/target and the
+            // existing external adoption/drop path is unchanged.
+            assert!(
+                reply.transfers.is_empty(),
+                "readable latest pre keeps external adoption: {reply:?}"
+            );
+            assert_eq!(window_row(&reply, "win-a").output.0, "out-b");
+        } else {
+            // Unreadable source and no target proof cannot erase own-write
+            // correlation: op12/targetA survives held.
+            assert_eq!(reply.transfers.len(), 1, "{reply:?}");
+            assert_eq!(reply.transfers[0].operation_id, latest.operation_id);
+            assert_eq!(reply.transfers[0].target_output.0, "out-a");
+            assert_eq!(reply.transfers[0].target_workspace, latest.target_workspace);
+            assert!(
+                reply.transfers[0].held,
+                "possibly-executed latest without source must latch held: {reply:?}"
+            );
+            assert_queued_cross_output_final_out_a(&reply);
+
+            // Fresh replay with the same unreadable evidence must not renew
+            // actuation permission or mint a new transfer id.
+            arrival.request_seq = 5;
+            arrival.observation_seq = 5;
+            arrival.request_id = "req-5".to_owned();
+            let replay = accepted(&mut engine, &arrival);
+            assert_eq!(replay.transfers.len(), 1, "{replay:?}");
+            assert_eq!(replay.transfers[0].operation_id, latest.operation_id);
+            assert!(
+                replay.transfers[0].held,
+                "replay must not renew actuation permission: {replay:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn queued_cross_output_unreadable_refused_predecessor_preserves_latest() {
+    use crate::world_report::MemberDisposition;
+
+    // Public report loop Right11 then Left12, native lagging at out-a:
+    // latest op12 targets the logical home at out-a (targetA), while the
+    // predecessor op11 targeted out-b (B). A later raw fact arrives at out-b,
+    // paired with exact prior op11 Refused evidence holding preA. In the
+    // unreadable arm post=None, so the refusal cannot be proven unchanged:
+    // the prior call may have written, making out-b our own possible arrival
+    // rather than proven external supersession. The original latest
+    // op12/targetA/unheld transfer must survive. The proven-refusal control
+    // (postA == preA) confirms the latest still drops and adopts B through
+    // the existing external path, so this is not blanket protection.
+    for unreadable in [true, false] {
+        let (mut engine, prior, latest) = queued_cross_output_published_roundtrip();
+        let home_a = WorkspaceRef::Logical {
+            output: latest.target_output.clone(),
+            workspace: WorkspaceId(latest.target_workspace.clone()),
+        };
+        let mut arrival = queued_cross_output_lagging_capture(4);
+        arrival.windows = vec![fact("win-a", "out-b", 800)];
+        arrival.monotonic_ms = 50;
+        // Exact prior op11 Refused evidence only, with preA; no latest op12
+        // attempt. post=None is unreadable, postA is a proven unchanged
+        // refusal.
+        arrival.member_attempts = vec![MemberAttempt {
+            operation_id: prior.operation_id.clone(),
+            window: WindowId("win-a".to_owned()),
+            target_output: prior.target_output.clone(),
+            target_workspace: prior.target_workspace.clone(),
+            setter: MemberDisposition::Refused,
+            pre: Some(home_a.clone()),
+            post: if unreadable { None } else { Some(home_a) },
+            attempt_ms: 40,
+        }];
+        let reply = accepted(&mut engine, &arrival);
+        if unreadable {
+            assert_eq!(reply.transfers.len(), 1, "unreadable: {reply:?}");
+            assert_eq!(reply.transfers[0].operation_id, latest.operation_id);
+            assert_eq!(reply.transfers[0].target_output.0, "out-a");
+            assert_eq!(reply.transfers[0].target_workspace, latest.target_workspace);
+            assert!(
+                !reply.transfers[0].held,
+                "unreadable prior refusal cannot prove an unchanged refusal: latest preserved unheld: {reply:?}"
+            );
+        } else {
+            assert!(
+                reply.transfers.is_empty(),
+                "proven unchanged refusal: latest drops and external fact adopts B: {reply:?}"
+            );
+            assert_eq!(window_row(&reply, "win-a").output.0, "out-b");
+        }
+    }
+}
+
+#[test]
+fn queued_cross_output_nonimmediate_predecessor_needs_raw_own_evidence() {
+    use crate::world_report::MemberDisposition;
+
+    for with_proof in [false, true] {
+        let screens = vec![
+            screen("out-a", 0),
+            screen("out-b", 800),
+            screen("out-c", 1600),
+        ];
+        let capture = |seq| {
+            let mut r = queued_cross_output_lagging_capture(seq);
+            r.screens = screens.clone();
+            r
+        };
+        let mut engine =
+            WorldEngine::new_test_bound("gen-1", "adapter-1").expect("valid generation");
+        accepted(&mut engine, &capture(1));
+        let mut prior: Option<crate::world_report::TransferTargetV4> = None;
+        let mut latest: Option<crate::world_report::TransferTargetV4> = None;
+        for (seq, direction, expected) in [
+            (11, "right", "out-b"),
+            (12, "right", "out-c"),
+            (13, "left", "out-b"),
+            (14, "left", "out-a"),
+        ] {
+            let (outcome, settlements) = engine.handle_report(
+                &capture(seq - 9),
+                &[(seq, queued_cross_output_move_dir("win-a", direction))],
+            );
+            assert_eq!(settlements[0].result, None);
+            let reply = match outcome {
+                WorldOutcome::Accepted(reply) => reply,
+                other => panic!("three-output capture must accept, got {other:?}"),
+            };
+            assert_eq!(window_row(&reply, "win-a").output.0, expected);
+            assert_eq!(reply.transfers.len(), 1);
+            assert_eq!(reply.transfers[0].target_output.0, expected);
+            if seq == 12 {
+                prior = Some(reply.transfers[0].clone());
+            }
+            latest = Some(reply.transfers[0].clone());
+        }
+        let prior = prior.expect("prior transfer");
+        let latest = latest.expect("latest transfer");
+        let mut arrival = capture(6);
+        arrival.windows = vec![fact("win-a", "out-c", 1600)];
+        arrival.monotonic_ms = 60;
+        if with_proof {
+            arrival.member_attempts = vec![MemberAttempt {
+                operation_id: prior.operation_id.clone(),
+                window: WindowId("win-a".to_owned()),
+                target_output: prior.target_output.clone(),
+                target_workspace: prior.target_workspace.clone(),
+                setter: MemberDisposition::Accepted,
+                pre: Some(WorkspaceRef::Logical {
+                    output: latest.target_output.clone(),
+                    workspace: WorkspaceId(latest.target_workspace.clone()),
+                }),
+                post: Some(WorkspaceRef::Logical {
+                    output: latest.target_output.clone(),
+                    workspace: WorkspaceId(latest.target_workspace.clone()),
+                }),
+                attempt_ms: 40,
+            }];
+        }
+        let reply = accepted(&mut engine, &arrival);
+        if with_proof {
+            let retained: Vec<_> = reply
+                .transfers
+                .iter()
+                .filter(|t| t.operation_id == latest.operation_id)
+                .collect();
+            assert_eq!(
+                retained.len(),
+                1,
+                "latest retained once: {:?}",
+                reply.transfers
+            );
+            assert!(!retained[0].held);
+            assert_eq!(window_row(&reply, "win-a").output.0, "out-a");
+        } else {
+            assert!(
+                reply.transfers.is_empty(),
+                "raw fact settles: {:?}",
+                reply.transfers
+            );
+            assert_eq!(window_row(&reply, "win-a").output.0, "out-c");
+        }
+    }
 }
 
 #[test]
@@ -2857,7 +3520,7 @@ fn migration_refused_or_superseded_settles_without_fighting() {
                 window: WindowId("win-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
                 target_workspace: view_a.clone(),
-                setter: FrameSetter::Refused,
+                setter: FrameSetter::Refused.into(),
                 pre: Some(crate::world_report::WorkspaceRef::Logical {
                     output: OutputId("out-a".to_owned()),
                     workspace: crate::directional::WorkspaceId(view_a.clone()),
@@ -4385,7 +5048,7 @@ fn window_refusal_needs_readable_source_proof_and_holds_across_gap() {
                 window: WindowId("win-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
                 target_workspace: view_b.clone(),
-                setter: crate::world_report::FrameSetter::Refused,
+                setter: crate::world_report::FrameSetter::Refused.into(),
                 pre: Some(crate::world_report::WorkspaceRef::Logical {
                     output: OutputId("out-a".to_owned()),
                     workspace: crate::directional::WorkspaceId(view_a.clone()),

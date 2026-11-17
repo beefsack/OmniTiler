@@ -11,7 +11,7 @@
 //! reachable. Same-state consumes with no writes and no new binding.
 //! Production mints one retained `Fullscreen` state target with an exact
 //! typed [`NativeFullscreenMeta`](crate::world_state::NativeFullscreenMeta)
-//! command-sequence carrier; the existing generic `settle_states`
+//! command-sequence carrier; the generic `settle_property_attempts`
 //! settlement owns correlation, spent-before-holds, terminal dispositions,
 //! and no-automatic-retry. A fresh command may reauthorize a spent failed
 //! binding; observation alone never mints. No geometry, intent, topology,

@@ -872,7 +872,8 @@ fn refused_command_preserves_observation_without_command_mutation() {
         engine
             .consumed_frames
             .get(&WindowId("w0".to_owned()))
-            .map(|attempt| attempt.attempt_ms),
+            .and_then(crate::world_attempts::PropertyAttempt::as_frame)
+            .map(|evidence| evidence.attempt_ms),
         Some(1000),
         "frame attempt settles pre-command"
     );

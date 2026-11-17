@@ -51,13 +51,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::session::DomainKey;
+use crate::world_attempts::{
+    PropertyAttempt, RetentionPolicy, VisibilityAttemptEvidence, retain_candidate,
+    retain_matching_attempt, view_evidence_matches, visibility_evidence_matches,
+};
 use crate::world_engine::WorldEngine;
 use crate::world_focus::{FocusVerdict, classify_focus_feedback};
 use crate::world_report::{
     AfterShown, AfterShownMember, AfterShownScope, EffectKind, FocusFeedback, HeldScreenRow,
-    HoldReason, LastWrite, LastWriteProperty, OneShotEffect, ScopeAuthority, ScreenReport,
-    SwitchEvent, SwitchFocus, SwitchOutcome, TransferKind, VisibilityTarget, WindowDesire,
-    WorldCommand,
+    HoldReason, OneShotEffect, ScopeAuthority, ScreenReport, SwitchEvent, SwitchFocus,
+    SwitchOutcome, TransferKind, VisibilityTarget, WindowDesire, WorldCommand,
 };
 
 /// Minimal carrier between the real selection command and publish only:
@@ -104,8 +107,8 @@ pub(crate) struct SelectionTarget {
 /// across all affected outputs, frozen at publish from the retained
 /// per-window map. Separate from [`FrozenArrivalMember`] (the focus-output
 /// controlled shown set driving arrival readiness only): hides and
-/// non-focus-output targets settle the switch through [`LastWrite`]
-/// verdicts without proving arrival. Late admissions never join: only the
+/// non-focus-output targets settle the switch through canonical visibility
+/// attempt verdicts without proving arrival. Late admissions never join: only the
 /// granting report's targets freeze, later revisions register against the
 /// surviving scopes instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,14 +144,16 @@ pub(crate) struct SelectionScope {
 }
 
 /// One latched per-member switch verdict: the first target-and-revision
-/// correlated [`LastWrite`](crate::world_report::LastWrite), the receiving
-/// report observation (receipt watermark), and the confirmation verdict
-/// computed once at receipt. Later reports never re-evaluate the historical
-/// post bound against a newer watermark: a future-dated post stays failed,
-/// raw facts are preserved, and later facts never upgrade the original.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// correlated canonical [`PropertyAttempt`] visibility evidence, the
+/// receiving report observation (receipt watermark), and the confirmation
+/// verdict computed once at receipt. The wire `LastWrite` DTO is normalized
+/// once at the staged boundary and never reconstructed here. Later reports
+/// never re-evaluate the historical post bound against a newer watermark: a
+/// future-dated post stays failed, raw facts are preserved verbatim in the
+/// canonical attempt, and later facts never upgrade the original.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LatchedSwitchEvidence {
-    pub last: LastWrite,
+    pub attempt: PropertyAttempt,
     pub receipt_obs: u64,
     pub confirmed: bool,
 }
@@ -160,8 +165,8 @@ pub(crate) struct LatchedSwitchEvidence {
 /// recorded from the dispatching command, never a new wire id), the focus
 /// selected home, the issuing revision and observation, the frozen arrival
 /// snapshot, the frozen switch target set, the first exact-tuple correlated
-/// feedback row (if any), the first-correlated [`LastWrite`]
-/// evidence per frozen switch member, the two distinct readiness facts, and
+/// feedback row (if any), the first-correlated canonical visibility attempt
+/// per frozen switch member, the two distinct readiness facts, and
 /// the native view targets (host-owned focus-bearing and focusless alike:
 /// per affected output
 /// the selected home proving via the native selector readback). Bounded to
@@ -183,7 +188,7 @@ pub(crate) struct RetainedSelection {
     pub foreground_proven: bool,
     pub arrival_ready: bool,
     pub view_targets: BTreeMap<OutputId, DomainKey>,
-    pub view_raw: BTreeMap<OutputId, crate::world_report::ViewAttempt>,
+    pub view_raw: BTreeMap<OutputId, PropertyAttempt>,
     /// Frozen selected homes plus affected outputs from the granting
     /// [`PendingSelection`]. Ordinary selections carry one home per
     /// affected output with a shared workspace id; a native-free
@@ -664,7 +669,11 @@ impl WorldEngine {
         let Some(home) = binding.view_targets.get(output) else {
             return false;
         };
-        let Some(attempt) = binding.view_raw.get(output) else {
+        let Some(attempt) = binding
+            .view_raw
+            .get(output)
+            .and_then(PropertyAttempt::as_view)
+        else {
             return false;
         };
         let host_owned = self.host_owned_workspace_domains();
@@ -1410,9 +1419,10 @@ impl WorldEngine {
         // Cloned once per report ahead of the per-binding mutable borrow.
         let host_owned = self.host_owned_workspace_domains();
         let native_map = self.native_map.clone();
+        let attempts = &self.staged.observation.property_attempts;
         for binding in self.retained_selection.values_mut() {
-            // First exact-correlated native view raw per obligated output
-            // latches here (same pre-rollback position as feedback and
+            // First exact-correlated canonical view evidence per obligated
+            // output latches here (same pre-rollback position as feedback and
             // LastWrite): the sequencer pending map forgets acknowledged
             // receipts, and a held Refused receipt consumed on one report
             // must still prove on a later recovery that omits it.
@@ -1421,18 +1431,26 @@ impl WorldEngine {
                 if binding.view_raw.contains_key(&output) {
                     continue;
                 }
-                if let Some(attempt) =
-                    self.staged
-                        .observation
-                        .view_attempts
-                        .iter()
-                        .find(|attempt| {
-                            attempt.operation_id == binding.parent_op
-                                && attempt.target_output == output
-                                && attempt.target_workspace == home.workspace.0.as_str()
+                let operation_id = binding.parent_op.clone();
+                let target_workspace = home.workspace.0.clone();
+                let mut slot: Option<PropertyAttempt> = None;
+                retain_matching_attempt(
+                    attempts,
+                    |attempt| {
+                        attempt.as_view().is_some_and(|evidence| {
+                            view_evidence_matches(
+                                evidence,
+                                &operation_id,
+                                &output,
+                                &target_workspace,
+                            )
                         })
-                {
-                    binding.view_raw.insert(output, attempt.clone());
+                    },
+                    &mut slot,
+                    RetentionPolicy::FirstMatch,
+                );
+                if let Some(attempt) = slot {
+                    binding.view_raw.insert(output, attempt);
                 }
             }
             let Some(effect) = binding.effect.as_ref() else {
@@ -1479,8 +1497,59 @@ impl WorldEngine {
         }
     }
 
-    /// Settle retained selection switches against first-correlated
-    /// [`LastWrite`] evidence plus (focus-bearing only) the latched focus
+    /// Correlate canonical visibility evidence for all bindings in one pass.
+    /// A temporary per-window reference index preserves the old keyed
+    /// complexity: one traversal of the canonical attempt lane builds a
+    /// `window -> first staged row` map (`or_insert`, so healthy-first and the
+    /// first decodable held row keep precedence), and each member then does a
+    /// keyed lookup plus exact revision/target check. This is a borrowed
+    /// internal index, not a second evidence store; only matched candidates
+    /// are cloned into the returned pending rows.
+    fn index_visibility_switches(&self) -> BTreeMap<WindowId, &PropertyAttempt> {
+        let mut index: BTreeMap<WindowId, &PropertyAttempt> = BTreeMap::new();
+        for attempt in &self.staged.observation.property_attempts {
+            if let Some(evidence) = attempt.as_visibility() {
+                index.entry(evidence.window.clone()).or_insert(attempt);
+            }
+        }
+        index
+    }
+
+    /// Exact (window, revision, target) correlation for one binding's
+    /// unresolved members over the borrowed index, latching each candidate
+    /// once through the shared `retain_candidate` FirstMatch primitive. A
+    /// wrong-kind or wrong-tuple row reads as absent and never shadows a later
+    /// exact row; the first retained receipt wins and later reports cannot
+    /// upgrade it.
+    fn correlate_visibility_switches(
+        index: &BTreeMap<WindowId, &PropertyAttempt>,
+        binding: &RetainedSelection,
+    ) -> Vec<(WindowId, PropertyAttempt)> {
+        let mut pending: Vec<(WindowId, PropertyAttempt)> = Vec::new();
+        for member in &binding.switch_members {
+            if binding.switch_evidence.contains_key(&member.window) {
+                continue;
+            }
+            let Some(attempt) = index.get(&member.window) else {
+                continue;
+            };
+            if !attempt.as_visibility().is_some_and(|evidence| {
+                visibility_evidence_matches(evidence, &member.window, member.shown, member.rev)
+            }) {
+                continue;
+            }
+            let mut slot: Option<PropertyAttempt> = None;
+            if retain_candidate(attempt, &mut slot, RetentionPolicy::FirstMatch)
+                && let Some(attempt) = slot
+            {
+                pending.push((member.window.clone(), attempt));
+            }
+        }
+        pending
+    }
+
+    /// Settle retained selection switches against first-correlated canonical
+    /// visibility attempts plus (focus-bearing only) the latched focus
     /// feedback, once per accepted report before the command-only rollback
     /// boundary (so consumed and observation-only reports settle exactly
     /// like command reports, and a rejected command's pre-command image
@@ -1522,32 +1591,32 @@ impl WorldEngine {
         let report_obs = self.staged.observation.observation_seq;
         let closed: BTreeSet<WindowId> = self.staged.closes.iter().cloned().collect();
         let outputs: Vec<OutputId> = self.retained_selection.keys().cloned().collect();
+        // Keyed intake for the whole phase: build the borrowed window index
+        // once, prepare each binding's pending rows, then drop the borrow before
+        // any per-output mutable policy work. Per-output policy order below is
+        // unchanged.
+        let index = self.index_visibility_switches();
+        let mut pending_by_output: BTreeMap<OutputId, Vec<(WindowId, PropertyAttempt)>> =
+            BTreeMap::new();
+        for output in &outputs {
+            if let Some(binding) = self.retained_selection.get(output) {
+                let pending = Self::correlate_visibility_switches(&index, binding);
+                if !pending.is_empty() {
+                    pending_by_output.insert(output.clone(), pending);
+                }
+            }
+        }
+        drop(index);
         for output in outputs {
             let issuing_obs = match self.retained_selection.get(&output) {
                 Some(binding) => binding.obs,
                 None => continue,
             };
-            // Latch first-correlated evidence before any mutable borrow:
-            // live facts first, else the lossless held raw (same
-            // native-state pattern: accepted evidence before holds, without
-            // treating held visibility as healthy).
-            let mut pending: Vec<(WindowId, LastWrite)> = Vec::new();
-            if let Some(binding) = self.retained_selection.get(&output) {
-                for member in &binding.switch_members {
-                    if binding.switch_evidence.contains_key(&member.window) {
-                        continue;
-                    }
-                    let Some(last) = self.selection_last_write_for(&member.window) else {
-                        continue;
-                    };
-                    if last.property == LastWriteProperty::Visibility
-                        && last.target == member.shown
-                        && last.revision == member.rev
-                    {
-                        pending.push((member.window.clone(), last));
-                    }
-                }
-            }
+            // Latch first-correlated canonical evidence before the terminal
+            // below. Staging already ordered healthy facts before held rows
+            // (malformed held raw skipped), so FirstMatch preserves the exact
+            // graded/held precedence and latches once at this receipt.
+            let pending = pending_by_output.remove(&output).unwrap_or_default();
             let native_proof = {
                 let binding = match self.retained_selection.get(&output) {
                     Some(binding) => binding.clone(),
@@ -1570,10 +1639,11 @@ impl WorldEngine {
             {
                 continue;
             }
-            for (window, last) in pending {
+            for (window, attempt) in pending {
                 // Verdict latches once at receipt: the historical post bound
                 // is checked against this report only, never re-evaluated
-                // against a later watermark.
+                // against a later watermark. Property proof policy sits above
+                // the common retention; it reads only canonical raw facts.
                 let member = binding
                     .switch_members
                     .iter()
@@ -1582,11 +1652,13 @@ impl WorldEngine {
                 let Some(member) = member else {
                     continue;
                 };
-                let confirmed = switch_confirms_target(&member, &last, issuing_obs, report_obs);
+                let confirmed = attempt.as_visibility().is_some_and(|evidence| {
+                    switch_confirms_target(&member, evidence, issuing_obs, report_obs)
+                });
                 binding.switch_evidence.insert(
                     window,
                     LatchedSwitchEvidence {
-                        last,
+                        attempt,
                         receipt_obs: report_obs,
                         confirmed,
                     },
@@ -1643,14 +1715,18 @@ impl WorldEngine {
             let fresh = self
                 .staged
                 .observation
-                .view_attempts
+                .property_attempts
                 .iter()
-                .find(|attempt| {
-                    attempt.operation_id == binding.parent_op
-                        && attempt.target_output == *output
-                        && attempt.target_workspace == target
+                .filter_map(PropertyAttempt::as_view)
+                .find(|evidence| {
+                    evidence.operation_id == binding.parent_op
+                        && evidence.target_output == *output
+                        && evidence.target_workspace == target
                 });
-            let latched = binding.view_raw.get(output);
+            let latched = binding
+                .view_raw
+                .get(output)
+                .and_then(PropertyAttempt::as_view);
             let Some(attempt) = latched.or(fresh) else {
                 return NativeSelectionProof::Pending;
             };
@@ -1698,27 +1774,6 @@ impl WorldEngine {
                 && matches!(retained.target.kind, TransferKind::View))
         });
         self.switch_settled.insert(output.clone(), event);
-    }
-
-    /// First raw visibility write for one frozen switch member: live staged
-    /// facts first, else the lossless held-row raw decoded by lifetime.
-    /// Held presence alone proves nothing; only the decoded [`LastWrite`]
-    /// post proof (checked by the caller at receipt) decides.
-    fn selection_last_write_for(&self, window: &WindowId) -> Option<LastWrite> {
-        if let Some(fact) = self.staged.facts.get(window)
-            && let Some(last) = fact.last_write
-        {
-            return Some(last);
-        }
-        for held in &self.staged.held_windows {
-            if held.window != *window {
-                continue;
-            }
-            if let Some(last) = decode_held_last_write(held) {
-                return Some(last);
-            }
-        }
-        None
     }
 
     /// Pre-mutation worst-case reserve for retained and simultaneous switch
@@ -2064,21 +2119,22 @@ enum NativeSelectionProof {
 }
 
 /// Target postcondition proof for one frozen switch member against its
-/// first-correlated [`LastWrite`]: the post read names the same live
-/// lifetime, shows the granted state with clean native facts, and sits
-/// inside the frozen issuing-to-receipt observation bracket. Acceptance
-/// alone never confirms; an unreadable or mismatched post is a correlated
-/// failure, never a confirmation. Only the enclosing row (exact
-/// target/revision, latched by the caller) reaches this proof. The caller
-/// latches the verdict once at receipt; later watermarks never re-evaluate
-/// it.
+/// first-correlated canonical visibility attempt: the identity-bound post
+/// sample names the same live lifetime, shows the granted state with clean
+/// native facts, and sits inside the frozen issuing-to-receipt observation
+/// bracket. Acceptance alone never confirms; an unreadable or mismatched post
+/// is a correlated failure, never a confirmation. Only the enclosing row
+/// (exact target/revision, latched by the caller) reaches this proof. The
+/// caller latches the verdict once at receipt; later watermarks never
+/// re-evaluate it. This is the property proof policy above the shared
+/// visibility retention, reading only canonical raw facts.
 fn switch_confirms_target(
     member: &SwitchMember,
-    last: &LastWrite,
+    evidence: &VisibilityAttemptEvidence,
     issuing_obs: u64,
     receipt_obs: u64,
 ) -> bool {
-    let Some(post) = last.post else {
+    let Some(post) = evidence.post else {
         return false;
     };
     if post.obs < issuing_obs || post.obs > receipt_obs {
@@ -2094,121 +2150,6 @@ fn switch_confirms_target(
         return false;
     }
     true
-}
-
-/// Decode one lossless held-row `lastWrite` from retained raw fields.
-/// Returns `None` when the row carries no `lastWrite`, carries `null`, or
-/// carries a shape that does not decode to a typed [`LastWrite`]:
-/// uncorrelated, never a failure and never a bypass of the post proof.
-fn decode_held_last_write(held: &crate::world_report::HeldWindowRow) -> Option<LastWrite> {
-    use crate::connection::RawSettingValue;
-    use crate::world_report::{
-        LastWritePath, LastWriteProperty, VisibilityReason, VisibilitySample, VisibilitySetter,
-    };
-    let (_, raw) = held.fields.iter().find(|(key, _)| key == "lastWrite")?;
-    let RawSettingValue::Object(entries) = raw else {
-        return None;
-    };
-    let get = |key: &str| entries.iter().find(|(k, _)| k == key).map(|(_, v)| v);
-    let as_str = |key: &str| match get(key)? {
-        RawSettingValue::String(text) => Some(text.as_str()),
-        _ => None,
-    };
-    let property = match as_str("property")? {
-        "visibility" => LastWriteProperty::Visibility,
-        _ => return None,
-    };
-    let target = match get("target")? {
-        RawSettingValue::Bool(value) => *value,
-        _ => return None,
-    };
-    let revision = as_str("revision")?.parse::<u64>().ok()?;
-    let path = match as_str("path")? {
-        "staged" => LastWritePath::Staged,
-        "fallback" => LastWritePath::Fallback,
-        "independent" => LastWritePath::Independent,
-        _ => return None,
-    };
-    let setter = match as_str("setter")? {
-        "accepted" => VisibilitySetter::Accepted,
-        "refused" => VisibilitySetter::Refused,
-        "threw" => VisibilitySetter::Threw,
-        "not-called" => VisibilitySetter::NotCalled,
-        _ => return None,
-    };
-    let reason = match as_str("reason")? {
-        "" => VisibilityReason::Empty,
-        "identity-stale" => VisibilityReason::IdentityStale,
-        "scope-held" => VisibilityReason::ScopeHeld,
-        "unreadable" => VisibilityReason::Unreadable,
-        "unsupported" => VisibilityReason::Unsupported,
-        "preimage-unavailable" => VisibilityReason::PreimageUnavailable,
-        "foreground-changed" => VisibilityReason::ForegroundChanged,
-        "fullscreen" => VisibilityReason::Fullscreen,
-        "game" => VisibilityReason::Game,
-        "show-blocked" => VisibilityReason::ShowBlocked,
-        "focus-unproven" => VisibilityReason::FocusUnproven,
-        "superseded" => VisibilityReason::Superseded,
-        "native-refused" => VisibilityReason::NativeRefused,
-        _ => return None,
-    };
-    fn decode_sample(value: &RawSettingValue) -> Option<VisibilitySample> {
-        use crate::connection::RawSettingValue;
-        use crate::world_report::VisibilityFact;
-        let RawSettingValue::Object(entries) = value else {
-            return None;
-        };
-        let get = |key: &str| entries.iter().find(|(k, _)| k == key).map(|(_, v)| v);
-        let obs = match get("obs")? {
-            RawSettingValue::String(text) => text.parse::<u64>().ok()?,
-            _ => return None,
-        };
-        let opt_bool = |key: &str| match get(key)? {
-            RawSettingValue::Null => Some(None),
-            RawSettingValue::Bool(value) => Some(Some(*value)),
-            _ => None,
-        };
-        let visibility = match get("visibility")? {
-            RawSettingValue::Object(visibility) => {
-                let find = |key: &str| visibility.iter().find(|(k, _)| k == key).map(|(_, v)| v);
-                let opt = |key: &str| match find(key)? {
-                    RawSettingValue::Null => Some(None),
-                    RawSettingValue::Bool(value) => Some(Some(*value)),
-                    _ => None,
-                };
-                VisibilityFact {
-                    visible: opt("visible")?,
-                    suppression_owned: opt("suppressionOwned")?,
-                }
-            }
-            _ => return None,
-        };
-        Some(VisibilitySample {
-            obs,
-            lifetime_matched: opt_bool("lifetimeMatched")?,
-            visibility,
-            minimized: opt_bool("minimized")?,
-            host_hidden: opt_bool("hostHidden")?,
-        })
-    }
-    let pre = match get("pre")? {
-        RawSettingValue::Null => None,
-        value => Some(decode_sample(value)?),
-    };
-    let post = match get("post")? {
-        RawSettingValue::Null => None,
-        value => Some(decode_sample(value)?),
-    };
-    Some(LastWrite {
-        property,
-        target,
-        revision,
-        path,
-        setter,
-        reason,
-        pre,
-        post,
-    })
 }
 
 /// Arrival proof over one frozen snapshot against one feedback row: every

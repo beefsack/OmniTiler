@@ -274,7 +274,8 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
         engine
             .consumed_frames
             .get(&WindowId("w0".to_owned()))
-            .map(|a| a.attempt_ms),
+            .and_then(crate::world_attempts::PropertyAttempt::as_frame)
+            .map(|evidence| evidence.attempt_ms),
         Some(1000),
         "frame attempt settles pre-command"
     );

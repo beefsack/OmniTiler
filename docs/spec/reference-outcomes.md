@@ -26,6 +26,12 @@ Existing citation keys retain historical pins until relied on again; KDE policy 
 | Complete float placement P1 for A; skip its terminal reply; admit P2 for A without native frame proof; consume only latest | User 2026-11-14, Q1 A: retain P1's float outcome while P2 is pending, replacing it only at P2's terminal. Match identity; P1 never completes P2 or grants another setter | Reference-WM and native KDE/macOS/Windows outcomes TBD; [contract](../porting/world-contract.md#retained-settlement-outcomes) |
 | Start clear or float placement for A; close A; skip the close reply and two publications; consume latest; admit a replacement using the old native handle. Repeat output departure for the switch owner | User 2026-11-14, Q2 A: remove outcome with departed owner, including final abandonment; emit trace diagnostic carrying the final dropped outcome. No replacement-window/output authority. Gesture outcome remains generation-scoped | Reference-WM and native KDE/macOS/Windows outcomes TBD; close/departure terminal delivery is explicitly retired, not claimed as retained delivery |
 
+### Ordered membership no-call discriminator
+
+| Minimal action sequence | Selected OmniTiler outcome | Unsupported outcome |
+| --- | --- | --- |
+| A alone on L, adjacent empty R; publish Right, then queue Left while native A still reports L; consume Left at L without a setter; replay its exact attempt | User 2026-11-17, Option A: both moves evaluate the preceding logical home. Initial L alone cannot retire Left while an older published move may land. Exact operation/window/target plus equal non-null L pre/post readbacks report `already-at-target`; core settles once, without renewing a native write | Reference-WM and native KDE/macOS/Windows outcomes TBD; no general publication or delivery acknowledgement; [raw attempts](../porting/world-contract.md#raw-attempts-and-settlement) |
+
 ### Inventory hold and pending execution subject
 
 | Minimal action sequence | Current core evidence | Unsupported outcome / decision |

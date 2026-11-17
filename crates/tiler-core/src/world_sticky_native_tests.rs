@@ -1869,8 +1869,12 @@ fn native_ambiguous_keeps_requested_without_retry() {
         "wrong revision never resolves"
     );
     assert_eq!(
-        binding.pending.as_ref().map(|pending| pending.setter),
-        Some(FrameSetter::Threw),
+        binding
+            .pending
+            .as_ref()
+            .and_then(crate::world_attempts::PropertyAttempt::as_state)
+            .map(|evidence| evidence.disposition),
+        Some(crate::world_attempts::AttemptDisposition::Threw),
         "wrong revision never replaces retained proof"
     );
     assert_eq!(
@@ -3232,8 +3236,11 @@ fn native_producer_lifecycle_close_own_handshake_and_incomplete_retains() {
     assert!(held.spent, "incomplete retains the spent proof");
     assert_eq!(held.disposition, AttemptOutcome::PossiblyExecuted);
     assert_eq!(
-        held.pending.as_ref().map(|pending| pending.setter),
-        Some(FrameSetter::Threw),
+        held.pending
+            .as_ref()
+            .and_then(crate::world_attempts::PropertyAttempt::as_state)
+            .map(|evidence| evidence.disposition),
+        Some(crate::world_attempts::AttemptDisposition::Threw),
         "incomplete retains the exact proof"
     );
     assert!(held.sticky_meta.is_some(), "metadata retained");
@@ -3468,6 +3475,7 @@ fn pending_window_transfer_holds_sticky_publication() {
         migration_terminal: None,
         migration_selection_rev: None,
         pending_member: None,
+        member_predecessors: Vec::new(),
         pending_members: std::collections::BTreeMap::new(),
         pending_view: None,
     });
@@ -3528,7 +3536,7 @@ fn pending_window_transfer_holds_sticky_publication() {
             window: WindowId("win-a".to_owned()),
             target_output: OutputId("out-a".to_owned()),
             target_workspace: ring[1].clone(),
-            setter: crate::world_report::FrameSetter::Accepted,
+            setter: crate::world_report::FrameSetter::Accepted.into(),
             pre: None,
             post: Some(crate::world_report::WorkspaceRef::Logical {
                 output: OutputId("out-a".to_owned()),
@@ -3605,7 +3613,7 @@ fn pending_window_transfer_holds_sticky_publication() {
             window: WindowId("win-b".to_owned()),
             target_output: OutputId("out-a".to_owned()),
             target_workspace: ring[1].clone(),
-            setter: crate::world_report::FrameSetter::Accepted,
+            setter: crate::world_report::FrameSetter::Accepted.into(),
             pre: None,
             post: Some(crate::world_report::WorkspaceRef::Logical {
                 output: OutputId("out-a".to_owned()),

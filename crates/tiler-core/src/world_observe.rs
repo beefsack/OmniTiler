@@ -284,12 +284,37 @@ impl WorldEngine {
             primary_output: report.primary_output.clone(),
             gesture: report.gesture.clone(),
             monotonic_ms: report.monotonic_ms,
-            frames: report.frames.clone(),
-            member_attempts: report.member_attempts.clone(),
-            view_attempts: report.view_attempts.clone(),
-            clear_attempts: report.clear_attempts.clone(),
             creation_attempts: report.creation_attempts.clone(),
-            state_attempts: report.state_attempts.clone(),
+            property_attempts: report
+                .state_attempts
+                .iter()
+                .map(crate::world_attempts::PropertyAttempt::from_state_attempt)
+                .chain(
+                    report
+                        .clear_attempts
+                        .iter()
+                        .map(crate::world_attempts::PropertyAttempt::from_clear_attempt),
+                )
+                .chain(
+                    report
+                        .member_attempts
+                        .iter()
+                        .map(crate::world_attempts::PropertyAttempt::from_member_attempt),
+                )
+                .chain(
+                    report
+                        .view_attempts
+                        .iter()
+                        .map(crate::world_attempts::PropertyAttempt::from_view_attempt),
+                )
+                .chain(
+                    report
+                        .frames
+                        .iter()
+                        .map(crate::world_attempts::PropertyAttempt::from_frame_attempt),
+                )
+                .collect(),
+            visibility_normalized: false,
             focus_feedback: report.focus_feedback.clone(),
             intent_records: report.intent_records.clone(),
         }
@@ -420,6 +445,38 @@ impl WorldEngine {
             staged.facts.insert(fact.window.clone(), fact.clone());
             staged.derived.insert(fact.window.clone(), classified);
         }
+        // Normalize wire-bound visibility `LastWrite` evidence into the single
+        // canonical attempt lane exactly once, after capability grading: a
+        // staged healthy fact wins per window, else the first losslessly
+        // decoded held row by lifetime, with malformed held raw skipped. Doing
+        // this here (not at capture) preserves the exact graded/held precedence
+        // of the old settlement intake and keeps the raw capture as the single
+        // ingestion boundary. The explicit observation flag is set even for a
+        // report with zero visibility evidence, so classification restages can
+        // never re-ingest or duplicate; no settlement lane rebuilds the DTO.
+        if !staged.observation.visibility_normalized {
+            let mut covered: BTreeSet<WindowId> = BTreeSet::new();
+            for (window, fact) in &staged.facts {
+                if let Some(last) = fact.last_write {
+                    staged.observation.property_attempts.push(
+                        crate::world_attempts::PropertyAttempt::from_last_write(window, &last),
+                    );
+                    covered.insert(window.clone());
+                }
+            }
+            for held_row in &staged.held_windows {
+                if covered.contains(&held_row.window) {
+                    continue;
+                }
+                if let Some(attempt) =
+                    crate::world_attempts::PropertyAttempt::from_held_last_write(held_row)
+                {
+                    covered.insert(held_row.window.clone());
+                    staged.observation.property_attempts.push(attempt);
+                }
+            }
+            staged.observation.visibility_normalized = true;
+        }
         for id in closes {
             staged.closes.insert(id.clone());
         }
@@ -447,16 +504,20 @@ impl WorldEngine {
         let state_offroute: Vec<RowDiagnostic> = self
             .staged
             .observation
-            .state_attempts
+            .property_attempts
             .iter()
-            .filter(|attempt| {
-                !crate::world_state::state_property_supported(self.capabilities(), attempt.property)
+            .filter_map(crate::world_attempts::PropertyAttempt::as_state)
+            .filter(|evidence| {
+                !crate::world_state::state_property_supported(
+                    self.capabilities(),
+                    evidence.property,
+                )
             })
-            .filter_map(|attempt| {
+            .filter_map(|evidence| {
                 self.state_offroute_diagnostic_for(
                     &effective,
                     &self.staged.held_windows,
-                    &attempt.window,
+                    &evidence.window,
                 )
             })
             .collect();

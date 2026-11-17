@@ -2308,6 +2308,7 @@ fn empty_native_free_migration_retires_echoless_born_clear_proceeds() {
         migration_terminal: None,
         migration_selection_rev: None,
         pending_member: None,
+        member_predecessors: Vec::new(),
         pending_members: BTreeMap::new(),
         pending_view: None,
     });

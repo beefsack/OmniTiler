@@ -55,8 +55,13 @@ use crate::bounds::GEOMETRY_BOUND;
 use crate::directional::WindowId;
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
+use crate::world_attempts::{
+    AttemptDisposition, FrameAttemptEvidence, PropertyAttempt, frame_watermark_stale,
+    retain_frame_watermark,
+};
 use crate::world_engine::WorldEngine;
-use crate::world_report::{FrameAttempt, FrameSetter};
+
+pub(crate) use crate::world_attempts::is_stale_replay;
 
 /// Backoff base for transient setter failures.
 pub(crate) const FRAME_TRANSIENT_BASE_MS: u64 = 500;
@@ -141,7 +146,7 @@ pub(crate) struct FrameBurst {
 /// (see `consume_attempt`). `None` means unreadable evidence: the core
 /// records nothing for the attempt.
 #[must_use]
-pub(crate) fn attempt_observed(attempt: &FrameAttempt, fact: Option<Rect>) -> Option<Rect> {
+pub(crate) fn attempt_observed(attempt: &FrameAttemptEvidence, fact: Option<Rect>) -> Option<Rect> {
     fact.or(attempt.readback)
 }
 
@@ -176,7 +181,7 @@ pub(crate) fn attempt_observed(attempt: &FrameAttempt, fact: Option<Rect>) -> Op
 #[must_use]
 pub(crate) fn consume_attempt(
     existing: Option<FrameMemory>,
-    attempt: &FrameAttempt,
+    attempt: &FrameAttemptEvidence,
     fact: Option<Rect>,
 ) -> Option<FrameMemory> {
     let observed = attempt_observed(attempt, fact)?;
@@ -196,7 +201,7 @@ pub(crate) fn consume_attempt(
     // A changed DPI basis invalidates the placement for accepted setters:
     // record nothing, never a stable clamp; the next tick retries under
     // fresh state.
-    if attempt.setter == FrameSetter::Accepted
+    if attempt.disposition == AttemptDisposition::Accepted
         && dpi_basis_changed(attempt.dpi_before, attempt.dpi_after)
     {
         return existing;
@@ -211,15 +216,15 @@ pub(crate) fn consume_attempt(
     let proven_dispatch = attempt.readback.is_some();
     // Changed pair after a mismatched readback: this write never proved
     // the new pair, so clear suppression and retry from it (no backoff).
-    if attempt.setter == FrameSetter::Accepted
+    if attempt.disposition == AttemptDisposition::Accepted
         && let Some(readback) = attempt.readback
         && readback != attempt.target
         && observed != readback
     {
         return None;
     }
-    match attempt.setter {
-        FrameSetter::Accepted if proven_dispatch => Some(FrameMemory {
+    match attempt.disposition {
+        AttemptDisposition::Accepted if proven_dispatch => Some(FrameMemory {
             desired: attempt.target,
             observed,
             failures: existing.as_ref().map_or(
@@ -233,47 +238,24 @@ pub(crate) fn consume_attempt(
             }),
             clamped: true,
         }),
-        FrameSetter::Accepted | FrameSetter::Refused | FrameSetter::Threw => Some(FrameMemory {
-            desired: attempt.target,
-            observed,
-            failures: existing.as_ref().map_or(0, |memory| {
-                if same_pair {
-                    memory.failures.saturating_add(1)
-                } else {
-                    0
-                }
-            }),
-            last_ms: attempt.attempt_ms,
-            clamped: existing
-                .as_ref()
-                .is_some_and(|memory| same_pair && memory.clamped),
-        }),
+        AttemptDisposition::Accepted | AttemptDisposition::Refused | AttemptDisposition::Threw => {
+            Some(FrameMemory {
+                desired: attempt.target,
+                observed,
+                failures: existing.as_ref().map_or(0, |memory| {
+                    if same_pair {
+                        memory.failures.saturating_add(1)
+                    } else {
+                        0
+                    }
+                }),
+                last_ms: attempt.attempt_ms,
+                clamped: existing
+                    .as_ref()
+                    .is_some_and(|memory| same_pair && memory.clamped),
+            })
+        }
     }
-}
-
-/// True when `attempt` is a lost-ack redelivery of already-consumed
-/// evidence for one lifetime, and must not mutate suppression memory:
-///
-/// - an older attempt stamp (`ms != 0` and strictly below the consumed
-///   stamp) is stale regardless of pair: reports are consumed in order
-///   over a non-decreasing adapter clock, so an older stamp can only be
-///   a replay; it never clobbers newer authority;
-/// - an exact duplicate of the consumed attempt (all mechanical fields
-///   plus stamp equal) is the same write reported twice, even at an
-///   equal stamp.
-///
-/// Deliberately narrow: attempts with an unreported clock (`ms == 0`)
-/// never dedup (no ordering claim is possible, and same-tick duplicates
-/// are routine there); a changed pair at an equal-or-newer stamp always
-/// processes, since time is not a unique attempt identity and the pair
-/// change itself is the new evidence. Dropping a same-stamp duplicate
-/// only shortens backoff growth, never extends suppression.
-#[must_use]
-pub(crate) fn is_stale_replay(prior: &FrameAttempt, attempt: &FrameAttempt) -> bool {
-    if attempt.attempt_ms == 0 {
-        return false;
-    }
-    attempt.attempt_ms < prior.attempt_ms || attempt == prior
 }
 
 /// Retained conservative learned minimum per exact window lifetime:
@@ -405,10 +387,10 @@ impl WorldEngine {
     /// maximum over it.
     fn learnable_attempt(
         &self,
-        attempt: &FrameAttempt,
+        attempt: &FrameAttemptEvidence,
         readback: &Rect,
     ) -> Option<(Option<i32>, Option<i32>)> {
-        if attempt.setter != FrameSetter::Accepted || attempt.attempt_ms == 0 {
+        if attempt.disposition != AttemptDisposition::Accepted || attempt.attempt_ms == 0 {
             return None;
         }
         if dpi_basis_changed(attempt.dpi_before, attempt.dpi_after) {
@@ -497,8 +479,9 @@ impl WorldEngine {
             for attempt in self
                 .staged
                 .observation
-                .frames
+                .property_attempts
                 .iter()
+                .filter_map(PropertyAttempt::as_frame)
                 .filter(|attempt| attempt.window == window)
             {
                 // No ordering claim: clockless attempts never veto fresh
@@ -512,11 +495,12 @@ impl WorldEngine {
                 if self
                     .consumed_frames
                     .get(&window)
+                    .and_then(PropertyAttempt::as_frame)
                     .is_some_and(|prior| is_stale_replay(prior, attempt))
                 {
                     continue;
                 }
-                if attempt.setter != FrameSetter::Accepted
+                if attempt.disposition != AttemptDisposition::Accepted
                     || dpi_basis_changed(attempt.dpi_before, attempt.dpi_after)
                 {
                     tainted = true;
@@ -670,7 +654,17 @@ impl WorldEngine {
         // clockless); never consult post-loop state.
         self.invalidate_learned();
         self.update_burst_observations();
-        let attempts = self.staged.observation.frames.clone();
+        // Clone only the canonical frame subset for the mutable-borrow loop,
+        // never the whole mixed attempt vector. Relative report order among
+        // frame writes is preserved by the filter.
+        let attempts: Vec<FrameAttemptEvidence> = self
+            .staged
+            .observation
+            .property_attempts
+            .iter()
+            .filter_map(PropertyAttempt::as_frame)
+            .cloned()
+            .collect();
         let now_ms = self.staged.observation.monotonic_ms;
         for attempt in &attempts {
             let (fact_rect, minimized) = match self.staged.facts.get(&attempt.window) {
@@ -680,11 +674,7 @@ impl WorldEngine {
             if minimized {
                 continue;
             }
-            if self
-                .consumed_frames
-                .get(&attempt.window)
-                .is_some_and(|prior| is_stale_replay(prior, attempt))
-            {
+            if frame_watermark_stale(&self.consumed_frames, attempt) {
                 continue;
             }
             // Burst budget: every non-stale attempt on an eligible readable
@@ -731,10 +721,7 @@ impl WorldEngine {
                     self.frames.remove(&attempt.window);
                 }
             }
-            if attempt.attempt_ms != 0 {
-                self.consumed_frames
-                    .insert(attempt.window.clone(), attempt.clone());
-            }
+            retain_frame_watermark(&mut self.consumed_frames, attempt);
         }
         let closed = &self.staged.observation.closed;
         for id in closed {

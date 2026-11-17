@@ -54,6 +54,7 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 
 - 2026-11-17: User decision: KDE desktop-type foreground permits the empty directional-focus subject only; other foreign foregrounds still refuse, with truthful reporting and no native focus clearing ([no-focus command](decisions/commands.md#directional-focus-without-a-focused-window)).
 - 2026-11-17: User decision: core steady-state report latency targets 1/4/10 ms p95 at 10/50/200 windows in a developer-machine release build; shared-runner CI uses a proportional Callgrind instruction-count and growth gate, with generous headroom rather than wall-clock assertions ([per-report latency](decisions/engine.md#core-per-report-latency)).
+- 2026-11-17: User decision: C4 normalizes six property kinds into one core attempt record/settlement engine while retaining existing wire locations; unified attempt wire shape is an explicit C5 target, not dropped. Focus feedback remains separate retained-request evidence, and creation stays separate ([property attempts](decisions/contract.md#state-centric-contract)).
 
 ## Tentative decisions
 
