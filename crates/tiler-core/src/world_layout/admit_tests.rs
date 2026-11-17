@@ -78,6 +78,8 @@ fn builder_leaves_retained_state_untouched_until_install() {
             false,
             false,
             &observed,
+            false,
+            FixedSizePredicate::default(),
         )
         .expect("tiled candidate builds");
 
@@ -121,6 +123,8 @@ fn builder_revision_refusal_keeps_state_but_burns_allocator() {
         false,
         false,
         &observed,
+        false,
+        FixedSizePredicate::default(),
     );
 
     assert_eq!(

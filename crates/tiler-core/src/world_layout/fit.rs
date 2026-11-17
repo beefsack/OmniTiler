@@ -226,8 +226,9 @@ fn commit_failed() -> FittedAdmissionDecline {
 
 /// Engine predicate: fixed hints under the predicate, not born fullscreen,
 /// not already floating, no adapter-asserted tile win; sticky stays
-/// intentional. Identical to `Engine::is_fixed_candidate_with`.
-fn is_fixed_candidate(entry: &EngineWindow, predicate: FixedSizePredicate) -> bool {
+/// intentional. Identical to `Engine::is_fixed_candidate_with`. Shared with
+/// the fresh-adoption router for its exact `fixed_present` gate.
+pub(super) fn is_fixed_candidate(entry: &EngineWindow, predicate: FixedSizePredicate) -> bool {
     !entry.floating
         && !entry.fullscreen
         && !entry.sticky

@@ -159,7 +159,7 @@ impl WorldLayout {
 /// no independent home, so moving the map key derives every home and no other
 /// field (tree, focus, history, exceptions, slots, provenance, revision) moves.
 /// No map mutation and no whole-world clone.
-fn build_relocated_candidate(
+pub(super) fn build_relocated_candidate(
     source: &DomainLayout,
     key: &DomainKey,
     bounds: Rect,

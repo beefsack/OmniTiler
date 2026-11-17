@@ -11,6 +11,7 @@
 
 mod admission;
 mod admit;
+mod adoption;
 mod bootstrap;
 mod capacity;
 mod convergence;
@@ -35,8 +36,9 @@ mod query_focus_tests;
 mod unchanged_tests;
 
 pub(crate) use outcome::{
-    AdmissionOutcome, FittedAdmissionDecline, FittedAdmissionReason, LayoutFailure,
-    OrientationOutcome, RetainedProjectionOutcome, RetainedReconcileFailure,
+    AdmissionOutcome, FittedAdmissionDecline, FittedAdmissionReason, FreshDomainFailure,
+    FreshDomainOutcome, FreshOutcomeKind, LayoutFailure, OrientationOutcome,
+    RetainedProjectionOutcome, RetainedReconcileFailure,
 };
 pub(crate) use projection::ProjectionFailure;
 pub(crate) use state::WorldLayout;

@@ -16,7 +16,7 @@ use crate::geometry::Rect;
 use crate::session::{
     DesiredGeometry, DomainKey, ExceptionBehavior, ExceptionFlags, ObservedWindow, RefusalKind,
 };
-use crate::size_hints::{WindowSizeHints, is_fixed_size_with};
+use crate::size_hints::{FixedSizePredicate, WindowSizeHints, is_fixed_size_with};
 
 use super::admission::plan_admission_leg;
 use super::focus::{domain_focus_resolves, settle_domain_focus_tail};
@@ -65,6 +65,8 @@ impl WorldLayout {
             suppress_fixed_float,
             allow_fullscreen_subject,
             observed,
+            self.config.fixed_size_admission,
+            self.config.fixed_size_predicate,
         )?;
 
         *self.domains.get_mut(key).expect("domain validated above") = candidate;
@@ -78,9 +80,13 @@ impl WorldLayout {
     /// Build a staged admission candidate without installing it. The caller
     /// supplies the `original` domain view (absent for a missing target) and a
     /// local `admission_counter` seed, which may differ from the retained
-    /// high-water for paired or freshly seeded admission paths. All validation,
-    /// geometry, allocator burns and the focus/provenance commit tail run here;
-    /// only the caller installs the returned candidate and counter.
+    /// high-water for paired or freshly seeded admission paths. `fixed_admission`
+    /// and `fixed_predicate` are passed explicitly instead of being read from
+    /// shared config so a legacy seeded final leg can use the old session's
+    /// default (false/default) policy without mutating this layout. All
+    /// validation, geometry, allocator burns and the focus/provenance commit
+    /// tail run here; only the caller installs the returned candidate and
+    /// counter.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn build_admission_candidate(
         &self,
@@ -94,6 +100,8 @@ impl WorldLayout {
         suppress_fixed_float: bool,
         allow_fullscreen_subject: bool,
         observed: &[ObservedWindow],
+        fixed_admission: bool,
+        fixed_predicate: FixedSizePredicate,
     ) -> Result<(DomainLayout, u64, AdmissionOutcome), LayoutFailure> {
         let refuse = LayoutFailure::Semantics;
 
@@ -185,7 +193,7 @@ impl WorldLayout {
 
         // Known bindings match retained state. The subject is not yet known,
         // so no admit_new exclusion is needed at this boundary.
-        if !domain_observed_known_match(key, original, observed, self.config.fixed_size_admission) {
+        if !domain_observed_known_match(key, original, observed, fixed_admission) {
             return Err(refuse(RefusalKind::PartialObservation));
         }
 
@@ -200,8 +208,6 @@ impl WorldLayout {
         let original_last_active = original.last_active.clone();
         let mut candidate = original.clone();
 
-        let fixed_admission = self.config.fixed_size_admission;
-        let fixed_predicate = self.config.fixed_size_predicate;
         let policy = self.policy.as_ref();
         let hints: BTreeMap<WindowId, WindowSizeHints> = observed
             .iter()

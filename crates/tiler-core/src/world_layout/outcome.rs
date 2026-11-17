@@ -72,22 +72,15 @@ pub(crate) struct FittedAdmissionDecline {
     pub(crate) centre_splits: usize,
 }
 
-/// Typed result of an atomic single-domain retained gap update. The domain is
-/// the caller's input key and is not echoed back. `base_revision` is the
-/// accepted revision observed before and after the update: gap adoption,
-/// outer-gap adoption and D7 repair are all revision-neutral. `geometry` is
-/// the complete hinted, clamp-marked projection at the requested bounds/gap;
-/// it is empty for a retired empty domain, an exception-only/float-only slot,
-/// or a repair that emptied the tiled set with floats remaining. `focus_leaf`
-/// is the retained tiled focus binding projected with the update (only ever
-/// `Some` when geometry is non-empty); an ordinary-float observed focus is
-/// allowed as no focus.
+/// Single-domain geometry and focus outcome. The domain is the caller's input
+/// key. Retained reconciliation and gap updates preserve the accepted revision
+/// and return sorted, clamp-marked geometry. Fresh adoption retains its route's
+/// admission or convergence revision and geometry semantics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RetainedProjectionOutcome {
-    /// Accepted revision before and after the update (never advanced here).
+    /// Accepted layout base revision of the producing operation.
     pub(crate) base_revision: u64,
-    /// Complete hinted geometry at the requested bounds/gap, ordered by
-    /// `(output, workspace, leaf)`.
+    /// Hinted geometry in the producing operation's order.
     pub(crate) geometry: Vec<DesiredGeometry>,
     /// Retained focus leaf carried with the successful projection.
     pub(crate) focus_leaf: Option<NodeId>,
@@ -109,6 +102,55 @@ pub(crate) enum RetainedReconcileFailure {
 }
 
 impl From<LayoutFailure> for RetainedReconcileFailure {
+    fn from(value: LayoutFailure) -> Self {
+        Self::Layout(value)
+    }
+}
+
+/// Typed result of a fresh-domain adoption reconcile on an initially absent
+/// target. Mixed and serial branches use retained clamp-marked projection;
+/// fit and legacy admission keep their plan's child-order geometry without
+/// client-clamp marks. Each keeps its operation's base revision.
+/// `native_capacity_float`
+/// is set only by the serial capacity-float branch, whose native opening frame
+/// the adapter owns (no float-rect authority here). `kind` is compact typed
+/// route evidence for the outer seam, never a report, correlation string,
+/// identity or retained diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FreshDomainOutcome {
+    pub(crate) projection: RetainedProjectionOutcome,
+    pub(crate) native_capacity_float: Option<WindowId>,
+    pub(crate) kind: FreshOutcomeKind,
+}
+
+/// Which fresh adoption route produced an outcome. Typed evidence only: the
+/// outer layer decides whether any of this is surfaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FreshOutcomeKind {
+    /// An empty, truly fresh observation: no retained slot, revision zero.
+    Empty,
+    /// Clean recursive-cut fit committed at revision one.
+    Fit,
+    /// Floating-aware carried observation converged in one commit.
+    Converged,
+    /// Serial spatial seed converged on an empty local domain.
+    SerialSeed,
+    /// Legacy seed or unique-source relocation plus the final anchor admit.
+    Legacy,
+}
+
+/// Typed failure for a fresh-domain adoption reconcile. `Layout` carries every
+/// ordinary semantic or revision refusal; `SeedFailed` carries legacy seed
+/// construction and serial-seed non-revision convergence failures; the outer
+/// boundary maps `AmbiguousPlacement` to the legacy ambiguous seed-order kinds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FreshDomainFailure {
+    Layout(LayoutFailure),
+    SeedFailed,
+    AmbiguousPlacement,
+}
+
+impl From<LayoutFailure> for FreshDomainFailure {
     fn from(value: LayoutFailure) -> Self {
         Self::Layout(value)
     }

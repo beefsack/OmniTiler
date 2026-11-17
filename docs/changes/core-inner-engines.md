@@ -339,3 +339,14 @@
   revision-bound allocation burns; source review and scoped formatting pass.
   Reported diagnostic checks find no admission-module errors, but global
   compilation and executed behavioural acceptance remain pending.
+- Fresh reconcile routing now composes fitted admission, carried-order mixed
+  convergence, legacy seed/admission and spatial serial convergence directly.
+  Legacy seeded final admission retains its default fixed-admission policy;
+  relocated/converged candidates use current configuration. Source review
+  restores distinct mixed/serial focus gates, legacy admission geometry,
+  relocation gap validation and pre-retirement revision/counter handling.
+  Two direct tests cover focused fit versus serial seeding and disjoint-source
+  relocation fallback; they remain unexecuted. Scoped formatting passes; a
+  library-and-tests check still fails on 101 library and 293 test-build errors
+  in unmigrated consumers, with no adoption-module error. Caller integration
+  is pending.
