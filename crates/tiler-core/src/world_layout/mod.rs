@@ -11,6 +11,7 @@
 
 mod admission;
 mod capacity;
+mod convergence;
 mod focus;
 mod orientation;
 mod outcome;

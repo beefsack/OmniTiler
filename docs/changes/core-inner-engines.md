@@ -261,3 +261,11 @@
   guards, exact share fractions and overflow fallback. Four existing share
   tests are ported unchanged in meaning. Source review and scoped formatting
   pass; these tests are not yet executed during caller migration.
+- Retained single-domain observation convergence now validates and installs one
+  domain candidate synchronously, preserving ordered admission, restore,
+  classification, capacity repair, hidden-lifetime pruning and focus settling.
+  Three direct tests cover focus-only revision stability, revision-bound
+  rollback with allocation burns, and explicit-hidden marker retention.
+  Review removes redundant copied membership indexes. Scoped formatting passes;
+  a library check still fails on 129 unmigrated engine-field callers, with no
+  convergence-module diagnostic. Tests and end-to-end integration remain pending.
