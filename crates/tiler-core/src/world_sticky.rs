@@ -21,9 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::boundary::{CoreCommand, CoreEvent};
 use crate::directional::{WindowId, WorkspaceId};
-use crate::engine::Engine;
 use crate::geometry::Rect;
 use crate::intent_data::IntentData;
 use crate::session::{DomainKey, OutputDomain, centered_float_rect};
@@ -804,7 +802,7 @@ impl WorldEngine {
                 return refused(KIND_OPERATION, MSG_OPERATION);
             }
             if dest != src && !staged.floating_scopes.contains(src) {
-                staged.engine.forget_minimized_slot(src, window);
+                staged.layout.forget_minimized_slot(src, window);
             }
             staged.command_result = Some(CommandResult::Float {
                 window: window.clone(),
@@ -861,19 +859,13 @@ impl WorldEngine {
                 return refused(KIND_OPERATION, MSG_OPERATION);
             }
             if dest != src && !staged.floating_scopes.contains(src) {
-                staged.engine.forget_minimized_slot(src, window);
+                staged.layout.forget_minimized_slot(src, window);
             }
-            let tiled = staged.engine.session(dest).is_some_and(|session| {
-                session
-                    .snapshot()
-                    .windows
-                    .iter()
-                    .any(|link| link.window == *window)
-            });
+            let tiled = staged.layout.is_tiled_window(dest, window);
             if !tiled {
                 return refused(KIND_OPERATION, MSG_OPERATION);
             }
-            staged.engine.commit_fixed_tile_override(window);
+            staged.layout.commit_fixed_tile_override(window);
             staged.command_result = Some(CommandResult::Float {
                 window: window.clone(),
                 rect: None,
@@ -887,10 +879,6 @@ impl WorldEngine {
             *self = staged;
             return CommandApplied::NoEffect;
         }
-        let command = CoreCommand::ToggleFloat {
-            window: window.0.clone(),
-            float_rect: None,
-        };
         let domain_report = match staged
             .staged
             .domains
@@ -917,11 +905,6 @@ impl WorldEngine {
                 }
             }
         }
-        let accepted = staged
-            .engine
-            .session(dest)
-            .map(|session| (session.accepted_revision(), session.accepted_fingerprint()));
-        let (revision, fingerprint) = accepted.unwrap_or((0, 0));
         let staged_output = OutputDomain {
             id: dest.output.clone(),
             workspace: dest.workspace.clone(),
@@ -934,25 +917,8 @@ impl WorldEngine {
         else {
             return refused(KIND_SCOPE_HELD, MSG_SCOPE_HELD);
         };
-        let event = CoreEvent {
-            owner,
-            generation: staged.core_generation.clone(),
-            correlation,
-            revision,
-            fingerprint,
-            domain: Engine::canonical_component_domain(&inset),
-            domain_key: dest.clone(),
-            outer_gap: domain_report.outer_gap,
-            focused_window: domain_report.focused.clone(),
-            windows: staged.shielded_windows(dest, &domain_report.windows),
-            closed_windows: staged.closed_for_domain(&domain_report),
-            directional: None,
-            directional_target_outer_gap: None,
-            target_domain: None,
-            target_windows: Vec::new(),
-            command: command.clone(),
-        };
-        let applied = staged.finish_operation_event(command_seq, &event, held_scopes);
+        let applied =
+            staged.run_sticky_unfloat_typed(command_seq, dest, &domain_report, &inset, window);
         match (&applied, &staged.command_result) {
             (
                 CommandApplied::NoEffect,
@@ -962,9 +928,9 @@ impl WorldEngine {
                     ..
                 }),
             ) => {
-                staged.engine.commit_fixed_tile_override(window);
+                staged.layout.commit_fixed_tile_override(window);
                 if dest != src && !staged.floating_scopes.contains(src) {
-                    staged.engine.forget_minimized_slot(src, window);
+                    staged.layout.forget_minimized_slot(src, window);
                 }
                 *self = staged;
                 CommandApplied::NoEffect
@@ -1020,11 +986,7 @@ impl WorldEngine {
         // Float-origin preserves the observed frame.
         let tile_origin_on = desired && !was_float;
         let float_placement: Option<Rect> = if tile_origin_on {
-            if let Some(retained) = staged
-                .engine
-                .session(dest)
-                .and_then(|session| session.retained_float_geometry(window))
-            {
+            if let Some(retained) = staged.layout.retained_float_geometry(dest, window) {
                 Some(retained)
             } else {
                 staged
@@ -1151,7 +1113,7 @@ impl WorldEngine {
             // A moved tiled leaf minimizes at the source; forget the slot
             // so no stale minimized lifetime survives the move. A moved
             // exception drops cleanly and the forget is a no-op.
-            staged.engine.forget_minimized_slot(src, window);
+            staged.layout.forget_minimized_slot(src, window);
         }
         // Genuine capacity fallback never commits a false tile save: a
         // tile outcome that did not land tiled refuses with no mutation
@@ -1161,19 +1123,9 @@ impl WorldEngine {
         // explicit `ToggleFloat` event at the destination where an
         // ordinary carrier converges through the sweep above.
         let converged = if landing_float {
-            staged.floating_scopes.contains(dest)
-                || staged
-                    .engine
-                    .session(dest)
-                    .is_some_and(|session| session.is_exception(window))
+            staged.floating_scopes.contains(dest) || staged.layout.is_exception(dest, window)
         } else {
-            staged.engine.session(dest).is_some_and(|session| {
-                session
-                    .snapshot()
-                    .windows
-                    .iter()
-                    .any(|link| link.window == *window)
-            })
+            staged.layout.is_tiled_window(dest, window)
         };
         if !converged {
             if landing_float {
@@ -1206,11 +1158,6 @@ impl WorldEngine {
             if held_scopes.contains(dest) {
                 return refused(KIND_OPERATION, MSG_OPERATION);
             }
-            let accepted = staged
-                .engine
-                .session(dest)
-                .map(|session| (session.accepted_revision(), session.accepted_fingerprint()));
-            let (revision, fingerprint) = accepted.unwrap_or((0, 0));
             let staged_output = OutputDomain {
                 id: dest.output.clone(),
                 workspace: dest.workspace.clone(),
@@ -1223,29 +1170,8 @@ impl WorldEngine {
             else {
                 return refused(KIND_SCOPE_HELD, MSG_SCOPE_HELD);
             };
-            let command = CoreCommand::ToggleFloat {
-                window: window.0.clone(),
-                float_rect: None,
-            };
-            let event = CoreEvent {
-                owner,
-                generation: staged.core_generation.clone(),
-                correlation,
-                revision,
-                fingerprint,
-                domain: Engine::canonical_component_domain(&inset),
-                domain_key: dest.clone(),
-                outer_gap: domain_report.outer_gap,
-                focused_window: domain_report.focused.clone(),
-                windows: staged.shielded_windows(dest, &domain_report.windows),
-                closed_windows: staged.closed_for_domain(&domain_report),
-                directional: None,
-                directional_target_outer_gap: None,
-                target_domain: None,
-                target_windows: Vec::new(),
-                command: command.clone(),
-            };
-            let applied = staged.finish_operation_event(command_seq, &event, held_scopes);
+            let applied =
+                staged.run_sticky_unfloat_typed(command_seq, dest, &domain_report, &inset, window);
             match (&applied, &staged.command_result) {
                 (
                     CommandApplied::NoEffect,
@@ -1255,7 +1181,7 @@ impl WorldEngine {
                         ..
                     }),
                 ) => {
-                    staged.engine.commit_fixed_tile_override(window);
+                    staged.layout.commit_fixed_tile_override(window);
                     staged.command_result = None;
                     staged.note_command(command_seq);
                     *self = staged;
@@ -1266,20 +1192,16 @@ impl WorldEngine {
             }
         }
         if !landing_float {
-            staged.engine.commit_fixed_tile_override(window);
+            staged.layout.commit_fixed_tile_override(window);
         }
         if tile_origin_on && let Some(target) = float_placement {
-            // Seed the session exception plus durable retained placement,
+            // Seed the layout exception plus durable retained placement,
             // then retain the one-shot frame token so the row carries the
             // placement exactly once (mirrors the ordinary ToggleFloat
-            // commit in `finish_operation_event`). A floating-scope landing
-            // has no session exception, so a failed adopt keeps the
-            // membership-only outcome with no token.
-            if staged
-                .engine
-                .session_mut(dest)
-                .is_some_and(|session| session.adopt_float_placement(window, target))
-            {
+            // commit). A floating-scope landing has no layout exception,
+            // so a failed adopt keeps the membership-only outcome with no
+            // token.
+            if staged.layout.adopt_float_placement(dest, window, target) {
                 staged.retained_floats.retain(|held| held.window != *window);
                 staged.reset_frame_burst(window);
                 staged
@@ -1462,7 +1384,7 @@ impl WorldEngine {
         // minimized slot at the dest is forgotten exactly like the
         // producer forgot the source slot on the way out.
         if meta.requested && meta.dest != home {
-            staged.engine.forget_minimized_slot(&meta.dest, &window);
+            staged.layout.forget_minimized_slot(&meta.dest, &window);
         }
         // Joint-ledger cap after restoring the exact prior runtime: the
         // restored sticky provenance shares the single MAX_INTENT_RECORDS

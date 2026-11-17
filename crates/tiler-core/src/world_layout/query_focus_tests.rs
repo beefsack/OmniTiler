@@ -310,3 +310,84 @@ fn validates_memory_target_checks_only_the_named_domain() {
     assert!(!layout.validates_memory_target(&malformed, &window("w-x")));
     assert!(!layout.validates_memory_target(&unknown, &window("w-a")));
 }
+
+#[test]
+fn sticky_query_mutators_are_revision_neutral_and_validate_exceptions() {
+    use crate::session::ExceptionFlags;
+
+    use super::state::{DomainException, DomainRestoreSlot};
+
+    let domain_key = key("out", "ws");
+    let w_float = window("w-float");
+    let w_sticky = window("w-sticky");
+    let w_min = window("w-min");
+    let mut layout = WorldLayout::new();
+    let mut dom = domain(Some(leaf("l1")), &[("w-tiled", "l1")], Vec::new());
+    dom.accepted_revision = 7;
+    dom.exceptions.insert(
+        w_float.clone(),
+        DomainException {
+            flags: ExceptionFlags {
+                floating: true,
+                sticky: false,
+                fullscreen: false,
+                maximized: false,
+            },
+            floating_geometry: None,
+        },
+    );
+    dom.exceptions.insert(
+        w_sticky.clone(),
+        DomainException {
+            flags: ExceptionFlags {
+                floating: true,
+                sticky: true,
+                fullscreen: false,
+                maximized: false,
+            },
+            floating_geometry: None,
+        },
+    );
+    dom.minimized_slots.insert(
+        w_min.clone(),
+        DomainRestoreSlot {
+            leaf: node("l1"),
+            tree: leaf("l1"),
+        },
+    );
+    layout.domains.insert(domain_key.clone(), dom);
+
+    let target = Rect {
+        x: 10,
+        y: 20,
+        w: 300,
+        h: 200,
+    };
+    let bad = Rect {
+        x: 10,
+        y: 20,
+        w: 0,
+        h: 200,
+    };
+
+    assert!(!layout.adopt_float_placement(&domain_key, &w_float, bad));
+    assert!(!layout.adopt_float_placement(&domain_key, &w_sticky, target));
+    assert!(!layout.adopt_float_placement(&domain_key, &window("missing"), target));
+    assert_eq!(layout.retained_float_geometry(&domain_key, &w_float), None);
+
+    assert!(layout.adopt_float_placement(&domain_key, &w_float, target));
+    assert_eq!(
+        layout.retained_float_geometry(&domain_key, &w_float),
+        Some(target)
+    );
+    assert_eq!(
+        layout
+            .exception_record(&domain_key, &w_float)
+            .and_then(|record| record.floating_geometry),
+        Some(target)
+    );
+
+    assert!(layout.forget_minimized_slot(&domain_key, &w_min));
+    assert!(!layout.forget_minimized_slot(&domain_key, &w_min));
+    assert_eq!(layout.accepted_revision(&domain_key), 7);
+}

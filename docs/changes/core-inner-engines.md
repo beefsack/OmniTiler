@@ -422,3 +422,12 @@
   Source review and scoped formatting pass. A reported library diagnostic still
   fails on 75 unmigrated consumers, with no publication-module error; runtime
   acceptance remains pending.
+- Sticky transitions now use layout membership, durable float placement and
+  revision-neutral slot/exception mutators directly. Explicit sticky unfloat
+  shares typed float settlement with ordinary commands while retaining raw
+  staged focus and filtered closes from its former boundary. Existing staged
+  world adoption, source reflow, exact tiled-outcome checks and frame-token
+  retention remain unchanged. One direct mutator test is added but unexecuted.
+  Source review and scoped formatting pass; a library/tests diagnostic still
+  fails on 59 library and 244 test-build errors in unmigrated consumers, with
+  no new helper or test error. Runtime acceptance remains pending.

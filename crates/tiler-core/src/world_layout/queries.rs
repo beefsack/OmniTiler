@@ -291,4 +291,62 @@ impl WorldLayout {
             }
         }
     }
+
+    /// Forget any minimize restore slot for `window` in `key`, returning
+    /// whether a slot was removed. Revision-neutral.
+    pub(crate) fn forget_minimized_slot(&mut self, key: &DomainKey, window: &WindowId) -> bool {
+        self.domains
+            .get_mut(key)
+            .is_some_and(|domain| domain.minimized_slots.remove(window).is_some())
+    }
+
+    /// Durable retained intentional-float geometry that survives unfloat. A
+    /// window keeps its last floating placement here while tiled, so the next
+    /// float can select it instead of recomputing the centered fallback.
+    #[must_use]
+    pub(crate) fn retained_float_geometry(
+        &self,
+        key: &DomainKey,
+        window: &WindowId,
+    ) -> Option<Rect> {
+        self.domain(key)
+            .and_then(|domain| domain.retained_float_geometry.get(window))
+            .copied()
+    }
+
+    /// Updates both the live exception geometry and the durable retained
+    /// placement so clear/unfloat restore the user placement exactly. Only
+    /// for floating non-sticky exceptions; refuses unknown windows,
+    /// non-float exceptions, and malformed rects with no mutation.
+    /// Revision-neutral.
+    pub(crate) fn adopt_float_placement(
+        &mut self,
+        key: &DomainKey,
+        window: &WindowId,
+        rect: Rect,
+    ) -> bool {
+        if rect.w <= 0
+            || rect.h <= 0
+            || rect.x.checked_add(rect.w).is_none()
+            || rect.y.checked_add(rect.h).is_none()
+        {
+            return false;
+        }
+        let Some(domain) = self.domains.get_mut(key) else {
+            return false;
+        };
+        let Some(record) = domain.exceptions.get_mut(window) else {
+            return false;
+        };
+        if !record.flags.floating
+            || record.flags.sticky
+            || record.flags.fullscreen
+            || record.flags.maximized
+        {
+            return false;
+        }
+        record.floating_geometry = Some(rect);
+        domain.retained_float_geometry.insert(window.clone(), rect);
+        true
+    }
 }

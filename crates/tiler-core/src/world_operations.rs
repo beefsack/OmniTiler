@@ -1784,30 +1784,13 @@ impl WorldEngine {
                     match command {
                         CoreCommand::ToggleFloat { window, float_rect } => {
                             let subject = WindowId(window.clone());
-                            match self.layout.run_toggle_float(&ctx, &subject, *float_rect) {
-                                Ok(outcome) => {
-                                    let no_space = outcome.float_window.is_some()
-                                        && outcome.float_rect.is_none();
-                                    let window = outcome.float_window.unwrap_or(subject);
-                                    let rect = outcome.float_rect;
-                                    self.command_result = Some(CommandResult::Float {
-                                        window: window.clone(),
-                                        rect,
-                                        no_space,
-                                    });
-                                    self.settle_float_retention(
-                                        command_seq,
-                                        &domain_key,
-                                        &windows,
-                                        window,
-                                        rect,
-                                        no_space,
-                                    );
-                                    self.note_command(command_seq);
-                                    CommandApplied::NoEffect
-                                }
-                                Err(err) => reject_local_operation_failure(err),
-                            }
+                            self.run_local_toggle_float_with_ctx(
+                                command_seq,
+                                &domain_key,
+                                &ctx,
+                                &subject,
+                                *float_rect,
+                            )
                         }
                         CoreCommand::ToggleOrientation { window } => {
                             if !is_opaque_id(window) {
@@ -2366,24 +2349,100 @@ impl WorldEngine {
         Ok((domain_key, domain_report, inset))
     }
 
-    fn converge_local_observation(
+    fn converge_local_observation_with(
         &mut self,
         domain_key: &DomainKey,
         domain_report: &crate::world_engine::StagedDomain,
+        focused_window: WindowId,
+        closed_windows: &[WindowId],
     ) -> Result<(WindowId, Vec<EngineWindow>, bool), CommandApplied> {
-        let focused_window = self.effective_operation_focus(domain_key, &domain_report.focused);
         let windows = self.shielded_windows(domain_key, &domain_report.windows);
         self.command_result = None;
         let preconverged = match self.layout.converge_retained_observation(
             domain_key,
             &windows,
             &focused_window,
-            &domain_report.closed,
+            closed_windows,
         ) {
             Ok(convergence) => convergence.is_some(),
             Err(err) => return Err(reject_layout_failure(err)),
         };
         Ok((focused_window, windows, preconverged))
+    }
+
+    fn converge_local_observation(
+        &mut self,
+        domain_key: &DomainKey,
+        domain_report: &crate::world_engine::StagedDomain,
+    ) -> Result<(WindowId, Vec<EngineWindow>, bool), CommandApplied> {
+        let focused_window = self.effective_operation_focus(domain_key, &domain_report.focused);
+        self.converge_local_observation_with(
+            domain_key,
+            domain_report,
+            focused_window,
+            &domain_report.closed,
+        )
+    }
+
+    fn run_local_toggle_float_with_ctx(
+        &mut self,
+        command_seq: u64,
+        domain_key: &DomainKey,
+        ctx: &LocalOperationContext<'_>,
+        subject: &WindowId,
+        float_rect: Option<Rect>,
+    ) -> CommandApplied {
+        match self.layout.run_toggle_float(ctx, subject, float_rect) {
+            Ok(outcome) => {
+                let no_space = outcome.float_window.is_some() && outcome.float_rect.is_none();
+                let window = outcome.float_window.unwrap_or_else(|| subject.clone());
+                let rect = outcome.float_rect;
+                self.command_result = Some(CommandResult::Float {
+                    window: window.clone(),
+                    rect,
+                    no_space,
+                });
+                self.settle_float_retention(
+                    command_seq,
+                    domain_key,
+                    ctx.observed,
+                    window,
+                    rect,
+                    no_space,
+                );
+                self.note_command(command_seq);
+                CommandApplied::NoEffect
+            }
+            Err(err) => reject_local_operation_failure(err),
+        }
+    }
+
+    pub(crate) fn run_sticky_unfloat_typed(
+        &mut self,
+        command_seq: u64,
+        domain_key: &DomainKey,
+        domain_report: &crate::world_engine::StagedDomain,
+        inset: &OutputDomain,
+        window: &WindowId,
+    ) -> CommandApplied {
+        let closed_windows = self.closed_for_domain(domain_report);
+        let (focused_window, windows, preconverged) = match self.converge_local_observation_with(
+            domain_key,
+            domain_report,
+            domain_report.focused.clone(),
+            &closed_windows,
+        ) {
+            Ok(found) => found,
+            Err(rejected) => return rejected,
+        };
+        let ctx = LocalOperationContext {
+            domain: inset,
+            outer_gap: domain_report.outer_gap,
+            observed_focus: &focused_window,
+            observed: &windows,
+            preconverged,
+        };
+        self.run_local_toggle_float_with_ctx(command_seq, domain_key, &ctx, window, None)
     }
 
     fn run_local_focus_with_ctx(
