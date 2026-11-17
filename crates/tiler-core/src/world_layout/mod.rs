@@ -49,13 +49,21 @@ mod workspace_migration;
 mod workspace_swap;
 
 #[cfg(test)]
+mod deferred_send_tests;
+#[cfg(test)]
+mod fixed_send_tests;
+#[cfg(test)]
 mod float_tests;
 #[cfg(test)]
 mod gesture_tests;
 #[cfg(test)]
+mod lifecycle_tests;
+#[cfg(test)]
 mod local_directional_tests;
 #[cfg(test)]
 mod local_operation_tests;
+#[cfg(test)]
+mod overlay_send_tests;
 #[cfg(test)]
 mod pair_convergence_tests;
 #[cfg(test)]
@@ -72,6 +80,8 @@ mod resize_tests;
 mod unchanged_tests;
 #[cfg(test)]
 mod workspace_migration_tests;
+#[cfg(test)]
+mod workspace_send_tests;
 #[cfg(test)]
 mod workspace_swap_tests;
 

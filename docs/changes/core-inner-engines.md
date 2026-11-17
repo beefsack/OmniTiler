@@ -585,3 +585,12 @@
   Direct core library execution passes all 2,220 tests. This count reflects
   removal of 204 embedded tests still awaiting coverage reconciliation and
   three retired pending-state tests; it is not full-suite acceptance.
+- Six external lifecycle/admission/send rigs now live in five focused internal
+  layout test modules, preserving access to typed private operations without
+  exposing layout state publicly. Their 78 tests become 71: seven deleted
+  identity/pending/acknowledgement contracts retire; pure policy-version and
+  redaction assertions remain. Real world catalog, same-domain and sticky-send
+  refusals are checked at the public world boundary. Reported full core library
+  execution passes 2,291 tests, and a direct workspace-send spot check passes
+  all 15. Movement/focus/resize external rigs and removed embedded coverage
+  remain to migrate before final gates.
