@@ -231,6 +231,7 @@ fn pair_focus_maximized_cross_allows_vertical_and_fullscreen_refuses() {
         .insert(Direction::Up, OutputId("out-1".to_owned()));
 
     let mut layout = WorldLayout::new();
+    layout.config.fixed_size_admission = true;
     layout.domains.insert(
         source_key(),
         domain_with(&src_dom, leaf("l1"), &[("w1", "l1")], "l1"),
@@ -558,7 +559,7 @@ fn pair_revision_limit_refuses_atomically_while_convergence_persists() {
     let dst_dom = target_output_domain();
     let mut layout = WorldLayout::new();
     let mut src_layout = domain_with(&src_dom, leaf("l1"), &[("w1", "l1")], "l1");
-    src_layout.accepted_revision = MAX_REVISION;
+    src_layout.accepted_revision = MAX_REVISION - 1;
     layout.domains.insert(source_key(), src_layout);
     layout.domains.insert(
         target_key(),

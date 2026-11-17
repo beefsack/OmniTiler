@@ -483,11 +483,11 @@ fn float_special_branch_convergence_persistence_and_invalid_descriptor() {
 
 #[test]
 fn all_seven_typed_entry_points_smoke() {
-    let dom = domain("out-1", "ws-1", 600, 400, 0);
+    let dom = domain("out-1", "ws-1", 1600, 900, 0);
     let k = dom.key();
     let obs_2 = vec![
-        window("w1", "out-1", "ws-1", 0, 300),
-        window("w2", "out-1", "ws-1", 300, 300),
+        window("w1", "out-1", "ws-1", 0, 800),
+        window("w2", "out-1", "ws-1", 800, 800),
     ];
     let ctx_2 = LocalOperationContext {
         domain: &dom,
@@ -535,9 +535,9 @@ fn all_seven_typed_entry_points_smoke() {
         .expect("keyboard_resize succeeds");
     assert_ne!(kb_out.operation.old_shares, kb_out.operation.new_shares);
 
-    // 4. Pointer edge resize: moves w1's right boundary to 320.
+    // 4. Pointer edge resize: moves w1's right boundary to 820.
     let ptr_out = fresh_two()
-        .run_pointer_resize(&ctx_2, &win("w1"), Direction::Right, 320)
+        .run_pointer_resize(&ctx_2, &win("w1"), Direction::Right, 820)
         .expect("pointer_resize succeeds");
     assert_ne!(ptr_out.operation.old_shares, ptr_out.operation.new_shares);
 
@@ -566,9 +566,9 @@ fn all_seven_typed_entry_points_smoke() {
     corner_dom.last_active = Some(nid("a"));
     corner_dom.accepted_revision = 1;
     let obs_3 = vec![
-        window("w1", "out-1", "ws-1", 0, 300),
-        window("w2", "out-1", "ws-1", 300, 300),
-        window("w3", "out-1", "ws-1", 0, 300),
+        window("w1", "out-1", "ws-1", 0, 800),
+        window("w2", "out-1", "ws-1", 800, 800),
+        window("w3", "out-1", "ws-1", 0, 800),
     ];
     let ctx_3 = LocalOperationContext {
         domain: &dom,
@@ -584,9 +584,9 @@ fn all_seven_typed_entry_points_smoke() {
             &ctx_3,
             &win("w1"),
             Direction::Right,
-            320,
+            820,
             Direction::Down,
-            220,
+            470,
         )
         .expect("pointer_resize_corner succeeds");
     assert_eq!(corner_out.direction_h, Direction::Right);

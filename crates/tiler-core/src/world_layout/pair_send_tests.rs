@@ -303,8 +303,8 @@ fn d2_capacity_fallback_and_b6_advisory_minima() {
     let narrow_bounds = Rect {
         x: 0,
         y: 0,
-        w: 1,
-        h: 100,
+        w: 2,
+        h: 1,
     };
     let source_desc = domain_desc(&source, std_bounds(), 0);
     let target_desc = domain_desc(&target_same, narrow_bounds, 0);
@@ -315,8 +315,8 @@ fn d2_capacity_fallback_and_b6_advisory_minima() {
         two_leaf_domain(std_bounds(), 0, "w1", "w2", "l1", "l2"),
     );
 
-    // Narrow positive target width=1 with two horizontal leaves: inserting a
-    // third leaf exhausts geometric width (w=0) and triggers D3 capacity-float.
+    // Narrow positive target width=2, height=1 with two horizontal leaves (each 1x1):
+    // inserting a third leaf exhausts geometric capacity and triggers D3 capacity-float.
     let mut tgt_dom = DomainLayout::new(narrow_bounds, 0, 0);
     tgt_dom.tree = Some(Node::Group {
         id: nid("tg0"),
@@ -531,8 +531,9 @@ fn target_empty_ignores_retained_residue_and_max_revision_and_source_error_prior
     tgt_dom.accepted_revision = MAX_REVISION;
     layout.domains.insert(target.clone(), tgt_dom);
 
-    // Target observation is empty -> retained target residue and MAX_REVISION are ignored,
-    // while install_pair still inherits retained target outer_gap (28).
+    // Empty target observation ignores retained target residue and MAX_REVISION.
+    // It removes the empty target domain and its outer gap
+    // during pre-send convergence, so the final send inherits source_outer_gap (10).
     let observed = vec![eng("w1", &source), eng("w2", &source)];
     let focus = win("w1");
     let ctx = PairOperationContext {
@@ -548,7 +549,7 @@ fn target_empty_ignores_retained_residue_and_max_revision_and_source_error_prior
         .run_pair_send(&ctx, &focus, true, false)
         .expect("empty target observation ignores retained target residue and MAX_REVISION");
     assert_eq!(outcome.kind, PairSendKind::Tiled);
-    assert_eq!(layout.domain_outer_gap(&target), Some(28));
+    assert_eq!(layout.domain_outer_gap(&target), Some(10));
     assert!(layout.is_tiled_window(&target, &win("w1")));
     assert!(!layout.is_tiled_window(&target, &win("stale")));
 }
@@ -626,8 +627,8 @@ fn same_output_capacity_send_updates_prior_source_durable_geometry() {
     let narrow_bounds = Rect {
         x: 0,
         y: 0,
-        w: 1,
-        h: 100,
+        w: 2,
+        h: 1,
     };
     let source_desc = domain_desc(&source, std_bounds(), 0);
     let target_desc = domain_desc(&target, narrow_bounds, 0);

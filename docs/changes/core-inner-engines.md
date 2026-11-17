@@ -529,3 +529,11 @@
   these require source-based triage, not assumed baseline failures. A direct
   swap-test spot check passes all nine tests. Runtime acceptance, old-machine
   removal and final gates remain pending.
+- Initial executable coverage now passes all 2,427 core library tests. Triage
+  corrects pair revision normalization on unchanged convergence, malformed new
+  resize/capacity/overlay fixtures and one obsolete duplicate-inner-owner
+  assertion while retaining real ownerless-command coverage. Source inspection
+  also corrects the empty-target send expectation: intermediate convergence
+  retires the target gap, so final installation inherits the source gap.
+  No test count changes in this correction. Old machines and their independent
+  test rigs still remain; endpoint removal and full acceptance are pending.

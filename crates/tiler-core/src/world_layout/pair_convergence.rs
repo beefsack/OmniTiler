@@ -592,11 +592,15 @@ impl WorldLayout {
             original_target_last_active.as_ref(),
         );
 
+        let final_revision = if changed {
+            base_revision + 1
+        } else {
+            base_revision
+        };
+        candidate.pair_revision = final_revision;
+        candidate.source.accepted_revision = final_revision;
+        candidate.target.accepted_revision = final_revision;
         if changed {
-            let next_revision = base_revision + 1;
-            candidate.pair_revision = next_revision;
-            candidate.source.accepted_revision = next_revision;
-            candidate.target.accepted_revision = next_revision;
             candidate.admission_seq_next = new_counter;
         }
         *pair = candidate;

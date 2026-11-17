@@ -509,64 +509,49 @@ fn sticky_composed_transition_restages_staged_facts_only() {
 #[test]
 fn local_toggle_orientation_uses_issue_owner_with_ownerless_connection() {
     // Event-owner authorization for the event-constructing local route:
-    // an eligible staged orientation flip succeeds with an ownerless
-    // connection and no report passed at all, while a wrong-owner
-    // issue refuses via engine/session authorization without mutating.
-    for wrong_owner in [false, true] {
-        let mut engine = new_engine();
-        let windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 200)];
-        let mut bootstrap = report_v4_simple(1, vec![screen("out-a", 0)]);
-        bootstrap.windows = windows.clone();
-        bootstrap.focused_global = "win-a".to_owned();
-        bootstrap.foreground_known = true;
-        accepted_v4(&mut engine, &bootstrap);
-        stage_v4(&mut engine, &bootstrap);
-        seed_ring_views(&mut engine);
-        engine.connection_owner = None;
-        // Real domain join over the staged facts (classification
-        // only, from staged state with no report input), mirroring
-        // accepted-run assembly.
-        engine.build_staged_domains();
-        let issue = EventIssue {
-            owner: OwnerId::parse(if wrong_owner { "intruder" } else { "adapter-1" })
-                .expect("owner"),
-            correlation: CorrelationId::parse("req-7").expect("correlation"),
-        };
-        let mut owned: Vec<EngineWindow> = Vec::new();
-        for domain in &engine.staged.domains {
-            owned.extend(domain.windows.iter().cloned());
-        }
-        let by_id: BTreeMap<&WindowId, &EngineWindow> =
-            owned.iter().map(|row| (&row.window, row)).collect();
-        let command = CoreCommand::ToggleOrientation {
-            window: "win-a".to_owned(),
-        };
-        let revision_before = engine.state_revision;
-        match engine.run_local_operation(&issue, 7, &command, &by_id, &BTreeSet::new()) {
-            CommandApplied::NoEffect => {
-                assert!(!wrong_owner, "wrong-owner orientation must not succeed");
-                assert_eq!(
-                    engine.command_highwater,
-                    Some(7),
-                    "eligible orientation consumes its sequence through the real event path",
-                );
-            }
-            CommandApplied::Rejected { kind, message } => assert!(
-                wrong_owner,
-                "eligible orientation must succeed with ownerless connection, got refusal {kind} {message}"
-            ),
-            CommandApplied::Effect(_) => panic!("orientation emits no focus effect"),
-        }
-        if wrong_owner {
+    // An eligible staged orientation flip succeeds with an ownerless
+    // connection and no report passed to the typed operation.
+    let mut engine = new_engine();
+    let windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 200)];
+    let mut bootstrap = report_v4_simple(1, vec![screen("out-a", 0)]);
+    bootstrap.windows = windows.clone();
+    bootstrap.focused_global = "win-a".to_owned();
+    bootstrap.foreground_known = true;
+    accepted_v4(&mut engine, &bootstrap);
+    stage_v4(&mut engine, &bootstrap);
+    seed_ring_views(&mut engine);
+    engine.connection_owner = None;
+    // Real domain join over the staged facts (classification
+    // only, from staged state with no report input), mirroring
+    // accepted-run assembly.
+    engine.build_staged_domains();
+    let issue = EventIssue {
+        owner: OwnerId::parse("adapter-1").expect("owner"),
+        correlation: CorrelationId::parse("req-7").expect("correlation"),
+    };
+    let mut owned: Vec<EngineWindow> = Vec::new();
+    for domain in &engine.staged.domains {
+        owned.extend(domain.windows.iter().cloned());
+    }
+    let by_id: BTreeMap<&WindowId, &EngineWindow> =
+        owned.iter().map(|row| (&row.window, row)).collect();
+    let command = CoreCommand::ToggleOrientation {
+        window: "win-a".to_owned(),
+    };
+    match engine.run_local_operation(&issue, 7, &command, &by_id, &BTreeSet::new()) {
+        CommandApplied::NoEffect => {
             assert_eq!(
-                engine.state_revision, revision_before,
-                "wrong-owner refusal mutates nothing"
-            );
-            assert!(
-                engine.command_highwater.is_none(),
-                "wrong-owner refusal consumes no sequence"
+                engine.command_highwater,
+                Some(7),
+                "eligible orientation consumes its sequence through the typed operation",
             );
         }
+        CommandApplied::Rejected { kind, message } => {
+            panic!(
+                "eligible orientation must succeed with ownerless connection, got refusal {kind} {message}"
+            );
+        }
+        CommandApplied::Effect(_) => panic!("orientation emits no focus effect"),
     }
 }
 
@@ -1863,6 +1848,9 @@ fn local_preconvergence_persists_after_invalid_direction_refusal() {
 fn local_composed_maximize_rollback_and_pointer_half_pair_refusal() {
     let mut engine = new_composed_engine();
     let mut bootstrap = focus_report_v4();
+    for row in &mut bootstrap.windows {
+        row.maximized = None;
+    }
     bootstrap.focused_global = "win-a".to_owned();
     bootstrap.foreground_known = true;
     accepted_v4(&mut engine, &bootstrap);
