@@ -488,13 +488,83 @@ impl WorldLayout {
             }
         }
         let history = self.cross_output_history_newest_first(target);
-        crate::session::rank_cross_output_edge_candidates(
-            &rects_dfs,
-            direction,
-            &history,
-            source_perp,
-        )
+        rank_cross_output_edge_candidates(&rects_dfs, direction, &history, source_perp)
     }
+}
+
+/// Cross-output edge-candidate ranking for directional focus (REQ-OUT-02).
+///
+/// Filters `rects_dfs` (projected target domain leaves in layout DFS order)
+/// to leaves touching the entry edge facing `direction` (minimum `x` for
+/// `Right`, maximum `x + w` for `Left`, minimum `y` for `Down`, maximum
+/// `y + h` for `Up`).
+///
+/// Ranking: the most-recently-focused candidate first
+/// (`history_newest_first`, newest first; stale entries simply miss the
+/// candidate set), else the largest perpendicular overlap with
+/// `source_perp` (`(start, end)` along the perpendicular axis), else DFS
+/// child order (stable: only a strictly larger overlap replaces, so ties
+/// keep the first layout leaf). An empty candidate set returns `None`.
+/// Coordinates need only a consistent frame: the entry extremes are
+/// relative to the candidate set and overlap is span differences, so
+/// globally-offset outputs rank correctly when `source_perp` shares the
+/// canonical frame.
+pub(crate) fn rank_cross_output_edge_candidates(
+    rects_dfs: &[(NodeId, Rect)],
+    direction: Direction,
+    history_newest_first: &[NodeId],
+    source_perp: (i32, i32),
+) -> Option<NodeId> {
+    if rects_dfs.is_empty() {
+        return None;
+    }
+    let min_x = rects_dfs.iter().map(|(_, r)| r.x).min().expect("non-empty");
+    let max_x = rects_dfs
+        .iter()
+        .map(|(_, r)| i64::from(r.x) + i64::from(r.w))
+        .max()
+        .expect("non-empty");
+    let min_y = rects_dfs.iter().map(|(_, r)| r.y).min().expect("non-empty");
+    let max_y = rects_dfs
+        .iter()
+        .map(|(_, r)| i64::from(r.y) + i64::from(r.h))
+        .max()
+        .expect("non-empty");
+    let touches = |rect: &Rect| match direction {
+        Direction::Right => rect.x == min_x,
+        Direction::Left => i64::from(rect.x) + i64::from(rect.w) == max_x,
+        Direction::Down => rect.y == min_y,
+        Direction::Up => i64::from(rect.y) + i64::from(rect.h) == max_y,
+    };
+    let candidates: Vec<&(NodeId, Rect)> =
+        rects_dfs.iter().filter(|(_, rect)| touches(rect)).collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    for remembered in history_newest_first {
+        if candidates.iter().any(|(leaf, _)| leaf == remembered) {
+            return Some(remembered.clone());
+        }
+    }
+    let horizontal = matches!(direction, Direction::Left | Direction::Right);
+    let (source_start, source_end) = (i64::from(source_perp.0), i64::from(source_perp.1));
+    let mut best: Option<(&NodeId, i64)> = None;
+    for (leaf, rect) in candidates {
+        let (start, end) = if horizontal {
+            (i64::from(rect.y), i64::from(rect.y) + i64::from(rect.h))
+        } else {
+            (i64::from(rect.x), i64::from(rect.x) + i64::from(rect.w))
+        };
+        let overlap = (end.min(source_end) - start.max(source_start)).max(0);
+        let replace = match &best {
+            None => true,
+            Some((_, top)) => overlap > *top,
+        };
+        if replace {
+            best = Some((leaf, overlap));
+        }
+    }
+    best.map(|(leaf, _)| leaf.clone())
 }
 
 #[cfg(test)]

@@ -81,7 +81,7 @@ impl WorldEngine {
         if derived.own_excluded || derived.excluded || derived.hidden {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
-        let decision = crate::session::Session::decide_maximize_toggle(fullscreen, maximized);
+        let decision = crate::session::decide_maximize_toggle(fullscreen, maximized);
         if decision.clear_fullscreen {
             if !self.capabilities().is_some_and(|caps| caps.fullscreen) {
                 self.command_result = Some(CommandResult::Rejected {

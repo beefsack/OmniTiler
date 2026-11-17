@@ -11,16 +11,10 @@
 use std::collections::BTreeSet;
 
 use crate::bounds::{rect_contained, valid_carried_rect};
-use crate::contract::{
-    AckOutcome, AdapterAck, LifecycleCapabilities, LifecyclePostObservation, Observation,
-};
 use crate::directional::{Axis, Node, NodeId, OutputId, WindowId, WindowLink, WorkspaceId};
 use crate::geometry::{Rect, project};
-use crate::ids::{CorrelationId, GenerationId, OwnerId};
-use crate::session::{
-    DesiredGeometry, DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, Session,
-    SessionCommand, SessionObservation,
-};
+use crate::session::{ObservedWindow, OutputDomain};
+use crate::world_layout::GroupAllocator;
 
 /// Serde-free observed window for seed ordering and recursive-cut fitting.
 ///
@@ -113,11 +107,7 @@ pub fn try_recursive_cut_fit_with_centre_count(
     domain: &OutputDomain,
     windows: &[EngineWindow],
 ) -> Result<(Node, Vec<WindowLink>, usize), FitDeclineReason> {
-    try_recursive_cut_fit_with_centre_count_and_alloc(
-        domain,
-        windows,
-        &crate::session::GroupAllocator::new(),
-    )
+    try_recursive_cut_fit_with_centre_count_and_alloc(domain, windows, &GroupAllocator::new())
 }
 
 /// Engine generation-shared fit: identical to
@@ -128,7 +118,7 @@ pub fn try_recursive_cut_fit_with_centre_count(
 pub(crate) fn try_recursive_cut_fit_with_centre_count_and_alloc(
     domain: &OutputDomain,
     windows: &[EngineWindow],
-    group_alloc: &crate::session::GroupAllocator,
+    group_alloc: &GroupAllocator,
 ) -> Result<(Node, Vec<WindowLink>, usize), FitDeclineReason> {
     if windows.len() < 2 {
         return Err(FitDeclineReason::SingleWindow);
@@ -188,7 +178,7 @@ pub(crate) fn try_recursive_cut_fit_with_centre_count_and_alloc(
     }
     struct Alloc {
         next_leaf: usize,
-        group_alloc: crate::session::GroupAllocator,
+        group_alloc: GroupAllocator,
         centre_splits: usize,
     }
 
@@ -442,28 +432,6 @@ pub fn order_spatial_with_focus_last(
     Some(windows)
 }
 
-/// Rebuild placement target for one admission step: the focused leaf's
-/// projected rectangle, or the output geometry when the rebuilt domain is
-/// still empty (or focus does not resolve there).
-#[must_use]
-pub fn seed_target_bounds(session: &Session, domain: &OutputDomain) -> Rect {
-    let key = DomainKey {
-        output: domain.id.clone(),
-        workspace: domain.workspace.clone(),
-    };
-    let (focus_domain, focus_leaf) = session.focus();
-    let eligible = focus_leaf
-        .as_ref()
-        .filter(|_| focus_domain.as_ref() == Some(&key));
-    let tree = session
-        .snapshot()
-        .domains
-        .into_iter()
-        .find(|d| d.output == key.output && d.workspace == key.workspace)
-        .and_then(|d| d.tree);
-    crate::session::admission_placement_for(domain, tree.as_ref(), eligible)
-}
-
 /// Portable observed-window mapping: tiled seed observations carry no
 /// exception flags beyond the carried floating/fullscreen/maximized/sticky
 /// bits. Hints propagate unchanged (advisory only; never identity).
@@ -481,338 +449,6 @@ pub fn observed_window_from_engine(entry: &EngineWindow) -> ObservedWindow {
         fixed_suppress: entry.fixed_suppress,
         hints: entry.hints,
     }
-}
-
-/// Portable session observation over one complete carried window set.
-#[must_use]
-pub fn session_observation_for(
-    owner: &OwnerId,
-    generation: &GenerationId,
-    base: u64,
-    fingerprint: u64,
-    windows: &[EngineWindow],
-) -> SessionObservation {
-    SessionObservation {
-        observation: Observation::new(owner.clone(), generation.clone(), base, fingerprint),
-        windows: windows.iter().map(observed_window_from_engine).collect(),
-    }
-}
-
-/// Portable two-domain workspace observation (source first, then target).
-#[must_use]
-pub fn workspace_observation_for(
-    owner: &OwnerId,
-    generation: &GenerationId,
-    base: u64,
-    fingerprint: u64,
-    source: &[EngineWindow],
-    target: &[EngineWindow],
-) -> SessionObservation {
-    let mut windows: Vec<ObservedWindow> = Vec::with_capacity(source.len() + target.len());
-    windows.extend(source.iter().map(observed_window_from_engine));
-    windows.extend(target.iter().map(observed_window_from_engine));
-    SessionObservation {
-        observation: Observation::new(owner.clone(), generation.clone(), base, fingerprint),
-        windows,
-    }
-}
-
-/// Portable post-observation match: every desired window must be carried
-/// exactly once (source plus target) with the expected output, workspace,
-/// and rectangle.
-#[must_use]
-pub fn workspace_post_matches(
-    desired_geometry: &[DesiredGeometry],
-    source: &[EngineWindow],
-    target: &[EngineWindow],
-) -> bool {
-    let mut observed: std::collections::HashMap<&str, &EngineWindow> =
-        std::collections::HashMap::with_capacity(source.len() + target.len());
-    for entry in source.iter().chain(target.iter()) {
-        if observed.insert(entry.window.0.as_str(), entry).is_some() {
-            return false;
-        }
-    }
-    if observed.len() != desired_geometry.len() {
-        return false;
-    }
-    for desired in desired_geometry {
-        let Some(entry) = observed.get(desired.window.0.as_str()) else {
-            return false;
-        };
-        if entry.output != desired.output
-            || entry.workspace != desired.workspace
-            || entry.rect != desired.rect
-        {
-            return false;
-        }
-    }
-    true
-}
-
-/// One shared seed admission step: propose/ack/verify one window into its
-/// domain through the retained session lifecycle path.
-///
-/// The retained tiled links always synthesize `floating: false` with no hints
-/// (unknown here, advisory only) plus the retained exceptions. The newly
-/// admitted window (`admitted`) and the pre/post fingerprints are caller
-/// inputs so each caller keeps its own semantics: tiled seeds synthesize the
-/// admitted window with no hints and verify with post `base`, while workspace
-/// entries preserve floating/hints via [`observed_window_from_engine`] and
-/// verify with the event fingerprint. Correlation identity (`seed-{index:04}`)
-/// and propose/ack/verify order match the retained lifecycle path exactly.
-#[allow(clippy::too_many_arguments)]
-fn seed_admit_step(
-    session: &mut Session,
-    owner: &OwnerId,
-    generation: &GenerationId,
-    domain: &OutputDomain,
-    admitted: ObservedWindow,
-    index: usize,
-    pre_fingerprint: u64,
-    post_fingerprint: u64,
-) -> Option<()> {
-    let base = session.accepted_revision();
-    let mut observed: Vec<ObservedWindow> = session
-        .snapshot()
-        .windows
-        .iter()
-        .map(|l| ObservedWindow {
-            window: l.window.clone(),
-            output: l.output.clone(),
-            workspace: l.workspace.clone(),
-            floating: false,
-            fullscreen: false,
-            maximized: false,
-            sticky: false,
-            fixed_auto: false,
-            fixed_suppress: false,
-            // Seed rebuilds synthesize observations from retained links;
-            // hints are unknown here, so none (advisory only).
-            hints: crate::size_hints::WindowSizeHints::none(),
-        })
-        .collect();
-    observed.extend(session.exception_observed());
-    let command = SessionCommand::Admit {
-        window: admitted.window.clone(),
-        output: admitted.output.clone(),
-        workspace: admitted.workspace.clone(),
-        exceptions: ExceptionFlags::none(),
-        exception_behavior: None,
-        placement_bounds: seed_target_bounds(session, domain),
-        suppress_fixed_float: false,
-    };
-    observed.push(admitted);
-    let correlation = CorrelationId::parse(&format!("seed-{index:04}"))?;
-    let observation = SessionObservation {
-        observation: Observation::new(owner.clone(), generation.clone(), base, pre_fingerprint),
-        windows: observed,
-    };
-    let plan = session
-        .propose(
-            &command,
-            &observation,
-            &correlation,
-            &LifecycleCapabilities::full(),
-        )
-        .ok()?;
-    let ack = AdapterAck::new(
-        correlation.clone(),
-        owner.clone(),
-        generation.clone(),
-        base,
-        AckOutcome::Accepted,
-    );
-    session.acknowledge(&ack).ok()?;
-    session
-        .verify_lifecycle(&LifecyclePostObservation::new(
-            Observation::new(owner.clone(), generation.clone(), base, post_fingerprint),
-            correlation,
-            true,
-            plan.dispatch.preconditions.clone(),
-            plan.dispatch.operation.clone(),
-        ))
-        .ok()?;
-    Some(())
-}
-
-/// Rebuild ephemeral authoritative topology from the normalized observation.
-///
-/// Admits the observed spatial order, with the focused window last, through
-/// the retained session lifecycle path only. The split axis derives from the
-/// rebuild target at each step (see [`seed_target_bounds`]); opaque window
-/// ids never determine topology. Correlations are `seed-{index:04}`,
-/// revisions advance one commit per member, and ack/verify follow the
-/// retained lifecycle path exactly.
-///
-/// `seed_session` seeds from the zero counter for standalone use; the
-/// Engine seeds through [`seed_session_from_counter`] with its
-/// Engine-wide floor so independently seeded domains never collide once
-/// their windows share a domain.
-#[must_use]
-pub fn seed_session(
-    owner: &OwnerId,
-    generation: &GenerationId,
-    fingerprint: u64,
-    domain: &OutputDomain,
-    seed_order: &[EngineWindow],
-) -> Option<Session> {
-    seed_session_from_counter(owner, generation, fingerprint, domain, seed_order, 0)
-}
-
-/// [`seed_session`] starting the first-successful-tiled-admission
-/// sequence at `admission_floor` instead of zero. The Engine passes its
-/// Engine-wide floor so this fresh domain's serial legs order after every
-/// retained domain's sequences; leg order within the roster is unchanged.
-///
-/// Standalone wrapper: the seeded session carries a fresh generation
-/// allocator. The Engine seeds through
-/// [`seed_session_from_counter_with_alloc`] with the generation-shared
-/// allocator so seed burns never reissue serials.
-#[must_use]
-pub fn seed_session_from_counter(
-    owner: &OwnerId,
-    generation: &GenerationId,
-    fingerprint: u64,
-    domain: &OutputDomain,
-    seed_order: &[EngineWindow],
-    admission_floor: u64,
-) -> Option<Session> {
-    seed_session_from_counter_with_alloc(
-        owner,
-        generation,
-        fingerprint,
-        domain,
-        seed_order,
-        admission_floor,
-        &crate::session::GroupAllocator::new(),
-    )
-}
-
-/// Engine generation-shared seed: identical to
-/// [`seed_session_from_counter`] except the seeded session shares the
-/// generation allocator, so ordinary-admission groups minted while
-/// seeding burn generation serials even when seeding itself fails.
-#[must_use]
-pub(crate) fn seed_session_from_counter_with_alloc(
-    owner: &OwnerId,
-    generation: &GenerationId,
-    fingerprint: u64,
-    domain: &OutputDomain,
-    seed_order: &[EngineWindow],
-    admission_floor: u64,
-    group_alloc: &crate::session::GroupAllocator,
-) -> Option<Session> {
-    let mut session = Session::new(
-        owner.clone(),
-        generation.clone(),
-        0,
-        fingerprint,
-        vec![domain.clone()],
-    )
-    .ok()?;
-    session.set_group_allocator(group_alloc.clone());
-    session.sync_admission_counter(admission_floor);
-    for (index, entry) in seed_order.iter().enumerate() {
-        let base = session.accepted_revision();
-        // Tiled seed synthesizes the admitted observation with no hints.
-        let admitted = ObservedWindow {
-            window: entry.window.clone(),
-            output: entry.output.clone(),
-            workspace: entry.workspace.clone(),
-            floating: false,
-            fullscreen: false,
-            maximized: false,
-            sticky: false,
-            fixed_auto: false,
-            fixed_suppress: false,
-            hints: crate::size_hints::WindowSizeHints::none(),
-        };
-        // Post fingerprint is the pre-step base, not the event fingerprint.
-        seed_admit_step(
-            &mut session,
-            owner,
-            generation,
-            domain,
-            admitted,
-            index,
-            fingerprint,
-            base,
-        )?;
-    }
-    Some(session)
-}
-
-/// One admission step of the two-domain workspace seed: propose/ack/verify
-/// one tiled window into its exact source or target domain.
-pub fn seed_workspace_admit(
-    session: &mut Session,
-    owner: &OwnerId,
-    generation: &GenerationId,
-    fingerprint: u64,
-    domain: &OutputDomain,
-    entry: &EngineWindow,
-    index: usize,
-) -> Option<()> {
-    // Workspace entries preserve floating/hints; post fingerprint is the
-    // event fingerprint.
-    seed_admit_step(
-        session,
-        owner,
-        generation,
-        domain,
-        observed_window_from_engine(entry),
-        index,
-        fingerprint,
-        fingerprint,
-    )
-}
-
-/// Rebuild the authoritative two-domain workspace topology from the observed
-/// source and target spatial orders (source first, then target). Mirrors
-/// [`seed_session`]; the mover is admitted into its source domain and focus is
-/// synced to it by the caller before the workspace move proposes.
-#[must_use]
-pub fn seed_workspace_session(
-    owner: &OwnerId,
-    generation: &GenerationId,
-    fingerprint: u64,
-    source_domain: &OutputDomain,
-    target_domain: &OutputDomain,
-    source_order: &[EngineWindow],
-    target_order: &[EngineWindow],
-) -> Option<Session> {
-    let mut session = Session::new(
-        owner.clone(),
-        generation.clone(),
-        0,
-        fingerprint,
-        vec![source_domain.clone(), target_domain.clone()],
-    )
-    .ok()?;
-    for (index, entry) in source_order.iter().enumerate() {
-        seed_workspace_admit(
-            &mut session,
-            owner,
-            generation,
-            fingerprint,
-            source_domain,
-            entry,
-            index,
-        )?;
-    }
-    for (index, entry) in target_order.iter().enumerate() {
-        seed_workspace_admit(
-            &mut session,
-            owner,
-            generation,
-            fingerprint,
-            target_domain,
-            entry,
-            source_order.len() + index,
-        )?;
-    }
-    Some(session)
 }
 
 #[cfg(test)]
@@ -1223,83 +859,5 @@ mod tests {
             window("focus", 50, 0, 10, 10),
         ];
         assert!(order_spatial_with_focus_last(windows, &focused, false).is_none());
-    }
-
-    fn ids() -> (OwnerId, GenerationId) {
-        (
-            OwnerId::parse("owner-a").expect("valid"),
-            GenerationId::parse("gen-1").expect("valid"),
-        )
-    }
-
-    #[test]
-    fn seed_session_advances_one_revision_per_member() {
-        let (owner, generation) = ids();
-        let domain = domain();
-        let mut order = vec![window("a", 0, 0, 10, 10), window("b", 20, 0, 10, 10)];
-        order[0].floating = true; // Tiled seed synthesizes this entry as tiled.
-        let session = seed_session(&owner, &generation, 7, &domain, &order).expect("seeds");
-        assert_eq!(session.accepted_revision(), 2);
-        assert_eq!(session.accepted_fingerprint(), 1);
-        assert_eq!(session.snapshot().windows.len(), 2);
-        assert!(seed_target_bounds(&session, &domain).w > 0);
-    }
-
-    #[test]
-    fn seed_workspace_session_covers_both_domains() {
-        let (owner, generation) = ids();
-        let source = domain();
-        let target = OutputDomain {
-            id: OutputId("out-2".to_owned()),
-            workspace: WorkspaceId("ws".to_owned()),
-            bounds: Rect {
-                x: 0,
-                y: 0,
-                w: 300,
-                h: 100,
-            },
-            gap: 0,
-            adjacent: BTreeMap::new(),
-        };
-        let source_win = window("a", 0, 0, 10, 10);
-        let mut target_win = window("b", 0, 0, 10, 10);
-        target_win.output = OutputId("out-2".to_owned());
-        let session = seed_workspace_session(
-            &owner,
-            &generation,
-            7,
-            &source,
-            &target,
-            std::slice::from_ref(&source_win),
-            std::slice::from_ref(&target_win),
-        )
-        .expect("seeds");
-        assert_eq!(session.accepted_revision(), 2);
-        assert_eq!(session.accepted_fingerprint(), 7);
-        assert_eq!(session.domains().len(), 2);
-        let observation = workspace_observation_for(
-            &owner,
-            &generation,
-            2,
-            7,
-            std::slice::from_ref(&source_win),
-            std::slice::from_ref(&target_win),
-        );
-        assert_eq!(observation.windows.len(), 2);
-        assert!(!workspace_post_matches(&[], &[source_win], &[target_win]));
-        let mut floating = window("c", 0, 0, 10, 10);
-        floating.floating = true;
-        assert!(
-            seed_workspace_session(
-                &owner,
-                &generation,
-                7,
-                &source,
-                &target,
-                std::slice::from_ref(&floating),
-                &[],
-            )
-            .is_none()
-        );
     }
 }

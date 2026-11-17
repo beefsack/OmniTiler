@@ -537,3 +537,22 @@
   retires the target gap, so final installation inherits the source gap.
   No test count changes in this correction. Old machines and their independent
   test rigs still remain; endpoint removal and full acceptance are pending.
+- Old production `Engine`, independent `Session`, `Reconciler`, event/reply
+  dispatch and synthetic acknowledgement/post-observation scaffolding are now
+  removed. Semantic command/domain/resize/drag vocabulary remains at its public
+  import paths. The shared burning allocator and its three tests move into
+  layout storage; entry-edge ranking and centered float placement remain pure
+  helpers. A direct core library check passes with 21 outstanding unused-code
+  warnings; reported core/protocol/service library builds pass.
+- Test migration is still required: 204 embedded tests were removed with the
+  old machine files, three allocator tests moved and 20 pure tests retained.
+  Meaningful layout coverage among the removed tests must be ported from
+  `37fb0ade`; obsolete inner-handshake/identity coverage must be distinguished,
+  not silently discarded. Surviving old-machine test rigs currently fail
+  compilation (140 reported library-test errors), so no post-removal runtime
+  acceptance or final count reconciliation is claimed.
+- Reported portable Windows library checking passes. Portable macOS host
+  checking fails with seven errors in `drag_fixture.rs` and `world_runtime.rs`
+  involving command-result and frame-setter vocabulary. Native sources are
+  unchanged; baseline failure status has not been verified. These host checks
+  do not establish native-target caller compilation.

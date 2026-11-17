@@ -9,13 +9,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::group_alloc::GroupAllocator;
 use crate::admission::{
     dfs_leaves, rank_largest_candidates, split_candidate_at, tree_admits_candidate,
 };
 use crate::directional::{Axis, Node, NodeId, WindowId};
 use crate::geometry::{Rect, project};
 use crate::policy::LayoutPolicy;
-use crate::session::GroupAllocator;
 use crate::size_hints::WindowSizeHints;
 
 use super::tree_edit;

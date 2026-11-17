@@ -449,7 +449,7 @@ fn pair_cross_output_focus(
             }
         }
         let history = cross_output_history_newest_first(&pair.target);
-        let Some(target_leaf) = crate::session::rank_cross_output_edge_candidates(
+        let Some(target_leaf) = super::queries::rank_cross_output_edge_candidates(
             &rects_dfs,
             direction,
             &history,

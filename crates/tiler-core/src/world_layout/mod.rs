@@ -21,6 +21,7 @@ mod float;
 mod focus;
 mod gesture;
 mod gesture_resolve;
+mod group_alloc;
 mod local_focus;
 mod local_move;
 mod local_operation;
@@ -74,6 +75,8 @@ mod workspace_migration_tests;
 #[cfg(test)]
 mod workspace_swap_tests;
 
+pub(crate) use float::centered_float_rect;
+pub(crate) use group_alloc::GroupAllocator;
 pub(crate) use local_operation::LocalOperationContext;
 pub(crate) use outcome::{
     AdmissionOutcome, DragDropOutcome, DragPreviewOutcome, FittedAdmissionDecline,

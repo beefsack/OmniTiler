@@ -6,8 +6,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::group_alloc::GroupAllocator;
 use crate::directional::{Axis, Node, NodeId, WindowId};
-use crate::session::GroupAllocator;
 
 use super::state::DomainRestoreSlot;
 use super::topology::{collect_leaves, tree_has_leaf};

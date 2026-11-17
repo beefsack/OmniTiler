@@ -9,7 +9,9 @@ use crate::directional::{
     WindowId, WindowLink,
 };
 use crate::policy::LayoutPolicy;
-use crate::session::{DesiredGeometry, DomainKey, GroupAllocator, RefusalKind};
+use crate::session::{DesiredGeometry, DomainKey, RefusalKind};
+
+use super::group_alloc::GroupAllocator;
 use crate::size_hints::WindowSizeHints;
 
 use super::local_move::{apply_local_move_operation, geometry_covers_domain, step_for_direction};

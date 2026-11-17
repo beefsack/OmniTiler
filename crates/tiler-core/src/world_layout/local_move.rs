@@ -14,7 +14,9 @@ use crate::directional::{
     SameAxisMove, Snapshot, WindowId, WindowLink,
 };
 use crate::policy::LayoutPolicy;
-use crate::session::{DesiredGeometry, DomainKey, GroupAllocator, ObservedWindow, RefusalKind};
+use crate::session::{DesiredGeometry, DomainKey, ObservedWindow, RefusalKind};
+
+use super::group_alloc::GroupAllocator;
 use crate::size_hints::WindowSizeHints;
 
 use super::focus::{settle_domain_focus_tail, sync_domain_focus_from_window};

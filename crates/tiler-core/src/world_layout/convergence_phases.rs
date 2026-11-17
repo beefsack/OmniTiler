@@ -6,7 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::directional::{Node, NodeId, WindowId};
 use crate::geometry::Rect;
 use crate::policy::LayoutPolicy;
-use crate::session::{DomainKey, ExceptionFlags, GroupAllocator, ObservedWindow, RefusalKind};
+use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, RefusalKind};
+
+use super::group_alloc::GroupAllocator;
 use crate::size_hints::{FixedSizePredicate, WindowSizeHints, is_fixed_size_with};
 
 use super::admission::plan_admission_leg;

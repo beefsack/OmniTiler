@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::contract::MAX_REVISION;
 use crate::directional::WindowId;
 use crate::geometry::Rect;
-use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, RefusalKind, centered_float_rect};
+use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, RefusalKind};
 use crate::size_hints::{FixedSizePredicate, WindowSizeHints};
 
 use super::focus::{domain_focus_resolves, settle_domain_focus_tail};
@@ -367,4 +367,19 @@ fn valid_rect_shape(rect: Rect) -> bool {
         && rect.h > 0
         && rect.x.checked_add(rect.w).is_some()
         && rect.y.checked_add(rect.h).is_some()
+}
+
+/// Centered 60% work-area rectangle, matching the adapter's previous static
+/// placement: `max(1, floor(0.6 * bounds))` size centered on the bounds.
+/// Shared with the sticky-on transition so tiled-origin sticky takes the
+/// same intentional-float placement as the ordinary float toggle.
+pub(crate) fn centered_float_rect(bounds: Rect) -> Rect {
+    let w = ((i64::from(bounds.w) * 6) / 10).max(1) as i32;
+    let h = ((i64::from(bounds.h) * 6) / 10).max(1) as i32;
+    Rect {
+        x: bounds.x + (bounds.w - w) / 2,
+        y: bounds.y + (bounds.h - h) / 2,
+        w,
+        h,
+    }
 }

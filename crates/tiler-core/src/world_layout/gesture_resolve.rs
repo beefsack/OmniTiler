@@ -10,7 +10,9 @@ use crate::contract::DragSide;
 use crate::directional::{Axis, Node, NodeId, WindowId};
 use crate::geometry::Rect;
 use crate::policy::{LayoutPolicy, PriorGroupEdge};
-use crate::session::{GroupAllocator, OutputDomain, RefusalKind};
+use crate::session::{OutputDomain, RefusalKind};
+
+use super::group_alloc::GroupAllocator;
 
 use super::state::DomainException;
 use super::topology::{collect_leaves, collect_node_ids};

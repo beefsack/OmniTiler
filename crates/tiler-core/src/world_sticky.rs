@@ -24,12 +24,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::directional::{WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::intent_data::IntentData;
-use crate::session::{DomainKey, OutputDomain, centered_float_rect};
+use crate::session::{DomainKey, OutputDomain};
 use crate::world_commands::CommandApplied;
 use crate::world_engine::{
     KIND_IN_FLIGHT, KIND_OPERATION, KIND_SCOPE_HELD, MSG_IN_FLIGHT, MSG_OPERATION, MSG_SCOPE_HELD,
     WorldEngine,
 };
+use crate::world_layout::centered_float_rect;
 use crate::world_members::MemberState;
 use crate::world_report::{
     AttemptOutcome, CommandRejectKind, CommandResult, HoldReason, ScopeAuthority, StateProperty,

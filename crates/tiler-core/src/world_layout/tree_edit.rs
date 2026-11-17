@@ -6,10 +6,10 @@
 
 use std::collections::BTreeSet;
 
+use super::group_alloc::GroupAllocator;
 use crate::directional::{Axis, Node, NodeId, WindowId};
 use crate::geometry::Rect;
 use crate::policy::LayoutPolicy;
-use crate::session::GroupAllocator;
 
 /// Mint one fresh group id from the generation-shared allocator, reserving it
 /// in `existing`. Serials burn on trial and rollback and removed ids are never

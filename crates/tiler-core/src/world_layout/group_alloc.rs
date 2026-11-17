@@ -1,8 +1,8 @@
 //! Generation-shared monotonic group allocator.
 //!
-//! Every production group mint in the session draws from one
+//! Every production group mint in the layout draws from one
 //! generation-owned counter. The counter is shared through
-//! `Arc<AtomicU64>` clones so discarded whole-session clones, failed
+//! `Arc<AtomicU64>` clones so discarded working clones, failed
 //! fits/trials, rolled-back placements, and paired commands all burn
 //! serials: a burned serial is never reissued, and a removed group id is
 //! therefore never minted again within the generation. Only a fresh
