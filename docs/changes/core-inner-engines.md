@@ -276,3 +276,11 @@
   Review restores command-shape validation, including placement rectangles,
   before scope/duplicate/completeness checks. Scoped formatting passes; caller
   integration and executed behavioural acceptance remain pending.
+- Fresh-domain convergence now constructs an empty local candidate and installs
+  only after one successful convergence. Retained convergence shares the same
+  candidate builder. Legacy tiled seed construction directly composes the
+  admission algorithms, keeping one revision per leg, no-hint seed semantics,
+  focus recency, capacity exceptions and discarded-trial allocation burns
+  without synthesized observations. Source review and scoped formatting pass;
+  two direct tests are added but not executed. Fit/adoption routing, relocation
+  and world caller integration remain pending.

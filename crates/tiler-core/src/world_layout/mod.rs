@@ -11,6 +11,7 @@
 
 mod admission;
 mod admit;
+mod bootstrap;
 mod capacity;
 mod convergence;
 mod focus;

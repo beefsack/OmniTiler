@@ -47,13 +47,33 @@ impl WorldLayout {
         observed_focus: Option<&WindowId>,
         hidden: &BTreeSet<WindowId>,
     ) -> Result<ObservationConvergence, LayoutFailure> {
+        let Some(original) = self.domain(key) else {
+            return Err(LayoutFailure::Semantics(RefusalKind::CrossDomainMismatch));
+        };
+        let (candidate, counter, counts) =
+            self.converge_candidate(key, original, observed, observed_focus, hidden)?;
+        *self.domains.get_mut(key).expect("domain validated above") = candidate;
+        self.admission_seq_next = counter;
+        Ok(counts)
+    }
+
+    /// Build one converged domain candidate from a borrowed original without
+    /// any retained write. The caller installs the returned candidate and
+    /// counter only after success. A fresh domain passes an empty original
+    /// with no last-active leaf; the remembered-leaf anchor still reads only
+    /// retained state, preserving the deliberate candidate-MRU distinction.
+    pub(super) fn converge_candidate(
+        &self,
+        key: &DomainKey,
+        original: &DomainLayout,
+        observed: &[ObservedWindow],
+        observed_focus: Option<&WindowId>,
+        hidden: &BTreeSet<WindowId>,
+    ) -> Result<(DomainLayout, u64, ObservationConvergence), LayoutFailure> {
         let refuse = LayoutFailure::Semantics;
 
-        // Pre-candidate validation: known domain, retained topology, observed
-        // id shape and exact single-domain homing, before any candidate work.
-        let Some(original) = self.domain(key) else {
-            return Err(refuse(RefusalKind::CrossDomainMismatch));
-        };
+        // Pre-candidate validation: retained topology, observed id shape and
+        // exact single-domain homing, before any candidate work.
         if !validate_domain_topology(key, original) {
             return Err(refuse(RefusalKind::MalformedTopology));
         }
@@ -532,23 +552,20 @@ impl WorldLayout {
         if changed {
             candidate.accepted_revision = base_revision + 1;
         }
-        *self.domains.get_mut(key).expect("domain validated above") = candidate;
-        if changed {
-            self.admission_seq_next = new_counter;
-        }
-        if changed {
-            Ok(ObservationConvergence {
+        let counts = if changed {
+            ObservationConvergence {
                 removed,
                 admitted,
                 flags_adopted,
-            })
+            }
         } else {
-            Ok(ObservationConvergence {
+            ObservationConvergence {
                 removed: 0,
                 admitted: 0,
                 flags_adopted: 0,
-            })
-        }
+            }
+        };
+        Ok((candidate, new_counter, counts))
     }
 }
 
