@@ -49,6 +49,8 @@ mod workspace_migration;
 mod workspace_swap;
 
 #[cfg(test)]
+mod cross_output_tests;
+#[cfg(test)]
 mod deferred_send_tests;
 #[cfg(test)]
 mod fixed_send_tests;
@@ -64,6 +66,8 @@ mod lifecycle_tests;
 mod local_directional_tests;
 #[cfg(test)]
 mod local_operation_tests;
+#[cfg(test)]
+mod movement_tests;
 #[cfg(test)]
 mod orientation_tests;
 #[cfg(test)]
