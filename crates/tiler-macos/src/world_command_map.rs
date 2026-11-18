@@ -261,6 +261,19 @@ pub(crate) fn operation_command(
             OP_MOVE,
         )),
         InputSemanticAction::ResizeStep { direction, mode } => {
+            use crate::runtime::InputDirection;
+            use tiler_core::contract::ResizeMode;
+            use tiler_core::directional::{Direction, ResizeSelector};
+            let typed_direction = match direction {
+                InputDirection::Left => Direction::Left,
+                InputDirection::Right => Direction::Right,
+                InputDirection::Up => Direction::Up,
+                InputDirection::Down => Direction::Down,
+            };
+            let typed_mode = match mode {
+                ResizeMode::Inwards => ResizeSelector::Inwards,
+                ResizeMode::Outwards => ResizeSelector::Outwards,
+            };
             // Exact Windows/KDE repeat rule, tracked macOS-side as before:
             // the press index continues only on a
             // focused-window/direction/mode match, restarts otherwise.
@@ -274,8 +287,8 @@ pub(crate) fn operation_command(
             Some((
                 WorldCommand::Operation(CoreCommand::Resize {
                     window: window.to_owned(),
-                    direction: direction.as_str().to_owned(),
-                    mode: mode.as_str().to_owned(),
+                    direction: typed_direction,
+                    mode: typed_mode,
                     press_index,
                 }),
                 OP_RESIZE,

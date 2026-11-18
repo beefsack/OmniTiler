@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::boundary::CoreCommand;
 use crate::bounds::is_opaque_id;
-use crate::contract::{DivergenceKind, ResizeMode};
+use crate::contract::DivergenceKind;
 use crate::directional::{Axis, Direction, OutputId, SameAxisMove, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::seed::EngineWindow;
@@ -185,7 +185,7 @@ impl WorldTransaction<'_> {
                 held_scopes,
             ),
             CoreCommand::MigrateWorkspace { direction } => {
-                self.operation_migration(issue, command_seq, direction, by_id, held_scopes)
+                self.operation_migration(issue, command_seq, *direction, by_id, held_scopes)
             }
             CoreCommand::ReleaseDomain => {
                 self.operation_release(command_seq, command, by_id, held_scopes)
@@ -200,7 +200,7 @@ impl WorldTransaction<'_> {
                 command_seq,
                 command,
                 window,
-                direction,
+                *direction,
                 None,
                 by_id,
                 held_scopes,
@@ -215,7 +215,7 @@ impl WorldTransaction<'_> {
                 command_seq,
                 command,
                 window,
-                direction,
+                *direction,
                 None,
                 by_id,
                 held_scopes,
@@ -258,7 +258,7 @@ impl WorldTransaction<'_> {
         command_seq: u64,
         command: &CoreCommand,
         window: &str,
-        direction: &str,
+        direction: Direction,
         pinned_target: Option<&OutputId>,
         by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
@@ -280,12 +280,6 @@ impl WorldTransaction<'_> {
                 message: MSG_SCOPE_HELD,
             };
         }
-        let Some(direction_parsed) = parse_direction_token(direction) else {
-            return CommandApplied::Rejected {
-                kind: KIND_OPERATION,
-                message: MSG_OPERATION,
-            };
-        };
         match command {
             CoreCommand::Move {
                 cross_output_transfer,
@@ -294,7 +288,7 @@ impl WorldTransaction<'_> {
             } => self.run_pair_move_typed(
                 command_seq,
                 &window_id,
-                direction_parsed,
+                direction,
                 *cross_output_transfer,
                 *same_axis_move,
                 pinned_target,
@@ -311,7 +305,7 @@ impl WorldTransaction<'_> {
                 self.run_pair_focus_typed(
                     command_seq,
                     &window_id,
-                    direction_parsed,
+                    direction,
                     *float_subject,
                     by_id,
                     held_scopes,
@@ -1823,7 +1817,7 @@ impl WorldTransaction<'_> {
         &mut self,
         issue: &crate::world_engine::EventIssue,
         command_seq: u64,
-        direction: &str,
+        direction: Direction,
         _by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
@@ -1837,12 +1831,6 @@ impl WorldTransaction<'_> {
                     };
                 }
             };
-        let Some(direction) = parse_direction_token(direction) else {
-            return CommandApplied::Rejected {
-                kind: KIND_OPERATION,
-                message: MSG_OPERATION,
-            };
-        };
         let target_output = match self.migration_topology_target(&domain_key.output, direction) {
             Ok(Some(target)) => target,
             _ => {
@@ -2159,113 +2147,103 @@ impl WorldTransaction<'_> {
                     }
                 }
             }
-            _ => match self.converge_local_observation(&domain_key, &domain_report) {
-                Err(rejected) => rejected,
-                Ok((focused_window, windows, preconverged)) => {
-                    let ctx = LocalOperationContext {
-                        domain: &inset,
-                        outer_gap: domain_report.outer_gap,
-                        observed_focus: &focused_window,
-                        observed: &windows,
-                        preconverged,
-                    };
-                    match command {
-                        CoreCommand::ToggleFloat { window, float_rect } => {
-                            let subject = WindowId(window.clone());
-                            self.run_local_toggle_float_with_ctx(
-                                command_seq,
-                                &domain_key,
-                                &ctx,
-                                &subject,
-                                *float_rect,
-                            )
-                        }
-                        CoreCommand::ToggleOrientation { window } => {
-                            if !is_opaque_id(window) {
-                                CommandApplied::Rejected {
-                                    kind: "toggle-orient-window-invalid",
-                                    message: OPAQUE_ID_MESSAGE,
-                                }
-                            } else {
-                                match self
-                                    .world
-                                    .layout
-                                    .run_toggle_orientation(&ctx, &WindowId(window.clone()))
-                                {
-                                    Ok(_) => {
-                                        self.note_command(command_seq);
-                                        CommandApplied::NoEffect
+            _ => {
+                match self.converge_local_observation(&domain_key, &domain_report) {
+                    Err(rejected) => rejected,
+                    Ok((focused_window, windows, preconverged)) => {
+                        let ctx = LocalOperationContext {
+                            domain: &inset,
+                            outer_gap: domain_report.outer_gap,
+                            observed_focus: &focused_window,
+                            observed: &windows,
+                            preconverged,
+                        };
+                        match command {
+                            CoreCommand::ToggleFloat { window, float_rect } => {
+                                let subject = WindowId(window.clone());
+                                self.run_local_toggle_float_with_ctx(
+                                    command_seq,
+                                    &domain_key,
+                                    &ctx,
+                                    &subject,
+                                    *float_rect,
+                                )
+                            }
+                            CoreCommand::ToggleOrientation { window } => {
+                                if !is_opaque_id(window) {
+                                    CommandApplied::Rejected {
+                                        kind: "toggle-orient-window-invalid",
+                                        message: OPAQUE_ID_MESSAGE,
                                     }
-                                    Err(err) => reject_local_operation_failure(err),
+                                } else {
+                                    match self
+                                        .world
+                                        .layout
+                                        .run_toggle_orientation(&ctx, &WindowId(window.clone()))
+                                    {
+                                        Ok(_) => {
+                                            self.note_command(command_seq);
+                                            CommandApplied::NoEffect
+                                        }
+                                        Err(err) => reject_local_operation_failure(err),
+                                    }
                                 }
                             }
-                        }
-                        CoreCommand::Move {
-                            window,
-                            direction,
-                            same_axis_move,
-                            ..
-                        } => {
-                            if !is_opaque_id(window) {
-                                CommandApplied::Rejected {
-                                    kind: "move-window-invalid",
-                                    message: OPAQUE_ID_MESSAGE,
-                                }
-                            } else if let Some(dir) = parse_direction_token(direction) {
-                                self.run_local_move_with_ctx(
-                                    command_seq,
-                                    &ctx,
-                                    &WindowId(window.clone()),
-                                    dir,
-                                    *same_axis_move,
-                                )
-                            } else {
-                                CommandApplied::Rejected {
-                                    kind: KIND_DIRECTION,
-                                    message: MSG_DIRECTION,
+                            CoreCommand::Move {
+                                window,
+                                direction,
+                                same_axis_move,
+                                ..
+                            } => {
+                                if !is_opaque_id(window) {
+                                    CommandApplied::Rejected {
+                                        kind: "move-window-invalid",
+                                        message: OPAQUE_ID_MESSAGE,
+                                    }
+                                } else {
+                                    self.run_local_move_with_ctx(
+                                        command_seq,
+                                        &ctx,
+                                        &WindowId(window.clone()),
+                                        *direction,
+                                        *same_axis_move,
+                                    )
                                 }
                             }
-                        }
-                        CoreCommand::Focus {
-                            window, direction, ..
-                        } => {
-                            if !is_opaque_id(window) {
-                                CommandApplied::Rejected {
-                                    kind: "focus-window-invalid",
-                                    message: OPAQUE_ID_MESSAGE,
-                                }
-                            } else if let Some(dir) = parse_direction_token(direction) {
-                                self.run_local_focus_with_ctx(
-                                    command_seq,
-                                    &ctx,
-                                    &WindowId(window.clone()),
-                                    dir,
-                                    held_scopes,
-                                )
-                            } else {
-                                CommandApplied::Rejected {
-                                    kind: KIND_DIRECTION,
-                                    message: MSG_DIRECTION,
+                            CoreCommand::Focus {
+                                window, direction, ..
+                            } => {
+                                if !is_opaque_id(window) {
+                                    CommandApplied::Rejected {
+                                        kind: "focus-window-invalid",
+                                        message: OPAQUE_ID_MESSAGE,
+                                    }
+                                } else {
+                                    self.run_local_focus_with_ctx(
+                                        command_seq,
+                                        &ctx,
+                                        &WindowId(window.clone()),
+                                        *direction,
+                                        held_scopes,
+                                    )
                                 }
                             }
-                        }
-                        CoreCommand::Resize {
-                            window,
-                            direction,
-                            mode,
-                            press_index,
-                        } => {
-                            if !is_opaque_id(window) {
-                                CommandApplied::Rejected {
-                                    kind: "resize-window-invalid",
-                                    message: OPAQUE_ID_MESSAGE,
-                                }
-                            } else if let Some(dir) = parse_direction_token(direction) {
-                                if let Some(parsed_mode) = parse_resize_mode(mode) {
+                            CoreCommand::Resize {
+                                window,
+                                direction,
+                                mode,
+                                press_index,
+                            } => {
+                                if !is_opaque_id(window) {
+                                    CommandApplied::Rejected {
+                                        kind: "resize-window-invalid",
+                                        message: OPAQUE_ID_MESSAGE,
+                                    }
+                                } else if let Some(parsed_mode) = mode.as_resize_mode() {
                                     match self.world.layout.run_keyboard_resize(
                                         &ctx,
                                         &WindowId(window.clone()),
-                                        dir,
+                                        *direction,
                                         parsed_mode,
                                         *press_index,
                                     ) {
@@ -2281,43 +2259,33 @@ impl WorldTransaction<'_> {
                                         message: MSG_DIRECTION,
                                     }
                                 }
-                            } else {
-                                CommandApplied::Rejected {
-                                    kind: KIND_DIRECTION,
-                                    message: MSG_DIRECTION,
-                                }
                             }
-                        }
-                        CoreCommand::PointerResize {
-                            window,
-                            direction,
-                            boundary,
-                            direction2,
-                            boundary2,
-                        } => {
-                            if !is_opaque_id(window) {
-                                CommandApplied::Rejected {
-                                    kind: "pointer-resize-window-invalid",
-                                    message: OPAQUE_ID_MESSAGE,
-                                }
-                            } else if let Some(dir) = parse_direction_token(direction) {
-                                let subject = WindowId(window.clone());
-                                match (direction2, boundary2) {
-                                    (None, None) => match self
-                                        .world
-                                        .layout
-                                        .run_pointer_resize(&ctx, &subject, dir, *boundary)
-                                    {
-                                        Ok(_) => {
-                                            self.note_command(command_seq);
-                                            CommandApplied::NoEffect
-                                        }
-                                        Err(err) => reject_local_operation_failure(err),
-                                    },
-                                    (Some(raw), Some(second)) => {
-                                        if let Some(parsed) = parse_direction_token(raw) {
-                                            if Axis::for_direction(dir)
-                                                == Axis::for_direction(parsed)
+                            CoreCommand::PointerResize {
+                                window,
+                                direction,
+                                boundary,
+                                second,
+                            } => {
+                                if !is_opaque_id(window) {
+                                    CommandApplied::Rejected {
+                                        kind: "pointer-resize-window-invalid",
+                                        message: OPAQUE_ID_MESSAGE,
+                                    }
+                                } else {
+                                    let subject = WindowId(window.clone());
+                                    match second {
+                                        None => match self.world.layout.run_pointer_resize(
+                                            &ctx, &subject, *direction, *boundary,
+                                        ) {
+                                            Ok(_) => {
+                                                self.note_command(command_seq);
+                                                CommandApplied::NoEffect
+                                            }
+                                            Err(err) => reject_local_operation_failure(err),
+                                        },
+                                        Some((parsed, second_boundary)) => {
+                                            if Axis::for_direction(*direction)
+                                                == Axis::for_direction(*parsed)
                                             {
                                                 CommandApplied::Rejected {
                                                     kind: KIND_DIRECTION,
@@ -2325,7 +2293,12 @@ impl WorldTransaction<'_> {
                                                 }
                                             } else {
                                                 match self.world.layout.run_pointer_resize_corner(
-                                                    &ctx, &subject, dir, *boundary, parsed, *second,
+                                                    &ctx,
+                                                    &subject,
+                                                    *direction,
+                                                    *boundary,
+                                                    *parsed,
+                                                    *second_boundary,
                                                 ) {
                                                     Ok(_) => {
                                                         self.note_command(command_seq);
@@ -2334,32 +2307,18 @@ impl WorldTransaction<'_> {
                                                     Err(err) => reject_local_operation_failure(err),
                                                 }
                                             }
-                                        } else {
-                                            CommandApplied::Rejected {
-                                                kind: KIND_DIRECTION,
-                                                message: MSG_DIRECTION,
-                                            }
                                         }
                                     }
-                                    _ => CommandApplied::Rejected {
-                                        kind: UNKNOWN_VALUE_KIND,
-                                        message: UNKNOWN_VALUE_MESSAGE,
-                                    },
-                                }
-                            } else {
-                                CommandApplied::Rejected {
-                                    kind: KIND_DIRECTION,
-                                    message: MSG_DIRECTION,
                                 }
                             }
+                            _ => CommandApplied::Rejected {
+                                kind: KIND_OPERATION,
+                                message: MSG_OPERATION,
+                            },
                         }
-                        _ => CommandApplied::Rejected {
-                            kind: KIND_OPERATION,
-                            message: MSG_OPERATION,
-                        },
                     }
                 }
-            },
+            }
         };
         if composed_cleared
             && matches!(applied, CommandApplied::Rejected { .. })
@@ -2809,8 +2768,6 @@ impl WorldTransaction<'_> {
 
 const OPAQUE_ID_MESSAGE: &str = "opaque id is invalid";
 const OBSERVATION_MESSAGE: &str = "observation does not cover the known window set";
-const UNKNOWN_VALUE_KIND: &str = "unknown-value";
-const UNKNOWN_VALUE_MESSAGE: &str = "request contains an unknown value";
 
 fn reject_retained_reconcile_failure(err: RetainedReconcileFailure) -> CommandApplied {
     match err {
@@ -2837,14 +2794,6 @@ fn reject_fresh_domain_failure(err: FreshDomainFailure) -> CommandApplied {
             kind: "missing-seed-order",
             message: OBSERVATION_MESSAGE,
         },
-    }
-}
-
-fn parse_resize_mode(mode: &str) -> Option<ResizeMode> {
-    match mode {
-        "inwards" => Some(ResizeMode::Inwards),
-        "outwards" => Some(ResizeMode::Outwards),
-        _ => None,
     }
 }
 

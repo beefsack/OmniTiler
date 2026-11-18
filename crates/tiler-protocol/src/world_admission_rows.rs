@@ -216,7 +216,7 @@ fn operation_estimate(command: &CoreCommand) -> usize {
         } => {
             61 + bool_len(*cross_output_transfer)
                 + json_string_len(window)
-                + json_string_len(direction)
+                + json_string_len(direction.as_wire_str())
                 + json_string_len(same_axis_move.as_wire_str())
         }
         CoreCommand::Focus {
@@ -228,7 +228,7 @@ fn operation_estimate(command: &CoreCommand) -> usize {
             65 + bool_len(*cross_output_transfer)
                 + bool_len(*float_subject)
                 + json_string_len(window)
-                + json_string_len(direction)
+                + json_string_len(direction.as_wire_str())
         }
         CoreCommand::Resize {
             window,
@@ -237,22 +237,20 @@ fn operation_estimate(command: &CoreCommand) -> usize {
             press_index,
         } => {
             52 + json_string_len(window)
-                + json_string_len(direction)
-                + json_string_len(mode)
+                + json_string_len(direction.as_wire_str())
+                + json_string_len(mode.as_wire_str())
                 + u64_len(u64::from(*press_index))
         }
         CoreCommand::PointerResize {
             window,
             direction,
             boundary,
-            direction2,
-            boundary2,
+            second,
         } => {
             76 + json_string_len(window)
-                + json_string_len(direction)
+                + json_string_len(direction.as_wire_str())
                 + int_len(*boundary)
-                + direction2.as_deref().map_or(4, json_string_len)
-                + boundary2.map_or(4, int_len)
+                + second.map_or(8, |(d, b)| json_string_len(d.as_wire_str()) + int_len(b))
         }
         CoreCommand::ToggleFloat { window, float_rect } => {
             36 + json_string_len(window)
@@ -283,7 +281,9 @@ fn operation_estimate(command: &CoreCommand) -> usize {
                 + json_string_len(target_output)
                 + json_string_len(target_workspace)
         }
-        CoreCommand::MigrateWorkspace { direction } => 38 + json_string_len(direction),
+        CoreCommand::MigrateWorkspace { direction } => {
+            38 + json_string_len(direction.as_wire_str())
+        }
         CoreCommand::DragDrop {
             window,
             x,

@@ -1951,11 +1951,11 @@ fn local_preconvergence_persists_after_invalid_direction_refusal() {
         tx.run_local_operation(
             &issue,
             2,
-            &CoreCommand::Move {
+            &CoreCommand::Resize {
                 window: "win-a".to_owned(),
-                direction: "bogus".to_owned(),
-                cross_output_transfer: false,
-                same_axis_move: SameAxisMove::SwapWithNeighbor,
+                direction: crate::directional::Direction::Left,
+                mode: crate::directional::ResizeSelector::Horizontal,
+                press_index: 0,
             },
             &by_id,
             &BTreeSet::new(),
@@ -2046,26 +2046,25 @@ fn local_composed_maximize_rollback_and_pointer_half_pair_refusal() {
         "composed_maximized bit must be restored on post-inset rejection"
     );
 
-    let half_pair = engine.tx(|tx| {
+    let same_axis_pair = engine.tx(|tx| {
         tx.run_local_operation(
             &issue,
             3,
             &CoreCommand::PointerResize {
                 window: "win-b".to_owned(),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 boundary: 250,
-                direction2: Some("up".to_owned()),
-                boundary2: None,
+                second: Some((crate::directional::Direction::Left, 250)),
             },
             &empty_by_id,
             &BTreeSet::new(),
         )
     });
-    match half_pair {
+    match same_axis_pair {
         CommandApplied::Rejected { kind, message } => {
-            assert_eq!(kind, "unknown-value");
-            assert_eq!(message, "request contains an unknown value");
+            assert_eq!(kind, "direction-invalid");
+            assert_eq!(message, "direction is invalid");
         }
-        _ => panic!("expected unknown-value refusal"),
+        _ => panic!("expected direction-invalid refusal"),
     }
 }

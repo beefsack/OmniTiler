@@ -129,7 +129,7 @@ fn diag_command_dir(command: &WorldCommand) -> Option<&str> {
             | crate::boundary::CoreCommand::Resize { direction, .. }
             | crate::boundary::CoreCommand::PointerResize { direction, .. }
             | crate::boundary::CoreCommand::MigrateWorkspace { direction },
-        ) => Some(direction.as_str()),
+        ) => Some(direction.as_wire_str()),
         WorldCommand::Operation(_) => None,
         WorldCommand::Implicit(inner) => diag_command_dir(inner),
         _ => None,
@@ -613,8 +613,8 @@ impl WorldTransaction<'_> {
                 .map(|seq| seq.to_string())
                 .unwrap_or_else(|| "-".to_owned()),
             diag_id(window),
-            diag_token(direction, 16),
-            diag_token(mode, 16),
+            diag_token(direction.as_wire_str(), 16),
+            diag_token(mode.as_wire_str(), 16),
             press_index,
             diag_token(kind, 32),
             diag_id(&self.world.staged.observation.focused_global),

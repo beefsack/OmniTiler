@@ -250,8 +250,8 @@ fn synchronous_atomic_revision_and_public_reply_contract() {
             Some(11),
             Some(WorldCommand::Operation(CoreCommand::Resize {
                 window: "win-b".to_owned(),
-                direction: "left".to_owned(),
-                mode: "outwards".to_owned(),
+                direction: tiler_core::directional::Direction::Left,
+                mode: tiler_core::directional::ResizeSelector::Outwards,
                 press_index: 0,
             })),
         ),

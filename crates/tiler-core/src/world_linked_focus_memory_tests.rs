@@ -2865,7 +2865,7 @@ fn last_active_tiled_operation_focus_supersedes_stale_sticky() {
             Some(WorldCommand::Operation(
                 crate::boundary::CoreCommand::Focus {
                     window: "win-s".to_owned(),
-                    direction: "left".to_owned(),
+                    direction: crate::directional::Direction::Left,
                     cross_output_transfer: false,
                     float_subject: false,
                 },
@@ -3187,7 +3187,7 @@ fn last_active_close_after_tile_supersession_falls_back_to_tiled() {
             Some(WorldCommand::Operation(
                 crate::boundary::CoreCommand::Focus {
                     window: "win-s".to_owned(),
-                    direction: "left".to_owned(),
+                    direction: crate::directional::Direction::Left,
                     cross_output_transfer: false,
                     float_subject: false,
                 },

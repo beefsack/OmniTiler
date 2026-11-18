@@ -3500,16 +3500,12 @@ pub fn valid_implicit_command(command: &WorldCommand) -> bool {
 /// Validate one execution-time operation payload minus the subject.
 #[must_use]
 pub fn valid_implicit_operation(command: &CoreCommand) -> bool {
-    const DIRECTIONS: [&str; 4] = ["left", "right", "up", "down"];
-    const RESIZE_MODES: [&str; 4] = ["inwards", "outwards", "horizontal", "vertical"];
     match command {
         CoreCommand::ToggleFloat { float_rect, .. } => {
             float_rect.is_none_or(|r| valid_carried_rect(r.x, r.y, r.w, r.h))
         }
         CoreCommand::ToggleOrientation { .. } => true,
-        CoreCommand::Resize {
-            direction, mode, ..
-        } => DIRECTIONS.contains(&direction.as_str()) && RESIZE_MODES.contains(&mode.as_str()),
+        CoreCommand::Resize { .. } => true,
         _ => false,
     }
 }
@@ -3628,8 +3624,8 @@ pub fn explicit_for_implicit(inner: &WorldCommand, window: WindowId) -> Option<W
                     ..
                 } => CoreCommand::Resize {
                     window: resolved,
-                    direction: direction.clone(),
-                    mode: mode.clone(),
+                    direction: *direction,
+                    mode: *mode,
                     press_index: *press_index,
                 },
                 _ => return None,
@@ -3643,41 +3639,21 @@ pub fn explicit_for_implicit(inner: &WorldCommand, window: WindowId) -> Option<W
 /// Validate one operation payload without executing it.
 #[must_use]
 pub fn valid_operation(command: &CoreCommand) -> bool {
-    const DIRECTIONS: [&str; 4] = ["left", "right", "up", "down"];
-    const RESIZE_MODES: [&str; 4] = ["inwards", "outwards", "horizontal", "vertical"];
     match command {
         CoreCommand::Reconcile | CoreCommand::UpdateGaps | CoreCommand::ReleaseDomain => true,
-        CoreCommand::Move {
-            window, direction, ..
+        CoreCommand::Move { window, .. } | CoreCommand::Focus { window, .. } => {
+            is_opaque_id(window)
         }
-        | CoreCommand::Focus {
-            window, direction, ..
-        } => is_opaque_id(window) && DIRECTIONS.contains(&direction.as_str()),
-        CoreCommand::Resize {
+        CoreCommand::Resize { window, .. } => is_opaque_id(window),
+        CoreCommand::PointerResize {
             window,
-            direction,
-            mode,
+            boundary,
+            second,
             ..
         } => {
             is_opaque_id(window)
-                && DIRECTIONS.contains(&direction.as_str())
-                && RESIZE_MODES.contains(&mode.as_str())
-        }
-        CoreCommand::PointerResize {
-            window,
-            direction,
-            boundary,
-            direction2,
-            boundary2,
-        } => {
-            is_opaque_id(window)
-                && DIRECTIONS.contains(&direction.as_str())
                 && (-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(boundary)
-                && direction2
-                    .as_deref()
-                    .is_none_or(|d| DIRECTIONS.contains(&d))
-                && boundary2.is_none_or(|b| (-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(&b))
-                && direction2.is_some() == boundary2.is_some()
+                && second.is_none_or(|(_, b)| (-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(&b))
         }
         CoreCommand::ToggleFloat { window, float_rect } => {
             is_opaque_id(window)
@@ -3696,7 +3672,7 @@ pub fn valid_operation(command: &CoreCommand) -> bool {
             target_workspace,
             ..
         } => is_opaque_id(window) && is_opaque_id(target_output) && is_opaque_id(target_workspace),
-        CoreCommand::MigrateWorkspace { direction } => DIRECTIONS.contains(&direction.as_str()),
+        CoreCommand::MigrateWorkspace { .. } => true,
         CoreCommand::DragDrop {
             window,
             x,

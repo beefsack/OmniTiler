@@ -320,7 +320,7 @@ fn v4_valid_command_and_renderer_shapes() {
                 mode, press_index, ..
             },
         )) => {
-            assert_eq!(mode, "outwards");
+            assert_eq!(mode, tiler_core::directional::ResizeSelector::Outwards);
             assert_eq!(press_index, 0);
         }
         other => panic!("resize promotes, got {other:?}"),
@@ -2320,4 +2320,38 @@ fn v4_creation_receipt_wire_spellings() {
     assert_eq!(decoded.report.held_attempts.len(), 1);
     assert_eq!(decoded.report.held_attempts[0].ordinal, 1);
     assert_eq!(decoded.creation_receipts, vec![CreationReceiptWire::Id]);
+}
+
+#[test]
+fn v4_typed_core_command_wire_gates() {
+    use tiler_core::boundary::CoreCommand;
+    use tiler_core::directional::{Direction, ResizeSelector};
+    use tiler_core::world_report::WorldCommand;
+
+    // Invalid direction or mode tokens reject at the wire gate.
+    for (field, bad) in [("direction", "bogus"), ("mode", "diagonal")] {
+        let mut doc = fixture_value("messages/report-command-resize.json");
+        doc["command"][field] = serde_json::json!(bad);
+        let err = decode_report_v4(&doc.to_string()).expect_err("invalid token must reject");
+        assert_eq!(err.kind, "unknown-value");
+    }
+
+    // Axis-only resize modes stay representable across decode.
+    for (mode_str, expected_mode) in [
+        ("horizontal", ResizeSelector::Horizontal),
+        ("vertical", ResizeSelector::Vertical),
+    ] {
+        let mut doc = fixture_value("messages/report-command-resize.json");
+        doc["command"]["mode"] = serde_json::json!(mode_str);
+        let decoded = decode_report_v4(&doc.to_string()).expect("axis mode decodes");
+        assert_eq!(
+            decoded.report.command,
+            Some(WorldCommand::Operation(CoreCommand::Resize {
+                window: "win-a".to_owned(),
+                direction: Direction::Right,
+                mode: expected_mode,
+                press_index: 0,
+            }))
+        );
+    }
 }

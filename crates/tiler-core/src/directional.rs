@@ -37,6 +37,79 @@ pub enum Direction {
     Down,
 }
 
+impl Direction {
+    /// Wire token for this direction (`left` / `right` / `up` / `down`).
+    #[must_use]
+    pub const fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Up => "up",
+            Self::Down => "down",
+        }
+    }
+
+    /// Validated parse of a wire token. `None` for anything else.
+    #[must_use]
+    pub fn parse_wire(value: &str) -> Option<Self> {
+        match value {
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            "up" => Some(Self::Up),
+            "down" => Some(Self::Down),
+            _ => None,
+        }
+    }
+}
+
+/// Closed keyboard-resize mode selector on [`crate::boundary::CoreCommand::Resize`].
+///
+/// Retains the inward/outward semantic modes as well as the axis-only wire
+/// tokens (`horizontal` / `vertical`) so domain and held-scope checks still
+/// take precedence over local semantic rejection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResizeSelector {
+    Inwards,
+    Outwards,
+    Horizontal,
+    Vertical,
+}
+
+impl ResizeSelector {
+    /// Wire token for this selector (`inwards` / `outwards` / `horizontal` / `vertical`).
+    #[must_use]
+    pub const fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::Inwards => "inwards",
+            Self::Outwards => "outwards",
+            Self::Horizontal => "horizontal",
+            Self::Vertical => "vertical",
+        }
+    }
+
+    /// Validated parse of a wire token. `None` for anything else.
+    #[must_use]
+    pub fn parse_wire(value: &str) -> Option<Self> {
+        match value {
+            "inwards" => Some(Self::Inwards),
+            "outwards" => Some(Self::Outwards),
+            "horizontal" => Some(Self::Horizontal),
+            "vertical" => Some(Self::Vertical),
+            _ => None,
+        }
+    }
+
+    /// Convert to [`crate::contract::ResizeMode`] when semantic (`Inwards`/`Outwards`).
+    #[must_use]
+    pub const fn as_resize_mode(self) -> Option<crate::contract::ResizeMode> {
+        match self {
+            Self::Inwards => Some(crate::contract::ResizeMode::Inwards),
+            Self::Outwards => Some(crate::contract::ResizeMode::Outwards),
+            Self::Horizontal | Self::Vertical => None,
+        }
+    }
+}
+
 /// Split axis of an N-ary group. Analogue of `CosmicAxis`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Axis {

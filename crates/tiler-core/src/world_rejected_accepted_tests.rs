@@ -450,7 +450,7 @@ fn noncatalog_legacy_refusal_normalizes_to_operation_refused_without_mutation() 
             Some(2),
             Some(WorldCommand::Operation(CoreCommand::Move {
                 window: "w-ghost".to_owned(),
-                direction: "left".to_owned(),
+                direction: crate::directional::Direction::Left,
                 cross_output_transfer: false,
                 same_axis_move: crate::directional::SameAxisMove::GroupWithNeighbor,
             })),
@@ -860,8 +860,8 @@ fn keyboard_resize_unknown_subject_stays_operation_refused() {
             Some(2),
             Some(WorldCommand::Operation(CoreCommand::Resize {
                 window: "w-ghost".to_owned(),
-                direction: "left".to_owned(),
-                mode: "outwards".to_owned(),
+                direction: crate::directional::Direction::Left,
+                mode: crate::directional::ResizeSelector::Outwards,
                 press_index: 0,
             })),
         ),
@@ -914,8 +914,8 @@ fn keyboard_resize_singleton_no_neighbor_stays_operation_refused() {
             Some(2),
             Some(WorldCommand::Operation(CoreCommand::Resize {
                 window: "w0".to_owned(),
-                direction: "left".to_owned(),
-                mode: "outwards".to_owned(),
+                direction: crate::directional::Direction::Left,
+                mode: crate::directional::ResizeSelector::Outwards,
                 press_index: 0,
             })),
         ),
@@ -974,15 +974,21 @@ fn resize_refusal_diagnostic_sanitizes_injection() {
         Some(9),
         Some(WorldCommand::Operation(CoreCommand::Resize {
             window: "w\n0".to_owned(),
-            direction: "LEFT".to_owned(),
-            mode: "out\nwards".to_owned(),
+            direction: crate::directional::Direction::Left,
+            mode: crate::directional::ResizeSelector::Outwards,
             press_index: 0,
         })),
     );
     resize.request_id = "evil\nid".to_owned();
     let line = resize_diag(&engine, &resize, "weird kind!").expect("diagnostic");
     assert!(!line.contains('\n'), "no log injection: {line:?}");
-    for token in ["req=-", "subject=-", "dir=-", "mode=-", "internal=-"] {
+    for token in [
+        "req=-",
+        "subject=-",
+        "dir=left",
+        "mode=outwards",
+        "internal=-",
+    ] {
         assert!(line.contains(token), "sanitized to {token}: {line}");
     }
     assert!(
@@ -1008,8 +1014,8 @@ fn resize_refusal_diagnostic_reports_actual_internal_cause_with_context() {
     // never from a hand-picked test string.
     let command = WorldCommand::Operation(CoreCommand::Resize {
         window: "w0".to_owned(),
-        direction: "left".to_owned(),
-        mode: "outwards".to_owned(),
+        direction: crate::directional::Direction::Left,
+        mode: crate::directional::ResizeSelector::Outwards,
         press_index: 0,
     });
     let issue = EventIssue {
@@ -1130,8 +1136,8 @@ fn resize_refusal_diagnostic_counts_row_truncation() {
         Some(2),
         Some(WorldCommand::Operation(CoreCommand::Resize {
             window: "w0".to_owned(),
-            direction: "left".to_owned(),
-            mode: "outwards".to_owned(),
+            direction: crate::directional::Direction::Left,
+            mode: crate::directional::ResizeSelector::Outwards,
             press_index: 0,
         })),
     );
@@ -1180,8 +1186,8 @@ fn resize_refusal_diagnostic_byte_truncates_long_ids() {
         Some(2),
         Some(WorldCommand::Operation(CoreCommand::Resize {
             window: ids[0].clone(),
-            direction: "left".to_owned(),
-            mode: "outwards".to_owned(),
+            direction: crate::directional::Direction::Left,
+            mode: crate::directional::ResizeSelector::Outwards,
             press_index: 0,
         })),
     );
@@ -1293,8 +1299,8 @@ fn keyboard_resize_singleton_no_neighbor_v4_stays_operation_refused() {
             Some(2),
             Some(WorldCommand::Operation(CoreCommand::Resize {
                 window: "w0".to_owned(),
-                direction: "left".to_owned(),
-                mode: "outwards".to_owned(),
+                direction: crate::directional::Direction::Left,
+                mode: crate::directional::ResizeSelector::Outwards,
                 press_index: 0,
             })),
         ),
@@ -1362,8 +1368,8 @@ fn v4_queued_resize_refusal_keeps_executing_identity_and_internal_kind() {
     }
     let command = WorldCommand::Operation(CoreCommand::Resize {
         window: "w0".to_owned(),
-        direction: "left".to_owned(),
-        mode: "outwards".to_owned(),
+        direction: crate::directional::Direction::Left,
+        mode: crate::directional::ResizeSelector::Outwards,
         press_index: 0,
     });
     let kind = v4verbatim_kind(&mut engine, 2, &command);
@@ -1456,7 +1462,7 @@ fn v4_command_refusal_diagnostic_covers_focus_and_move_with_actual_kind() {
     // route instead of the directional NoEffect-with-cause lane.
     let mov = WorldCommand::Operation(CoreCommand::Move {
         window: "w-ghost".to_owned(),
-        direction: "left".to_owned(),
+        direction: crate::directional::Direction::Left,
         cross_output_transfer: false,
         same_axis_move: crate::directional::SameAxisMove::GroupWithNeighbor,
     });
@@ -1575,8 +1581,8 @@ fn v4_command_refusal_diagnostic_is_safe_bounded_and_pure() {
     let clean = v4report(2, vec![fact("w0", "out-a", 0)], "w0", None, None);
     let resize = WorldCommand::Operation(CoreCommand::Resize {
         window: "w0".to_owned(),
-        direction: "left".to_owned(),
-        mode: "outwards".to_owned(),
+        direction: crate::directional::Direction::Left,
+        mode: crate::directional::ResizeSelector::Outwards,
         press_index: 0,
     });
     let queued = vec![(12, resize)];

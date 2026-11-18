@@ -1614,7 +1614,7 @@ fn clear_same_report_core_command_supersedes_before_continuation() {
         Some(14),
         Some(WorldCommand::Operation(CoreCommand::Move {
             window: "win-max".to_owned(),
-            direction: "right".to_owned(),
+            direction: crate::directional::Direction::Right,
             cross_output_transfer: true,
             same_axis_move: crate::directional::SameAxisMove::default(),
         })),

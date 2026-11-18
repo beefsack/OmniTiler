@@ -277,7 +277,7 @@ fn cursor_refused_nonfocus_never_cancels_pending() {
     // operation refusal is equally powerless over pending focus.
     let refused_op = WorldCommand::Operation(CoreCommand::Move {
         window: "win-zzz".to_owned(),
-        direction: "left".to_owned(),
+        direction: crate::directional::Direction::Left,
         cross_output_transfer: false,
         same_axis_move: crate::directional::SameAxisMove::GroupWithNeighbor,
     });

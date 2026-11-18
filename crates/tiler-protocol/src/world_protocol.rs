@@ -66,7 +66,7 @@ use tiler_core::bounds::{is_opaque_id, valid_carried_rect};
 use tiler_core::connection::RawSettingValue;
 use tiler_core::connection::{HostCapabilities, valid_identity_text, valid_process_identity_text};
 use tiler_core::contract::DragSide;
-use tiler_core::directional::{NodeId, OutputId, WindowId, WorkspaceId};
+use tiler_core::directional::{Direction, NodeId, OutputId, ResizeSelector, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::gesture::GestureSettled;
 use tiler_core::ids::{
@@ -394,6 +394,14 @@ fn parse_direction_token(text: &str) -> Result<String> {
         "left" | "right" | "up" | "down" => Ok(text.to_owned()),
         _ => Err(unknown_value()),
     }
+}
+
+fn parse_direction(text: &str) -> Result<Direction> {
+    Direction::parse_wire(text).ok_or_else(unknown_value)
+}
+
+fn parse_resize_selector(text: &str) -> Result<ResizeSelector> {
+    ResizeSelector::parse_wire(text).ok_or_else(unknown_value)
 }
 
 fn decode_hints(value: &serde_json::Value) -> Result<tiler_core::size_hints::WindowSizeHints> {
@@ -2251,7 +2259,7 @@ fn decode_core_command(map: &serde_json::Map<String, serde_json::Value>) -> Resu
             };
             Ok(CoreCommand::Move {
                 window: req_id(map, "win")?,
-                direction: parse_direction_token(req_str(map, "direction")?)?,
+                direction: parse_direction(req_str(map, "direction")?)?,
                 cross_output_transfer: req_bool(map, "crossOutput")?,
                 same_axis_move: same_axis,
             })
@@ -2263,19 +2271,14 @@ fn decode_core_command(map: &serde_json::Map<String, serde_json::Value>) -> Resu
             )?;
             Ok(CoreCommand::Focus {
                 window: req_id(map, "win")?,
-                direction: parse_direction_token(req_str(map, "direction")?)?,
+                direction: parse_direction(req_str(map, "direction")?)?,
                 cross_output_transfer: req_bool(map, "crossOutput")?,
                 float_subject: req_bool(map, "floatSubject")?,
             })
         }
         "resize" => {
             check_keys(map, &["op", "win", "direction", "mode", "press"])?;
-            let mode = match req_str(map, "mode")? {
-                "inwards" | "outwards" | "horizontal" | "vertical" => {
-                    req_str(map, "mode")?.to_owned()
-                }
-                _ => return Err(unknown_value()),
-            };
+            let mode = parse_resize_selector(req_str(map, "mode")?)?;
             let press = map
                 .get("press")
                 .and_then(serde_json::Value::as_u64)
@@ -2283,7 +2286,7 @@ fn decode_core_command(map: &serde_json::Map<String, serde_json::Value>) -> Resu
                 .ok_or_else(malformed)?;
             Ok(CoreCommand::Resize {
                 window: req_id(map, "win")?,
-                direction: parse_direction_token(req_str(map, "direction")?)?,
+                direction: parse_direction(req_str(map, "direction")?)?,
                 mode,
                 press_index: press,
             })
@@ -2303,7 +2306,7 @@ fn decode_core_command(map: &serde_json::Map<String, serde_json::Value>) -> Resu
             let direction2 = match map.get("direction2") {
                 None => return Err(malformed()),
                 Some(serde_json::Value::Null) => None,
-                Some(v) => Some(parse_direction_token(v.as_str().ok_or_else(malformed)?)?),
+                Some(v) => Some(parse_direction(v.as_str().ok_or_else(malformed)?)?),
             };
             let boundary2 = match map.get("boundary2") {
                 None => return Err(malformed()),
@@ -2314,15 +2317,16 @@ fn decode_core_command(map: &serde_json::Map<String, serde_json::Value>) -> Resu
                         .ok_or_else(malformed)?,
                 ),
             };
-            if direction2.is_some() != boundary2.is_some() {
-                return Err(unknown_value());
-            }
+            let second = match (direction2, boundary2) {
+                (None, None) => None,
+                (Some(d), Some(b)) => Some((d, b)),
+                _ => return Err(unknown_value()),
+            };
             Ok(CoreCommand::PointerResize {
                 window: req_id(map, "win")?,
-                direction: parse_direction_token(req_str(map, "direction")?)?,
+                direction: parse_direction(req_str(map, "direction")?)?,
                 boundary: req_i32(map, "boundary")?,
-                direction2,
-                boundary2,
+                second,
             })
         }
         "toggle-float" => {
@@ -2359,7 +2363,7 @@ fn decode_core_command(map: &serde_json::Map<String, serde_json::Value>) -> Resu
         "migrate-workspace" => {
             check_keys(map, &["op", "direction"])?;
             Ok(CoreCommand::MigrateWorkspace {
-                direction: parse_direction_token(req_str(map, "direction")?)?,
+                direction: parse_direction(req_str(map, "direction")?)?,
             })
         }
         "drag-drop" | "drag-preview" => {
@@ -4257,12 +4261,7 @@ fn decode_implicit_command_v4(
         }
         "resize" => {
             check_keys(map, &["op", "win", "direction", "mode", "press"])?;
-            let mode = match req_str(map, "mode")? {
-                "inwards" | "outwards" | "horizontal" | "vertical" => {
-                    req_str(map, "mode")?.to_owned()
-                }
-                _ => return Err(unknown_value()),
-            };
+            let mode = parse_resize_selector(req_str(map, "mode")?)?;
             let press = map
                 .get("press")
                 .and_then(serde_json::Value::as_u64)
@@ -4270,7 +4269,7 @@ fn decode_implicit_command_v4(
                 .ok_or_else(malformed)?;
             C::Operation(CoreCommand::Resize {
                 window: String::new(),
-                direction: parse_direction_token(req_str(map, "direction")?)?,
+                direction: parse_direction(req_str(map, "direction")?)?,
                 mode,
                 press_index: press,
             })
@@ -4337,12 +4336,7 @@ fn decode_command_v4(value: &serde_json::Value) -> Result<WorldCommand> {
         }
         "resize" => {
             check_keys(map, &["op", "win", "direction", "mode", "press"])?;
-            let mode = match req_str(map, "mode")? {
-                "inwards" | "outwards" | "horizontal" | "vertical" => {
-                    req_str(map, "mode")?.to_owned()
-                }
-                _ => return Err(unknown_value()),
-            };
+            let mode = parse_resize_selector(req_str(map, "mode")?)?;
             let press = map
                 .get("press")
                 .and_then(serde_json::Value::as_u64)
@@ -4350,7 +4344,7 @@ fn decode_command_v4(value: &serde_json::Value) -> Result<WorldCommand> {
                 .ok_or_else(malformed)?;
             Ok(WorldCommand::Operation(CoreCommand::Resize {
                 window: req_id(map, "win")?,
-                direction: parse_direction_token(req_str(map, "direction")?)?,
+                direction: parse_direction(req_str(map, "direction")?)?,
                 mode,
                 press_index: press,
             }))
@@ -7040,9 +7034,9 @@ fn encode_command_v4(command: &WorldCommand) -> Result<String> {
                 out.push_str("{\"op\":\"resize\",\"win\":");
                 push_json_string(&mut out, window);
                 out.push_str(",\"direction\":");
-                push_json_string(&mut out, direction);
+                push_json_string(&mut out, direction.as_wire_str());
                 out.push_str(",\"mode\":");
-                push_json_string(&mut out, mode);
+                push_json_string(&mut out, mode.as_wire_str());
                 out.push_str(",\"press\":");
                 out.push_str(&press_index.to_string());
                 out.push('}');
@@ -7181,9 +7175,9 @@ fn encode_implicit_command_v4(command: &WorldCommand) -> Result<String> {
             } => {
                 out.push_str("{\"op\":\"resize\",\"win\":{\"currentFocus\":true}");
                 out.push_str(",\"direction\":");
-                push_json_string(&mut out, direction);
+                push_json_string(&mut out, direction.as_wire_str());
                 out.push_str(",\"mode\":");
-                push_json_string(&mut out, mode);
+                push_json_string(&mut out, mode.as_wire_str());
                 out.push_str(",\"press\":");
                 out.push_str(&press_index.to_string());
                 out.push('}');
@@ -7610,6 +7604,48 @@ pub use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointer_resize_half_pair_rejects_and_same_axis_decodes() {
+        for (dir2, bnd2) in [
+            (serde_json::json!("up"), serde_json::Value::Null),
+            (serde_json::Value::Null, serde_json::json!(250)),
+        ] {
+            let val = serde_json::json!({
+                "op": "pointer-resize",
+                "win": "win-a",
+                "direction": "right",
+                "boundary": 200,
+                "direction2": dir2,
+                "boundary2": bnd2,
+            });
+            let map = val.as_object().expect("object");
+            let err = decode_core_command(map).expect_err("half-pair must reject");
+            assert_eq!(err.kind, "unknown-value");
+        }
+
+        for (dir2_str, expected_dir2) in [("up", Direction::Up), ("left", Direction::Left)] {
+            let val = serde_json::json!({
+                "op": "pointer-resize",
+                "win": "win-a",
+                "direction": "right",
+                "boundary": 200,
+                "direction2": dir2_str,
+                "boundary2": 250,
+            });
+            let map = val.as_object().expect("object");
+            let cmd = decode_core_command(map).expect("pair decodes");
+            assert_eq!(
+                cmd,
+                CoreCommand::PointerResize {
+                    window: "win-a".to_owned(),
+                    direction: Direction::Right,
+                    boundary: 200,
+                    second: Some((expected_dir2, 250)),
+                }
+            );
+        }
+    }
 
     #[test]
     fn u64_decimal_rejects_floats_and_formats() {

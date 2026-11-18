@@ -163,8 +163,9 @@ fn implicit_maximize() -> WorldCommand {
 fn implicit_resize_dir(direction: &str, mode: &str) -> WorldCommand {
     implicit(WorldCommand::Operation(CoreCommand::Resize {
         window: String::new(),
-        direction: direction.to_owned(),
-        mode: mode.to_owned(),
+        direction: crate::directional::Direction::parse_wire(direction)
+            .expect("valid test direction"),
+        mode: crate::directional::ResizeSelector::parse_wire(mode).expect("valid test mode"),
         press_index: 1,
     }))
 }
@@ -1921,8 +1922,9 @@ fn implicit_resize_press0(direction: &str, mode: &str) -> WorldCommand {
     // shared key-repeat counter).
     implicit(WorldCommand::Operation(CoreCommand::Resize {
         window: String::new(),
-        direction: direction.to_owned(),
-        mode: mode.to_owned(),
+        direction: crate::directional::Direction::parse_wire(direction)
+            .expect("valid test direction"),
+        mode: crate::directional::ResizeSelector::parse_wire(mode).expect("valid test mode"),
         press_index: 0,
     }))
 }

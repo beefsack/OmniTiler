@@ -191,11 +191,23 @@ pub(super) fn dispatch_resize_intent(
     // Exact KDE repeat tracker: continued only on a focused/direction/mode
     // match, restarted otherwise, advanced before the world dispatch.
     // `from` is the origin-verified token, never blind foreground.
-    let direction = direction_name(intent.direction).to_owned();
-    let mode = intent.mode.as_str().to_owned();
-    let (press_index, repeat) =
-        crate::tiling::resize_repeat_next(state.resize_repeat.clone(), &from, &direction, &mode);
+    let direction_str = direction_name(intent.direction);
+    let mode_str = intent.mode.as_str();
+    let (press_index, repeat) = crate::tiling::resize_repeat_next(
+        state.resize_repeat.clone(),
+        &from,
+        direction_str,
+        mode_str,
+    );
     state.resize_repeat = Some(repeat);
+    let resize_mode = match intent.mode {
+        tiler_core::contract::ResizeMode::Inwards => {
+            tiler_core::directional::ResizeSelector::Inwards
+        }
+        tiler_core::contract::ResizeMode::Outwards => {
+            tiler_core::directional::ResizeSelector::Outwards
+        }
+    };
     // Single-domain resizes run the world operation route: the core owns
     // direction semantics and the host diff applies the accepted reply
     // with fresh proof. No focus, order, or topology mutation beyond the
@@ -213,8 +225,8 @@ pub(super) fn dispatch_resize_intent(
         fulls,
         tiler_core::world_report::WorldCommand::Operation(CoreCommand::Resize {
             window: from.clone(),
-            direction,
-            mode,
+            direction: intent.direction,
+            mode: resize_mode,
             press_index,
         }),
         super::observation::sample_cursor(),

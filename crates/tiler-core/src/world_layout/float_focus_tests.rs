@@ -365,7 +365,7 @@ fn float_cross_edge_conditions_refuse_without_mutation() {
     let held = BTreeSet::new();
     let cmd = CoreCommand::Focus {
         window: "win-f".to_owned(),
-        direction: "right".to_owned(),
+        direction: Direction::Right,
         cross_output_transfer: true,
         float_subject: true,
     };

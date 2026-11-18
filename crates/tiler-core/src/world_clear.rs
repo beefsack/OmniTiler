@@ -662,18 +662,17 @@ impl WorldTransaction<'_> {
                 let applied = if let Some(target) = pinned {
                     let command = crate::boundary::CoreCommand::Move {
                         window: retained.window.0.clone(),
-                        direction: retained.direction.clone(),
+                        direction: direction_parsed,
                         cross_output_transfer: true,
                         same_axis_move: retained.same_axis,
                     };
                     let window_name = retained.window.0.clone();
-                    let direction_name = retained.direction.clone();
                     self.operation_directional(
                         issue,
                         command_seq,
                         &command,
                         &window_name,
-                        direction_name.as_str(),
+                        direction_parsed,
                         Some(&target),
                         &by_id,
                         &held_scopes,
@@ -681,7 +680,7 @@ impl WorldTransaction<'_> {
                 } else {
                     let command = crate::boundary::CoreCommand::Move {
                         window: retained.window.0.clone(),
-                        direction: retained.direction.clone(),
+                        direction: direction_parsed,
                         cross_output_transfer: false,
                         same_axis_move: retained.same_axis,
                     };

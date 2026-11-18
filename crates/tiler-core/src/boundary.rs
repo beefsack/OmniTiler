@@ -1,11 +1,10 @@
 //! Serde-free typed command vocabulary.
 //!
 //! Portable command carriers over adapter-normalized integer geometry only: no
-//! transport, JSON, platform, or process imports. Direction/mode strings cross
-//! as opaque carriers so handler-local precedence stays untouched.
+//! transport, JSON, platform, or process imports.
 //! This module owns no retained state.
 
-use crate::directional::SameAxisMove;
+use crate::directional::{Direction, ResizeSelector, SameAxisMove};
 use crate::geometry::Rect;
 use crate::session::{DomainKey, DragHoverPrior};
 
@@ -13,9 +12,8 @@ use crate::session::{DomainKey, DragHoverPrior};
 /// release-domain, move, focus, resize, pointer-resize, toggle-float,
 /// toggle-orientation, `send-to-workspace`, `send-to-output`,
 /// `migrate-workspace`, `drag-drop`, and read-only `drag-preview`.
-/// Payloads are already-decoded clones; fallible wire vocabularies
-/// (direction/mode) cross opaquely so this conversion stays total
-/// and handler precedence is untouched.
+/// Payloads carry typed directions and closed resize selectors decoded at
+/// the wire boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoreCommand {
     Reconcile,
@@ -23,7 +21,7 @@ pub enum CoreCommand {
     ReleaseDomain,
     Move {
         window: String,
-        direction: String,
+        direction: Direction,
         cross_output_transfer: bool,
         /// R-MOV-03 same-axis mode: validated at the protocol boundary
         /// (missing wire field decodes to [`SameAxisMove::GroupWithNeighbor`]);
@@ -33,7 +31,7 @@ pub enum CoreCommand {
     },
     Focus {
         window: String,
-        direction: String,
+        direction: Direction,
         cross_output_transfer: bool,
         /// Float-origin cross-output focus (Left/Right miss with no local
         /// float target): the subject is a floating/sticky exception, so the
@@ -44,20 +42,19 @@ pub enum CoreCommand {
     },
     Resize {
         window: String,
-        direction: String,
-        mode: String,
+        direction: Direction,
+        mode: ResizeSelector,
         press_index: u32,
     },
     PointerResize {
         window: String,
-        direction: String,
+        direction: Direction,
         boundary: i32,
-        /// Second-axis corner pair: both `Some` for an atomic corner
-        /// (dual-axis) resize, both `None` for an ordinary single-axis
-        /// request. A half-present pair never reaches layout execution (the
-        /// protocol layer refuses it as `pointer-resize-op-invalid`).
-        direction2: Option<String>,
-        boundary2: Option<i32>,
+        /// Second-axis corner pair: `Some((direction, boundary))` for an
+        /// atomic corner (dual-axis) resize, `None` for an ordinary
+        /// single-axis request. Half-present pairs are rejected at the
+        /// protocol boundary as `unknown-value`.
+        second: Option<(Direction, i32)>,
     },
     ToggleFloat {
         window: String,
@@ -90,10 +87,9 @@ pub enum CoreCommand {
     /// workspace keeps its stable backing id and moves to the adjacent
     /// output resolved adapter-side via full-output-rect adjacency (no wrap).
     /// Follow-only; the adapter shows the migrated workspace on the target
-    /// and refills the source natively. Direction crosses opaquely so
-    /// handler-local precedence stays untouched.
+    /// and refills the source natively.
     MigrateWorkspace {
-        direction: String,
+        direction: Direction,
     },
     DragDrop {
         window: String,
@@ -158,28 +154,27 @@ mod tests {
             CoreCommand::ReleaseDomain,
             CoreCommand::Move {
                 window: "w".to_owned(),
-                direction: "left".to_owned(),
+                direction: Direction::Left,
                 cross_output_transfer: true,
                 same_axis_move: SameAxisMove::GroupWithNeighbor,
             },
             CoreCommand::Focus {
                 window: "w".to_owned(),
-                direction: "left".to_owned(),
+                direction: Direction::Left,
                 cross_output_transfer: true,
                 float_subject: false,
             },
             CoreCommand::Resize {
                 window: "w".to_owned(),
-                direction: "left".to_owned(),
-                mode: "inwards".to_owned(),
+                direction: Direction::Left,
+                mode: ResizeSelector::Inwards,
                 press_index: 0,
             },
             CoreCommand::PointerResize {
                 window: "w".to_owned(),
-                direction: "left".to_owned(),
+                direction: Direction::Left,
                 boundary: 0,
-                direction2: None,
-                boundary2: None,
+                second: None,
             },
             CoreCommand::ToggleFloat {
                 window: "w".to_owned(),
@@ -201,7 +196,7 @@ mod tests {
                 follow: true,
             },
             CoreCommand::MigrateWorkspace {
-                direction: "right".to_owned(),
+                direction: Direction::Right,
             },
             CoreCommand::DragDrop {
                 window: "w".to_owned(),

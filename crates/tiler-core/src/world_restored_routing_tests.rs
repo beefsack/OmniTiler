@@ -1125,8 +1125,8 @@ fn move_and_resize_ride_the_snapshot() {
         Some(85),
         Some(WorldCommand::Operation(CoreCommand::Resize {
             window: "win-b".to_owned(),
-            direction: "right".to_owned(),
-            mode: "outwards".to_owned(),
+            direction: crate::directional::Direction::Right,
+            mode: crate::directional::ResizeSelector::Outwards,
             press_index: 0,
         })),
     );
@@ -1142,7 +1142,7 @@ fn move_and_resize_ride_the_snapshot() {
         Some(86),
         Some(WorldCommand::Operation(CoreCommand::Move {
             window: "win-b".to_owned(),
-            direction: "right".to_owned(),
+            direction: crate::directional::Direction::Right,
             cross_output_transfer: false,
             same_axis_move: SameAxisMove::GroupWithNeighbor,
         })),
@@ -1336,7 +1336,7 @@ fn operation_send_retains_and_foreign_routes_refuse() {
         "win-a",
         Some(33),
         Some(WorldCommand::Operation(CoreCommand::MigrateWorkspace {
-            direction: "right".to_owned(),
+            direction: crate::directional::Direction::Right,
         })),
     );
     match solo.handle_report(&refused, &[]) {
@@ -2341,7 +2341,7 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
             },
             1 => WorldCommand::Operation(CoreCommand::Move {
                 window: "win-a".to_owned(),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 cross_output_transfer: true,
                 same_axis_move: SameAxisMove::GroupWithNeighbor,
             }),
@@ -2351,7 +2351,7 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
             },
             3 => WorldCommand::Operation(CoreCommand::Focus {
                 window: "win-a".to_owned(),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 cross_output_transfer: true,
                 float_subject: false,
             }),
