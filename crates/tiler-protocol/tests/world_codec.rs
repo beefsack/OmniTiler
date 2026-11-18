@@ -1349,16 +1349,16 @@ fn retired_window_keys_hold_identifiable_row_with_key_retained() {
             serde_json::from_str(&one_window_request()).expect("valid");
         let windows = value["windows"].as_array_mut().expect("windows");
         windows[0][key] = serde_json::Value::Bool(false);
-        let report = decode_request(&value.to_string()).expect("retired holds");
-        assert!(report.windows.is_empty(), "{key}");
-        assert_eq!(report.held_windows.len(), 1, "{key}");
-        assert!(
-            report.held_windows[0]
-                .fields
-                .iter()
-                .any(|(name, _)| name == key),
-            "{key} retained"
-        );
+        let decoded = tiler_protocol::world_protocol::decode_report_v4(&value.to_string())
+            .expect("retired holds");
+        assert!(decoded.report.windows.is_empty(), "{key}");
+        assert_eq!(decoded.report.held_windows.len(), 1, "{key}");
+        let fields = decoded
+            .residual
+            .as_deref()
+            .and_then(|r| r.window_fields(decoded.report.held_windows[0].ordinal))
+            .expect("held window retains residual fields");
+        assert!(fields.iter().any(|(name, _)| name == key), "{key} retained");
     }
 }
 
@@ -1887,23 +1887,29 @@ fn native_ws_field_decodes_and_gates() {
         let mut window = v4_window("win-a", "out", [0, 0, 200, 200]);
         window["nativeWs"] = native;
         value["windows"] = serde_json::json!([window]);
-        decode_request(&value.to_string())
+        tiler_protocol::world_protocol::decode_report_v4(&value.to_string())
     };
     // Null, empty, and missing are distinct spellings of the same unknown.
-    let report = with_native(serde_json::Value::Null).expect("null decodes");
+    let report = with_native(serde_json::Value::Null)
+        .expect("null decodes")
+        .report;
     assert_eq!(
         report.windows[0].native_workspace,
         NativeWorkspaceFact::Null
     );
     assert_eq!(report.windows[0].native_workspace.as_deref(), None);
-    let report = with_native(serde_json::Value::String(String::new())).expect("empty decodes");
+    let report = with_native(serde_json::Value::String(String::new()))
+        .expect("empty decodes")
+        .report;
     assert_eq!(
         report.windows[0].native_workspace,
         NativeWorkspaceFact::Value(String::new())
     );
     assert_eq!(report.windows[0].native_workspace.as_deref(), None);
     // A valid opaque native id decodes.
-    let report = with_native(serde_json::Value::String("d1".to_owned())).expect("id decodes");
+    let report = with_native(serde_json::Value::String("d1".to_owned()))
+        .expect("id decodes")
+        .report;
     assert_eq!(report.windows[0].native_workspace.as_deref(), Some("d1"));
     // Non-id and non-string native membership holds the identifiable row
     // narrowly in v4 (contract 307-314, 393): the bad spelling rides the
@@ -1913,17 +1919,26 @@ fn native_ws_field_decodes_and_gates() {
         ("bad id", serde_json::Value::String("not an id!".to_owned())),
         ("number", serde_json::json!(7)),
     ] {
-        let report = with_native(native.clone()).expect("bad spelling holds");
-        assert!(report.windows.is_empty(), "{label}: no valid row");
-        assert_eq!(report.held_windows.len(), 1, "{label}: one held row");
-        let held = &report.held_windows[0];
+        let decoded = with_native(native.clone()).expect("bad spelling holds");
+        assert!(decoded.report.windows.is_empty(), "{label}: no valid row");
+        assert_eq!(
+            decoded.report.held_windows.len(),
+            1,
+            "{label}: one held row"
+        );
+        let held = &decoded.report.held_windows[0];
         assert_eq!(
             held.kind,
             tiler_core::world_report::RowDiagnosticKind::InvalidFact,
             "{label}"
         );
+        let fields = decoded
+            .residual
+            .as_deref()
+            .and_then(|r| r.window_fields(held.ordinal))
+            .expect("held window retains residual fields");
         assert!(
-            held.fields.iter().any(|(name, _)| name == "nativeWs"),
+            fields.iter().any(|(name, _)| name == "nativeWs"),
             "{label}: bad spelling retained"
         );
     }
@@ -3924,15 +3939,21 @@ fn bad_process_grammar_holds_with_invalid_kind_parity() {
     // with its carried pid retained and an InvalidFact kind.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["windows"][0]["processId"] = serde_json::json!("has space");
-    let report = decode_request(&value.to_string()).expect("bad process holds");
-    assert!(report.windows.is_empty());
-    assert_eq!(report.held_windows.len(), 1);
-    let held = &report.held_windows[0];
+    let decoded = tiler_protocol::world_protocol::decode_report_v4(&value.to_string())
+        .expect("bad process holds");
+    assert!(decoded.report.windows.is_empty());
+    assert_eq!(decoded.report.held_windows.len(), 1);
+    let held = &decoded.report.held_windows[0];
     assert_eq!(held.kind, RowDiagnosticKind::InvalidFact);
     let diagnostic = held.diagnostic.as_ref().expect("scoped diagnostic");
     assert_eq!(diagnostic.kind, RowDiagnosticKind::InvalidFact);
+    let fields = decoded
+        .residual
+        .as_deref()
+        .and_then(|r| r.window_fields(held.ordinal))
+        .expect("held window retains residual fields");
     assert_eq!(
-        held.fields.iter().find(|(k, _)| k == "processId"),
+        fields.iter().find(|(k, _)| k == "processId"),
         Some(&(
             "processId".to_owned(),
             tiler_core::connection::RawSettingValue::String("has space".to_owned())
@@ -4083,10 +4104,10 @@ fn v4_window_rows_retain_canonical_bytes_from_immutable_fixtures() {
         "../../../test-fixtures/world-wire/v4/messages/invalid-removed-window-floating.json"
     ));
     let staged = stage_fixture_window_rows(&[&held_raw]);
-    let report = decode_request(&staged).expect("retired holds");
-    assert!(report.windows.is_empty(), "no valid row");
-    assert_eq!(report.held_windows.len(), 1, "one held row");
-    let held = &report.held_windows[0];
+    let decoded = tiler_protocol::world_protocol::decode_report_v4(&staged).expect("retired holds");
+    assert!(decoded.report.windows.is_empty(), "no valid row");
+    assert_eq!(decoded.report.held_windows.len(), 1, "one held row");
+    let held = &decoded.report.held_windows[0];
     assert_eq!(held.window.0, "win-a");
     assert_eq!(held.ordinal, 0, "original windows index");
     assert_eq!(
@@ -4098,18 +4119,26 @@ fn v4_window_rows_retain_canonical_bytes_from_immutable_fixtures() {
     assert_eq!(diagnostic.kind, RowDiagnosticKind::InvalidFact);
     assert_eq!(diagnostic.row, RowDiagnosticLane::Window);
     assert_eq!(diagnostic.id.as_deref(), Some("win-a"));
+    let fields = decoded
+        .residual
+        .as_deref()
+        .and_then(|r| r.window_fields(held.ordinal))
+        .expect("held window retains residual fields");
     assert!(
-        held.fields.iter().any(|(name, value)| name == "floating"
+        fields.iter().any(|(name, value)| name == "floating"
             && *value == tiler_core::connection::RawSettingValue::Bool(false)),
         "retired key retained"
     );
     assert_eq!(
-        encode_held_window_canonical(held).expect("finite canonical row"),
+        encode_held_window_canonical(fields).expect("finite canonical row"),
         held_raw,
         "lossless held canonical bytes"
     );
-    assert!(validate_report_v4_reason(&report).is_none());
-    let estimate = report_estimate_v4(&report);
+    assert!(validate_report_v4_reason(&decoded.report).is_none());
+    let estimate = tiler_protocol::world_admission_sizing::report_estimate_v4_with_residual(
+        &decoded.report,
+        decoded.residual.as_deref(),
+    );
     assert!(
         estimate >= staged.len(),
         "estimate {estimate} bounds wire {}",
@@ -4241,17 +4270,23 @@ fn v4_window_vocab_rejects_unknown_enums_and_holds_retired() {
         assert_eq!(rows.len(), 1);
         rows[0].to_owned()
     };
-    let report =
-        decode_request(&stage_fixture_window_rows(&[&unknown])).expect("unknown type holds");
-    assert!(report.windows.is_empty(), "no valid row");
-    assert_eq!(report.held_windows.len(), 1, "one held row");
-    let held = &report.held_windows[0];
+    let decoded =
+        tiler_protocol::world_protocol::decode_report_v4(&stage_fixture_window_rows(&[&unknown]))
+            .expect("unknown type holds");
+    assert!(decoded.report.windows.is_empty(), "no valid row");
+    assert_eq!(decoded.report.held_windows.len(), 1, "one held row");
+    let held = &decoded.report.held_windows[0];
     assert_eq!(held.kind, RowDiagnosticKind::InvalidFact);
     let diagnostic = held.diagnostic.as_ref().expect("scoped diagnostic");
     assert_eq!(diagnostic.kind, RowDiagnosticKind::InvalidFact);
     assert_eq!(diagnostic.row, RowDiagnosticLane::Window);
+    let unknown_fields = decoded
+        .residual
+        .as_deref()
+        .and_then(|r| r.window_fields(held.ordinal))
+        .expect("held window retains residual fields");
     assert_eq!(
-        encode_held_window_canonical(held).expect("finite row"),
+        encode_held_window_canonical(unknown_fields).expect("finite row"),
         unknown,
         "lossless held canonical bytes"
     );
@@ -4265,12 +4300,22 @@ fn v4_window_vocab_rejects_unknown_enums_and_holds_retired() {
         assert_eq!(rows.len(), 1);
         rows[0].to_owned()
     };
-    let report = decode_request(&stage_fixture_window_rows(&[&mistyped])).expect("mistyped holds");
-    assert!(report.windows.is_empty());
-    assert_eq!(report.held_windows.len(), 1);
-    assert_eq!(report.held_windows[0].kind, RowDiagnosticKind::InvalidFact);
+    let decoded =
+        tiler_protocol::world_protocol::decode_report_v4(&stage_fixture_window_rows(&[&mistyped]))
+            .expect("mistyped holds");
+    assert!(decoded.report.windows.is_empty());
+    assert_eq!(decoded.report.held_windows.len(), 1);
     assert_eq!(
-        encode_held_window_canonical(&report.held_windows[0]).expect("finite row"),
+        decoded.report.held_windows[0].kind,
+        RowDiagnosticKind::InvalidFact
+    );
+    let mistyped_fields = decoded
+        .residual
+        .as_deref()
+        .and_then(|r| r.window_fields(decoded.report.held_windows[0].ordinal))
+        .expect("held window retains residual fields");
+    assert_eq!(
+        encode_held_window_canonical(mistyped_fields).expect("finite row"),
         mistyped
     );
 
@@ -4300,43 +4345,35 @@ fn v4_window_vocab_rejects_unknown_enums_and_holds_retired() {
         let mut row = healthy.clone();
         row.pop();
         row.push_str(&format!(",\"{key}\":false}}"));
-        let report = decode_request(&stage_fixture_window_rows(&[&row])).expect("{key} holds");
-        assert!(report.windows.is_empty(), "{key}");
-        assert_eq!(report.held_windows.len(), 1, "{key}");
+        let decoded =
+            tiler_protocol::world_protocol::decode_report_v4(&stage_fixture_window_rows(&[&row]))
+                .expect("{key} holds");
+        assert!(decoded.report.windows.is_empty(), "{key}");
+        assert_eq!(decoded.report.held_windows.len(), 1, "{key}");
         assert_eq!(
-            report.held_windows[0].kind,
+            decoded.report.held_windows[0].kind,
             RowDiagnosticKind::InvalidFact,
             "{key}"
         );
-        assert!(
-            report.held_windows[0]
-                .fields
-                .iter()
-                .any(|(name, _)| name == key),
-            "{key} retained"
-        );
+        let fields = decoded
+            .residual
+            .as_deref()
+            .and_then(|r| r.window_fields(decoded.report.held_windows[0].ordinal))
+            .expect("held window retains residual fields");
+        assert!(fields.iter().any(|(name, _)| name == key), "{key} retained");
         assert_eq!(
-            encode_held_window_canonical(&report.held_windows[0]).expect("finite row"),
+            encode_held_window_canonical(fields).expect("finite row"),
             row,
             "{key}: lossless held bytes"
         );
     }
 
     // A non-finite retained number never spells `null`: the held writer errs.
-    let nonfinite = tiler_core::world_report::HeldWindowRow {
-        window: tiler_core::directional::WindowId("win-a".to_owned()),
-        ordinal: 0,
-        output: Some(tiler_core::directional::OutputId("out-a".to_owned())),
-        has_native_workspace: false,
-        last_write: None,
-        fields: vec![(
-            "layer".to_owned(),
-            tiler_core::connection::RawSettingValue::Number(f64::NAN),
-        )],
-        diagnostic: None,
-        kind: RowDiagnosticKind::InvalidFact,
-    };
-    assert!(encode_held_window_canonical(&nonfinite).is_err());
+    let nonfinite_fields = vec![(
+        "layer".to_owned(),
+        tiler_core::connection::RawSettingValue::Number(f64::NAN),
+    )];
+    assert!(encode_held_window_canonical(&nonfinite_fields).is_err());
     // Valid integer geometry is always finite: the valid writer never fails.
     let staged = stage_fixture_window_rows(&[&healthy]);
     let report = decode_request(&staged).expect("healthy decodes");

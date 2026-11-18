@@ -1191,8 +1191,11 @@ fn wrapper_preserves_primary_native_and_held_row_semantics() {
     assert_eq!(plain, wired.report);
     assert!(plain.windows.is_empty());
     assert_eq!(plain.held_windows.len(), 1);
-    let names: Vec<&str> = wired.report.held_windows[0]
-        .fields
+    let names: Vec<&str> = wired
+        .residual
+        .as_deref()
+        .and_then(|residual| residual.window_fields(wired.report.held_windows[0].ordinal))
+        .expect("held window fields")
         .iter()
         .map(|(name, _)| name.as_str())
         .collect();

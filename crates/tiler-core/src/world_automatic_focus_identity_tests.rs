@@ -756,7 +756,6 @@ fn token_survives_incomplete_held_and_engine_known_absence() {
         output: None,
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];

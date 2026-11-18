@@ -5174,7 +5174,6 @@ fn switch_first_evidence_immutable_and_future_stays_failed() {
 
 #[test]
 fn switch_held_raw_evidence_correlates_without_healthy_visibility() {
-    use crate::world_report::retained_window_fields;
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
     let effect = granted
@@ -5213,7 +5212,6 @@ fn switch_held_raw_evidence_correlates_without_healthy_visibility() {
         output: Some(OutputId("out-a".to_owned())),
         has_native_workspace: w1_fact.native_workspace.as_deref().is_some(),
         last_write: w1_fact.last_write,
-        fields: retained_window_fields(&w1_fact),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];
@@ -6097,7 +6095,6 @@ fn switch_duplicate_replays_identical_outcome_then_next_report_retains() {
 
 #[test]
 fn switch_conflicting_held_row_correlates_without_healthy_visibility() {
-    use crate::world_report::retained_window_fields;
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
     let effect = granted
@@ -6136,7 +6133,6 @@ fn switch_conflicting_held_row_correlates_without_healthy_visibility() {
         output: Some(OutputId("out-a".to_owned())),
         has_native_workspace: w1_fact.native_workspace.as_deref().is_some(),
         last_write: w1_fact.last_write,
-        fields: retained_window_fields(&w1_fact),
         diagnostic: None,
         kind: RowDiagnosticKind::ConflictingFact,
     }];

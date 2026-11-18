@@ -20,7 +20,7 @@ use crate::world_report::{
     RenderTarget, RowDiagnosticKind, WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef,
     WorldCommand, WorldReportV4, check_screen_structure, check_window_structure,
     conflicting_window, gradable_screen, gradable_window, graded_held_row, graded_held_window_row,
-    hidden_window_id_violation, retained_window_fields, valid_command,
+    hidden_window_id_violation, valid_command,
 };
 
 fn held_in_lane(report: &WorldReportV4, lane: crate::world_report::AttemptLaneV4) -> usize {
@@ -961,7 +961,6 @@ pub fn grade_conflicting_windows_v4(
                     .as_deref()
                     .is_some_and(|id| !id.is_empty()),
                 last_write: fact.last_write,
-                fields: retained_window_fields(fact),
                 diagnostic: fact
                     .output
                     .as_ref()
@@ -1080,6 +1079,37 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
             }
         }
         flag(hash, diagnostic.id.is_some());
+    }
+    fn feed_last_write(hash: &mut u64, last_write: &Option<crate::world_report::LastWrite>) {
+        match last_write.as_ref() {
+            None => {
+                feed(hash, "no-last-write");
+                sep(hash);
+            }
+            Some(last) => {
+                feed(hash, last.property.as_str());
+                sep(hash);
+                flag(hash, last.target);
+                feed(hash, &last.revision.to_string());
+                sep(hash);
+                feed(hash, last.path.as_str());
+                sep(hash);
+                feed(hash, last.setter.as_str());
+                sep(hash);
+                feed(hash, last.reason.as_str());
+                sep(hash);
+                for sample in [last.pre.as_ref(), last.post.as_ref()] {
+                    match sample {
+                        None => {
+                            feed(hash, "no-sample");
+                            sep(hash);
+                        }
+                        Some(sample) => feed_visibility_sample(hash, sample),
+                    }
+                }
+            }
+        }
+        flag(hash, last_write.is_some());
     }
     fn feed_visibility_sample(hash: &mut u64, sample: &crate::world_report::VisibilitySample) {
         feed(hash, &sample.obs.to_string());
@@ -1286,11 +1316,17 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         sep(&mut hash);
         feed(&mut hash, &held.ordinal.to_string());
         sep(&mut hash);
-        for (key, value) in &held.fields {
-            feed(&mut hash, key);
-            sep(&mut hash);
-            feed_raw(&mut hash, value);
-        }
+        feed(
+            &mut hash,
+            held.output
+                .as_ref()
+                .map(|out| out.0.as_str())
+                .unwrap_or_default(),
+        );
+        sep(&mut hash);
+        flag(&mut hash, held.output.is_some());
+        flag(&mut hash, held.has_native_workspace);
+        feed_last_write(&mut hash, &held.last_write);
         feed(&mut hash, held.kind.as_str());
         sep(&mut hash);
         flag(&mut hash, held.diagnostic.is_some());

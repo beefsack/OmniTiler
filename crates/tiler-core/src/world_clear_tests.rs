@@ -3612,7 +3612,6 @@ fn q2_operation_settled_retains_holds_minimize_incomplete_and_prunes_departure_w
             output: Some(OutputId("out-a".to_owned())),
             has_native_workspace: false,
             last_write: None,
-            fields: Vec::new(),
             diagnostic: None,
             kind: crate::world_report::RowDiagnosticKind::InvalidFact,
         }];

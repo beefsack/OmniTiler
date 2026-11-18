@@ -1579,7 +1579,6 @@ fn pager_finish_retains_held_and_gaps_prunes_complete_and_close() {
         output: Some(OutputId("out-a".to_owned())),
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];

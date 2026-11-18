@@ -1355,5 +1355,48 @@ mod tests {
             }
         );
         assert_eq!(engine.state_revision(), rev_after_accept);
+
+        // Held window residual: same discrimination at reqSeq 2.
+        let win_fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-fixtures/world-wire/v4/messages/invalid-window-type-unknown.json");
+        let win_text = std::fs::read_to_string(win_fixture_path).expect("held window fixture");
+        let mut win_doc: serde_json::Value = serde_json::from_str(&win_text).expect("json");
+        win_doc["adapter"] = serde_json::json!("adapter-a");
+        win_doc["gen"] = serde_json::json!(gen_id);
+        win_doc["reqSeq"] = serde_json::json!("2");
+        win_doc["obs"] = serde_json::json!("2");
+        win_doc["req"] = serde_json::json!("req-2");
+
+        let win_a = decode_report_v4(&win_doc.to_string()).expect("held window decodes");
+        assert_eq!(win_a.report.held_windows.len(), 1);
+        let win_residual = win_a.residual.as_ref().expect("window residual");
+        assert!(win_residual.window_fields(0).is_some());
+
+        let (win_outcome, _) = handle_report_decoded_checked(&mut engine, &win_a, &[]);
+        assert!(matches!(win_outcome, WorldOutcome::Accepted(_)));
+        let rev_after_win = engine.state_revision();
+        assert_eq!(Arc::strong_count(win_residual), 2);
+
+        let win_a_ws = decode_report_v4(&serde_json::to_string_pretty(&win_doc).expect("pretty"))
+            .expect("spaced window decodes");
+        assert_eq!(win_a.residual, win_a_ws.residual);
+        let (win_ws_outcome, _) = handle_report_decoded_checked(&mut engine, &win_a_ws, &[]);
+        assert!(matches!(win_ws_outcome, WorldOutcome::Duplicate(_)));
+        assert_eq!(engine.state_revision(), rev_after_win);
+
+        let mut win_changed_doc = win_doc.clone();
+        win_changed_doc["windows"][0]["title"] = serde_json::json!("changed-title");
+        let win_b = decode_report_v4(&win_changed_doc.to_string()).expect("changed window decodes");
+        assert_eq!(win_a.report, win_b.report);
+        assert_ne!(win_a.residual, win_b.residual);
+        let (win_reused_outcome, _) = handle_report_decoded_checked(&mut engine, &win_b, &[]);
+        assert_eq!(
+            win_reused_outcome,
+            WorldOutcome::Rejected {
+                kind: "request-reused",
+                message: "request sequence reused with different input",
+            }
+        );
+        assert_eq!(engine.state_revision(), rev_after_win);
     }
 }

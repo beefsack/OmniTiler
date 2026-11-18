@@ -181,9 +181,6 @@ pub fn report_estimate_v4_with_residual(
             + fact.visibility.suppression_owned.map_or(4, bool_len)
             + last_write_estimate(&fact.last_write);
     }
-    for held in &report.held_windows {
-        bytes += held_fields_estimate(&held.fields);
-    }
     for id in &report.closed {
         bytes += json_string_len(&id.0) + 1;
     }

@@ -134,22 +134,14 @@ fn composed_null_admits_while_nonnull_conflicts_narrowly() {
         .iter()
         .map(|held| held.window.0.as_str())
         .collect();
-    assert!(held.contains(&"win-false"), "raw retained: {held:?}");
-    assert!(held.contains(&"win-true"), "raw retained: {held:?}");
+    assert!(held.contains(&"win-false"), "false row held: {held:?}");
+    assert!(held.contains(&"win-true"), "true row held: {held:?}");
     assert!(!held.contains(&"win-composed"), "{held:?}");
     for held_row in engine.world.staged.held_windows.iter() {
         if held_row.window.0 == "win-false" || held_row.window.0 == "win-true" {
             assert_eq!(held_row.kind, RowDiagnosticKind::ConflictingFact);
-            let sticky = held_row
-                .fields
-                .iter()
-                .find(|(key, _)| key == "sticky")
-                .expect("sticky retained");
-            assert!(
-                matches!(sticky.1, crate::connection::RawSettingValue::Bool(_)),
-                "raw non-null retained, got {:?}",
-                sticky.1
-            );
+            let diagnostic = held_row.diagnostic.as_ref().expect("held scope");
+            assert_eq!(diagnostic.id.as_deref(), Some(held_row.window.0.as_str()));
         }
     }
     let members = engine.logical_members_all();
@@ -488,17 +480,7 @@ fn conflicting_sticky_never_masks_structure_or_invalid_precedence() {
     assert_eq!(graded.windows.len(), 0);
     assert_eq!(graded.held_windows.len(), 1);
     assert_eq!(graded.held_windows[0].kind, RowDiagnosticKind::InvalidFact);
-    let sticky = graded.held_windows[0]
-        .fields
-        .iter()
-        .find(|(key, _)| key == "sticky")
-        .expect("sticky retained");
-    assert_eq!(
-        sticky.1,
-        crate::connection::RawSettingValue::Bool(true),
-        "raw true retained exactly, got {:?}",
-        sticky.1
-    );
+    assert_eq!(graded.held_windows[0].window.0, raw.windows[0].window.0);
     assert!(
         grade_conflicting_windows_v4(&graded, &[], false, true).is_none(),
         "already-held invalid row never re-grades"
@@ -530,17 +512,8 @@ fn conflicting_sticky_never_masks_structure_or_invalid_precedence() {
     assert_eq!(restaged.held_windows[1].ordinal, 1);
     for held in &restaged.held_windows {
         assert_eq!(held.kind, RowDiagnosticKind::ConflictingFact);
-        let sticky = held
-            .fields
-            .iter()
-            .find(|(key, _)| key == "sticky")
-            .expect("sticky retained");
-        let expected = if held.window.0 == "win-first" {
-            crate::connection::RawSettingValue::Bool(false)
-        } else {
-            crate::connection::RawSettingValue::Bool(true)
-        };
-        assert_eq!(sticky.1, expected, "exact Bool for {}", held.window.0);
+        let diagnostic = held.diagnostic.as_ref().expect("held scope");
+        assert_eq!(diagnostic.id.as_deref(), Some(held.window.0.as_str()));
     }
 }
 

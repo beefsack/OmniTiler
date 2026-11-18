@@ -340,6 +340,7 @@ fn v4_estimate_nonfinite_total_and_held_structure_delta() {
             1,
             vec![("scale".to_owned(), RawSettingValue::Number(f64::INFINITY))],
         )],
+        held_window_fields: Vec::new(),
         held_presentation_fields: None,
     };
     assert!(report_estimate_v4_with_residual(&report, Some(&residual)) > 0);
@@ -367,6 +368,7 @@ fn v4_estimate_nonfinite_total_and_held_structure_delta() {
     });
     let structure_residual = WorldReportResidual {
         held_screen_fields: vec![(1, vec![("extra".to_owned(), nested)])],
+        held_window_fields: Vec::new(),
         held_presentation_fields: None,
     };
     let expected_delta = serde_json::to_string(&serde_json::json!({
@@ -392,6 +394,13 @@ fn v4_estimate_nonfinite_total_and_held_structure_delta() {
     );
     let mixed_residual = WorldReportResidual {
         held_screen_fields: structure_residual.held_screen_fields.clone(),
+        held_window_fields: vec![(
+            0,
+            vec![(
+                "title".to_owned(),
+                RawSettingValue::String("held-title".to_owned()),
+            )],
+        )],
         held_presentation_fields: Some(vec![(
             "witness".to_owned(),
             RawSettingValue::String("bad-const".to_owned()),
@@ -402,10 +411,15 @@ fn v4_estimate_nonfinite_total_and_held_structure_delta() {
     }))
     .expect("json")
     .len();
+    let expected_win_delta = serde_json::to_string(&serde_json::json!({
+        "title": "held-title"
+    }))
+    .expect("json")
+    .len();
     assert_eq!(
         report_estimate_v4_with_residual(&mixed, Some(&mixed_residual))
             - report_estimate_v4(&mixed),
-        expected_delta + expected_pres_delta
+        expected_delta + expected_win_delta + expected_pres_delta
     );
 }
 

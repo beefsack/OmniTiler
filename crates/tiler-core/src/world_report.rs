@@ -1292,30 +1292,16 @@ pub struct HeldScreenRow {
 /// array so a future exact request encoder can reconstruct the original
 /// order (valid rows keep relative order in `windows`); `output` is the
 /// row's actual reported output (`None` when the row carried `out: null`:
-/// the authority source, never a guessed screen); `fields` retains
-/// every carried window key in canonical schema key order (`win`, `out`,
-/// `rect`, `fullscreen`, `maximized`, `sticky`, `minimized`, `hints`,
-/// `nativeWs`, `hostHidden`, `privileged`, `managed`, `acceptsInput`,
-/// `activationInhibited`, `toolWindow`, `owned`, `transient`, `modal`,
-/// `resizable`, `above`, `below`, `owner`, `parent`, `role`, `appId`,
-/// `executable`, `processId`, `class`, `title`, `type`, `activationPolicy`,
-/// `layer`, `fullscreenOwner`, `fullscreenExitable`,
-/// `suppressionAvailable`, `visibility`, `lastWrite`, then any other
-/// carried keys in lexicographic order) as JSON-agnostic
-/// [`RawSettingValue`](crate::connection::RawSettingValue) facts so the
-/// canonical writer round-trips the row losslessly (absence, `null`, and
-/// value are all preserved, including bad types, overbound metadata text,
-/// and retired extras; the nested `hints`, `visibility`, and `lastWrite`
-/// objects are retained in schema order with unknown sub-keys after in
-/// lexicographic order); `diagnostic` is `Some` typed diagnostic for the
-/// row's actual reported output, and `None` when the row carried no
-/// output: such a row has no output authority (its evidence is retained
-/// in `fields`; engine staging may resolve a real scope from the
-/// retained home, but never a fabricated one). `kind` is the mandatory
-/// narrow-hold reason (`InvalidFact` or `ConflictingFact`), independent
-/// of the scoped `diagnostic`: scope resolution must not lose the
-/// invalid-vs-conflicting distinction, including when `diagnostic` is
-/// `None`.
+/// the authority source, never a guessed screen); `diagnostic` is `Some`
+/// typed diagnostic for the row's actual reported output, and `None` when
+/// the row carried no output: such a row has no output authority (engine
+/// staging may resolve a real scope from the retained home, but never a
+/// fabricated one); `kind` is the mandatory narrow-hold reason
+/// (`InvalidFact` or `ConflictingFact`), independent of the scoped
+/// `diagnostic`: scope resolution must not lose the invalid-vs-conflicting
+/// distinction, including when `diagnostic` is `None`. Any raw carried
+/// fields for lossless wire round-tripping and exact replay reside in
+/// protocol-owned residual evidence (`WorldReportResidual`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HeldWindowRow {
     pub window: WindowId,
@@ -1323,7 +1309,6 @@ pub struct HeldWindowRow {
     pub output: Option<OutputId>,
     pub has_native_workspace: bool,
     pub last_write: Option<LastWrite>,
-    pub fields: Vec<(String, crate::connection::RawSettingValue)>,
     pub diagnostic: Option<RowDiagnostic>,
     pub kind: RowDiagnosticKind,
 }
@@ -2830,49 +2815,6 @@ pub(crate) fn graded_held_row(screen: &ScreenReport, ordinal: usize) -> HeldScre
     }
 }
 
-/// Canonical schema key order for carried window rows, mirrored by the
-/// protocol decoder, the estimators, and the canonical writer.
-#[doc(hidden)]
-pub const WINDOW_SCHEMA_ORDER: &[&str] = &[
-    "win",
-    "out",
-    "rect",
-    "fullscreen",
-    "maximized",
-    "sticky",
-    "minimized",
-    "hints",
-    "nativeWs",
-    "hostHidden",
-    "privileged",
-    "managed",
-    "acceptsInput",
-    "activationInhibited",
-    "toolWindow",
-    "owned",
-    "transient",
-    "modal",
-    "resizable",
-    "above",
-    "below",
-    "owner",
-    "parent",
-    "role",
-    "appId",
-    "executable",
-    "processId",
-    "class",
-    "title",
-    "type",
-    "activationPolicy",
-    "layer",
-    "fullscreenOwner",
-    "fullscreenExitable",
-    "suppressionAvailable",
-    "visibility",
-    "lastWrite",
-];
-
 /// Structural per-window checks shared by [`validate_report_v4_reason`](crate::world_report_v4_checks::validate_report_v4_reason) and
 /// the window graders: lifetime id, output id shape, duplicate lifetime,
 /// and rect-pair shape. An unknown `out` (valid id naming no live screen)
@@ -2971,9 +2913,9 @@ pub(crate) fn gradable_window(fact: &WindowFact) -> bool {
 }
 
 /// Retain one directly constructed invalid window row as a narrow hold,
-/// mirroring the protocol codec's retained fields and diagnostic: a
-/// diagnostic only for the row's actual reported output, never a
-/// fabricated scope.
+/// mirroring the protocol codec's typed held row and diagnostic without
+/// fabricating raw wire fields: a diagnostic only for the row's actual
+/// reported output, never a fabricated scope.
 pub(crate) fn graded_held_window_row(fact: &WindowFact, ordinal: usize) -> HeldWindowRow {
     HeldWindowRow {
         window: fact.window.clone(),
@@ -2984,7 +2926,6 @@ pub(crate) fn graded_held_window_row(fact: &WindowFact, ordinal: usize) -> HeldW
             .as_deref()
             .is_some_and(|id| !id.is_empty()),
         last_write: fact.last_write,
-        fields: retained_window_fields(fact),
         diagnostic: fact.output.as_ref().map(|out| RowDiagnostic {
             scope: AuthorityScope::Output(out.clone()),
             row: RowDiagnosticLane::Window,
@@ -2993,230 +2934,6 @@ pub(crate) fn graded_held_window_row(fact: &WindowFact, ordinal: usize) -> HeldW
         }),
         kind: RowDiagnosticKind::InvalidFact,
     }
-}
-
-/// Retain every carried window fact in canonical schema order
-/// ([`WINDOW_SCHEMA_ORDER`]) as JSON-agnostic facts, with the nested
-/// `hints`, `visibility`, and `lastWrite` objects in schema order. Used by
-/// both the invalid and the conflicting graders: one retention, two
-/// diagnostics.
-///
-/// Transition: temporarily `pub` so `tiler_protocol` reuses the structural
-/// field mapping for canonical window row emission without duplicating it
-/// before raw hold ownership moves.
-pub fn retained_window_fields(
-    fact: &WindowFact,
-) -> Vec<(String, crate::connection::RawSettingValue)> {
-    use crate::connection::RawSettingValue;
-    fn opt_bool(value: Option<bool>) -> RawSettingValue {
-        value.map_or(RawSettingValue::Null, RawSettingValue::Bool)
-    }
-    fn opt_text(value: &Option<String>) -> RawSettingValue {
-        value.as_deref().map_or(RawSettingValue::Null, |text| {
-            RawSettingValue::String(text.to_owned())
-        })
-    }
-    fn opt_id(value: &Option<WindowId>) -> RawSettingValue {
-        value.as_ref().map_or(RawSettingValue::Null, |id| {
-            RawSettingValue::String(id.0.clone())
-        })
-    }
-    fn rect_value(rect: Option<Rect>) -> RawSettingValue {
-        rect.map_or(RawSettingValue::Null, |row| {
-            RawSettingValue::Array(vec![
-                RawSettingValue::Number(f64::from(row.x)),
-                RawSettingValue::Number(f64::from(row.y)),
-                RawSettingValue::Number(f64::from(row.w)),
-                RawSettingValue::Number(f64::from(row.h)),
-            ])
-        })
-    }
-    fn visibility_value(visibility: VisibilityFact) -> RawSettingValue {
-        RawSettingValue::Object(vec![
-            ("visible".to_owned(), opt_bool(visibility.visible)),
-            (
-                "suppressionOwned".to_owned(),
-                opt_bool(visibility.suppression_owned),
-            ),
-        ])
-    }
-    fn sample_value(sample: &VisibilitySample) -> RawSettingValue {
-        RawSettingValue::Object(vec![
-            (
-                "obs".to_owned(),
-                RawSettingValue::String(sample.obs.to_string()),
-            ),
-            (
-                "lifetimeMatched".to_owned(),
-                opt_bool(sample.lifetime_matched),
-            ),
-            ("visibility".to_owned(), visibility_value(sample.visibility)),
-            ("minimized".to_owned(), opt_bool(sample.minimized)),
-            ("hostHidden".to_owned(), opt_bool(sample.host_hidden)),
-        ])
-    }
-    fn last_write_value(last: &LastWrite) -> RawSettingValue {
-        RawSettingValue::Object(vec![
-            (
-                "property".to_owned(),
-                RawSettingValue::String(last.property.as_str().to_owned()),
-            ),
-            ("target".to_owned(), RawSettingValue::Bool(last.target)),
-            (
-                "revision".to_owned(),
-                RawSettingValue::String(last.revision.to_string()),
-            ),
-            (
-                "path".to_owned(),
-                RawSettingValue::String(last.path.as_str().to_owned()),
-            ),
-            (
-                "setter".to_owned(),
-                RawSettingValue::String(last.setter.as_str().to_owned()),
-            ),
-            (
-                "reason".to_owned(),
-                RawSettingValue::String(last.reason.as_str().to_owned()),
-            ),
-            (
-                "pre".to_owned(),
-                last.pre
-                    .as_ref()
-                    .map_or(RawSettingValue::Null, sample_value),
-            ),
-            (
-                "post".to_owned(),
-                last.post
-                    .as_ref()
-                    .map_or(RawSettingValue::Null, sample_value),
-            ),
-        ])
-    }
-    fn native_value(native: &NativeWorkspaceFact) -> Option<RawSettingValue> {
-        match native {
-            NativeWorkspaceFact::Omitted => None,
-            NativeWorkspaceFact::Null => Some(RawSettingValue::Null),
-            NativeWorkspaceFact::Value(id) => Some(RawSettingValue::String(id.clone())),
-        }
-    }
-    let mut fields = vec![
-        (
-            "win".to_owned(),
-            RawSettingValue::String(fact.window.0.clone()),
-        ),
-        (
-            "out".to_owned(),
-            fact.output.as_ref().map_or(RawSettingValue::Null, |out| {
-                RawSettingValue::String(out.0.clone())
-            }),
-        ),
-        ("rect".to_owned(), rect_value(fact.rect)),
-        ("fullscreen".to_owned(), opt_bool(fact.fullscreen)),
-        ("maximized".to_owned(), opt_bool(fact.maximized)),
-        ("sticky".to_owned(), opt_bool(fact.sticky)),
-        ("minimized".to_owned(), opt_bool(fact.minimized)),
-        (
-            "hints".to_owned(),
-            fact.hints.map_or(RawSettingValue::Null, |hints| {
-                RawSettingValue::Object(vec![
-                    (
-                        "minW".to_owned(),
-                        hints.min_w.map_or(RawSettingValue::Null, |bound| {
-                            RawSettingValue::Number(f64::from(bound))
-                        }),
-                    ),
-                    (
-                        "minH".to_owned(),
-                        hints.min_h.map_or(RawSettingValue::Null, |bound| {
-                            RawSettingValue::Number(f64::from(bound))
-                        }),
-                    ),
-                    (
-                        "maxW".to_owned(),
-                        hints.max_w.map_or(RawSettingValue::Null, |bound| {
-                            RawSettingValue::Number(f64::from(bound))
-                        }),
-                    ),
-                    (
-                        "maxH".to_owned(),
-                        hints.max_h.map_or(RawSettingValue::Null, |bound| {
-                            RawSettingValue::Number(f64::from(bound))
-                        }),
-                    ),
-                ])
-            }),
-        ),
-    ];
-    if let Some(native) = native_value(&fact.native_workspace) {
-        fields.push(("nativeWs".to_owned(), native));
-    }
-    fields.extend([
-        ("hostHidden".to_owned(), opt_bool(fact.host_hidden)),
-        ("privileged".to_owned(), opt_bool(fact.privileged)),
-        ("managed".to_owned(), opt_bool(fact.managed)),
-        ("acceptsInput".to_owned(), opt_bool(fact.accepts_input)),
-        (
-            "activationInhibited".to_owned(),
-            opt_bool(fact.activation_inhibited),
-        ),
-        ("toolWindow".to_owned(), opt_bool(fact.tool_window)),
-        ("owned".to_owned(), opt_bool(fact.owned)),
-        ("transient".to_owned(), opt_bool(fact.transient)),
-        ("modal".to_owned(), opt_bool(fact.modal)),
-        ("resizable".to_owned(), opt_bool(fact.resizable)),
-        ("above".to_owned(), opt_bool(fact.above)),
-        ("below".to_owned(), opt_bool(fact.below)),
-        ("owner".to_owned(), opt_id(&fact.owner)),
-        ("parent".to_owned(), opt_id(&fact.parent)),
-        ("role".to_owned(), opt_text(&fact.role)),
-        ("appId".to_owned(), opt_text(&fact.app_id)),
-        ("executable".to_owned(), opt_text(&fact.executable)),
-        ("processId".to_owned(), opt_text(&fact.process_id)),
-        ("class".to_owned(), opt_text(&fact.class)),
-        ("title".to_owned(), opt_text(&fact.title)),
-        (
-            "type".to_owned(),
-            fact.window_type.map_or(RawSettingValue::Null, |kind| {
-                RawSettingValue::String(kind.as_str().to_owned())
-            }),
-        ),
-        (
-            "activationPolicy".to_owned(),
-            fact.activation_policy
-                .map_or(RawSettingValue::Null, |policy| {
-                    RawSettingValue::String(policy.as_str().to_owned())
-                }),
-        ),
-        (
-            "layer".to_owned(),
-            fact.layer.map_or(RawSettingValue::Null, |layer| {
-                RawSettingValue::Number(f64::from(layer))
-            }),
-        ),
-        (
-            "fullscreenOwner".to_owned(),
-            fact.fullscreen_owner
-                .map_or(RawSettingValue::Null, |owner| {
-                    RawSettingValue::String(owner.as_str().to_owned())
-                }),
-        ),
-        (
-            "fullscreenExitable".to_owned(),
-            opt_bool(fact.fullscreen_exitable),
-        ),
-        (
-            "suppressionAvailable".to_owned(),
-            opt_bool(fact.suppression_available),
-        ),
-        ("visibility".to_owned(), visibility_value(fact.visibility)),
-        (
-            "lastWrite".to_owned(),
-            fact.last_write
-                .as_ref()
-                .map_or(RawSettingValue::Null, last_write_value),
-        ),
-    ]);
-    fields
 }
 
 /// True when a window row contradicts the connection's unavailable facts: a

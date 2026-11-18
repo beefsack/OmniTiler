@@ -736,7 +736,6 @@ fn pager_held_without_fact_retains_order_slot() {
         output: None,
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];

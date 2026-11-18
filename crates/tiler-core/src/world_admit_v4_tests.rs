@@ -22,8 +22,7 @@ use crate::world_report::{
     HeldWindowRow, IntentDesire, MAX_FOCUS_DEPARTING, MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED,
     MAX_FOCUS_VIEWS, PresentationIngressV4, PresentationRowV4, RowDiagnostic, RowDiagnosticKind,
     RowDiagnosticLane, ScreenReport, SendSource, WORLD_CONTRACT_VERSION_V4, WindowFact,
-    WorldCommand, WorldReportV4, retained_window_fields, validate_after_shown_reason,
-    validate_focus_request_reason,
+    WorldCommand, WorldReportV4, validate_after_shown_reason, validate_focus_request_reason,
 };
 use crate::world_report_v4_checks::{graded_effective_v4, report_digest_v4};
 use crate::world_run_v4::V4RunOutcome;
@@ -1007,7 +1006,6 @@ fn raw_capability_conflict_never_aliases_preheld_input() {
         output: Some(OutputId("out-a".to_owned())),
         has_native_workspace: sticky_fact.native_workspace.as_deref().is_some(),
         last_write: sticky_fact.last_write,
-        fields: retained_window_fields(&sticky_fact),
         diagnostic: Some(RowDiagnostic {
             scope: AuthorityScope::Output(OutputId("out-a".to_owned())),
             row: RowDiagnosticLane::Window,
@@ -2619,7 +2617,6 @@ fn slice_7_1_mixed_invalid_structural_refused_atomically() {
         output: Some(OutputId("out-a".to_owned())),
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];
@@ -2961,7 +2958,6 @@ fn slice_7_1_held_window_typed_native_workspace_refuses_without_capability() {
         output: Some(OutputId("out-a".to_owned())),
         has_native_workspace: true,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];

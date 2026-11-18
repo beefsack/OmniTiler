@@ -744,7 +744,6 @@ fn pending_live_empty_cursor_guards_implicit_subject() {
         output: None,
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];
@@ -870,7 +869,6 @@ fn gap_prefix(engine: &mut WorldEngine) -> WorldReplyV4 {
         output: None,
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];
@@ -1254,7 +1252,6 @@ fn held_absent_target_retains_row_with_empty_cursor_until_live_recovery() {
         output: None,
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     };
@@ -1453,7 +1450,6 @@ fn unavailable_pending_same_batch_refuses_then_newer_report_acts_on_observed_and
         output: None,
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     };
@@ -1520,7 +1516,6 @@ fn unavailable_pending_same_batch_refuses_then_newer_report_acts_on_observed_and
         output: None,
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     };
@@ -1663,7 +1658,6 @@ fn unavailable_pending_newer_accepted_report_with_equal_observation_seq_acts_on_
         output: None,
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     };
@@ -1763,7 +1757,6 @@ fn same_batch_focus_decision_blocks_fallback_even_with_older_unavailable_pending
         output: None,
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     };
@@ -1855,7 +1848,6 @@ fn unavailable_pending_newer_unknown_or_unbound_foreground_refuses() {
         output: None,
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     };
@@ -2235,7 +2227,6 @@ fn failed_record_command_focus_clears_prior_cursor() {
         output: None,
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];

@@ -1228,7 +1228,6 @@ fn held_scope_holds_entry_then_healthy_recovery_resumes_tuple() {
         output: None,
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: crate::world_report::RowDiagnosticKind::InvalidFact,
     }];

@@ -75,12 +75,16 @@ fn slice_7_1_window_typed_matches_decoded() {
     let decoded = decode_report_v4(&value.to_string()).expect("decoded holds");
     assert_eq!(decoded.report.held_windows.len(), 1);
     assert_eq!(
-        graded.held_windows[0].fields, decoded.report.held_windows[0].fields,
-        "typed and decoded held window fields match"
+        graded.held_windows[0], decoded.report.held_windows[0],
+        "typed and decoded held window rows match"
     );
-    assert_eq!(
-        graded.held_windows[0].diagnostic,
-        decoded.report.held_windows[0].diagnostic
+    assert!(
+        decoded
+            .residual
+            .as_deref()
+            .and_then(|r| r.window_fields(decoded.report.held_windows[0].ordinal))
+            .is_some(),
+        "decoded held window retains residual fields"
     );
     assert_eq!(graded.held_windows[0].kind, RowDiagnosticKind::InvalidFact);
 }
@@ -246,12 +250,16 @@ fn slice_7_1_invalid_lanes_typed_match_decoded() {
     assert_eq!(typed_window_graded.held_windows.len(), 1);
     assert_eq!(decoded_window.report.held_windows.len(), 1);
     assert_eq!(
-        typed_window_graded.held_windows[0].fields, decoded_window.report.held_windows[0].fields,
-        "process-id held fields match"
+        typed_window_graded.held_windows[0], decoded_window.report.held_windows[0],
+        "process-id held window rows match"
     );
-    assert_eq!(
-        typed_window_graded.held_windows[0].diagnostic,
-        decoded_window.report.held_windows[0].diagnostic
+    assert!(
+        decoded_window
+            .residual
+            .as_deref()
+            .and_then(|r| r.window_fields(decoded_window.report.held_windows[0].ordinal))
+            .is_some(),
+        "decoded process-id held window retains residual fields"
     );
     // A cursor hit naming the held window refuses on both paths with
     // the identical verdict: the gradable row is not a readable

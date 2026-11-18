@@ -1,13 +1,14 @@
 //! Protocol-owned canonical v4 screen and window row emission, including held
-//! rows. Uses the protocol canonical scalar/raw writer in [`crate::canonical_json`]
-//! and reuses [`tiler_core::world_report::retained_window_fields`] so valid and
-//! held window rows share one field mapping without duplication.
+//! rows. Uses the protocol canonical scalar/raw writer in [`crate::canonical_json`].
 
 use crate::canonical_json::{NonFiniteNumber, push_json_number, push_raw_setting_value};
 use crate::world_protocol::push_json_string;
 use tiler_core::connection::RawSettingValue;
+use tiler_core::directional::WindowId;
 use tiler_core::geometry::Rect;
-use tiler_core::world_report::{HeldWindowRow, ScreenReport, WindowFact, retained_window_fields};
+use tiler_core::world_report::{
+    LastWrite, NativeWorkspaceFact, ScreenReport, VisibilityFact, VisibilitySample, WindowFact,
+};
 
 /// Exact canonical encoding for one held screen row: the retained carried
 /// fields as a JSON object in stored order (canonical schema order at
@@ -43,10 +44,12 @@ pub fn encode_held_screen_canonical(
 /// keys lexicographically, with the nested `hints`, `visibility`, and
 /// `lastWrite` objects in schema order). Checked: a non-finite retained
 /// number is an error, never a silent `null`.
-pub fn encode_held_window_canonical(held: &HeldWindowRow) -> Result<String, NonFiniteNumber> {
+pub fn encode_held_window_canonical(
+    fields: &[(String, RawSettingValue)],
+) -> Result<String, NonFiniteNumber> {
     let mut out = String::new();
     out.push('{');
-    for (i, (key, value)) in held.fields.iter().enumerate() {
+    for (i, (key, value)) in fields.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
@@ -133,6 +136,226 @@ pub fn encode_screen_canonical(screen: &ScreenReport) -> Result<String, NonFinit
     push_identity_text(&mut out, &screen.identity.connector);
     out.push_str("}}");
     Ok(out)
+}
+/// Map one valid window fact to its carried fields in canonical schema order
+/// (`win`, `out`, `rect`, `fullscreen`, `maximized`, `sticky`, `minimized`,
+/// `hints`, `nativeWs`, `hostHidden`, `privileged`, `managed`, `acceptsInput`,
+/// `activationInhibited`, `toolWindow`, `owned`, `transient`, `modal`,
+/// `resizable`, `above`, `below`, `owner`, `parent`, `role`, `appId`,
+/// `executable`, `processId`, `class`, `title`, `type`, `activationPolicy`,
+/// `layer`, `fullscreenOwner`, `fullscreenExitable`, `suppressionAvailable`,
+/// `visibility`, `lastWrite`), with nested `hints`, `visibility`, and
+/// `lastWrite` objects in schema order.
+pub(crate) fn retained_window_fields(fact: &WindowFact) -> Vec<(String, RawSettingValue)> {
+    fn opt_bool(value: Option<bool>) -> RawSettingValue {
+        value.map_or(RawSettingValue::Null, RawSettingValue::Bool)
+    }
+    fn opt_text(value: &Option<String>) -> RawSettingValue {
+        value.as_deref().map_or(RawSettingValue::Null, |text| {
+            RawSettingValue::String(text.to_owned())
+        })
+    }
+    fn opt_id(value: &Option<WindowId>) -> RawSettingValue {
+        value.as_ref().map_or(RawSettingValue::Null, |id| {
+            RawSettingValue::String(id.0.clone())
+        })
+    }
+    fn rect_value(rect: Option<Rect>) -> RawSettingValue {
+        rect.map_or(RawSettingValue::Null, |row| {
+            RawSettingValue::Array(vec![
+                RawSettingValue::Number(f64::from(row.x)),
+                RawSettingValue::Number(f64::from(row.y)),
+                RawSettingValue::Number(f64::from(row.w)),
+                RawSettingValue::Number(f64::from(row.h)),
+            ])
+        })
+    }
+    fn visibility_value(visibility: VisibilityFact) -> RawSettingValue {
+        RawSettingValue::Object(vec![
+            ("visible".to_owned(), opt_bool(visibility.visible)),
+            (
+                "suppressionOwned".to_owned(),
+                opt_bool(visibility.suppression_owned),
+            ),
+        ])
+    }
+    fn sample_value(sample: &VisibilitySample) -> RawSettingValue {
+        RawSettingValue::Object(vec![
+            (
+                "obs".to_owned(),
+                RawSettingValue::String(sample.obs.to_string()),
+            ),
+            (
+                "lifetimeMatched".to_owned(),
+                opt_bool(sample.lifetime_matched),
+            ),
+            ("visibility".to_owned(), visibility_value(sample.visibility)),
+            ("minimized".to_owned(), opt_bool(sample.minimized)),
+            ("hostHidden".to_owned(), opt_bool(sample.host_hidden)),
+        ])
+    }
+    fn last_write_value(last: &LastWrite) -> RawSettingValue {
+        RawSettingValue::Object(vec![
+            (
+                "property".to_owned(),
+                RawSettingValue::String(last.property.as_str().to_owned()),
+            ),
+            ("target".to_owned(), RawSettingValue::Bool(last.target)),
+            (
+                "revision".to_owned(),
+                RawSettingValue::String(last.revision.to_string()),
+            ),
+            (
+                "path".to_owned(),
+                RawSettingValue::String(last.path.as_str().to_owned()),
+            ),
+            (
+                "setter".to_owned(),
+                RawSettingValue::String(last.setter.as_str().to_owned()),
+            ),
+            (
+                "reason".to_owned(),
+                RawSettingValue::String(last.reason.as_str().to_owned()),
+            ),
+            (
+                "pre".to_owned(),
+                last.pre
+                    .as_ref()
+                    .map_or(RawSettingValue::Null, sample_value),
+            ),
+            (
+                "post".to_owned(),
+                last.post
+                    .as_ref()
+                    .map_or(RawSettingValue::Null, sample_value),
+            ),
+        ])
+    }
+    fn native_value(native: &NativeWorkspaceFact) -> Option<RawSettingValue> {
+        match native {
+            NativeWorkspaceFact::Omitted => None,
+            NativeWorkspaceFact::Null => Some(RawSettingValue::Null),
+            NativeWorkspaceFact::Value(id) => Some(RawSettingValue::String(id.clone())),
+        }
+    }
+    let mut fields = vec![
+        (
+            "win".to_owned(),
+            RawSettingValue::String(fact.window.0.clone()),
+        ),
+        (
+            "out".to_owned(),
+            fact.output.as_ref().map_or(RawSettingValue::Null, |out| {
+                RawSettingValue::String(out.0.clone())
+            }),
+        ),
+        ("rect".to_owned(), rect_value(fact.rect)),
+        ("fullscreen".to_owned(), opt_bool(fact.fullscreen)),
+        ("maximized".to_owned(), opt_bool(fact.maximized)),
+        ("sticky".to_owned(), opt_bool(fact.sticky)),
+        ("minimized".to_owned(), opt_bool(fact.minimized)),
+        (
+            "hints".to_owned(),
+            fact.hints.map_or(RawSettingValue::Null, |hints| {
+                RawSettingValue::Object(vec![
+                    (
+                        "minW".to_owned(),
+                        hints.min_w.map_or(RawSettingValue::Null, |bound| {
+                            RawSettingValue::Number(f64::from(bound))
+                        }),
+                    ),
+                    (
+                        "minH".to_owned(),
+                        hints.min_h.map_or(RawSettingValue::Null, |bound| {
+                            RawSettingValue::Number(f64::from(bound))
+                        }),
+                    ),
+                    (
+                        "maxW".to_owned(),
+                        hints.max_w.map_or(RawSettingValue::Null, |bound| {
+                            RawSettingValue::Number(f64::from(bound))
+                        }),
+                    ),
+                    (
+                        "maxH".to_owned(),
+                        hints.max_h.map_or(RawSettingValue::Null, |bound| {
+                            RawSettingValue::Number(f64::from(bound))
+                        }),
+                    ),
+                ])
+            }),
+        ),
+    ];
+    if let Some(native) = native_value(&fact.native_workspace) {
+        fields.push(("nativeWs".to_owned(), native));
+    }
+    fields.extend([
+        ("hostHidden".to_owned(), opt_bool(fact.host_hidden)),
+        ("privileged".to_owned(), opt_bool(fact.privileged)),
+        ("managed".to_owned(), opt_bool(fact.managed)),
+        ("acceptsInput".to_owned(), opt_bool(fact.accepts_input)),
+        (
+            "activationInhibited".to_owned(),
+            opt_bool(fact.activation_inhibited),
+        ),
+        ("toolWindow".to_owned(), opt_bool(fact.tool_window)),
+        ("owned".to_owned(), opt_bool(fact.owned)),
+        ("transient".to_owned(), opt_bool(fact.transient)),
+        ("modal".to_owned(), opt_bool(fact.modal)),
+        ("resizable".to_owned(), opt_bool(fact.resizable)),
+        ("above".to_owned(), opt_bool(fact.above)),
+        ("below".to_owned(), opt_bool(fact.below)),
+        ("owner".to_owned(), opt_id(&fact.owner)),
+        ("parent".to_owned(), opt_id(&fact.parent)),
+        ("role".to_owned(), opt_text(&fact.role)),
+        ("appId".to_owned(), opt_text(&fact.app_id)),
+        ("executable".to_owned(), opt_text(&fact.executable)),
+        ("processId".to_owned(), opt_text(&fact.process_id)),
+        ("class".to_owned(), opt_text(&fact.class)),
+        ("title".to_owned(), opt_text(&fact.title)),
+        (
+            "type".to_owned(),
+            fact.window_type.map_or(RawSettingValue::Null, |kind| {
+                RawSettingValue::String(kind.as_str().to_owned())
+            }),
+        ),
+        (
+            "activationPolicy".to_owned(),
+            fact.activation_policy
+                .map_or(RawSettingValue::Null, |policy| {
+                    RawSettingValue::String(policy.as_str().to_owned())
+                }),
+        ),
+        (
+            "layer".to_owned(),
+            fact.layer.map_or(RawSettingValue::Null, |layer| {
+                RawSettingValue::Number(f64::from(layer))
+            }),
+        ),
+        (
+            "fullscreenOwner".to_owned(),
+            fact.fullscreen_owner
+                .map_or(RawSettingValue::Null, |owner| {
+                    RawSettingValue::String(owner.as_str().to_owned())
+                }),
+        ),
+        (
+            "fullscreenExitable".to_owned(),
+            opt_bool(fact.fullscreen_exitable),
+        ),
+        (
+            "suppressionAvailable".to_owned(),
+            opt_bool(fact.suppression_available),
+        ),
+        ("visibility".to_owned(), visibility_value(fact.visibility)),
+        (
+            "lastWrite".to_owned(),
+            fact.last_write
+                .as_ref()
+                .map_or(RawSettingValue::Null, last_write_value),
+        ),
+    ]);
+    fields
 }
 
 #[cfg(test)]

@@ -389,7 +389,7 @@ fn v4_structural_held_rows_accept_with_exact_retention() {
         );
         match lane {
             "screens" => assert_screen_hold(&decoded, &doc, &invalid, fixture),
-            "windows" => assert_window_hold(report, &doc, &invalid, fixture),
+            "windows" => assert_window_hold(&decoded, &doc, &invalid, fixture),
             "native" => assert_native_hold(report, &doc, &invalid, fixture),
             "presentation" => assert_presentation_hold(&decoded, &doc, &invalid, fixture),
             "frameAttempts" | "memberAttempts" | "viewAttempts" | "clearAttempts"
@@ -458,11 +458,12 @@ fn assert_screen_hold(
 }
 
 fn assert_window_hold(
-    report: &tiler_core::world_report::WorldReportV4,
+    decoded: &tiler_protocol::world_protocol::DecodedReportV4,
     doc: &serde_json::Value,
     invalid: &InvalidRef,
     fixture: &ManifestFixture,
 ) {
+    let report = &decoded.report;
     let ordinal: usize = invalid
         .pointer
         .split('/')
@@ -526,13 +527,23 @@ fn assert_window_hold(
             order_last_write(value);
         }
     }
+    let fields = decoded
+        .residual
+        .as_deref()
+        .and_then(|r| r.window_fields(held.ordinal))
+        .expect("held window retains residual fields");
     assert_eq!(
-        held.fields.iter().map(|(key, _)| key).collect::<Vec<_>>(),
+        fields.iter().map(|(key, _)| key).collect::<Vec<_>>(),
         expected.iter().map(|(key, _)| key).collect::<Vec<_>>(),
         "{} field order",
         fixture.id
     );
-    assert_eq!(held.fields, expected, "{} exact retention", fixture.id);
+    assert_eq!(
+        fields,
+        expected.as_slice(),
+        "{} exact retention",
+        fixture.id
+    );
 }
 
 fn order_last_write(value: &mut RawSettingValue) {
@@ -2135,7 +2146,7 @@ fn v4_writer_refuses_inconsistent_metadata() {
                     tiler_core::connection::RawSettingValue::Number(f64::NAN),
                 )],
             )],
-            held_presentation_fields: None,
+            ..Default::default()
         },
     ));
     let error = encode_report_v4(&decoded).expect_err("held nonfinite refuses");

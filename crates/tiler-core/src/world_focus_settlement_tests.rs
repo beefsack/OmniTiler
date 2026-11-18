@@ -956,7 +956,6 @@ fn first_tuple_latches_under_hold_incomplete_barrier_and_keeps_stamp() {
             output: None,
             has_native_workspace: false,
             last_write: None,
-            fields: Vec::new(),
             diagnostic: None,
             kind: RowDiagnosticKind::InvalidFact,
         }];
@@ -1346,7 +1345,6 @@ fn settle_under_sweep_hold_and_held_presence_retains() {
         output: None,
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];

@@ -65,7 +65,6 @@ fn held_window_row(window: &str, output: &str, ordinal: usize) -> HeldWindowRow 
         output: Some(OutputId(output.to_owned())),
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }
@@ -1219,7 +1218,6 @@ fn held_scope_keeps_prior_staged_homing() {
         output: None,
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: crate::world_report::RowDiagnosticKind::InvalidFact,
     }];
@@ -1335,7 +1333,6 @@ fn intent_pending_survives_hold_cleared_by_close_and_late_fenced() {
         output: Some(OutputId("out-a".to_owned())),
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: crate::world_report::RowDiagnosticKind::InvalidFact,
     }];
@@ -7523,7 +7520,6 @@ fn visibility_normalization_keeps_healthy_over_held() {
         output: Some(OutputId("out-a".to_owned())),
         has_native_workspace: false,
         last_write: Some(win_a_lw),
-        fields: crate::world_report::retained_window_fields(&fact_with_lw("win-a", win_a_lw)),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];
@@ -7558,7 +7554,6 @@ fn visibility_normalization_falls_back_to_first_decodable_held_row() {
         output: Some(OutputId("out-a".to_owned())),
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     };
@@ -7569,7 +7564,6 @@ fn visibility_normalization_falls_back_to_first_decodable_held_row() {
         output: Some(OutputId("out-a".to_owned())),
         has_native_workspace: false,
         last_write: Some(decodable_lw),
-        fields: crate::world_report::retained_window_fields(&fact_with_lw("win-a", decodable_lw)),
         diagnostic: None,
         kind: RowDiagnosticKind::ConflictingFact,
     };

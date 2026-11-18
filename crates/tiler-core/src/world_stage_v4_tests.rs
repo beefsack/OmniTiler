@@ -91,7 +91,6 @@ fn held_window(window: &str, output: Option<&str>) -> HeldWindowRow {
         output: output.map(|out| OutputId(out.to_owned())),
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }
@@ -918,7 +917,6 @@ fn v4_state_offroute_scope_precedence_and_unresolved() {
         output: Some(OutputId("out-b".to_owned())),
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::ConflictingFact,
     };
@@ -948,7 +946,6 @@ fn v4_state_offroute_scope_precedence_and_unresolved() {
         output: Some(OutputId("out-b".to_owned())),
         has_native_workspace: false,
         last_write: None,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     };

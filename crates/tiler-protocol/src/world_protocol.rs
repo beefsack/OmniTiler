@@ -518,7 +518,10 @@ fn opt_point_or_null(
 #[allow(clippy::large_enum_variant)] // Keep held evidence inline rather than allocate per held row.
 enum WindowRowOutcome {
     Valid(Box<WindowFact>),
-    Held(HeldWindowRow),
+    Held {
+        row: HeldWindowRow,
+        fields: crate::world_report_residual::HeldFields,
+    },
 }
 
 /// Nullable bounded native text (`role`, `appId`, `executable`, `class`,
@@ -799,7 +802,7 @@ fn held_window_row(
     fact: &WindowFact,
     ordinal: usize,
     map: &serde_json::Map<String, serde_json::Value>,
-) -> HeldWindowRow {
+) -> (HeldWindowRow, crate::world_report_residual::HeldFields) {
     const SCHEMA_ORDER: &[&str] = &[
         "win",
         "out",
@@ -895,13 +898,12 @@ fn held_window_row(
         Some(serde_json::Value::String(id)) if !id.is_empty()
     );
     let last_write = map.get("lastWrite").and_then(decode_held_last_write_json);
-    HeldWindowRow {
+    let row = HeldWindowRow {
         window: fact.window.clone(),
         ordinal,
         output: fact.output.clone(),
         has_native_workspace,
         last_write,
-        fields,
         diagnostic: fact.output.as_ref().map(|out| RowDiagnostic {
             scope: AuthorityScope::Output(out.clone()),
             row: RowDiagnosticLane::Window,
@@ -909,7 +911,8 @@ fn held_window_row(
             kind: RowDiagnosticKind::InvalidFact,
         }),
         kind: RowDiagnosticKind::InvalidFact,
-    }
+    };
+    (row, fields)
 }
 
 /// Reorder the nested objects of a retained `lastWrite` value into
@@ -2789,9 +2792,9 @@ pub struct DecodedReportV4 {
     /// in order (one entry per valid row).
     pub creation_receipts: Vec<CreationReceiptWire>,
     /// Protocol-owned residual evidence (retained raw fields for held
-    /// `screens` rows and a held `presentation` singleton) for lossless
-    /// re-encoding, sizing, and exact replay discrimination. `None` when no
-    /// held-row residual is carried.
+    /// `screens` rows, held `windows` rows, and a held `presentation`
+    /// singleton) for lossless re-encoding, sizing, and exact replay
+    /// discrimination. `None` when no held-row residual is carried.
     pub residual: Option<std::sync::Arc<crate::world_report_residual::WorldReportResidual>>,
 }
 
@@ -3353,9 +3356,8 @@ fn decode_fact_v4(
                 message: reason,
             });
         }
-        return Ok(WindowRowOutcome::Held(held_window_row(
-            &candidate, ordinal, map,
-        )));
+        let (row, fields) = held_window_row(&candidate, ordinal, map);
+        return Ok(WindowRowOutcome::Held { row, fields });
     }
     let fact = WindowFact {
         window: candidate.window.clone(),
@@ -4583,6 +4585,7 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
     let windows_value = map.get("windows").ok_or_else(malformed)?;
     let mut windows = Vec::new();
     let mut held_windows = Vec::new();
+    let mut held_window_fields = Vec::new();
     let mut seen_windows = std::collections::BTreeSet::new();
     for (ordinal, item) in windows_value
         .as_array()
@@ -4592,7 +4595,10 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
     {
         match decode_fact_v4(item, ordinal, &mut seen_windows)? {
             WindowRowOutcome::Valid(fact) => windows.push(*fact),
-            WindowRowOutcome::Held(held) => held_windows.push(held),
+            WindowRowOutcome::Held { row, fields } => {
+                held_window_fields.push((row.ordinal, fields));
+                held_windows.push(row);
+            }
         }
     }
     if windows.len().saturating_add(held_windows.len()) > tiler_core::world_report::MAX_WORLD_FACTS
@@ -5058,12 +5064,16 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
             Some(_) => GestureIngressWire::Present,
         },
     };
-    let residual = if held_screen_fields.is_empty() && held_presentation_fields.is_none() {
+    let residual = if held_screen_fields.is_empty()
+        && held_window_fields.is_empty()
+        && held_presentation_fields.is_none()
+    {
         None
     } else {
         Some(std::sync::Arc::new(
             crate::world_report_residual::WorldReportResidual {
                 held_screen_fields,
+                held_window_fields,
                 held_presentation_fields,
             },
         ))
@@ -7421,10 +7431,9 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
     for screen in &report.screens {
         screens.push(encode_screen_canonical(screen).map_err(|_| snapshot_invalid("nonfinite"))?);
     }
+    let residual_ref = decoded.residual.as_deref();
     let mut held_screens = Vec::with_capacity(report.held_screens.len());
-    let mut residual_screens = decoded
-        .residual
-        .as_deref()
+    let mut residual_screens = residual_ref
         .map(|r| r.held_screen_fields.as_slice())
         .unwrap_or(&[])
         .iter()
@@ -7460,10 +7469,28 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
         windows.push(encode_window_canonical(fact).map_err(|_| snapshot_invalid("nonfinite"))?);
     }
     let mut held_windows = Vec::with_capacity(report.held_windows.len());
+    let mut residual_windows = residual_ref
+        .map(|r| r.held_window_fields.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .peekable();
     for held in &report.held_windows {
+        while let Some((ord, _)) = residual_windows.peek() {
+            if *ord < held.ordinal {
+                residual_windows.next();
+            } else {
+                break;
+            }
+        }
+        let fields = residual_windows
+            .peek()
+            .filter(|(ord, _)| *ord == held.ordinal)
+            .map(|(_, fields)| fields.as_slice())
+            .ok_or_else(|| snapshot_invalid("held-window-residual-missing"))?;
+        residual_windows.next();
         held_windows.push((
             held.ordinal,
-            encode_held_window_canonical(held).map_err(|_| snapshot_invalid("nonfinite"))?,
+            encode_held_window_canonical(fields).map_err(|_| snapshot_invalid("nonfinite"))?,
         ));
     }
     for (i, row) in merge_lane(windows, held_windows)?.iter().enumerate() {
