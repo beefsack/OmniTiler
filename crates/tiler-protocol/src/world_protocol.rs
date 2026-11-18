@@ -515,6 +515,7 @@ fn opt_point_or_null(
 /// unidentifiable (bad `win`) or structurally wrong (unknown non-retired
 /// keys, bad `out` shape, duplicate lifetime, bad `rect`, bad `hints`)
 /// refuses the whole report.
+#[allow(clippy::large_enum_variant)] // Keep held evidence inline rather than allocate per held row.
 enum WindowRowOutcome {
     Valid(Box<WindowFact>),
     Held(HeldWindowRow),
@@ -725,6 +726,68 @@ fn decode_last_write(value: &serde_json::Value) -> Result<LastWrite> {
     })
 }
 
+/// Permissive held-row `lastWrite` decode: preserves the prior core
+/// `decode_held_last_write` tolerance for extra keys at `LastWrite`,
+/// `VisibilitySample`, and `VisibilityFact` nesting as well as
+/// `str::parse::<u64>()` counters (e.g. zero-padded strings). Returns `None`
+/// for `null` or any undecodable shape.
+fn decode_held_last_write_json(value: &serde_json::Value) -> Option<LastWrite> {
+    let map = value.as_object()?;
+    let as_str = |key: &str| map.get(key)?.as_str();
+    let property = LastWriteProperty::parse(as_str("property")?)?;
+    let target = map.get("target")?.as_bool()?;
+    let revision = as_str("revision")?.parse::<u64>().ok()?;
+    let path = LastWritePath::parse(as_str("path")?)?;
+    let setter = VisibilitySetter::parse(as_str("setter")?)?;
+    let reason = VisibilityReason::parse(as_str("reason")?)?;
+    fn decode_sample(value: &serde_json::Value) -> Option<VisibilitySample> {
+        let map = value.as_object()?;
+        let obs = map.get("obs")?.as_str()?.parse::<u64>().ok()?;
+        let opt_bool = |key: &str| match map.get(key)? {
+            serde_json::Value::Null => Some(None),
+            serde_json::Value::Bool(value) => Some(Some(*value)),
+            _ => None,
+        };
+        let visibility = {
+            let vis = map.get("visibility")?.as_object()?;
+            let opt = |key: &str| match vis.get(key)? {
+                serde_json::Value::Null => Some(None),
+                serde_json::Value::Bool(value) => Some(Some(*value)),
+                _ => None,
+            };
+            VisibilityFact {
+                visible: opt("visible")?,
+                suppression_owned: opt("suppressionOwned")?,
+            }
+        };
+        Some(VisibilitySample {
+            obs,
+            lifetime_matched: opt_bool("lifetimeMatched")?,
+            visibility,
+            minimized: opt_bool("minimized")?,
+            host_hidden: opt_bool("hostHidden")?,
+        })
+    }
+    let pre = match map.get("pre")? {
+        serde_json::Value::Null => None,
+        value => Some(decode_sample(value)?),
+    };
+    let post = match map.get("post")? {
+        serde_json::Value::Null => None,
+        value => Some(decode_sample(value)?),
+    };
+    Some(LastWrite {
+        property,
+        target,
+        revision,
+        path,
+        setter,
+        reason,
+        pre,
+        post,
+    })
+}
+
 /// Retain one identifiable-but-bad window row: every carried key in
 /// canonical schema order, then any other carried keys lexicographically,
 /// with an `InvalidFact` diagnostic only for the row's actual reported
@@ -827,10 +890,17 @@ fn held_window_row(
             reorder_last_write(value);
         }
     }
+    let has_native_workspace = matches!(
+        map.get("nativeWs"),
+        Some(serde_json::Value::String(id)) if !id.is_empty()
+    );
+    let last_write = map.get("lastWrite").and_then(decode_held_last_write_json);
     HeldWindowRow {
         window: fact.window.clone(),
         ordinal,
         output: fact.output.clone(),
+        has_native_workspace,
+        last_write,
         fields,
         diagnostic: fact.output.as_ref().map(|out| RowDiagnostic {
             scope: AuthorityScope::Output(out.clone()),
@@ -2761,10 +2831,19 @@ fn held_attempt_row(
     for key in extra {
         fields.push((key.clone(), raw_setting_value(&map[key])));
     }
+    let has_native_ref = lane == AttemptLaneV4::Member
+        && ["pre", "post"].iter().any(|key| {
+            matches!(
+                map.get(*key),
+                Some(serde_json::Value::Object(entries))
+                    if matches!(entries.get("kind"), Some(serde_json::Value::String(kind)) if kind == "native")
+            )
+        });
     HeldAttemptRow {
         lane,
         ordinal,
         identity,
+        has_native_ref,
         fields,
         diagnostic,
         kind: RowDiagnosticKind::InvalidFact,
@@ -2854,9 +2933,14 @@ fn held_native_row(
             reorder_retained_items(value, &["native", "count"]);
         }
     }
+    let order_len = match map.get("order") {
+        Some(serde_json::Value::Array(items)) => items.len(),
+        _ => 0,
+    };
     HeldNativeRow {
         output: output.clone(),
         ordinal,
+        order_len,
         fields,
         diagnostic: RowDiagnostic {
             scope: AuthorityScope::Output(output.clone()),
@@ -3798,20 +3882,6 @@ fn decode_clear_attempt_v4(
     }
 }
 
-/// Carried `order` length of one held native row, read off its retained
-/// fields (a held row always carries `order`: a missing one refuses before
-/// any hold). Used only for the global native-id budget.
-fn held_native_order_len(held: &HeldNativeRow) -> usize {
-    held.fields
-        .iter()
-        .find(|(key, _)| key == "order")
-        .map(|(_, value)| match value {
-            RawSettingValue::Array(items) => items.len(),
-            _ => 0,
-        })
-        .unwrap_or(0)
-}
-
 /// Staged v4 creation-attempt decode: structural preflight over the readable
 /// fields first (mirrors the core creation gate: bad ids, per-row caps and
 /// dupes, op uniqueness, receipt reuse, aggregate budget), then the strict
@@ -4596,7 +4666,7 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
                     message: "native-output-unknown",
                 });
             }
-            total_native = total_native.saturating_add(held_native_order_len(held));
+            total_native = total_native.saturating_add(held.order_len);
         }
         if total_native > tiler_core::world_report::MAX_WORLD_NATIVE {
             return Err(WorldProtocolError {

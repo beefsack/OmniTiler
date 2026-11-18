@@ -4289,6 +4289,8 @@ fn v4_window_vocab_rejects_unknown_enums_and_holds_retired() {
         window: tiler_core::directional::WindowId("win-a".to_owned()),
         ordinal: 0,
         output: Some(tiler_core::directional::OutputId("out-a".to_owned())),
+        has_native_workspace: false,
+        last_write: None,
         fields: vec![(
             "layer".to_owned(),
             tiler_core::connection::RawSettingValue::Number(f64::NAN),
@@ -4580,4 +4582,63 @@ fn consumed_command_replays_no_explicit_effect_with_metadata() {
         reply.drag_preview
     );
     reply_wire(&reply);
+}
+
+#[test]
+fn v4_held_rows_project_typed_facts_with_wire_parity() {
+    let mut raw: serde_json::Value = serde_json::from_str(&one_window_request()).expect("report");
+    raw["windows"][0]["nativeWs"] = serde_json::json!("ws-native-1");
+    raw["windows"][0]["lastWrite"] = serde_json::json!({
+        "property": "visibility",
+        "target": true,
+        "revision": "007",
+        "path": "staged",
+        "setter": "accepted",
+        "reason": "",
+        "pre": {
+            "obs": "001",
+            "lifetimeMatched": true,
+            "visibility": {
+                "visible": false,
+                "suppressionOwned": false,
+                "extraVisKey": 1
+            },
+            "minimized": false,
+            "hostHidden": false,
+            "extraSampleKey": "x"
+        },
+        "post": null,
+        "extraLastWriteKey": true
+    });
+    raw["native"] = serde_json::json!([{
+        "out": "out",
+        "order": ["ws-native-1", "ws-native-2"],
+        "current": "",
+        "occupancy": [
+            {"native": "ws-native-1", "count": 1},
+            {"native": "ws-native-2", "count": 0}
+        ]
+    }]);
+    raw["memberAttempts"] = serde_json::json!([{
+        "op": "op-m",
+        "win": "win-a",
+        "out": "out",
+        "ws": "ws-1",
+        "setter": "accepted",
+        "pre": {"kind": "native", "out": "out", "ws": "ws-native-1", "extra": true},
+        "post": null,
+        "attemptMs": "1"
+    }]);
+    let report = decode_request(&raw.to_string()).expect("decodes with held rows");
+    assert_eq!(report.held_windows.len(), 1);
+    assert!(report.held_windows[0].has_native_workspace);
+    let lw = report.held_windows[0]
+        .last_write
+        .expect("permissive held lastWrite decodes with extra keys and zero-padded counters");
+    assert_eq!(lw.revision, 7);
+    assert_eq!(lw.pre.as_ref().map(|s| s.obs), Some(1));
+    assert_eq!(report.held_native.len(), 1);
+    assert_eq!(report.held_native[0].order_len, 2);
+    assert_eq!(report.held_attempts.len(), 1);
+    assert!(report.held_attempts[0].has_native_ref);
 }

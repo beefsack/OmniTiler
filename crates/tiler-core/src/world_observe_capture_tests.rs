@@ -64,6 +64,8 @@ fn held_window_row(window: &str, output: &str, ordinal: usize) -> HeldWindowRow 
         window: WindowId(window.to_owned()),
         ordinal,
         output: Some(OutputId(output.to_owned())),
+        has_native_workspace: false,
+        last_write: None,
         fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
@@ -74,6 +76,7 @@ fn held_native_row(output: &str, ordinal: usize) -> HeldNativeRow {
     HeldNativeRow {
         output: OutputId(output.to_owned()),
         ordinal,
+        order_len: 0,
         fields: Vec::new(),
         diagnostic: diag(output, RowDiagnosticLane::Native, None),
     }
@@ -84,6 +87,7 @@ fn held_frame_row(ordinal: usize) -> HeldAttemptRow {
         lane: AttemptLaneV4::Frame,
         ordinal,
         identity: Vec::new(),
+        has_native_ref: false,
         fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
@@ -95,6 +99,7 @@ fn held_member_row(ordinal: usize) -> HeldAttemptRow {
         lane: AttemptLaneV4::Member,
         ordinal,
         identity: vec!["win-a".to_owned()],
+        has_native_ref: false,
         fields: Vec::new(),
         diagnostic: Some(diag("out-a", RowDiagnosticLane::Attempt, Some("win-a"))),
         kind: RowDiagnosticKind::InvalidFact,
@@ -1214,6 +1219,8 @@ fn held_scope_keeps_prior_staged_homing() {
         window: WindowId("win-keep".to_owned()),
         ordinal: 0,
         output: None,
+        has_native_workspace: false,
+        last_write: None,
         fields: Vec::new(),
         diagnostic: None,
         kind: crate::world_report::RowDiagnosticKind::InvalidFact,
@@ -1328,6 +1335,8 @@ fn intent_pending_survives_hold_cleared_by_close_and_late_fenced() {
         window: WindowId("win-a".to_owned()),
         ordinal: 0,
         output: Some(OutputId("out-a".to_owned())),
+        has_native_workspace: false,
+        last_write: None,
         fields: Vec::new(),
         diagnostic: None,
         kind: crate::world_report::RowDiagnosticKind::InvalidFact,
@@ -7509,14 +7518,14 @@ fn visibility_normalization_keeps_healthy_over_held() {
         vec![fact_with_lw("win-a", confirm_last_write(false, 1, 2))],
         Vec::new(),
     );
+    let win_a_lw = confirm_last_write(true, 1, 2);
     v4report.held_windows = vec![HeldWindowRow {
         window: WindowId("win-a".to_owned()),
         ordinal: 1,
         output: Some(OutputId("out-a".to_owned())),
-        fields: crate::world_report::retained_window_fields(&fact_with_lw(
-            "win-a",
-            confirm_last_write(true, 1, 2),
-        )),
+        has_native_workspace: false,
+        last_write: Some(win_a_lw),
+        fields: crate::world_report::retained_window_fields(&fact_with_lw("win-a", win_a_lw)),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];
@@ -7549,18 +7558,20 @@ fn visibility_normalization_falls_back_to_first_decodable_held_row() {
         window: WindowId("win-a".to_owned()),
         ordinal: 1,
         output: Some(OutputId("out-a".to_owned())),
+        has_native_workspace: false,
+        last_write: None,
         fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     };
+    let decodable_lw = confirm_last_write(true, 1, 2);
     let decodable = HeldWindowRow {
         window: WindowId("win-a".to_owned()),
         ordinal: 2,
         output: Some(OutputId("out-a".to_owned())),
-        fields: crate::world_report::retained_window_fields(&fact_with_lw(
-            "win-a",
-            confirm_last_write(true, 1, 2),
-        )),
+        has_native_workspace: false,
+        last_write: Some(decodable_lw),
+        fields: crate::world_report::retained_window_fields(&fact_with_lw("win-a", decodable_lw)),
         diagnostic: None,
         kind: RowDiagnosticKind::ConflictingFact,
     };

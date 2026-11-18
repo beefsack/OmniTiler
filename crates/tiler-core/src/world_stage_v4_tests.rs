@@ -90,6 +90,8 @@ fn held_window(window: &str, output: Option<&str>) -> HeldWindowRow {
         window: WindowId(window.to_owned()),
         ordinal: 0,
         output: output.map(|out| OutputId(out.to_owned())),
+        has_native_workspace: false,
+        last_write: None,
         fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
@@ -205,6 +207,7 @@ fn v4_stages_new_lanes_verbatim() {
     report.held_native = vec![HeldNativeRow {
         output: OutputId("out-a".to_owned()),
         ordinal: 0,
+        order_len: 0,
         fields: Vec::new(),
         diagnostic: diagnostic("out-a", RowDiagnosticLane::Native, None),
     }];
@@ -213,6 +216,7 @@ fn v4_stages_new_lanes_verbatim() {
             lane: AttemptLaneV4::Frame,
             ordinal: 0,
             identity: Vec::new(),
+            has_native_ref: false,
             fields: Vec::new(),
             diagnostic: None,
             kind: RowDiagnosticKind::InvalidFact,
@@ -221,6 +225,7 @@ fn v4_stages_new_lanes_verbatim() {
             lane: AttemptLaneV4::Member,
             ordinal: 1,
             identity: vec!["win-a".to_owned()],
+            has_native_ref: false,
             fields: Vec::new(),
             diagnostic: Some(diagnostic(
                 "out-a",
@@ -289,6 +294,7 @@ fn v4_lane_order_with_held_presentation_last() {
     report.held_native = vec![HeldNativeRow {
         output: OutputId("out-a".to_owned()),
         ordinal: 0,
+        order_len: 0,
         fields: Vec::new(),
         diagnostic: diagnostic("out-a", RowDiagnosticLane::Native, None),
     }];
@@ -296,6 +302,7 @@ fn v4_lane_order_with_held_presentation_last() {
         lane: AttemptLaneV4::Clear,
         ordinal: 0,
         identity: Vec::new(),
+        has_native_ref: false,
         fields: Vec::new(),
         diagnostic: Some(diagnostic(
             "out-a",
@@ -911,6 +918,8 @@ fn v4_state_offroute_scope_precedence_and_unresolved() {
         window: WindowId("win-a".to_owned()),
         ordinal: 0,
         output: Some(OutputId("out-b".to_owned())),
+        has_native_workspace: false,
+        last_write: None,
         fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::ConflictingFact,
@@ -939,6 +948,8 @@ fn v4_state_offroute_scope_precedence_and_unresolved() {
         window: WindowId("win-held".to_owned()),
         ordinal: 0,
         output: Some(OutputId("out-b".to_owned())),
+        has_native_workspace: false,
+        last_write: None,
         fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
@@ -1128,6 +1139,7 @@ fn v4_offroute_orders_before_presentation_last() {
     report.held_native = vec![HeldNativeRow {
         output: OutputId("out-a".to_owned()),
         ordinal: 0,
+        order_len: 0,
         fields: Vec::new(),
         diagnostic: diagnostic("out-a", RowDiagnosticLane::Native, None),
     }];
@@ -1135,6 +1147,7 @@ fn v4_offroute_orders_before_presentation_last() {
         lane: AttemptLaneV4::Clear,
         ordinal: 0,
         identity: Vec::new(),
+        has_native_ref: false,
         fields: Vec::new(),
         diagnostic: Some(diagnostic(
             "out-a",

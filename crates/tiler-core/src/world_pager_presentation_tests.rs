@@ -734,6 +734,8 @@ fn pager_held_without_fact_retains_order_slot() {
         window: WindowId("win-c".to_owned()),
         ordinal: 0,
         output: None,
+        has_native_workspace: false,
+        last_write: None,
         fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,

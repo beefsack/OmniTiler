@@ -396,6 +396,8 @@ fn output_less_held_row_resolves_retained_home_hold() {
         window: WindowId("win-a".to_owned()),
         ordinal: 0,
         output: None,
+        has_native_workspace: false,
+        last_write: None,
         fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,

@@ -13,8 +13,8 @@ use crate::geometry::Rect;
 use crate::world_engine::EventIssue;
 use crate::world_report::{
     ClearAttempt, FrameAttempt, FrameSetter, HeldWindowRow, LastWrite, LastWritePath,
-    LastWriteProperty, MemberAttempt, MemberDisposition, StateAttempt, StateProperty, TransferKind,
-    ViewAttempt, VisibilityReason, VisibilitySample, VisibilitySetter, WorkspaceRef, WorldCommand,
+    MemberAttempt, MemberDisposition, StateAttempt, StateProperty, TransferKind, ViewAttempt,
+    VisibilityReason, VisibilitySample, VisibilitySetter, WorkspaceRef, WorldCommand,
 };
 
 /// Shared mechanical call disposition carried by canonical attempts. The
@@ -375,8 +375,8 @@ impl PropertyAttempt {
     /// rule.
     #[must_use]
     pub(crate) fn from_held_last_write(held: &HeldWindowRow) -> Option<Self> {
-        let last = decode_held_last_write(held)?;
-        Some(Self::from_last_write(&held.window, &last))
+        let last = held.last_write.as_ref()?;
+        Some(Self::from_last_write(&held.window, last))
     }
 
     /// Normalize one raw wire frame attempt at the capture boundary. Every
@@ -874,120 +874,10 @@ impl crate::world_transaction::WorldTransaction<'_> {
     }
 }
 
-/// Decode one lossless held-row `lastWrite` from retained raw fields. Returns
-/// `None` when the row carries no `lastWrite`, carries `null`, or carries a
-/// shape that does not decode to a typed [`LastWrite`]. This is the boundary
-/// normalization of retained raw input only; no settlement lane reconstructs
-/// the wire DTO downstream.
-fn decode_held_last_write(held: &HeldWindowRow) -> Option<LastWrite> {
-    use crate::connection::RawSettingValue;
-    let (_, raw) = held.fields.iter().find(|(key, _)| key == "lastWrite")?;
-    let RawSettingValue::Object(entries) = raw else {
-        return None;
-    };
-    let get = |key: &str| entries.iter().find(|(k, _)| k == key).map(|(_, v)| v);
-    let as_str = |key: &str| match get(key)? {
-        RawSettingValue::String(text) => Some(text.as_str()),
-        _ => None,
-    };
-    let property = match as_str("property")? {
-        "visibility" => LastWriteProperty::Visibility,
-        _ => return None,
-    };
-    let target = match get("target")? {
-        RawSettingValue::Bool(value) => *value,
-        _ => return None,
-    };
-    let revision = as_str("revision")?.parse::<u64>().ok()?;
-    let path = match as_str("path")? {
-        "staged" => LastWritePath::Staged,
-        "fallback" => LastWritePath::Fallback,
-        "independent" => LastWritePath::Independent,
-        _ => return None,
-    };
-    let setter = match as_str("setter")? {
-        "accepted" => VisibilitySetter::Accepted,
-        "refused" => VisibilitySetter::Refused,
-        "threw" => VisibilitySetter::Threw,
-        "not-called" => VisibilitySetter::NotCalled,
-        _ => return None,
-    };
-    let reason = match as_str("reason")? {
-        "" => VisibilityReason::Empty,
-        "identity-stale" => VisibilityReason::IdentityStale,
-        "scope-held" => VisibilityReason::ScopeHeld,
-        "unreadable" => VisibilityReason::Unreadable,
-        "unsupported" => VisibilityReason::Unsupported,
-        "preimage-unavailable" => VisibilityReason::PreimageUnavailable,
-        "foreground-changed" => VisibilityReason::ForegroundChanged,
-        "fullscreen" => VisibilityReason::Fullscreen,
-        "game" => VisibilityReason::Game,
-        "show-blocked" => VisibilityReason::ShowBlocked,
-        "focus-unproven" => VisibilityReason::FocusUnproven,
-        "superseded" => VisibilityReason::Superseded,
-        "native-refused" => VisibilityReason::NativeRefused,
-        _ => return None,
-    };
-    fn decode_sample(value: &RawSettingValue) -> Option<VisibilitySample> {
-        let RawSettingValue::Object(entries) = value else {
-            return None;
-        };
-        let get = |key: &str| entries.iter().find(|(k, _)| k == key).map(|(_, v)| v);
-        let obs = match get("obs")? {
-            RawSettingValue::String(text) => text.parse::<u64>().ok()?,
-            _ => return None,
-        };
-        let opt_bool = |key: &str| match get(key)? {
-            RawSettingValue::Null => Some(None),
-            RawSettingValue::Bool(value) => Some(Some(*value)),
-            _ => None,
-        };
-        let visibility = match get("visibility")? {
-            RawSettingValue::Object(visibility) => {
-                let find = |key: &str| visibility.iter().find(|(k, _)| k == key).map(|(_, v)| v);
-                let opt = |key: &str| match find(key)? {
-                    RawSettingValue::Null => Some(None),
-                    RawSettingValue::Bool(value) => Some(Some(*value)),
-                    _ => None,
-                };
-                crate::world_report::VisibilityFact {
-                    visible: opt("visible")?,
-                    suppression_owned: opt("suppressionOwned")?,
-                }
-            }
-            _ => return None,
-        };
-        Some(VisibilitySample {
-            obs,
-            lifetime_matched: opt_bool("lifetimeMatched")?,
-            visibility,
-            minimized: opt_bool("minimized")?,
-            host_hidden: opt_bool("hostHidden")?,
-        })
-    }
-    let pre = match get("pre")? {
-        RawSettingValue::Null => None,
-        value => Some(decode_sample(value)?),
-    };
-    let post = match get("post")? {
-        RawSettingValue::Null => None,
-        value => Some(decode_sample(value)?),
-    };
-    Some(LastWrite {
-        property,
-        target,
-        revision,
-        path,
-        setter,
-        reason,
-        pre,
-        post,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world_report::LastWriteProperty;
 
     fn window(name: &str) -> WindowId {
         WindowId(name.to_owned())

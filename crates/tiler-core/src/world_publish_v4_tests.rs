@@ -2098,6 +2098,8 @@ fn staged_automatic_born_clear_at_1024_cap_rejects_transactionally_without_wedgi
             window: WindowId(format!("w-{i}")),
             ordinal: i,
             output: None,
+            has_native_workspace: false,
+            last_write: None,
             fields: Vec::new(),
             diagnostic: None,
             kind: RowDiagnosticKind::InvalidFact,

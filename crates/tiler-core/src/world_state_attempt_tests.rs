@@ -1173,6 +1173,8 @@ fn offroute_held_first_appearance_uses_held_output() {
         window: WindowId("win-held".to_owned()),
         ordinal: 0,
         output: Some(OutputId("out-b".to_owned())),
+        has_native_workspace: false,
+        last_write: None,
         fields: Vec::new(),
         diagnostic: None,
         kind: crate::world_report::RowDiagnosticKind::ConflictingFact,

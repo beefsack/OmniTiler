@@ -1329,6 +1329,8 @@ pub struct HeldWindowRow {
     pub window: WindowId,
     pub ordinal: usize,
     pub output: Option<OutputId>,
+    pub has_native_workspace: bool,
+    pub last_write: Option<LastWrite>,
     pub fields: Vec<(String, crate::connection::RawSettingValue)>,
     pub diagnostic: Option<RowDiagnostic>,
     pub kind: RowDiagnosticKind,
@@ -1349,6 +1351,7 @@ pub struct HeldWindowRow {
 pub struct HeldNativeRow {
     pub output: OutputId,
     pub ordinal: usize,
+    pub order_len: usize,
     pub fields: Vec<(String, crate::connection::RawSettingValue)>,
     pub diagnostic: RowDiagnostic,
 }
@@ -1397,6 +1400,7 @@ pub struct HeldAttemptRow {
     pub lane: AttemptLaneV4,
     pub ordinal: usize,
     pub identity: Vec<String>,
+    pub has_native_ref: bool,
     pub fields: Vec<(String, crate::connection::RawSettingValue)>,
     pub diagnostic: Option<RowDiagnostic>,
     pub kind: RowDiagnosticKind,
@@ -3032,6 +3036,11 @@ pub(crate) fn graded_held_window_row(fact: &WindowFact, ordinal: usize) -> HeldW
         window: fact.window.clone(),
         ordinal,
         output: fact.output.clone(),
+        has_native_workspace: fact
+            .native_workspace
+            .as_deref()
+            .is_some_and(|id| !id.is_empty()),
+        last_write: fact.last_write,
         fields: retained_window_fields(fact),
         diagnostic: fact.output.as_ref().map(|out| RowDiagnostic {
             scope: AuthorityScope::Output(out.clone()),

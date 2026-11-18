@@ -31,17 +31,6 @@ fn held_in_lane(report: &WorldReportV4, lane: crate::world_report::AttemptLaneV4
         .count()
 }
 
-fn held_native_order_len(held: &crate::world_report::HeldNativeRow) -> usize {
-    held.fields
-        .iter()
-        .find(|(key, _)| key == "order")
-        .map(|(_, value)| match value {
-            crate::connection::RawSettingValue::Array(items) => items.len(),
-            _ => 0,
-        })
-        .unwrap_or(0)
-}
-
 /// V4 report validation: version gate against [`WORLD_CONTRACT_VERSION_V4`], no `views` lane,
 /// section caps mirroring the protocol `decode_report_v4` valid-plus-held
 /// counting (including `held_native` and per-lane
@@ -392,7 +381,7 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
             if !seen_native_outputs.insert(held.output.0.clone()) {
                 return Some("duplicate-native");
             }
-            total_native = total_native.saturating_add(held_native_order_len(held));
+            total_native = total_native.saturating_add(held.order_len);
         }
     }
     if total_native > MAX_WORLD_NATIVE {
@@ -967,6 +956,11 @@ pub fn grade_conflicting_windows_v4(
                 window: fact.window.clone(),
                 ordinal: slot,
                 output: fact.output.clone(),
+                has_native_workspace: fact
+                    .native_workspace
+                    .as_deref()
+                    .is_some_and(|id| !id.is_empty()),
+                last_write: fact.last_write,
                 fields: retained_window_fields(fact),
                 diagnostic: fact
                     .output

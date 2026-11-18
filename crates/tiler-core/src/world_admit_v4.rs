@@ -29,7 +29,6 @@
 
 use std::collections::BTreeSet;
 
-use crate::connection::RawSettingValue;
 use crate::ids::CorrelationId;
 use crate::world_engine::{
     AdmittedReplayV4, EventIssue, KIND_CORRELATION, KIND_GENERATION, KIND_OBS_STALE,
@@ -377,19 +376,12 @@ impl WorldEngine {
         // member attempt counts only when a retained `pre`/`post` field
         // carries the native reference kind.
         let held_native_evidence = !report.held_native.is_empty()
-            || report.held_windows.iter().any(|held| {
-                held.fields.iter().any(|(key, value)| {
-                    key == "nativeWs"
-                        && matches!(value, crate::connection::RawSettingValue::String(id) if !id.is_empty())
-                })
-            })
+            || report
+                .held_windows
+                .iter()
+                .any(|held| held.has_native_workspace)
             || report.held_attempts.iter().any(|held| match held.lane {
-                AttemptLaneV4::Member => held.fields.iter().any(|(key, value)| {
-                    (key == "pre" || key == "post")
-                        && matches!(value, RawSettingValue::Object(entries)
-                            if entries.iter().any(|(key, kind)| key == "kind"
-                                && matches!(kind, RawSettingValue::String(kind) if kind == "native")))
-                }),
+                AttemptLaneV4::Member => held.has_native_ref,
                 AttemptLaneV4::View | AttemptLaneV4::Creation => true,
                 _ => false,
             });

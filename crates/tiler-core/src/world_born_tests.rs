@@ -2998,6 +2998,8 @@ fn startup_held_and_minimized_and_unhomed_preserve_presence() {
         window: WindowId("win-held".to_owned()),
         ordinal: 0,
         output: Some(OutputId("out-a".to_owned())),
+        has_native_workspace: false,
+        last_write: None,
         fields: Vec::new(),
         diagnostic: None,
         kind: crate::world_report::RowDiagnosticKind::InvalidFact,

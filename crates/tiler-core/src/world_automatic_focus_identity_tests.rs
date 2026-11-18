@@ -754,6 +754,8 @@ fn token_survives_incomplete_held_and_engine_known_absence() {
         window: WindowId("win-b".to_owned()),
         ordinal: 1,
         output: None,
+        has_native_workspace: false,
+        last_write: None,
         fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,

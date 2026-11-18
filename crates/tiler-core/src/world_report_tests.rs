@@ -158,6 +158,7 @@ fn digest_covers_every_section() {
     changed.held_native.push(HeldNativeRow {
         output: OutputId("out".to_owned()),
         ordinal: 0,
+        order_len: 0,
         fields: Vec::new(),
         diagnostic: RowDiagnostic {
             scope: AuthorityScope::Output(OutputId("out".to_owned())),

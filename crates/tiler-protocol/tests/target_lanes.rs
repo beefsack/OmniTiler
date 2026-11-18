@@ -213,7 +213,7 @@ fn max_legal_target_lane_width_combinations_match_exact_bytes() {
             &mut decoded,
             lane_window(
                 Some(u64::MAX),
-                max_show.clone(),
+                max_show,
                 ScopeAuthority::Controlled,
                 Vec::new()
             ),
@@ -251,12 +251,7 @@ fn max_legal_target_lane_width_combinations_match_exact_bytes() {
     assert_eq!(
         measure_lanes(
             &mut decoded,
-            lane_window(
-                Some(u64::MAX),
-                max_show.clone(),
-                max_hold,
-                vec![sticky_max.clone()],
-            ),
+            lane_window(Some(u64::MAX), max_show, max_hold, vec![sticky_max],),
         ),
         296
     );
@@ -266,9 +261,9 @@ fn max_legal_target_lane_width_combinations_match_exact_bytes() {
             &mut decoded,
             lane_window(
                 Some(u64::MAX),
-                max_show.clone(),
+                max_show,
                 max_hold,
-                vec![sticky_max.clone(), fullscreen_max.clone()],
+                vec![sticky_max, fullscreen_max],
             ),
         ),
         414
@@ -279,13 +274,9 @@ fn max_legal_target_lane_width_combinations_match_exact_bytes() {
             &mut decoded,
             lane_window(
                 Some(u64::MAX),
-                max_show.clone(),
+                max_show,
                 max_hold,
-                vec![
-                    sticky_max.clone(),
-                    fullscreen_max.clone(),
-                    maximized_max.clone(),
-                ],
+                vec![sticky_max, fullscreen_max, maximized_max,],
             ),
         ),
         531

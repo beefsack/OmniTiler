@@ -1005,6 +1005,8 @@ fn raw_capability_conflict_never_aliases_preheld_input() {
         window: WindowId("win-a".to_owned()),
         ordinal: 0,
         output: Some(OutputId("out-a".to_owned())),
+        has_native_workspace: sticky_fact.native_workspace.as_deref().is_some(),
+        last_write: sticky_fact.last_write,
         fields: retained_window_fields(&sticky_fact),
         diagnostic: Some(RowDiagnostic {
             scope: AuthorityScope::Output(OutputId("out-a".to_owned())),
@@ -2308,6 +2310,7 @@ fn slice_7_1_held_native_capability_fence() {
     held_native.held_native = vec![crate::world_report::HeldNativeRow {
         output: OutputId("out-a".to_owned()),
         ordinal: 0,
+        order_len: 0,
         fields: vec![(
             "out".to_owned(),
             RawSettingValue::String("out-a".to_owned()),
@@ -2373,6 +2376,7 @@ fn held_member_row(pre_native: bool, post_native: bool) -> HeldAttemptRow {
         lane: AttemptLaneV4::Member,
         ordinal: 0,
         identity: vec!["op-1".to_owned(), "win-a".to_owned()],
+        has_native_ref: pre_native || post_native,
         fields: vec![
             ("op".to_owned(), RawSettingValue::String("op-1".to_owned())),
             (
@@ -2405,6 +2409,7 @@ fn held_view_row() -> HeldAttemptRow {
         lane: AttemptLaneV4::View,
         ordinal: 0,
         identity: vec!["op-v".to_owned()],
+        has_native_ref: false,
         fields: vec![("op".to_owned(), RawSettingValue::String("op-v".to_owned()))],
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
@@ -2619,6 +2624,8 @@ fn slice_7_1_mixed_invalid_structural_refused_atomically() {
         window: WindowId("win-held".to_owned()),
         ordinal: 99,
         output: Some(OutputId("out-a".to_owned())),
+        has_native_workspace: false,
+        last_write: None,
         fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
@@ -2948,4 +2955,31 @@ fn admission_gate_checkpoint_order_and_refusal_mapping() {
         assert_eq!(ready.state_revision(), 1);
         assert_eq!(ready.last_request_seq_v4(), 1);
     }
+}
+
+#[test]
+fn slice_7_1_held_window_typed_native_workspace_refuses_without_capability() {
+    let mut engine = engine();
+    assert!(!engine.connection.host_owned_workspace_domains());
+    let mut report = observe(1, facts_pair(), "win-a");
+    report.held_windows = vec![HeldWindowRow {
+        window: WindowId("win-held".to_owned()),
+        ordinal: 0,
+        output: Some(OutputId("out-a".to_owned())),
+        has_native_workspace: true,
+        last_write: None,
+        fields: Vec::new(),
+        diagnostic: None,
+        kind: RowDiagnosticKind::InvalidFact,
+    }];
+    let revision_before = engine.state_revision();
+    match admit(&mut engine, &report) {
+        V4RunOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, KIND_SNAPSHOT);
+            assert_eq!(message, "native-without-capability");
+        }
+        other => panic!("expected held window native fence, got {other:?}"),
+    }
+    assert_eq!(engine.state_revision(), revision_before);
+    assert!(!engine.has_last_v4());
 }
