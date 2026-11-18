@@ -4242,16 +4242,6 @@ fn held_unreadable_row(output: &str, ordinal: usize) -> crate::world_report::Hel
     crate::world_report::HeldScreenRow {
         output: OutputId(output.to_owned()),
         ordinal,
-        fields: vec![
-            (
-                "out".to_owned(),
-                crate::connection::RawSettingValue::String(output.to_owned()),
-            ),
-            (
-                "scale".to_owned(),
-                crate::connection::RawSettingValue::String("bad".to_owned()),
-            ),
-        ],
         diagnostic: crate::world_report::RowDiagnostic {
             scope: crate::world_report::AuthorityScope::Output(OutputId(output.to_owned())),
             row: crate::world_report::RowDiagnosticLane::Screen,

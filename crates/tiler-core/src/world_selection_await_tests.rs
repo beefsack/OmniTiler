@@ -3976,13 +3976,6 @@ fn held_screen_row(output: &str, ordinal: usize) -> HeldScreenRow {
     HeldScreenRow {
         output: OutputId(output.to_owned()),
         ordinal,
-        fields: vec![
-            ("out".to_owned(), RawSettingValue::String(output.to_owned())),
-            (
-                "scale".to_owned(),
-                RawSettingValue::String("bad".to_owned()),
-            ),
-        ],
         diagnostic: RowDiagnostic {
             scope: AuthorityScope::Output(OutputId(output.to_owned())),
             row: RowDiagnosticLane::Screen,

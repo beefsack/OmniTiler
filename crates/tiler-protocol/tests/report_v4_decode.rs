@@ -388,7 +388,7 @@ fn v4_structural_held_rows_accept_with_exact_retention() {
             fixture.id
         );
         match lane {
-            "screens" => assert_screen_hold(report, &doc, &invalid, fixture),
+            "screens" => assert_screen_hold(&decoded, &doc, &invalid, fixture),
             "windows" => assert_window_hold(report, &doc, &invalid, fixture),
             "native" => assert_native_hold(report, &doc, &invalid, fixture),
             "presentation" => assert_presentation_hold(&decoded, &doc, &invalid, fixture),
@@ -400,11 +400,12 @@ fn v4_structural_held_rows_accept_with_exact_retention() {
 }
 
 fn assert_screen_hold(
-    report: &tiler_core::world_report::WorldReportV4,
+    decoded: &tiler_protocol::world_protocol::DecodedReportV4,
     doc: &serde_json::Value,
     invalid: &InvalidRef,
     fixture: &ManifestFixture,
 ) {
+    let report = &decoded.report;
     let ordinal: usize = invalid
         .pointer
         .split('/')
@@ -437,14 +438,19 @@ fn assert_screen_hold(
         row,
         &["out", "full", "work", "complete", "scale", "identity"],
     );
+    let fields = decoded
+        .residual
+        .as_deref()
+        .and_then(|r| r.screen_fields(held.ordinal))
+        .expect("held screen retains residual fields");
     assert_eq!(
-        held.fields.iter().map(|(key, _)| key).collect::<Vec<_>>(),
+        fields.iter().map(|(key, _)| key).collect::<Vec<_>>(),
         expected.iter().map(|(key, _)| key).collect::<Vec<_>>(),
         "{} field order",
         fixture.id
     );
     assert_eq!(
-        normalize_fields(&held.fields),
+        normalize_fields(fields),
         normalize_fields(&expected),
         "{} field values",
         fixture.id
@@ -2120,6 +2126,18 @@ fn v4_writer_refuses_inconsistent_metadata() {
     decoded.report.screens[0].scale = f64::NAN;
     decoded.report = tiler_core::world_report_v4_checks::grade_invalid_screens_v4(&decoded.report)
         .expect("grades to hold");
+    decoded.residual = Some(std::sync::Arc::new(
+        tiler_protocol::world_report_residual::WorldReportResidual {
+            held_screen_fields: vec![(
+                0,
+                vec![(
+                    "scale".to_owned(),
+                    tiler_core::connection::RawSettingValue::Number(f64::NAN),
+                )],
+            )],
+            held_presentation_fields: None,
+        },
+    ));
     let error = encode_report_v4(&decoded).expect_err("held nonfinite refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "nonfinite");

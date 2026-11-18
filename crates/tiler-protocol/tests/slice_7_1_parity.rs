@@ -43,12 +43,16 @@ fn slice_7_1_screen_typed_matches_decoded() {
     let decoded = decode_report_v4(&value.to_string()).expect("decoded holds");
     assert_eq!(decoded.report.held_screens.len(), 1);
     assert_eq!(
-        graded.held_screens[0].fields, decoded.report.held_screens[0].fields,
-        "typed and decoded held screen fields match"
+        graded.held_screens[0], decoded.report.held_screens[0],
+        "typed and decoded held screen rows match"
     );
-    assert_eq!(
-        graded.held_screens[0].diagnostic,
-        decoded.report.held_screens[0].diagnostic
+    assert!(
+        decoded
+            .residual
+            .as_deref()
+            .and_then(|r| r.screen_fields(decoded.report.held_screens[0].ordinal))
+            .is_some(),
+        "decoded held screen retains residual fields"
     );
     assert_eq!(
         graded.held_screens[0].diagnostic.kind,
@@ -220,12 +224,16 @@ fn slice_7_1_invalid_lanes_typed_match_decoded() {
     assert_eq!(typed_graded.held_screens.len(), 1);
     assert_eq!(decoded_identity.report.held_screens.len(), 1);
     assert_eq!(
-        typed_graded.held_screens[0].fields, decoded_identity.report.held_screens[0].fields,
-        "identity held fields match"
+        typed_graded.held_screens[0], decoded_identity.report.held_screens[0],
+        "identity held screen rows match"
     );
-    assert_eq!(
-        typed_graded.held_screens[0].diagnostic,
-        decoded_identity.report.held_screens[0].diagnostic
+    assert!(
+        decoded_identity
+            .residual
+            .as_deref()
+            .and_then(|r| r.screen_fields(decoded_identity.report.held_screens[0].ordinal))
+            .is_some(),
+        "decoded identity held screen retains residual fields"
     );
     // Window process-id invalid: typed vs decoded held rows match.
     let mut typed_window = valid.report.clone();

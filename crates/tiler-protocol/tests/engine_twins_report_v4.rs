@@ -19,7 +19,9 @@ use tiler_core::world_report::{
 use tiler_core::world_report_v4_checks::{
     grade_conflicting_windows_v4, report_digest_v4, validate_report_v4_reason,
 };
-use tiler_protocol::world_admission_sizing::report_estimate_v4;
+use tiler_protocol::world_admission_sizing::{
+    report_estimate_v4, report_estimate_v4_with_residual,
+};
 use tiler_protocol::world_protocol::{decode_report_v4, encode_report_v4};
 
 fn fixture_root() -> std::path::PathBuf {
@@ -98,11 +100,13 @@ fn v4_twins_accept_all_wire_reports() {
             fixture.id
         );
         let wire = encode_report_v4(&decoded).expect("fixture encodes");
+        let estimate =
+            report_estimate_v4_with_residual(&decoded.report, decoded.residual.as_deref());
         assert!(
-            report_estimate_v4(&decoded.report) >= wire.len(),
+            estimate >= wire.len(),
             "estimate covers wire {} ({} vs {})",
             fixture.id,
-            report_estimate_v4(&decoded.report),
+            estimate,
             wire.len()
         );
         assert!(
@@ -317,12 +321,13 @@ fn v4_digest_sees_each_lane_family() {
 /// counts surrounding held structure without collapsing.
 #[test]
 fn v4_estimate_nonfinite_total_and_held_structure_delta() {
+    use tiler_protocol::world_report_residual::WorldReportResidual;
+
     let mut report = decode_ok("messages/report-observe.json");
     report.screens[0].scale = f64::NAN;
     report.held_screens.push(HeldScreenRow {
         output: OutputId("out-held".to_owned()),
         ordinal: 1,
-        fields: vec![("scale".to_owned(), RawSettingValue::Number(f64::INFINITY))],
         diagnostic: RowDiagnostic {
             scope: AuthorityScope::Output(OutputId("out-held".to_owned())),
             row: RowDiagnosticLane::Screen,
@@ -330,7 +335,14 @@ fn v4_estimate_nonfinite_total_and_held_structure_delta() {
             kind: RowDiagnosticKind::InvalidFact,
         },
     });
-    assert!(report_estimate_v4(&report) > 0);
+    let residual = WorldReportResidual {
+        held_screen_fields: vec![(
+            1,
+            vec![("scale".to_owned(), RawSettingValue::Number(f64::INFINITY))],
+        )],
+        held_presentation_fields: None,
+    };
+    assert!(report_estimate_v4_with_residual(&report, Some(&residual)) > 0);
     assert_eq!(
         validate_report_v4_reason(&report),
         Some("screen-scale-invalid")
@@ -346,7 +358,6 @@ fn v4_estimate_nonfinite_total_and_held_structure_delta() {
     structure.held_screens.push(HeldScreenRow {
         output: OutputId("out-held".to_owned()),
         ordinal: 1,
-        fields: vec![("extra".to_owned(), nested)],
         diagnostic: RowDiagnostic {
             scope: AuthorityScope::Output(OutputId("out-held".to_owned())),
             row: RowDiagnosticLane::Screen,
@@ -354,6 +365,10 @@ fn v4_estimate_nonfinite_total_and_held_structure_delta() {
             kind: RowDiagnosticKind::InvalidFact,
         },
     });
+    let structure_residual = WorldReportResidual {
+        held_screen_fields: vec![(1, vec![("extra".to_owned(), nested)])],
+        held_presentation_fields: None,
+    };
     let expected_delta = serde_json::to_string(&serde_json::json!({
         "extra": {
             "big": big,
@@ -362,7 +377,36 @@ fn v4_estimate_nonfinite_total_and_held_structure_delta() {
     }))
     .expect("json")
     .len();
-    assert_eq!(report_estimate_v4(&structure) - before, expected_delta);
+    assert_eq!(
+        report_estimate_v4_with_residual(&structure, Some(&structure_residual)) - before,
+        expected_delta
+    );
+
+    // Mixed held screen + held presentation charges residual.estimate_bytes once.
+    let mut mixed = structure.clone();
+    mixed.presentation = tiler_core::world_report::PresentationRowV4::Held(
+        tiler_core::world_report::HeldPresentationRow {
+            kind: RowDiagnosticKind::InvalidFact,
+            diagnostic: None,
+        },
+    );
+    let mixed_residual = WorldReportResidual {
+        held_screen_fields: structure_residual.held_screen_fields.clone(),
+        held_presentation_fields: Some(vec![(
+            "witness".to_owned(),
+            RawSettingValue::String("bad-const".to_owned()),
+        )]),
+    };
+    let expected_pres_delta = serde_json::to_string(&serde_json::json!({
+        "witness": "bad-const"
+    }))
+    .expect("json")
+    .len();
+    assert_eq!(
+        report_estimate_v4_with_residual(&mixed, Some(&mixed_residual))
+            - report_estimate_v4(&mixed),
+        expected_delta + expected_pres_delta
+    );
 }
 
 /// Focus-feedback sizing delta matches the checked canonical wire encoder

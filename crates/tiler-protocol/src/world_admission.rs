@@ -1259,4 +1259,101 @@ mod tests {
         );
         assert_eq!(engine.state_revision(), rev_after_accept);
     }
+
+    #[test]
+    fn held_screen_residual_discriminates_replay_whitespace_vs_changed_and_prepare_refusal() {
+        use crate::world_protocol::decode_report_v4;
+        use tiler_core::connection::{
+            ApplicationIdentity, HandshakeRequest, HostCapabilities, SettingsRequest,
+        };
+
+        let mut engine = WorldEngine::new("gen-seed").expect("engine");
+        let hs_reply = engine.handshake(&HandshakeRequest {
+            adapter: "adapter-a".to_owned(),
+            request: "hs-1".to_owned(),
+            application_identity: ApplicationIdentity {
+                app_id: None,
+                executable: Some("test-own-executable".to_owned()),
+                process_id: Some("test-own-pid".to_owned()),
+            },
+            capabilities: HostCapabilities::default(),
+        });
+        let gen_id = hs_reply.generation.expect("generation");
+        engine
+            .handle_settings(&SettingsRequest {
+                adapter: "adapter-a".to_owned(),
+                generation: gen_id.clone(),
+                request: "set-1".to_owned(),
+                revision: 0,
+                values: Vec::new(),
+            })
+            .expect("settings");
+
+        let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-fixtures/world-wire/v4/messages/invalid-screen-string-scale.json");
+        let base_text = std::fs::read_to_string(fixture_path).expect("held screen fixture");
+        let mut doc: serde_json::Value = serde_json::from_str(&base_text).expect("json");
+        doc["adapter"] = serde_json::json!("adapter-a");
+        doc["gen"] = serde_json::json!(gen_id);
+        doc["reqSeq"] = serde_json::json!("1");
+        doc["obs"] = serde_json::json!("1");
+        doc["req"] = serde_json::json!("req-1");
+        // A report containing only a held screen is bootstrap-only; include
+        // one usable screen to exercise installation into the replay record.
+        let mut usable = doc["screens"][0].clone();
+        usable["out"] = serde_json::json!("out-b");
+        usable["scale"] = serde_json::json!(1.25);
+        usable["identity"]["serial"] = serde_json::json!("serial-b");
+        doc["screens"]
+            .as_array_mut()
+            .expect("screen array")
+            .push(usable);
+
+        let decoded_a = decode_report_v4(&doc.to_string()).expect("held screen decodes");
+        assert_eq!(decoded_a.report.held_screens.len(), 1);
+        let residual = decoded_a.residual.as_ref().expect("screen residual");
+        assert!(residual.screen_fields(0).is_some());
+
+        // Late prepare refusal must not install or retain replay residual.
+        let gate_refuse = ProtocolAdmissionGate::with_residual(decoded_a.residual.as_ref());
+        let err = engine
+            .handle_report_with_gate_and_prepare(&decoded_a.report, &[], &gate_refuse, |_| {
+                Err::<(), &'static str>("prepare-refused")
+            })
+            .expect_err("prepare error propagates");
+        assert_eq!(err, "prepare-refused");
+        assert_eq!(engine.state_revision(), 0);
+        assert_eq!(Arc::strong_count(residual), 1);
+
+        // Successful install retains residual.
+        let (outcome, _) = handle_report_decoded_checked(&mut engine, &decoded_a, &[]);
+        assert!(matches!(outcome, WorldOutcome::Accepted(_)));
+        let rev_after_accept = engine.state_revision();
+        assert_eq!(Arc::strong_count(residual), 2);
+
+        // Whitespace-only difference in raw JSON decodes to equal residual -> Duplicate.
+        let spaced_json = serde_json::to_string_pretty(&doc).expect("pretty json");
+        let decoded_a_ws = decode_report_v4(&spaced_json).expect("spaced decodes");
+        assert_eq!(decoded_a.residual, decoded_a_ws.residual);
+        let (ws_outcome, _) = handle_report_decoded_checked(&mut engine, &decoded_a_ws, &[]);
+        assert!(matches!(ws_outcome, WorldOutcome::Duplicate(_)));
+        assert_eq!(engine.state_revision(), rev_after_accept);
+
+        // Changed held screen residual with identical typed HeldScreenRow -> request-reused.
+        let mut changed_doc = doc.clone();
+        changed_doc["screens"][0]["scale"] = serde_json::json!("2.5");
+        let decoded_b =
+            decode_report_v4(&changed_doc.to_string()).expect("changed residual decodes");
+        assert_eq!(decoded_a.report, decoded_b.report);
+        assert_ne!(decoded_a.residual, decoded_b.residual);
+        let (reused_outcome, _) = handle_report_decoded_checked(&mut engine, &decoded_b, &[]);
+        assert_eq!(
+            reused_outcome,
+            WorldOutcome::Rejected {
+                kind: "request-reused",
+                message: "request sequence reused with different input",
+            }
+        );
+        assert_eq!(engine.state_revision(), rev_after_accept);
+    }
 }

@@ -1275,22 +1275,14 @@ pub struct RowDiagnostic {
 /// instead of refusing the whole report. `output` is the valid live output
 /// handle; `ordinal` is the row's original index in the carried `screens`
 /// array so a future exact request encoder can reconstruct the original
-/// order (valid rows keep relative order in `screens`); `fields` retains
-/// every carried screen key in canonical schema key order (`out`, `full`,
-/// `work`, `complete`, `scale`, `identity`, then any other carried keys in
-/// lexicographic order) as JSON-agnostic
-/// [`RawSettingValue`](crate::connection::RawSettingValue) facts so the
-/// canonical writer round-trips the row losslessly (absence, `null`, and
-/// value are all preserved, including bad types, overbound identity text,
-/// and retired extras; the nested `identity` object itself is retained in
-/// schema order `manufacturer`, `model`, `serial`, `connector` with unknown
-/// sub-keys after in lexicographic order); `diagnostic` is the emitted
-/// typed diagnostic for the held scope.
+/// order (valid rows keep relative order in `screens`); `diagnostic` is the
+/// emitted typed diagnostic for the held scope. Any raw carried fields for
+/// lossless wire round-tripping and exact replay reside in protocol-owned
+/// residual evidence (`WorldReportResidual`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HeldScreenRow {
     pub output: OutputId,
     pub ordinal: usize,
-    pub fields: Vec<(String, crate::connection::RawSettingValue)>,
     pub diagnostic: RowDiagnostic,
 }
 
@@ -1452,7 +1444,7 @@ pub struct WorldReportV4 {
     /// scale, and neutral reconnect identity.
     pub screens: Vec<ScreenReport>,
     /// Identifiable screen rows that failed v4 shape checks, held narrowly
-    /// with their raw fields retained (see [`HeldScreenRow`]).
+    /// with typed scope and diagnostic (see [`HeldScreenRow`]).
     pub held_screens: Vec<HeldScreenRow>,
     /// Truthful window facts: observed screen affinity, frames, flags, and
     /// minimized state.
@@ -2823,55 +2815,12 @@ pub(crate) fn gradable_screen(screen: &ScreenReport) -> bool {
 }
 
 /// Retain one directly constructed invalid screen row as a narrow hold,
-/// mirroring the protocol codec's retained fields and diagnostic.
+/// mirroring the protocol codec's typed held row and diagnostic without
+/// fabricating raw wire fields.
 pub(crate) fn graded_held_row(screen: &ScreenReport, ordinal: usize) -> HeldScreenRow {
-    use crate::connection::RawSettingValue;
-    fn rect_value(rect: Option<Rect>) -> RawSettingValue {
-        rect.map_or(RawSettingValue::Null, |row| {
-            RawSettingValue::Array(vec![
-                RawSettingValue::Number(f64::from(row.x)),
-                RawSettingValue::Number(f64::from(row.y)),
-                RawSettingValue::Number(f64::from(row.w)),
-                RawSettingValue::Number(f64::from(row.h)),
-            ])
-        })
-    }
-    fn identity_text(text: &Option<String>) -> RawSettingValue {
-        text.as_deref().map_or(RawSettingValue::Null, |value| {
-            RawSettingValue::String(value.to_owned())
-        })
-    }
     HeldScreenRow {
         output: screen.output.clone(),
         ordinal,
-        fields: vec![
-            (
-                "out".to_owned(),
-                RawSettingValue::String(screen.output.0.clone()),
-            ),
-            ("full".to_owned(), rect_value(screen.full_rect)),
-            ("work".to_owned(), rect_value(screen.work_area)),
-            (
-                "complete".to_owned(),
-                RawSettingValue::Bool(screen.complete),
-            ),
-            ("scale".to_owned(), RawSettingValue::Number(screen.scale)),
-            (
-                "identity".to_owned(),
-                RawSettingValue::Object(vec![
-                    (
-                        "manufacturer".to_owned(),
-                        identity_text(&screen.identity.manufacturer),
-                    ),
-                    ("model".to_owned(), identity_text(&screen.identity.model)),
-                    ("serial".to_owned(), identity_text(&screen.identity.serial)),
-                    (
-                        "connector".to_owned(),
-                        identity_text(&screen.identity.connector),
-                    ),
-                ]),
-            ),
-        ],
         diagnostic: RowDiagnostic {
             scope: AuthorityScope::Output(screen.output.clone()),
             row: RowDiagnosticLane::Screen,

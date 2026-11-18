@@ -2054,7 +2054,7 @@ fn slice_7_1_invalid_screen_scale_held_no_authority() {
 }
 
 #[test]
-fn slice_7_1_nonfinite_scale_retained_faithfully() {
+fn slice_7_1_nonfinite_scale_grades_to_typed_hold() {
     let mut engine = engine();
     accepted_reply(1, admit(&mut engine, &observe(1, facts_pair(), "win-a")));
     let mut bad = screen("out-a", 0);
@@ -2065,18 +2065,11 @@ fn slice_7_1_nonfinite_scale_retained_faithfully() {
         V4RunOutcome::Accepted(_) => {}
         other => panic!("expected accepted nonfinite screen, got {other:?}"),
     }
+    assert_eq!(engine.world.staged.held_screens.len(), 1);
     let held = &engine.world.staged.held_screens[0];
-    let scale = held
-        .fields
-        .iter()
-        .find(|(key, _)| key == "scale")
-        .map(|(_, value)| value);
-    match scale {
-        Some(RawSettingValue::Number(value)) => {
-            assert!(!value.is_finite(), "nonfinite stays a held number");
-        }
-        other => panic!("scale must stay a held number, got {other:?}"),
-    }
+    assert_eq!(held.output.0, "out-a");
+    assert_eq!(held.ordinal, 0);
+    assert_eq!(held.diagnostic.kind, RowDiagnosticKind::InvalidFact);
 }
 
 #[test]

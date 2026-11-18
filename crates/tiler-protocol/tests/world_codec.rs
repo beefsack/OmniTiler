@@ -2991,7 +2991,9 @@ fn v4_screen_rows_decode_valid_held_and_reject_with_canonical_bytes() {
     ];
     for (name, screens, expected_canonical) in held_cases {
         let wire = request_with(screens, "[]", "");
-        let report = decode_request(&wire).expect("held row decodes: {name}");
+        let decoded = tiler_protocol::world_protocol::decode_request_with_wire(&wire)
+            .expect("held row decodes: {name}");
+        let report = &decoded.report;
         assert!(report.screens.is_empty(), "{name}: no valid row");
         assert_eq!(report.held_screens.len(), 1, "{name}: one held row");
         let held = &report.held_screens[0];
@@ -3003,12 +3005,20 @@ fn v4_screen_rows_decode_valid_held_and_reject_with_canonical_bytes() {
         );
         assert_eq!(held.diagnostic.row, RowDiagnosticLane::Screen, "{name}");
         assert_eq!(held.diagnostic.id.as_deref(), Some("out"), "{name}");
+        let fields = decoded
+            .residual
+            .as_deref()
+            .and_then(|r| r.screen_fields(held.ordinal))
+            .expect("held screen residual");
         assert_eq!(
-            encode_held_screen_canonical(held).expect("finite canonical row"),
+            encode_held_screen_canonical(fields).expect("finite canonical row"),
             expected_canonical,
             "{name}: lossless canonical bytes"
         );
-        let estimate = report_estimate_v4(&report);
+        let estimate = tiler_protocol::world_admission_sizing::report_estimate_v4_with_residual(
+            report,
+            decoded.residual.as_deref(),
+        );
         assert!(
             estimate >= wire.len(),
             "{name}: estimate {estimate} bounds wire {}",
@@ -3309,7 +3319,9 @@ fn v4_screen_rows_retain_canonical_bytes_from_immutable_fixtures() {
         // The nested row bytes ride the production route staged in the
         // current parent shape; the row itself is never re-serialized.
         let staged = stage_fixture_rows(&rows, None);
-        let report = decode_request(&staged).expect("{name}: held row decodes");
+        let decoded = tiler_protocol::world_protocol::decode_request_with_wire(&staged)
+            .expect("{name}: held row decodes");
+        let report = &decoded.report;
         assert!(report.screens.is_empty(), "{name}: no valid row");
         assert_eq!(report.held_screens.len(), 1, "{name}: one held row");
         let held_row = &report.held_screens[0];
@@ -3322,8 +3334,13 @@ fn v4_screen_rows_retain_canonical_bytes_from_immutable_fixtures() {
         );
         assert_eq!(held_row.diagnostic.row, RowDiagnosticLane::Screen, "{name}");
         assert_eq!(held_row.diagnostic.id.as_deref(), Some("out-a"), "{name}");
+        let fields = decoded
+            .residual
+            .as_deref()
+            .and_then(|r| r.screen_fields(held_row.ordinal))
+            .expect("held screen residual");
         assert_eq!(
-            encode_held_screen_canonical(held_row).expect("finite canonical row"),
+            encode_held_screen_canonical(fields).expect("finite canonical row"),
             rows[0],
             "{name}: lossless canonical bytes"
         );
@@ -3414,13 +3431,20 @@ fn v4_held_rows_retain_multibyte_identity_bytes() {
          \"serial\":\"{over_bound}\",\"connector\":null}}}}"
     );
     let staged = stage_fixture_rows(&[&held_row], None);
-    let report = decode_request(&staged).expect("overbound identity holds");
+    let decoded = tiler_protocol::world_protocol::decode_request_with_wire(&staged)
+        .expect("overbound identity holds");
+    let report = &decoded.report;
     assert!(report.screens.is_empty());
     assert_eq!(report.held_screens.len(), 1);
     let held = &report.held_screens[0];
     assert_eq!(held.ordinal, 0);
+    let fields = decoded
+        .residual
+        .as_deref()
+        .and_then(|r| r.screen_fields(held.ordinal))
+        .expect("held screen residual");
     assert_eq!(
-        encode_held_screen_canonical(held).expect("finite row"),
+        encode_held_screen_canonical(fields).expect("finite row"),
         held_row
     );
 }
@@ -3436,19 +3460,25 @@ fn v4_mixed_valid_held_rows_keep_original_index() {
         r#"{"out":"out-c","full":[800,0,800,600],"work":[800,0,800,560],"complete":true,"scale":2,"identity":{"manufacturer":null,"model":null,"serial":null,"connector":null}}"#,
     ];
     let staged = stage_fixture_rows(&rows, None);
-    let report = decode_request(&staged).expect("mixed rows decode");
+    let decoded = tiler_protocol::world_protocol::decode_request_with_wire(&staged)
+        .expect("mixed rows decode");
+    let report = &decoded.report;
     assert_eq!(report.screens.len(), 2);
     assert_eq!(report.screens[0].output.0, "out-a");
     assert_eq!(report.screens[1].output.0, "out-c");
     assert_eq!(report.held_screens.len(), 1);
     assert_eq!(report.held_screens[0].output.0, "out-b");
     assert_eq!(report.held_screens[0].ordinal, 1);
+    let fields = decoded
+        .residual
+        .as_deref()
+        .and_then(|r| r.screen_fields(report.held_screens[0].ordinal))
+        .expect("held screen residual");
     assert_eq!(
-        tiler_protocol::world_protocol::encode_held_screen_canonical(&report.held_screens[0])
-            .expect("finite row"),
+        tiler_protocol::world_protocol::encode_held_screen_canonical(fields).expect("finite row"),
         rows[1]
     );
-    assert!(validate_report_v4_reason(&report).is_none());
+    assert!(validate_report_v4_reason(report).is_none());
 }
 
 /// Causal equivalence (finding B): directly constructed identifiable

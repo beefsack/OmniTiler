@@ -509,13 +509,10 @@ fn presentation_ingress_v4_estimate(ingress: &PresentationIngressV4) -> usize {
     bytes
 }
 
-pub(crate) fn presentation_row_v4_estimate(
-    row: &PresentationRowV4,
-    residual: Option<&crate::world_report_residual::WorldReportResidual>,
-) -> usize {
+pub(crate) fn presentation_row_v4_estimate(row: &PresentationRowV4) -> usize {
     match row {
         PresentationRowV4::Valid(ingress) => presentation_ingress_v4_estimate(ingress),
-        PresentationRowV4::Held(_) => residual.map_or(0, |r| r.estimate_bytes()),
+        PresentationRowV4::Held(_) => 0,
     }
 }
 

@@ -848,9 +848,9 @@ fn grade_invalid_screens_leaves_valid_reports_untouched() {
 }
 
 #[test]
-fn grade_invalid_screens_retains_nonfinite_fact_without_null_spelling() {
-    // Finding B: a directly constructed non-finite scale grades to a
-    // narrow hold with the original fact retained.
+fn grade_invalid_screens_retains_typed_hold_and_diagnostic_only() {
+    // A directly constructed non-finite scale grades to a narrow typed
+    // hold without fabricating raw wire fields.
     let mut report = test_report();
     report.screens[0].scale = f64::NAN;
     assert_eq!(
@@ -866,12 +866,6 @@ fn grade_invalid_screens_retains_nonfinite_fact_without_null_spelling() {
     assert_eq!(held.diagnostic.kind, RowDiagnosticKind::InvalidFact);
     assert_eq!(held.diagnostic.row, RowDiagnosticLane::Screen);
     assert_eq!(held.diagnostic.id.as_deref(), Some("out"));
-    let scale = held
-        .fields
-        .iter()
-        .find(|(key, _)| key == "scale")
-        .expect("scale fact retained");
-    assert!(matches!(scale.1, crate::connection::RawSettingValue::Number(v) if v.is_nan()));
     assert!(validate_report_v4_reason(&graded).is_none());
 }
 
@@ -897,7 +891,6 @@ fn grade_invalid_screens_grades_overbound_identity() {
 fn grade_invalid_screens_preserves_existing_held_ordinals() {
     // Mixed lane: the pre-existing held row keeps its original ordinal
     // while the newly graded row takes the free carried-array slot.
-    use crate::connection::RawSettingValue;
     let mut report = test_report();
     report.screens.push(ScreenReport {
         output: OutputId("out-bad".to_owned()),
@@ -910,10 +903,6 @@ fn grade_invalid_screens_preserves_existing_held_ordinals() {
     report.held_screens.push(HeldScreenRow {
         output: OutputId("out-held".to_owned()),
         ordinal: 1,
-        fields: vec![(
-            "out".to_owned(),
-            RawSettingValue::String("out-held".to_owned()),
-        )],
         diagnostic: RowDiagnostic {
             scope: AuthorityScope::Output(OutputId("out-held".to_owned())),
             row: RowDiagnosticLane::Screen,
@@ -1048,10 +1037,6 @@ fn screen_section_cap_counts_valid_plus_held_rows() {
         HeldScreenRow {
             output: OutputId(output.to_owned()),
             ordinal,
-            fields: vec![(
-                "out".to_owned(),
-                crate::connection::RawSettingValue::String(output.to_owned()),
-            )],
             diagnostic: RowDiagnostic {
                 scope: AuthorityScope::Output(OutputId(output.to_owned())),
                 row: RowDiagnosticLane::Screen,

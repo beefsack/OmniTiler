@@ -54,7 +54,6 @@ fn held_screen_row(output: &str, ordinal: usize) -> HeldScreenRow {
     HeldScreenRow {
         output: OutputId(output.to_owned()),
         ordinal,
-        fields: Vec::new(),
         diagnostic: diag(output, RowDiagnosticLane::Screen, Some(output)),
     }
 }

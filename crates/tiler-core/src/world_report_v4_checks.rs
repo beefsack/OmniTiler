@@ -743,9 +743,9 @@ fn valid_attempt_workspace_ref(reference: &WorkspaceRef) -> bool {
 
 /// Staged v4 twin of [`grade_invalid_screens_v4`](crate::world_report_v4_checks::grade_invalid_screens_v4):
 /// identifiable invalid scale/identity rows become narrow `InvalidFact`
-/// holds with retained fields, mirroring the decoder. Structural
-/// violations refuse: prechecks cover every carried screen, and the
-/// normalized report must validate except for a still-pending window
+/// holds with typed output, ordinal, and diagnostic only (no raw fields).
+/// Structural violations refuse: prechecks cover every carried screen, and
+/// the normalized report must validate except for a still-pending window
 /// invalid lane (composed by the caller next).
 #[must_use]
 pub fn grade_invalid_screens_v4(report: &WorldReportV4) -> Option<WorldReportV4> {
@@ -1279,11 +1279,6 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         sep(&mut hash);
         feed(&mut hash, &held.ordinal.to_string());
         sep(&mut hash);
-        for (key, value) in &held.fields {
-            feed(&mut hash, key);
-            sep(&mut hash);
-            feed_raw(&mut hash, value);
-        }
         feed_diagnostic(&mut hash, &held.diagnostic);
     }
     for held in held_windows {

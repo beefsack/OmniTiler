@@ -5,20 +5,21 @@
 
 use crate::canonical_json::{NonFiniteNumber, push_json_number, push_raw_setting_value};
 use crate::world_protocol::push_json_string;
+use tiler_core::connection::RawSettingValue;
 use tiler_core::geometry::Rect;
-use tiler_core::world_report::{
-    HeldScreenRow, HeldWindowRow, ScreenReport, WindowFact, retained_window_fields,
-};
+use tiler_core::world_report::{HeldWindowRow, ScreenReport, WindowFact, retained_window_fields};
 
 /// Exact canonical encoding for one held screen row: the retained carried
 /// fields as a JSON object in stored order (canonical schema order at
 /// decode: `out`, `full`, `work`, `complete`, `scale`, `identity`, then any
 /// other carried keys lexicographically). Checked: a non-finite retained
 /// number is an error, never a silent `null`.
-pub fn encode_held_screen_canonical(held: &HeldScreenRow) -> Result<String, NonFiniteNumber> {
+pub fn encode_held_screen_canonical(
+    fields: &[(String, RawSettingValue)],
+) -> Result<String, NonFiniteNumber> {
     let mut out = String::new();
     out.push('{');
-    for (i, (key, value)) in held.fields.iter().enumerate() {
+    for (i, (key, value)) in fields.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
@@ -139,10 +140,7 @@ mod tests {
     use super::*;
     use tiler_core::connection::RawSettingValue;
     use tiler_core::directional::OutputId;
-    use tiler_core::world_report::{
-        AuthorityScope, OutputIdentity, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
-    };
-
+    use tiler_core::world_report::OutputIdentity;
     #[test]
     fn non_finite_rows_are_checked_errors_never_null() {
         // A non-finite scale never encodes as a valid row.
@@ -157,17 +155,7 @@ mod tests {
         assert_eq!(encode_screen_canonical(&screen), Err(NonFiniteNumber));
 
         // A non-finite retained field never encodes as a held row.
-        let held = HeldScreenRow {
-            output: OutputId("out".to_owned()),
-            ordinal: 0,
-            fields: vec![("scale".to_owned(), RawSettingValue::Number(f64::INFINITY))],
-            diagnostic: RowDiagnostic {
-                scope: AuthorityScope::Output(OutputId("out".to_owned())),
-                row: RowDiagnosticLane::Screen,
-                id: Some("out".to_owned()),
-                kind: RowDiagnosticKind::InvalidFact,
-            },
-        };
-        assert_eq!(encode_held_screen_canonical(&held), Err(NonFiniteNumber));
+        let fields = vec![("scale".to_owned(), RawSettingValue::Number(f64::INFINITY))];
+        assert_eq!(encode_held_screen_canonical(&fields), Err(NonFiniteNumber));
     }
 }

@@ -2428,7 +2428,6 @@ mod prior_empty_scope_tests {
 #[cfg(test)]
 mod live_output_order_tests {
     use super::*;
-    use crate::connection::RawSettingValue;
     use crate::world_report::{
         AuthorityScope, HeldScreenRow, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
     };
@@ -2441,10 +2440,6 @@ mod live_output_order_tests {
         HeldScreenRow {
             output: OutputId(output.to_owned()),
             ordinal,
-            fields: vec![
-                ("out".to_owned(), RawSettingValue::String(output.to_owned())),
-                ("scale".to_owned(), RawSettingValue::Number(0.0)),
-            ],
             diagnostic: RowDiagnostic {
                 scope: AuthorityScope::Output(OutputId(output.to_owned())),
                 row: RowDiagnosticLane::Screen,

@@ -1,10 +1,11 @@
 //! Protocol-owned residual evidence for [`DecodedReportV4`](crate::world_protocol::DecodedReportV4).
 //!
-//! Retains canonical raw fields that core held rows omit (currently the
-//! singleton `HeldPresentationRow` raw carried fields) for lossless wire
-//! round-tripping, exact bounded request estimation, and exact replay
-//! discrimination at checked ingress. Direct unchecked typed core entries that
-//! never had a wire shape have `None` residual and pay zero heap allocation.
+//! Retains canonical raw fields that core held rows omit (currently held
+//! `HeldScreenRow` entries and the singleton `HeldPresentationRow` raw carried
+//! fields) for lossless wire round-tripping, exact bounded request estimation,
+//! and exact replay discrimination at checked ingress. Direct unchecked typed
+//! core entries that never had a wire shape have `None` residual and pay zero
+//! heap allocation.
 
 use tiler_core::connection::RawSettingValue;
 use tiler_core::world_engine::ReplayResidualToken;
@@ -18,6 +19,10 @@ pub type HeldFields = Vec<(String, RawSettingValue)>;
 /// report.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorldReportResidual {
+    /// Canonical ordered raw fields for held `screens` rows, in the same
+    /// logical order as `report.held_screens` (sorted by `ordinal`), each entry
+    /// paired with its carried `ordinal`.
+    pub held_screen_fields: Vec<(usize, HeldFields)>,
     /// Canonical ordered raw fields of a held `presentation` singleton object,
     /// when `report.presentation` is `PresentationRowV4::Held(_)`.
     pub held_presentation_fields: Option<HeldFields>,
@@ -27,20 +32,36 @@ impl WorldReportResidual {
     /// Whether this residual carries no retained wire evidence.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.held_presentation_fields.is_none()
+        self.held_screen_fields.is_empty() && self.held_presentation_fields.is_none()
+    }
+
+    /// Look up retained raw fields for one held screen ordinal in sorted
+    /// `(ordinal, fields)` entries via binary search.
+    #[must_use]
+    pub fn screen_fields(&self, ordinal: usize) -> Option<&[(String, RawSettingValue)]> {
+        let idx = self
+            .held_screen_fields
+            .binary_search_by_key(&ordinal, |(ord, _)| *ord)
+            .ok()?;
+        Some(self.held_screen_fields[idx].1.as_slice())
     }
 
     /// Exact canonical byte estimate of retained residual fields for
     /// [`report_estimate_v4_with_residual`](crate::world_admission_sizing::report_estimate_v4_with_residual).
     #[must_use]
     pub(crate) fn estimate_bytes(&self) -> usize {
-        match &self.held_presentation_fields {
+        let screen_bytes: usize = self
+            .held_screen_fields
+            .iter()
+            .map(|(_, fields)| held_fields_estimate(fields))
+            .sum();
+        let presentation_bytes = match &self.held_presentation_fields {
             Some(fields) => held_fields_estimate(fields),
             None => 0,
-        }
+        };
+        screen_bytes.saturating_add(presentation_bytes)
     }
 }
-
 impl ReplayResidualToken for WorldReportResidual {
     fn as_any(&self) -> &dyn std::any::Any {
         self

@@ -680,7 +680,6 @@ fn held_screen_missing_scale_hides_without_hold() {
     let held = HeldScreenRow {
         output: OutputId("out-a".to_owned()),
         ordinal: 0,
-        fields: Vec::new(),
         diagnostic: RowDiagnostic {
             scope: crate::world_report::AuthorityScope::Output(OutputId("out-a".to_owned())),
             row: RowDiagnosticLane::Screen,

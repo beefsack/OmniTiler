@@ -80,7 +80,6 @@ fn held_screen(output: &str) -> HeldScreenRow {
     HeldScreenRow {
         output: OutputId(output.to_owned()),
         ordinal: 0,
-        fields: Vec::new(),
         diagnostic: diagnostic(output, RowDiagnosticLane::Screen, Some(output)),
     }
 }

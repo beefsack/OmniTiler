@@ -93,7 +93,8 @@ pub fn report_estimate_v4_with_residual(
         + bool_len(report.foreground_known)
         + bool_len(report.inventory_complete)
         + bool_len(report.gesture_barrier)
-        + presentation_row_v4_estimate(&report.presentation, residual);
+        + presentation_row_v4_estimate(&report.presentation)
+        + residual.map_or(0, |r| r.estimate_bytes());
     for screen in &report.screens {
         bytes += 106
             + rect_len(screen.full_rect)
@@ -120,9 +121,6 @@ pub fn report_estimate_v4_with_residual(
             .as_ref()
             .map_or(4, |hit| json_string_len(&hit.0));
     bytes += 17 + u64_len(report.monotonic_ms);
-    for held in &report.held_screens {
-        bytes += held_fields_estimate(&held.fields);
-    }
     for fact in &report.windows {
         bytes += 523
             + json_string_len(&fact.window.0)

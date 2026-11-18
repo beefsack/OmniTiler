@@ -991,7 +991,10 @@ const RETIRED_WINDOW_KEYS: &[&str] = &[
 /// keys, bad `full`/`work`/`complete`) refuses the whole report.
 enum ScreenRowOutcome {
     Valid(ScreenReport),
-    Held(HeldScreenRow),
+    Held {
+        row: HeldScreenRow,
+        fields: crate::world_report_residual::HeldFields,
+    },
 }
 
 /// Convert one carried JSON value into its JSON-agnostic retained fact.
@@ -1029,7 +1032,7 @@ fn held_screen_row(
     output: &OutputId,
     ordinal: usize,
     map: &serde_json::Map<String, serde_json::Value>,
-) -> HeldScreenRow {
+) -> (HeldScreenRow, crate::world_report_residual::HeldFields) {
     const SCHEMA_ORDER: &[&str] = &["out", "full", "work", "complete", "scale", "identity"];
     const IDENTITY_ORDER: &[&str] = &["manufacturer", "model", "serial", "connector"];
     fn order_identity(entries: Vec<(String, RawSettingValue)>) -> Vec<(String, RawSettingValue)> {
@@ -1066,17 +1069,17 @@ fn held_screen_row(
     for key in extra {
         fields.push((key.clone(), raw_setting_value(&map[key])));
     }
-    HeldScreenRow {
+    let row = HeldScreenRow {
         output: output.clone(),
         ordinal,
-        fields,
         diagnostic: RowDiagnostic {
             scope: AuthorityScope::Output(output.clone()),
             row: RowDiagnosticLane::Screen,
             id: Some(output.0.clone()),
             kind: RowDiagnosticKind::InvalidFact,
         },
-    }
+    };
+    (row, fields)
 }
 
 /// Strict v4 screen-row decode: `{out, full, work, complete, scale,
@@ -1142,25 +1145,22 @@ fn decode_screen(value: &serde_json::Value, ordinal: usize) -> Result<ScreenRowO
         .iter()
         .any(|key| map.contains_key(*key));
     if retired {
-        return Ok(ScreenRowOutcome::Held(held_screen_row(
-            &output, ordinal, map,
-        )));
+        let (row, fields) = held_screen_row(&output, ordinal, map);
+        return Ok(ScreenRowOutcome::Held { row, fields });
     }
     let scale = match map.get("scale") {
         None => return Err(malformed()),
         Some(serde_json::Value::Number(number)) => {
             let scale = number.as_f64().ok_or_else(malformed)?;
             if !scale.is_finite() || scale <= 0.0 {
-                return Ok(ScreenRowOutcome::Held(held_screen_row(
-                    &output, ordinal, map,
-                )));
+                let (row, fields) = held_screen_row(&output, ordinal, map);
+                return Ok(ScreenRowOutcome::Held { row, fields });
             }
             scale
         }
         Some(_) => {
-            return Ok(ScreenRowOutcome::Held(held_screen_row(
-                &output, ordinal, map,
-            )));
+            let (row, fields) = held_screen_row(&output, ordinal, map);
+            return Ok(ScreenRowOutcome::Held { row, fields });
         }
     };
     let identity = match map.get("identity") {
@@ -1169,16 +1169,14 @@ fn decode_screen(value: &serde_json::Value, ordinal: usize) -> Result<ScreenRowO
             match decode_identity_strict(identity_map) {
                 Some(identity) => identity,
                 None => {
-                    return Ok(ScreenRowOutcome::Held(held_screen_row(
-                        &output, ordinal, map,
-                    )));
+                    let (row, fields) = held_screen_row(&output, ordinal, map);
+                    return Ok(ScreenRowOutcome::Held { row, fields });
                 }
             }
         }
         Some(_) => {
-            return Ok(ScreenRowOutcome::Held(held_screen_row(
-                &output, ordinal, map,
-            )));
+            let (row, fields) = held_screen_row(&output, ordinal, map);
+            return Ok(ScreenRowOutcome::Held { row, fields });
         }
     };
     Ok(ScreenRowOutcome::Valid(ScreenReport {
@@ -2790,9 +2788,10 @@ pub struct DecodedReportV4 {
     /// Creation-receipt spellings aligned to [`WorldReportV4::creation_attempts`]
     /// in order (one entry per valid row).
     pub creation_receipts: Vec<CreationReceiptWire>,
-    /// Protocol-owned residual evidence (currently retained raw fields for a
-    /// held `presentation` singleton) for lossless re-encoding, sizing, and
-    /// exact replay discrimination. `None` when no held-row residual is carried.
+    /// Protocol-owned residual evidence (retained raw fields for held
+    /// `screens` rows and a held `presentation` singleton) for lossless
+    /// re-encoding, sizing, and exact replay discrimination. `None` when no
+    /// held-row residual is carried.
     pub residual: Option<std::sync::Arc<crate::world_report_residual::WorldReportResidual>>,
 }
 
@@ -4537,6 +4536,7 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
     let screens_value = map.get("screens").ok_or_else(malformed)?;
     let mut screens = Vec::new();
     let mut held_screens = Vec::new();
+    let mut held_screen_fields = Vec::new();
     for (ordinal, item) in screens_value
         .as_array()
         .ok_or_else(malformed)?
@@ -4545,7 +4545,10 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
     {
         match decode_screen(item, ordinal)? {
             ScreenRowOutcome::Valid(screen) => screens.push(screen),
-            ScreenRowOutcome::Held(held) => held_screens.push(held),
+            ScreenRowOutcome::Held { row, fields } => {
+                held_screen_fields.push((row.ordinal, fields));
+                held_screens.push(row);
+            }
         }
     }
     if screens.len().saturating_add(held_screens.len())
@@ -5055,11 +5058,16 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
             Some(_) => GestureIngressWire::Present,
         },
     };
-    let residual = held_presentation_fields.map(|fields| {
-        std::sync::Arc::new(crate::world_report_residual::WorldReportResidual {
-            held_presentation_fields: Some(fields),
-        })
-    });
+    let residual = if held_screen_fields.is_empty() && held_presentation_fields.is_none() {
+        None
+    } else {
+        Some(std::sync::Arc::new(
+            crate::world_report_residual::WorldReportResidual {
+                held_screen_fields,
+                held_presentation_fields,
+            },
+        ))
+    };
     Ok(DecodedReportV4 {
         report,
         wire,
@@ -7414,10 +7422,30 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
         screens.push(encode_screen_canonical(screen).map_err(|_| snapshot_invalid("nonfinite"))?);
     }
     let mut held_screens = Vec::with_capacity(report.held_screens.len());
+    let mut residual_screens = decoded
+        .residual
+        .as_deref()
+        .map(|r| r.held_screen_fields.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .peekable();
     for held in &report.held_screens {
+        while let Some((ord, _)) = residual_screens.peek() {
+            if *ord < held.ordinal {
+                residual_screens.next();
+            } else {
+                break;
+            }
+        }
+        let fields = residual_screens
+            .peek()
+            .filter(|(ord, _)| *ord == held.ordinal)
+            .map(|(_, fields)| fields.as_slice())
+            .ok_or_else(|| snapshot_invalid("held-screen-residual-missing"))?;
+        residual_screens.next();
         held_screens.push((
             held.ordinal,
-            encode_held_screen_canonical(held).map_err(|_| snapshot_invalid("nonfinite"))?,
+            encode_held_screen_canonical(fields).map_err(|_| snapshot_invalid("nonfinite"))?,
         ));
     }
     for (i, row) in merge_lane(screens, held_screens)?.iter().enumerate() {
