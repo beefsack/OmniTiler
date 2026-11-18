@@ -699,7 +699,7 @@ fn rich_v4(seq: u64, lanes: RichLanes) -> WorldReportV4 {
         command_seq: Some(9),
         command: Some(crate::world_report::WorldCommand::Focus {
             window: WindowId("win-a".to_owned()),
-            direction: String::new(),
+            direction: None,
         }),
         screens: vec![
             screen("out-a", 0),

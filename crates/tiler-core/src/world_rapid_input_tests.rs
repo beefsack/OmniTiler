@@ -146,7 +146,7 @@ fn run_batched(
 fn focus_cmd(window: &str) -> WorldCommand {
     WorldCommand::Focus {
         window: WindowId(window.to_owned()),
-        direction: String::new(),
+        direction: None,
     }
 }
 
@@ -173,7 +173,7 @@ fn implicit_resize_dir(direction: &str, mode: &str) -> WorldCommand {
 fn implicit_move_dir(direction: &str) -> WorldCommand {
     implicit(WorldCommand::MoveDirectional {
         window: WindowId(String::new()),
-        direction: direction.to_owned(),
+        direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
         same_axis: SameAxisMove::GroupWithNeighbor,
     })
 }
@@ -181,7 +181,7 @@ fn implicit_move_dir(direction: &str) -> WorldCommand {
 fn implicit_focus_dir(direction: &str) -> WorldCommand {
     implicit(WorldCommand::FocusDirectional {
         window: WindowId(String::new()),
-        direction: direction.to_owned(),
+        direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
     })
 }
 
@@ -543,7 +543,7 @@ fn rapid_input_mixed_100_action_burst_single_capture() {
         96,
         WorldCommand::MoveDirectional {
             window: WindowId("win-b".to_owned()),
-            direction: "right".to_owned(),
+            direction: crate::directional::Direction::Right,
             same_axis: SameAxisMove::GroupWithNeighbor,
         },
     ));
@@ -558,7 +558,7 @@ fn rapid_input_mixed_100_action_burst_single_capture() {
         98,
         implicit(WorldCommand::Focus {
             window: WindowId(String::new()),
-            direction: String::new(),
+            direction: None,
         }),
     ));
     queued.push((99, focus_cmd("win-b")));
@@ -785,7 +785,7 @@ fn rapid_input_empty_focus_directional_stays_no_focus() {
                 1,
                 WorldCommand::FocusDirectional {
                     window: WindowId(String::new()),
-                    direction: "right".to_owned(),
+                    direction: crate::directional::Direction::Right,
                 },
             ),
             (2, focus_cmd("win-b")),

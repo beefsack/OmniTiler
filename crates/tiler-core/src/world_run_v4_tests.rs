@@ -272,7 +272,7 @@ fn bare_focus_direction_gate_splits_legacy_and_v4_envelopes() {
     // dispatch gate admits it.
     let bare = WorldCommand::Focus {
         window: WindowId("win-a".to_owned()),
-        direction: String::new(),
+        direction: None,
     };
     assert!(
         !crate::world_report::valid_command(&bare),
@@ -488,7 +488,7 @@ fn ordinary_focus_command_dispatches_effect() {
     );
     let command = WorldCommand::Focus {
         window: WindowId("win-b".to_owned()),
-        direction: String::new(),
+        direction: None,
     };
     let (outcome, settlements) = run_with_settlements(
         &mut engine,
@@ -536,7 +536,7 @@ fn consumed_command_reconciles_without_reexecution() {
     );
     let command = WorldCommand::Focus {
         window: WindowId("win-b".to_owned()),
-        direction: String::new(),
+        direction: None,
     };
     let command_report = report(
         2,
@@ -580,7 +580,7 @@ fn consumed_rerun_with_new_observation_reconciles_without_revalidation() {
     );
     let command = WorldCommand::Focus {
         window: WindowId("win-b".to_owned()),
-        direction: String::new(),
+        direction: None,
     };
     accepted_reply(
         2,
@@ -682,7 +682,7 @@ fn consumed_command_skips_renderer_validation() {
     };
     let command = WorldCommand::Focus {
         window: WindowId("win-b".to_owned()),
-        direction: String::new(),
+        direction: None,
     };
     let command_report = report(
         2,
@@ -912,7 +912,7 @@ fn frozen_migration_source_refuses_without_fallback() {
         run(&mut engine, &observe(1, facts_pair(), "win-a"), false),
     );
     let command = WorldCommand::MigrateDirectional {
-        direction: "left".to_owned(),
+        direction: crate::directional::Direction::Left,
     };
     let (outcome, settlements) = run_with_settlements(
         &mut engine,
@@ -973,7 +973,7 @@ fn frozen_new_view_refuses_despite_same_report_creation() {
         PresentationRowV4::Valid(ingress("win-a")),
         Some(1),
         Some(WorldCommand::MigrateDirectional {
-            direction: "left".to_owned(),
+            direction: crate::directional::Direction::Left,
         }),
         None,
         Vec::new(),
@@ -1025,7 +1025,7 @@ fn renderer_valid_target_proceeds_to_normal_command_gates() {
     };
     let command = WorldCommand::Focus {
         window: WindowId("win-gone".to_owned()),
-        direction: String::new(),
+        direction: None,
     };
     let (outcome, settlements) = run_with_settlements(
         &mut engine,
@@ -1075,7 +1075,7 @@ fn renderer_unissued_revision_refuses_command() {
     };
     let command = WorldCommand::Focus {
         window: WindowId("win-b".to_owned()),
-        direction: String::new(),
+        direction: None,
     };
     let (outcome, settlements) = run_with_settlements(
         &mut engine,
@@ -1155,7 +1155,7 @@ fn renderer_older_unchanged_target_executes_after_intervening_observation() {
             Some(1),
             Some(WorldCommand::Focus {
                 window: WindowId("win-b".to_owned()),
-                direction: String::new(),
+                direction: None,
             }),
             Some(older),
             Vec::new(),
@@ -1252,7 +1252,7 @@ fn renderer_target_rehomed_during_genuine_run_refuses_as_stale() {
             Some(2),
             Some(WorldCommand::Focus {
                 window: WindowId("win-a".to_owned()),
-                direction: String::new(),
+                direction: None,
             }),
             Some(old_renderer),
             Vec::new(),
@@ -1301,7 +1301,7 @@ fn renderer_equal_revision_with_exact_row_executes() {
     };
     let command = WorldCommand::Focus {
         window: WindowId("win-b".to_owned()),
-        direction: String::new(),
+        direction: None,
     };
     let (outcome, settlements) = run_with_settlements(
         &mut engine,

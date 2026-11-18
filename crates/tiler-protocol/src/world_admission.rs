@@ -767,7 +767,7 @@ mod tests {
         assert_eq!(
             max_intent_save_bound_v4(&with_cmd(Some(WorldCommand::Focus {
                 window: WindowId("win-a".to_owned()),
-                direction: "left".to_owned(),
+                direction: Some(tiler_core::directional::Direction::Left),
             }))),
             0
         );
@@ -861,14 +861,14 @@ mod tests {
                 1,
                 WorldCommand::Focus {
                     window: WindowId("win-a".to_owned()),
-                    direction: String::new(),
+                    direction: None,
                 },
             ),
             (
                 2,
                 WorldCommand::Focus {
                     window: WindowId("win-b".to_owned()),
-                    direction: String::new(),
+                    direction: None,
                 },
             ),
         ];

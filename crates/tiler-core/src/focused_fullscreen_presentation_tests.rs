@@ -505,7 +505,7 @@ fn window_actions_and_shortcuts_during_suspension() {
             Some(7),
             Some(WorldCommand::Focus {
                 window: WindowId("win-b".to_owned()),
-                direction: "left".to_owned(),
+                direction: Some(crate::directional::Direction::Left),
             }),
             ingress_fullscreen("win-a"),
         ),

@@ -1471,7 +1471,7 @@ pub(crate) fn describe_send_command(command: &WorldCommand) -> (String, String, 
             window.0.clone(),
             "directional".to_owned(),
             *follow,
-            direction.clone(),
+            direction.as_wire_str().to_owned(),
         ),
         _ => ("none".to_owned(), "-".to_owned(), false, "none".to_owned()),
     }

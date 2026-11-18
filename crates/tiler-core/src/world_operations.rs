@@ -658,7 +658,7 @@ impl WorldTransaction<'_> {
         _issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
-        direction: &str,
+        direction: Direction,
         by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
@@ -666,22 +666,11 @@ impl WorldTransaction<'_> {
             DirectionalOutcome, DirectionalVerdict, early_verdict, effective_domain,
             float_focus_candidates, select_float_focus_target,
         };
-        let Some(direction_parsed) = parse_direction_token(direction) else {
-            return CommandApplied::Rejected {
-                kind: KIND_DIRECTION,
-                message: MSG_DIRECTION,
-            };
-        };
         // No focused window: the adapter claimed no subject, so the core
         // starts from the current workspace/output instead of resolving a
         // subject row. Unknown non-empty windows keep the stale refusal.
         if window.0.is_empty() {
-            return self.focus_directional_no_focus(
-                command_seq,
-                direction_parsed,
-                held_scopes,
-                by_id,
-            );
+            return self.focus_directional_no_focus(command_seq, direction, held_scopes, by_id);
         }
         // Hidden subjects never navigate: a staged minimized/host-hidden
         // source refuses with the existing stale vocabulary, like an
@@ -778,7 +767,7 @@ impl WorldTransaction<'_> {
             let Some(target) = select_float_focus_target(
                 source_row.rect.x,
                 source_row.rect.y,
-                direction,
+                direction.as_wire_str(),
                 &candidates,
             ) else {
                 self.world.command_result = Some(CommandResult::Directional {
@@ -813,8 +802,8 @@ impl WorldTransaction<'_> {
         // irrespective of held/unreadable targets and the cross operation
         // refused. No silent relabel as local success.
         let cross_target = (maximized_subject
-            || matches!(direction_parsed, Direction::Left | Direction::Right))
-        .then(|| self.core_topology_target(&source_key.output, direction_parsed))
+            || matches!(direction, Direction::Left | Direction::Right))
+        .then(|| self.core_topology_target(&source_key.output, direction))
         .flatten();
         if composed_overlay {
             // Composed maximized subject (tiled or float/sticky): same-output
@@ -860,7 +849,7 @@ impl WorldTransaction<'_> {
             let Some(((_, _), (_, target_key), _, _)) = self.directional_pair_for_target(
                 &source_key,
                 source_staged,
-                direction_parsed,
+                direction,
                 &target_output,
                 held_scopes,
             ) else {
@@ -876,7 +865,7 @@ impl WorldTransaction<'_> {
                     crate::geometry::inset_bounds(source_staged.bounds, source_staged.outer_gap)
                         .ok()
                         .and_then(|usable| {
-                            let source_perp = match direction_parsed {
+                            let source_perp = match direction {
                                 Direction::Left | Direction::Right => {
                                     (usable.y, usable.y.checked_add(usable.h)?)
                                 }
@@ -886,7 +875,7 @@ impl WorldTransaction<'_> {
                             };
                             self.world.layout.select_cross_output_edge_target(
                                 &target_key,
-                                direction_parsed,
+                                direction,
                                 source_perp,
                             )
                         })
@@ -929,7 +918,7 @@ impl WorldTransaction<'_> {
             return self.run_pair_focus_typed(
                 command_seq,
                 window,
-                direction_parsed,
+                direction,
                 float_subject,
                 by_id,
                 held_scopes,
@@ -950,7 +939,7 @@ impl WorldTransaction<'_> {
             self.note_command(command_seq);
             return CommandApplied::NoEffect;
         }
-        self.run_local_focus_typed(command_seq, window, direction_parsed, held_scopes)
+        self.run_local_focus_typed(command_seq, window, direction, held_scopes)
     }
 
     /// Direction-only focus with no focused window (empty window): start
@@ -1108,7 +1097,7 @@ impl WorldTransaction<'_> {
         _issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
-        direction: &str,
+        direction: Direction,
         same_axis: SameAxisMove,
         by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
@@ -1116,12 +1105,6 @@ impl WorldTransaction<'_> {
         use crate::world_directional::{
             DirectionalOutcome, DirectionalVerdict, early_verdict, effective_domain,
             float_half_snap_rect, half_snap_constraints_ok,
-        };
-        let Some(direction_parsed) = parse_direction_token(direction) else {
-            return CommandApplied::Rejected {
-                kind: KIND_DIRECTION,
-                message: MSG_DIRECTION,
-            };
         };
         let Some(source_row) = by_id.get(window) else {
             self.world.command_result = Some(CommandResult::Directional {
@@ -1223,7 +1206,7 @@ impl WorldTransaction<'_> {
                         operation_id,
                         command_seq,
                         window: window.clone(),
-                        direction: direction.to_owned(),
+                        direction: direction.as_wire_str().to_owned(),
                         home: home.clone(),
                         view: view.clone(),
                         focus: self.world.staged.observation.focused_global.clone(),
@@ -1304,7 +1287,7 @@ impl WorldTransaction<'_> {
                 self.note_command(command_seq);
                 return CommandApplied::NoEffect;
             };
-            let Some(half) = float_half_snap_rect(work, gap, direction) else {
+            let Some(half) = float_half_snap_rect(work, gap, direction.as_wire_str()) else {
                 self.world.command_result = Some(CommandResult::Directional {
                     outcome: DirectionalOutcome::MoveFloatRefusedInvalidGeometry,
                     target: None,
@@ -1403,23 +1386,20 @@ impl WorldTransaction<'_> {
         if composed_overlay {
             self.world.runtime.composed_maximized.remove(window);
         }
-        let pinned = match self.window_topology_target(
-            &source_key.output,
-            direction_parsed,
-            &source_row.rect,
-        ) {
-            Err(_) => {
-                if composed_overlay {
-                    self.world.runtime.composed_maximized.insert(window.clone());
+        let pinned =
+            match self.window_topology_target(&source_key.output, direction, &source_row.rect) {
+                Err(_) => {
+                    if composed_overlay {
+                        self.world.runtime.composed_maximized.insert(window.clone());
+                    }
+                    return CommandApplied::Rejected {
+                        kind: KIND_OPERATION,
+                        message: MSG_OPERATION,
+                    };
                 }
-                return CommandApplied::Rejected {
-                    kind: KIND_OPERATION,
-                    message: MSG_OPERATION,
-                };
-            }
-            Ok(None) => None,
-            Ok(Some(target)) => Some(target),
-        };
+                Ok(None) => None,
+                Ok(Some(target)) => Some(target),
+            };
         // Tiled directional moves keep focus on the mover through one spent
         // core effect (same at-most-once lane as directional focus): the
         // adapter only verifies the foreground for its snap chain and never
@@ -1428,7 +1408,7 @@ impl WorldTransaction<'_> {
             self.run_pair_move_typed(
                 command_seq,
                 window,
-                direction_parsed,
+                direction,
                 true,
                 same_axis,
                 Some(&target),
@@ -1436,13 +1416,7 @@ impl WorldTransaction<'_> {
                 held_scopes,
             )
         } else {
-            self.run_local_move_typed(
-                command_seq,
-                window,
-                direction_parsed,
-                same_axis,
-                held_scopes,
-            )
+            self.run_local_move_typed(command_seq, window, direction, same_axis, held_scopes)
         };
         if composed_overlay && matches!(applied, CommandApplied::Rejected { .. }) {
             self.world.runtime.composed_maximized.insert(window.clone());
@@ -1468,36 +1442,27 @@ impl WorldTransaction<'_> {
         issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
-        direction: &str,
+        direction: Direction,
         follow: bool,
         by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
-        let Some(direction_parsed) = parse_direction_token(direction) else {
-            return CommandApplied::Rejected {
-                kind: KIND_DIRECTION,
-                message: MSG_DIRECTION,
-            };
-        };
         let Some(source_row) = by_id.get(window) else {
             return CommandApplied::Rejected {
                 kind: KIND_SEND_WINDOW,
                 message: MSG_SEND_WINDOW,
             };
         };
-        let target_output = match self.window_topology_target(
-            &source_row.output,
-            direction_parsed,
-            &source_row.rect,
-        ) {
-            Ok(Some(target)) => target,
-            _ => {
-                return CommandApplied::Rejected {
-                    kind: KIND_SEND_TARGET,
-                    message: MSG_SEND_TARGET,
-                };
-            }
-        };
+        let target_output =
+            match self.window_topology_target(&source_row.output, direction, &source_row.rect) {
+                Ok(Some(target)) => target,
+                _ => {
+                    return CommandApplied::Rejected {
+                        kind: KIND_SEND_TARGET,
+                        message: MSG_SEND_TARGET,
+                    };
+                }
+            };
         let Some(current) = self.effective_view(&target_output) else {
             return CommandApplied::Rejected {
                 kind: KIND_SEND_TARGET,
@@ -1534,17 +1499,11 @@ impl WorldTransaction<'_> {
         command_seq: u64,
         source_output: &OutputId,
         workspace: &str,
-        direction: &str,
+        direction: Direction,
         _by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
-        let Some(direction_parsed) = parse_direction_token(direction) else {
-            return CommandApplied::Rejected {
-                kind: KIND_DIRECTION,
-                message: MSG_DIRECTION,
-            };
-        };
-        let target_output = match self.migration_topology_target(source_output, direction_parsed) {
+        let target_output = match self.migration_topology_target(source_output, direction) {
             Ok(Some(target)) => target,
             Err(_) => {
                 return CommandApplied::Rejected {

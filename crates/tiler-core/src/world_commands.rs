@@ -19,13 +19,13 @@ use crate::workspace_scope::{
     resolve_relative_step, resolve_trailing,
 };
 use crate::world_engine::{
-    KIND_CREATION_EXHAUSTED, KIND_DIRECTION, KIND_FOCUS, KIND_IN_FLIGHT, KIND_MIGRATION,
-    KIND_OPERATION, KIND_SCOPE_HELD, KIND_SELECT_UNKNOWN, KIND_SEND_TARGET, KIND_SEND_WINDOW,
-    MSG_CREATION_EXHAUSTED, MSG_DIRECTION, MSG_FOCUS, MSG_IN_FLIGHT, MSG_MIGRATION,
-    MSG_MIGRATION_FLIGHT, MSG_MIGRATION_INVENTORY, MSG_MIGRATION_RECIPROCAL, MSG_MIGRATION_RESIDUE,
-    MSG_MIGRATION_SHARED, MSG_MIGRATION_SOURCE, MSG_MIGRATION_SOURCE_UNREADABLE,
-    MSG_MIGRATION_TARGET_GEOMETRY, MSG_MIGRATION_TARGET_INCOMPLETE, MSG_OPERATION, MSG_SCOPE_HELD,
-    MSG_SELECT_UNKNOWN, MSG_SEND_TARGET, MSG_SEND_WINDOW, RetainedTransfer, WorldEngine,
+    KIND_CREATION_EXHAUSTED, KIND_FOCUS, KIND_IN_FLIGHT, KIND_MIGRATION, KIND_OPERATION,
+    KIND_SCOPE_HELD, KIND_SELECT_UNKNOWN, KIND_SEND_TARGET, KIND_SEND_WINDOW,
+    MSG_CREATION_EXHAUSTED, MSG_FOCUS, MSG_IN_FLIGHT, MSG_MIGRATION, MSG_MIGRATION_FLIGHT,
+    MSG_MIGRATION_INVENTORY, MSG_MIGRATION_RECIPROCAL, MSG_MIGRATION_RESIDUE, MSG_MIGRATION_SHARED,
+    MSG_MIGRATION_SOURCE, MSG_MIGRATION_SOURCE_UNREADABLE, MSG_MIGRATION_TARGET_GEOMETRY,
+    MSG_MIGRATION_TARGET_INCOMPLETE, MSG_OPERATION, MSG_SCOPE_HELD, MSG_SELECT_UNKNOWN,
+    MSG_SEND_TARGET, MSG_SEND_WINDOW, RetainedTransfer, WorldEngine,
 };
 use crate::world_layout::{LayoutFailure, WorkspaceMigrationFailure, WorkspaceSwapSide};
 use crate::world_report::{
@@ -125,19 +125,10 @@ impl WorldTransaction<'_> {
                 self.world.focus.implicit_event_focus = previous;
                 applied
             }
-            WorldCommand::Focus { window, direction } => {
-                // V4 by-id focus spells the removed direction as the
-                // empty string; the legacy envelope still refuses it
-                // through `valid_command`, so only this shared dispatch
-                // gate admits the bare shape.
-                if !(direction.is_empty()
-                    || matches!(direction.as_str(), "left" | "right" | "up" | "down"))
-                {
-                    return CommandApplied::Rejected {
-                        kind: KIND_DIRECTION,
-                        message: MSG_DIRECTION,
-                    };
-                }
+            WorldCommand::Focus {
+                window,
+                direction: _,
+            } => {
                 // Hidden targets never take focus: a staged
                 // minimized/host-hidden target refuses with the existing
                 // focus vocabulary before the retained-membership
@@ -760,7 +751,7 @@ impl WorldTransaction<'_> {
                 held_scopes,
             ),
             WorldCommand::FocusDirectional { window, direction } => {
-                self.focus_directional(issue, command_seq, window, direction, &by_id, held_scopes)
+                self.focus_directional(issue, command_seq, window, *direction, &by_id, held_scopes)
             }
             WorldCommand::MoveDirectional {
                 window,
@@ -770,7 +761,7 @@ impl WorldTransaction<'_> {
                 issue,
                 command_seq,
                 window,
-                direction,
+                *direction,
                 *same_axis,
                 &by_id,
                 held_scopes,
@@ -783,7 +774,7 @@ impl WorldTransaction<'_> {
                 issue,
                 command_seq,
                 window,
-                direction,
+                *direction,
                 *follow,
                 &by_id,
                 held_scopes,
@@ -807,7 +798,7 @@ impl WorldTransaction<'_> {
                     command_seq,
                     &source,
                     &view,
-                    direction,
+                    *direction,
                     &by_id,
                     held_scopes,
                 )

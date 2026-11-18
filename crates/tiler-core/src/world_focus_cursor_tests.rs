@@ -134,7 +134,7 @@ fn run_batched(
 fn focus_cmd(window: &str) -> WorldCommand {
     WorldCommand::Focus {
         window: WindowId(window.to_owned()),
-        direction: String::new(),
+        direction: None,
     }
 }
 
@@ -145,7 +145,7 @@ fn implicit(command: WorldCommand) -> WorldCommand {
 fn implicit_focus_dir(direction: &str) -> WorldCommand {
     implicit(WorldCommand::FocusDirectional {
         window: WindowId(String::new()),
-        direction: direction.to_owned(),
+        direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
     })
 }
 
@@ -846,7 +846,7 @@ fn gap_windows() -> Vec<WindowFact> {
 fn implicit_move_dir(direction: &str) -> WorldCommand {
     implicit(WorldCommand::MoveDirectional {
         window: WindowId(String::new()),
-        direction: direction.to_owned(),
+        direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
         same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
     })
 }
@@ -2156,7 +2156,7 @@ fn move_directional_effect_preserves_command_focus_cursor() {
     m2.screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let move_cmd = WorldCommand::MoveDirectional {
         window: WindowId("win-a".to_owned()),
-        direction: "right".to_owned(),
+        direction: crate::directional::Direction::Right,
         same_axis: SameAxisMove::SwapWithNeighbor,
     };
     let (reply_move, move_settlements) =
@@ -2349,7 +2349,7 @@ fn perpendicular_descent_both_histories_abc_vs_bac() {
             1,
             WorldCommand::FocusDirectional {
                 window: WindowId("win-c".to_owned()),
-                direction: "left".to_owned(),
+                direction: crate::directional::Direction::Left,
             },
         )],
     );
@@ -2378,7 +2378,7 @@ fn perpendicular_descent_both_histories_abc_vs_bac() {
             1,
             WorldCommand::FocusDirectional {
                 window: WindowId("win-c".to_owned()),
-                direction: "left".to_owned(),
+                direction: crate::directional::Direction::Left,
             },
         )],
     );
@@ -2459,7 +2459,7 @@ fn perpendicular_descent_no_history_fallback_and_nested() {
             1,
             WorldCommand::FocusDirectional {
                 window: WindowId("win-c".to_owned()),
-                direction: "left".to_owned(),
+                direction: crate::directional::Direction::Left,
             },
         )],
     );
@@ -2483,7 +2483,7 @@ fn perpendicular_descent_no_history_fallback_and_nested() {
             2,
             WorldCommand::FocusDirectional {
                 window: WindowId("win-c".to_owned()),
-                direction: "left".to_owned(),
+                direction: crate::directional::Direction::Left,
             },
         )],
     );
@@ -2523,7 +2523,7 @@ fn perpendicular_descent_no_history_fallback_and_nested() {
             3,
             WorldCommand::FocusDirectional {
                 window: WindowId("win-d".to_owned()),
-                direction: "down".to_owned(),
+                direction: crate::directional::Direction::Down,
             },
         )],
     );
@@ -2575,7 +2575,7 @@ fn perpendicular_descent_explicit_focus_command_and_rejected_observation() {
                 3,
                 WorldCommand::FocusDirectional {
                     window: WindowId("win-c".to_owned()),
-                    direction: "left".to_owned(),
+                    direction: crate::directional::Direction::Left,
                 },
             ),
         ],
@@ -2632,7 +2632,7 @@ fn perpendicular_descent_accepted_hover_focus_updates_history() {
                 2,
                 WorldCommand::FocusDirectional {
                     window: WindowId("win-c".to_owned()),
-                    direction: "left".to_owned(),
+                    direction: crate::directional::Direction::Left,
                 },
             ),
         ],
@@ -2696,7 +2696,7 @@ fn perpendicular_descent_accepted_hover_not_overwritten_by_lagging_foreground() 
                 2,
                 WorldCommand::FocusDirectional {
                     window: WindowId("win-a".to_owned()),
-                    direction: "right".to_owned(),
+                    direction: crate::directional::Direction::Right,
                 },
             ),
         ],
@@ -2883,7 +2883,7 @@ fn perpendicular_descent_closed_mru_falls_through_to_next_candidate() {
                 2,
                 WorldCommand::FocusDirectional {
                     window: WindowId("win-c".to_owned()),
-                    direction: "left".to_owned(),
+                    direction: crate::directional::Direction::Left,
                 },
             ),
         ],
@@ -2934,7 +2934,7 @@ fn perpendicular_descent_closed_mru_falls_through_to_next_candidate() {
             3,
             WorldCommand::SendDirectional {
                 window: WindowId("win-b".to_owned()),
-                direction: "left".to_owned(),
+                direction: crate::directional::Direction::Left,
                 follow: false,
             },
         )],
@@ -2960,7 +2960,7 @@ fn perpendicular_descent_closed_mru_falls_through_to_next_candidate() {
             4,
             WorldCommand::FocusDirectional {
                 window: WindowId("win-c".to_owned()),
-                direction: "left".to_owned(),
+                direction: crate::directional::Direction::Left,
             },
         )],
     );
@@ -2999,7 +2999,7 @@ fn perpendicular_descent_leaves_move_and_send_unchanged() {
                 1,
                 WorldCommand::MoveDirectional {
                     window: WindowId("win-c".to_owned()),
-                    direction: "left".to_owned(),
+                    direction: crate::directional::Direction::Left,
                     same_axis: SameAxisMove::GroupWithNeighbor,
                 },
             )],
@@ -3033,7 +3033,7 @@ fn perpendicular_descent_leaves_move_and_send_unchanged() {
                 1,
                 WorldCommand::MoveDirectional {
                     window: WindowId("win-c".to_owned()),
-                    direction: "left".to_owned(),
+                    direction: crate::directional::Direction::Left,
                     same_axis: SameAxisMove::SwapWithNeighbor,
                 },
             )],
@@ -3079,7 +3079,7 @@ fn perpendicular_descent_leaves_move_and_send_unchanged() {
                 1,
                 WorldCommand::SendDirectional {
                     window: WindowId("win-d".to_owned()),
-                    direction: "left".to_owned(),
+                    direction: crate::directional::Direction::Left,
                     follow: false,
                 },
             )],

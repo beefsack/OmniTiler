@@ -234,7 +234,7 @@ fn occupied_target_migration_arrival_proves_without_deferred_view() {
         moving_prims(),
         0,
         Some(WorldCommand::MigrateDirectional {
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
         }),
         Some((10, 10)),
     );
@@ -473,7 +473,7 @@ fn asymmetric_migration_members_land_on_published_slots_both_prove() {
         moving_prims(),
         0,
         Some(WorldCommand::MigrateDirectional {
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
         }),
         Some((10, 10)),
     );
@@ -792,7 +792,7 @@ fn roundtrip_migration_select_occupied_then_close_reflows_and_settles() {
         moving_prims(),
         0,
         Some(WorldCommand::MigrateDirectional {
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
         }),
         Some((10, 10)),
     );
@@ -833,7 +833,7 @@ fn roundtrip_migration_select_occupied_then_close_reflows_and_settles() {
         moving_prims(),
         0,
         Some(WorldCommand::MigrateDirectional {
-            direction: "left".to_owned(),
+            direction: tiler_core::directional::Direction::Left,
         }),
         Some((2000, 10)),
     );
@@ -1917,7 +1917,7 @@ fn selection_return_core_effect_binds_exact_grant() {
     let observed = live_visible_observed();
     let dir_command = WorldCommand::Focus {
         window: tiler_core::directional::WindowId("w7".to_owned()),
-        direction: "left".to_owned(),
+        direction: Some(tiler_core::directional::Direction::Left),
     };
     let directed = live_tick(
         &mut env,

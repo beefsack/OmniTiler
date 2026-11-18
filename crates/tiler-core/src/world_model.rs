@@ -2368,7 +2368,7 @@ mod prior_empty_scope_tests {
         let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         let refused_focus = WorldCommand::Focus {
             window: WindowId("win-zzz".to_owned()),
-            direction: "left".to_owned(),
+            direction: Some(crate::directional::Direction::Left),
         };
         // Empty observation plus a refusing command: the refusal reply
         // still publishes the controlled-empty workspace and consumes the
@@ -2405,7 +2405,7 @@ mod prior_empty_scope_tests {
             Some(1),
             Some(WorldCommand::Focus {
                 window: WindowId("win-zzz".to_owned()),
-                direction: "left".to_owned(),
+                direction: Some(crate::directional::Direction::Left),
             }),
         );
         match engine.handle_report(&redelivery, &[]).0 {

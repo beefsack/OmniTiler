@@ -241,35 +241,36 @@ pub(crate) fn operation_command(
     window: &str,
     retained: &mut RetainedCore,
 ) -> Option<(WorldCommand, &'static str)> {
+    use crate::runtime::InputDirection;
     use tiler_core::boundary::CoreCommand;
-    use tiler_core::directional::{SameAxisMove, WindowId};
+    use tiler_core::directional::{Direction, SameAxisMove, WindowId};
     let empty = || WindowId(String::new());
+    let map_direction = |direction: InputDirection| match direction {
+        InputDirection::Left => Direction::Left,
+        InputDirection::Right => Direction::Right,
+        InputDirection::Up => Direction::Up,
+        InputDirection::Down => Direction::Down,
+    };
     match action {
         InputSemanticAction::FocusStep { direction } => Some((
             WorldCommand::Implicit(Box::new(WorldCommand::FocusDirectional {
                 window: empty(),
-                direction: direction.as_str().to_owned(),
+                direction: map_direction(*direction),
             })),
             OP_FOCUS,
         )),
         InputSemanticAction::MoveStep { direction } => Some((
             WorldCommand::Implicit(Box::new(WorldCommand::MoveDirectional {
                 window: empty(),
-                direction: direction.as_str().to_owned(),
+                direction: map_direction(*direction),
                 same_axis: SameAxisMove::default(),
             })),
             OP_MOVE,
         )),
         InputSemanticAction::ResizeStep { direction, mode } => {
-            use crate::runtime::InputDirection;
             use tiler_core::contract::ResizeMode;
-            use tiler_core::directional::{Direction, ResizeSelector};
-            let typed_direction = match direction {
-                InputDirection::Left => Direction::Left,
-                InputDirection::Right => Direction::Right,
-                InputDirection::Up => Direction::Up,
-                InputDirection::Down => Direction::Down,
-            };
+            use tiler_core::directional::ResizeSelector;
+            let typed_direction = map_direction(*direction);
             let typed_mode = match mode {
                 ResizeMode::Inwards => ResizeSelector::Inwards,
                 ResizeMode::Outwards => ResizeSelector::Outwards,
@@ -427,11 +428,11 @@ mod directional_codec_tests {
         // (`group-with-neighbor`, matching the prior legacy intent).
         let expected_focus = WorldCommand::Implicit(Box::new(WorldCommand::FocusDirectional {
             window: WindowId(String::new()),
-            direction: "left".to_owned(),
+            direction: tiler_core::directional::Direction::Left,
         }));
         let expected_move = WorldCommand::Implicit(Box::new(WorldCommand::MoveDirectional {
             window: WindowId(String::new()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
             same_axis: tiler_core::directional::SameAxisMove::default(),
         }));
         for (action, op, expected) in [

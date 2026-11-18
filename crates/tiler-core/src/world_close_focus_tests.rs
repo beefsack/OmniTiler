@@ -617,7 +617,7 @@ fn inline_command_supersedes_pending_request() {
             Some(4),
             Some(WorldCommand::Focus {
                 window: WindowId("win-c".to_owned()),
-                direction: "left".to_owned(),
+                direction: Some(crate::directional::Direction::Left),
             }),
         ),
     );
@@ -644,7 +644,7 @@ fn consumed_sequence_report_supersedes_pending_request() {
             Some(1),
             Some(WorldCommand::Focus {
                 window: WindowId("win-a".to_owned()),
-                direction: "left".to_owned(),
+                direction: Some(crate::directional::Direction::Left),
             }),
         ),
     );
@@ -671,7 +671,7 @@ fn consumed_sequence_report_supersedes_pending_request() {
                 Some(1),
                 Some(WorldCommand::Focus {
                     window: WindowId("win-a".to_owned()),
-                    direction: "left".to_owned(),
+                    direction: Some(crate::directional::Direction::Left),
                 }),
             ),
             &[],
@@ -1337,7 +1337,7 @@ fn same_report_explicit_beats_admission_and_close() {
             Some(4),
             Some(WorldCommand::Focus {
                 window: WindowId("win-a".to_owned()),
-                direction: "left".to_owned(),
+                direction: Some(crate::directional::Direction::Left),
             }),
         ),
     );
@@ -1719,14 +1719,14 @@ fn four_windows() -> Vec<WindowFact> {
 fn implicit_focus_dir(direction: &str) -> WorldCommand {
     WorldCommand::Implicit(Box::new(WorldCommand::FocusDirectional {
         window: WindowId(String::new()),
-        direction: direction.to_owned(),
+        direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
     }))
 }
 
 fn implicit_move_dir(direction: &str) -> WorldCommand {
     WorldCommand::Implicit(Box::new(WorldCommand::MoveDirectional {
         window: WindowId(String::new()),
-        direction: direction.to_owned(),
+        direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
         same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
     }))
 }

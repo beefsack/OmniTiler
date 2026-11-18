@@ -279,7 +279,7 @@ pub(super) fn workspace_output_send_tick(
         }
         let command = WorldCommand::SendDirectional {
             window: tiler_core::directional::WindowId(o.token.clone()),
-            direction: direction_name(intent.direction).to_owned(),
+            direction: intent.direction,
             follow: intent.follow,
         };
         let reply =
@@ -370,7 +370,7 @@ pub(super) fn workspace_output_send_one(
         fulls,
         WorldCommand::SendDirectional {
             window: tiler_core::directional::WindowId(origin.token.clone()),
-            direction: direction_name(intent.direction).to_owned(),
+            direction: intent.direction,
             follow: intent.follow,
         },
         super::observation::sample_cursor(),

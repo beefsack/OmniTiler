@@ -1264,7 +1264,7 @@ fn offroute_diagnostics_survive_command_restage() {
             Some(1),
             Some(crate::world_report::WorldCommand::Focus {
                 window: WindowId("win-a".to_owned()),
-                direction: "left".to_owned(),
+                direction: Some(crate::directional::Direction::Left),
             }),
         ),
         rows.clone(),

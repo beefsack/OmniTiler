@@ -349,7 +349,7 @@ fn disabled_explicit_directional_clear_unaffected() {
         Some(13),
         Some(WorldCommand::MoveDirectional {
             window: WindowId("win-max".to_owned()),
-            direction: "right".to_owned(),
+            direction: crate::directional::Direction::Right,
             same_axis: crate::directional::SameAxisMove::default(),
         }),
     );

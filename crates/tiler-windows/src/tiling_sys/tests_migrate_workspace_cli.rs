@@ -915,7 +915,7 @@ fn migrate_workspace_dispatch_prefers_pointer_over_stale_cache() {
         0,
         &fx.fulls,
         WorldCommand::MigrateDirectional {
-            direction: "left".to_owned(),
+            direction: tiler_core::directional::Direction::Left,
         },
         Some((810, 10)),
     )
@@ -938,7 +938,7 @@ fn migrate_workspace_dispatch_prefers_pointer_over_stale_cache() {
         0,
         &fx.fulls,
         WorldCommand::MigrateDirectional {
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
         },
         None,
     );
@@ -958,7 +958,7 @@ fn migrate_workspace_dispatch_prefers_pointer_over_stale_cache() {
         0,
         &fx.fulls,
         WorldCommand::MigrateDirectional {
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
         },
         None,
     )

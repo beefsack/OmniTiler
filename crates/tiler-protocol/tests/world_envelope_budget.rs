@@ -587,7 +587,7 @@ fn preflight_effect_reserve_boundary_refuses_before_mutation_and_retry_accepts()
     );
     let focus = || WorldCommand::Focus {
         window: WindowId("win-a".to_owned()),
-        direction: "right".to_owned(),
+        direction: Some(tiler_core::directional::Direction::Right),
     };
     let bound_of = |windows: &[WindowFact]| {
         let mut r = report(2, windows.to_vec());
@@ -668,7 +668,7 @@ fn explicit_focus_with_newcomer_fits_preflight_reserve_and_canonical_count() {
     input.command_seq = Some(2);
     input.command = Some(WorldCommand::Focus {
         window: WindowId("win-a".to_owned()),
-        direction: "right".to_owned(),
+        direction: Some(tiler_core::directional::Direction::Right),
     });
     let pre_bound = reply_upper_bound_v4(&input, 0, 1, 2, 0, 1);
     let reply = accepted(&mut engine, &input);

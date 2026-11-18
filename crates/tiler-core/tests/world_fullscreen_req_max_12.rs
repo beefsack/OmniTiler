@@ -456,7 +456,7 @@ fn host_owned_focused_fullscreen_toggle_orientation_and_move_refuse() {
         Some(2),
         Some(WorldCommand::MoveDirectional {
             window: WindowId("w1".to_owned()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
             same_axis: SameAxisMove::default(),
         }),
     );

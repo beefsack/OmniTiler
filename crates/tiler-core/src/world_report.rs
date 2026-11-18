@@ -2099,7 +2099,10 @@ pub enum SendSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorldCommand {
     /// One-shot focus attempt (emits an effect, never retained).
-    Focus { window: WindowId, direction: String },
+    Focus {
+        window: WindowId,
+        direction: Option<Direction>,
+    },
     /// Window transfer (retained until confirmed/refused/superseded).
     Send {
         window: WindowId,
@@ -2193,7 +2196,10 @@ pub enum WorldCommand {
     /// An empty window names no focused window: the core starts from the
     /// current workspace/output (neutral action context) and crosses by
     /// the existing cross-output selection, otherwise no effect.
-    FocusDirectional { window: WindowId, direction: String },
+    FocusDirectional {
+        window: WindowId,
+        direction: Direction,
+    },
     /// Direction-only move (core-owned topology): the adapter names the
     /// window, direction and same-axis mode only. Core resolves the strict
     /// target; when it exists the cross-output pair runs in all four
@@ -2201,7 +2207,7 @@ pub enum WorldCommand {
     /// refuses a local move for missing topology.
     MoveDirectional {
         window: WindowId,
-        direction: String,
+        direction: Direction,
         same_axis: crate::directional::SameAxisMove,
     },
     /// Direction-only window send (core-owned topology): the adapter names
@@ -2211,7 +2217,7 @@ pub enum WorldCommand {
     /// No resolvable target refuses without mutation.
     SendDirectional {
         window: WindowId,
-        direction: String,
+        direction: Direction,
         follow: bool,
     },
     /// Direction-only whole-workspace migration (core-owned topology): the
@@ -2222,7 +2228,7 @@ pub enum WorldCommand {
     /// runs the world migration path. No resolvable source or target
     /// refuses without mutation. Genuine explicit migrations route
     /// [`WorldCommand::MigrateWorkspace`] with both scopes named.
-    MigrateDirectional { direction: String },
+    MigrateDirectional { direction: Direction },
     /// Maximize toggle: flip the maximized flag on the focused
     /// subject at execution time. `clear_fullscreen` carries the source
     /// fullscreen preimage (true when the subject was fullscreen, so the
@@ -3375,11 +3381,8 @@ pub fn valid_send_source(source: &SendSource) -> bool {
 /// every rect/coordinate is within carried bounds.
 #[must_use]
 pub fn valid_command(command: &WorldCommand) -> bool {
-    const DIRECTIONS: [&str; 4] = ["left", "right", "up", "down"];
     match command {
-        WorldCommand::Focus { window, direction } => {
-            is_opaque_id(&window.0) && DIRECTIONS.contains(&direction.as_str())
-        }
+        WorldCommand::Focus { window, direction } => is_opaque_id(&window.0) && direction.is_some(),
         WorldCommand::Send {
             window,
             target_output,
@@ -3431,22 +3434,15 @@ pub fn valid_command(command: &WorldCommand) -> bool {
                 && is_opaque_id(workspace)
                 && source_output != target_output
         }
-        WorldCommand::FocusDirectional {
-            window, direction, ..
-        } => {
+        WorldCommand::FocusDirectional { window, .. } => {
             // An empty window is the no-focused-window form (start from
             // the current workspace/output); every other form names its
             // subject.
-            (window.0.is_empty() || is_opaque_id(&window.0))
-                && DIRECTIONS.contains(&direction.as_str())
+            window.0.is_empty() || is_opaque_id(&window.0)
         }
-        WorldCommand::MoveDirectional {
-            window, direction, ..
-        } => is_opaque_id(&window.0) && DIRECTIONS.contains(&direction.as_str()),
-        WorldCommand::SendDirectional {
-            window, direction, ..
-        } => is_opaque_id(&window.0) && DIRECTIONS.contains(&direction.as_str()),
-        WorldCommand::MigrateDirectional { direction } => DIRECTIONS.contains(&direction.as_str()),
+        WorldCommand::MoveDirectional { window, .. } => is_opaque_id(&window.0),
+        WorldCommand::SendDirectional { window, .. } => is_opaque_id(&window.0),
+        WorldCommand::MigrateDirectional { .. } => true,
         WorldCommand::ToggleMaximize { window } => is_opaque_id(&window.0),
         WorldCommand::SetSticky { window, .. } | WorldCommand::ToggleSticky { window } => {
             is_opaque_id(&window.0)
@@ -3465,11 +3461,8 @@ pub fn valid_command(command: &WorldCommand) -> bool {
 /// may ride the implicit subject; windowless commands refuse.
 #[must_use]
 pub fn valid_implicit_command(command: &WorldCommand) -> bool {
-    const DIRECTIONS: [&str; 4] = ["left", "right", "up", "down"];
     match command {
-        WorldCommand::Focus { direction, .. } => {
-            direction.is_empty() || DIRECTIONS.contains(&direction.as_str())
-        }
+        WorldCommand::Focus { .. } => true,
         WorldCommand::Send {
             target_output,
             target_workspace,
@@ -3481,11 +3474,9 @@ pub fn valid_implicit_command(command: &WorldCommand) -> bool {
         WorldCommand::SendNumbered { source, index, .. } => {
             valid_send_source(source) && *index <= 9
         }
-        WorldCommand::FocusDirectional { direction, .. } => {
-            DIRECTIONS.contains(&direction.as_str())
-        }
-        WorldCommand::MoveDirectional { direction, .. } => DIRECTIONS.contains(&direction.as_str()),
-        WorldCommand::SendDirectional { direction, .. } => DIRECTIONS.contains(&direction.as_str()),
+        WorldCommand::FocusDirectional { .. } => true,
+        WorldCommand::MoveDirectional { .. } => true,
+        WorldCommand::SendDirectional { .. } => true,
         WorldCommand::ToggleMaximize { .. }
         | WorldCommand::ToggleSticky { .. }
         | WorldCommand::ToggleFullscreen { .. } => true,
@@ -3542,7 +3533,7 @@ pub fn explicit_for_implicit(inner: &WorldCommand, window: WindowId) -> Option<W
     match inner {
         WorldCommand::Focus { direction, .. } => Some(WorldCommand::Focus {
             window,
-            direction: direction.clone(),
+            direction: *direction,
         }),
         WorldCommand::Send {
             target_output,
@@ -3579,7 +3570,7 @@ pub fn explicit_for_implicit(inner: &WorldCommand, window: WindowId) -> Option<W
         }),
         WorldCommand::FocusDirectional { direction, .. } => Some(WorldCommand::FocusDirectional {
             window,
-            direction: direction.clone(),
+            direction: *direction,
         }),
         WorldCommand::MoveDirectional {
             direction,
@@ -3587,14 +3578,14 @@ pub fn explicit_for_implicit(inner: &WorldCommand, window: WindowId) -> Option<W
             ..
         } => Some(WorldCommand::MoveDirectional {
             window,
-            direction: direction.clone(),
+            direction: *direction,
             same_axis: *same_axis,
         }),
         WorldCommand::SendDirectional {
             direction, follow, ..
         } => Some(WorldCommand::SendDirectional {
             window,
-            direction: direction.clone(),
+            direction: *direction,
             follow: *follow,
         }),
         WorldCommand::ToggleMaximize { .. } => Some(WorldCommand::ToggleMaximize { window }),

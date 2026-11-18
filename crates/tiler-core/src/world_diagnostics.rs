@@ -118,11 +118,13 @@ fn diag_command_subject(command: &WorldCommand) -> Option<&str> {
 /// the call site through [`diag_token`].
 fn diag_command_dir(command: &WorldCommand) -> Option<&str> {
     match command {
-        WorldCommand::Focus { direction, .. }
-        | WorldCommand::FocusDirectional { direction, .. }
+        WorldCommand::Focus { direction, .. } => {
+            direction.map(crate::directional::Direction::as_wire_str)
+        }
+        WorldCommand::FocusDirectional { direction, .. }
         | WorldCommand::MoveDirectional { direction, .. }
         | WorldCommand::SendDirectional { direction, .. }
-        | WorldCommand::MigrateDirectional { direction } => Some(direction.as_str()),
+        | WorldCommand::MigrateDirectional { direction } => Some(direction.as_wire_str()),
         WorldCommand::Operation(
             crate::boundary::CoreCommand::Move { direction, .. }
             | crate::boundary::CoreCommand::Focus { direction, .. }

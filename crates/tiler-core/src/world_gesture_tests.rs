@@ -1354,7 +1354,7 @@ fn consumed_command_reports_still_carry_gesture_preview() {
     with_command.command_seq = Some(7);
     with_command.command = Some(WorldCommand::Focus {
         window: WindowId("win-a".to_owned()),
-        direction: "right".to_owned(),
+        direction: Some(crate::directional::Direction::Right),
     });
     let first = accepted(&mut engine, &with_command);
     assert!(first.drag_preview.is_some() || first.command_consumed);
@@ -1382,7 +1382,7 @@ fn consumed_command_reports_still_carry_gesture_preview() {
     resend.command_seq = Some(7);
     resend.command = Some(WorldCommand::Focus {
         window: WindowId("win-a".to_owned()),
-        direction: "right".to_owned(),
+        direction: Some(crate::directional::Direction::Right),
     });
     match engine.handle_report(&resend, &[]).0 {
         WorldOutcome::CommandConsumed(reply) => {

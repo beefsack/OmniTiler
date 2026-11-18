@@ -189,10 +189,15 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
         return Some("command-pair-invalid");
     }
     if let Some(command) = report.command.as_ref() {
-        // V4 by-id focus spells the removed direction as the empty string;
+        // V4 by-id focus spells the removed direction as `None`;
         // the legacy direction vocabulary would misread it as invalid.
-        let bare_focus =
-            matches!(command, WorldCommand::Focus { direction, .. } if direction.is_empty());
+        let bare_focus = matches!(
+            command,
+            WorldCommand::Focus {
+                direction: None,
+                ..
+            }
+        );
         if !bare_focus && !valid_command(command) {
             return Some("command-invalid");
         }

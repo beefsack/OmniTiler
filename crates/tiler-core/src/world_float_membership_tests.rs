@@ -1263,7 +1263,7 @@ fn hints_null_float_move_refuses_without_side_effects() {
             Some(11),
             Some(WorldCommand::MoveDirectional {
                 window: WindowId("win-d".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 same_axis: SameAxisMove::default(),
             }),
         ),
@@ -1330,7 +1330,7 @@ fn hints_null_float_move_refuses_without_side_effects() {
             Some(12),
             Some(WorldCommand::MoveDirectional {
                 window: WindowId("win-m".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 same_axis: SameAxisMove::default(),
             }),
         ),
@@ -1369,7 +1369,7 @@ fn hints_null_float_move_refuses_without_side_effects() {
             Some(13),
             Some(WorldCommand::MoveDirectional {
                 window: WindowId("win-d".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 same_axis: SameAxisMove::default(),
             }),
         ),
@@ -1425,7 +1425,7 @@ fn hints_null_float_move_refuses_without_side_effects() {
             Some(11),
             Some(WorldCommand::MoveDirectional {
                 window: WindowId("win-d".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 same_axis: SameAxisMove::default(),
             }),
         ),
@@ -1697,7 +1697,7 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
             Some(11),
             Some(WorldCommand::MoveDirectional {
                 window: WindowId("win-d".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 same_axis: SameAxisMove::default(),
             }),
         ),
@@ -1831,7 +1831,7 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
             Some(12),
             Some(WorldCommand::MoveDirectional {
                 window: WindowId("win-m".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 same_axis: SameAxisMove::default(),
             }),
         ),

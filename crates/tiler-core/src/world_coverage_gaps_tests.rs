@@ -1367,7 +1367,7 @@ fn explicit_focus_command_after_withhold_succeeds_without_admission_token() {
             Some(10),
             Some(WorldCommand::Focus {
                 window: WindowId("wf".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -1666,7 +1666,7 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
             Some(11),
             Some(WorldCommand::SendDirectional {
                 window: WindowId("w0".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 follow: false,
             }),
         ),
@@ -1734,7 +1734,7 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
             Some(12),
             Some(WorldCommand::SendDirectional {
                 window: WindowId("w0".to_owned()),
-                direction: "left".to_owned(),
+                direction: crate::directional::Direction::Left,
                 follow: true,
             }),
         ),
@@ -1831,7 +1831,7 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
             Some(11),
             Some(WorldCommand::SendDirectional {
                 window: WindowId("wb".to_owned()),
-                direction: "left".to_owned(),
+                direction: crate::directional::Direction::Left,
                 follow: false,
             }),
         ),
@@ -1904,7 +1904,7 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
             Some(12),
             Some(WorldCommand::SendDirectional {
                 window: WindowId("wb".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 follow: true,
             }),
         ),
@@ -2054,7 +2054,7 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
             Some(11),
             Some(WorldCommand::SendDirectional {
                 window: WindowId("w0".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 follow: false,
             }),
         );
@@ -2140,7 +2140,7 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
             Some(11),
             Some(WorldCommand::SendDirectional {
                 window: WindowId("w0".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 follow: false,
             }),
         );
@@ -2255,7 +2255,7 @@ fn second_migration_explicit_refuses_while_directional_resolves_current() {
         vec![],
         Some(13),
         Some(WorldCommand::MigrateDirectional {
-            direction: "right".to_owned(),
+            direction: crate::directional::Direction::Right,
         }),
     );
     retry_directional.action_foreground = Some(OutputId("out-a".to_owned()));

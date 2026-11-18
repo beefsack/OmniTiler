@@ -224,7 +224,7 @@ fn contra_v4(seq: u64) -> WorldReportV4 {
 fn focus_command(window: &str) -> WorldCommand {
     WorldCommand::Focus {
         window: WindowId(window.to_owned()),
-        direction: "left".to_owned(),
+        direction: Some(crate::directional::Direction::Left),
     }
 }
 
@@ -855,7 +855,7 @@ fn move_float_destination_reads_staged_screens_not_contra() {
             12,
             &WorldCommand::MoveDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "left".to_owned(),
+                direction: crate::directional::Direction::Left,
                 same_axis: SameAxisMove::GroupWithNeighbor,
             },
             &BTreeSet::new(),
@@ -915,7 +915,7 @@ fn move_float_destination_reads_staged_screens_not_contra() {
             12,
             &WorldCommand::MoveDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "left".to_owned(),
+                direction: crate::directional::Direction::Left,
                 same_axis: SameAxisMove::GroupWithNeighbor,
             },
             &BTreeSet::new(),
@@ -1815,7 +1815,7 @@ fn hidden_directional_source_refuses_stale_complete_and_incomplete() {
                 12,
                 &WorldCommand::FocusDirectional {
                     window: WindowId("win-b".to_owned()),
-                    direction: "left".to_owned(),
+                    direction: crate::directional::Direction::Left,
                 },
                 &BTreeSet::new(),
                 None,
@@ -1857,7 +1857,7 @@ fn hidden_directional_source_refuses_stale_complete_and_incomplete() {
                 13,
                 &WorldCommand::FocusDirectional {
                     window: WindowId("win-a".to_owned()),
-                    direction: "left".to_owned(),
+                    direction: crate::directional::Direction::Left,
                 },
                 &BTreeSet::new(),
                 None,

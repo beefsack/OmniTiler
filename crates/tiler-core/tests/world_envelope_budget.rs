@@ -282,8 +282,8 @@ fn malformed_reports_are_transactional() {
                 vec![fact("win-a", "out-a", 0)],
                 Some(11),
                 Some(WorldCommand::FocusDirectional {
-                    window: WindowId("win-a".to_owned()),
-                    direction: "sideways".to_owned(),
+                    window: WindowId("!!!".to_owned()),
+                    direction: tiler_core::directional::Direction::Right,
                 }),
             )
         ),

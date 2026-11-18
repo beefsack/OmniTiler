@@ -242,7 +242,7 @@ fn accepted_with_settlements(
 fn no_focus_command(direction: &str) -> WorldCommand {
     WorldCommand::FocusDirectional {
         window: WindowId(String::new()),
-        direction: direction.to_owned(),
+        direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
     }
 }
 
@@ -1006,7 +1006,7 @@ fn no_focus_unknown_window_stays_stale() {
             Some(11),
             Some(WorldCommand::FocusDirectional {
                 window: WindowId("win-gone".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
             }),
             Some("out-a"),
             None,
@@ -1040,8 +1040,8 @@ fn no_focus_invalid_direction_rejects() {
         "",
         Some(11),
         Some(WorldCommand::FocusDirectional {
-            window: WindowId(String::new()),
-            direction: "sideways".to_owned(),
+            window: WindowId("!!!".to_owned()),
+            direction: crate::directional::Direction::Right,
         }),
         Some("out-a"),
         None,

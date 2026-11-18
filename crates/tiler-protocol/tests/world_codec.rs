@@ -283,7 +283,10 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
     let report = decode_request(&with_command(&command_json, "7")).expect("focus decodes");
     assert!(matches!(
         report.command,
-        Some(C::Focus { direction, .. }) if direction.is_empty()
+        Some(C::Focus {
+            direction: None,
+            ..
+        })
     ));
     assert_eq!(report.command_seq, Some(7));
     let bad = serde_json::json!({"op": "focus", "win": "win-a", "direction": "sideways"});
@@ -416,7 +419,7 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
     let report = decode_request(&with_command(&migrate, "7")).expect("direction decodes");
     match report.command {
         Some(C::MigrateDirectional { direction }) => {
-            assert_eq!(direction, "right");
+            assert_eq!(direction, tiler_core::directional::Direction::Right);
         }
         _ => panic!("migrate-directional decoded"),
     }

@@ -2288,7 +2288,7 @@ fn kde_shared_roster_d4_cross_output_send_then_reobserve() {
         Some(1),
         Some(WorldCommand::SendDirectional {
             window: WindowId("win-a".to_owned()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
             follow: false,
         }),
         true,

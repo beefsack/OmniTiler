@@ -565,7 +565,7 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
         Some(12),
         Some(WorldCommand::Focus {
             window: WindowId("win-b".to_owned()),
-            direction: "left".to_owned(),
+            direction: Some(tiler_core::directional::Direction::Left),
         }),
     );
     focus_report.focused_global = "win-a".to_owned();
@@ -594,7 +594,7 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
             Some(13),
             Some(WorldCommand::FocusDirectional {
                 window: WindowId("win-b".to_owned()),
-                direction: "left".to_owned(),
+                direction: tiler_core::directional::Direction::Left,
             }),
         ),
         &[],
@@ -1126,7 +1126,7 @@ fn pager_click_minimized_refuses_while_tiled_focus_succeeds() {
         Some(11),
         Some(WorldCommand::Focus {
             window: WindowId("win-b".to_owned()),
-            direction: "left".to_owned(),
+            direction: Some(tiler_core::directional::Direction::Left),
         }),
     );
     click_minimized.focused_global = "win-a".to_owned();
@@ -1153,7 +1153,7 @@ fn pager_click_minimized_refuses_while_tiled_focus_succeeds() {
         Some(12),
         Some(WorldCommand::Focus {
             window: WindowId("win-a".to_owned()),
-            direction: "left".to_owned(),
+            direction: Some(tiler_core::directional::Direction::Left),
         }),
     );
     click_tiled.focused_global = "win-a".to_owned();

@@ -9563,7 +9563,7 @@ mod tests {
         let reply = close_reply_for(&session, "close-focus-7", 7, 9);
         let ticket = tiler_core::world_report::WorldCommand::Focus {
             window: close_target(8),
-            direction: "left".to_owned(),
+            direction: Some(tiler_core::directional::Direction::Left),
         };
         consume_close(
             &mut session,
@@ -11189,7 +11189,7 @@ mod tests {
                 Some(2),
                 Some(WorldCommand::Focus {
                     window: CoreWindowId("4242_8".to_owned()),
-                    direction: String::new(),
+                    direction: None,
                 }),
             ),
         );

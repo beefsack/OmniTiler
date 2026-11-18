@@ -640,7 +640,7 @@ fn ordinary_direct_focus_grants_no_arrival() {
             Some(2),
             Some(WorldCommand::Focus {
                 window: WindowId("w1".to_owned()),
-                direction: "left".to_owned(),
+                direction: Some(crate::directional::Direction::Left),
             }),
             vec![],
             "",
@@ -2600,7 +2600,7 @@ fn follow_cross_output_binds_current_destination_and_settles_window_first() {
             Some(2),
             Some(WorldCommand::SendDirectional {
                 window: WindowId("w1".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 follow: true,
             }),
             vec![],
@@ -10504,7 +10504,7 @@ fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
         Some(4),
         Some(WorldCommand::Focus {
             window: WindowId("w1".to_owned()),
-            direction: "left".to_owned(),
+            direction: Some(crate::directional::Direction::Left),
         }),
         vec![],
         "",
@@ -11713,7 +11713,7 @@ fn migration_issuing_reserve_covers_both_migration_commands() {
         workspace: "ws-1".to_owned(),
     };
     let dir = WorldCommand::MigrateDirectional {
-        direction: "right".to_owned(),
+        direction: crate::directional::Direction::Right,
     };
     assert_eq!(
         engine.world.switch_issuing_count(Some(&ws)),

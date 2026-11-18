@@ -156,7 +156,7 @@ pub(super) fn workspace_migrate_one(
         return outcome;
     }
     let command = WorldCommand::MigrateDirectional {
-        direction: direction_name(intent.direction).to_owned(),
+        direction: intent.direction,
     };
     let reply = super::world_tick::observe_and_command_at(
         state, me, store, dir, fulls, areas, command, cursor,

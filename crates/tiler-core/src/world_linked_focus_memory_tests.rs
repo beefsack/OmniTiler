@@ -253,7 +253,7 @@ fn stale_memory_to(engine: &mut WorldEngine, seq: u64, window: &str, focused: &s
             Some(10),
             Some(WorldCommand::Focus {
                 window: WindowId(window.to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -274,7 +274,7 @@ fn no_focus_report(
         Some(command_seq),
         Some(WorldCommand::FocusDirectional {
             window: WindowId(String::new()),
-            direction: direction.to_owned(),
+            direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
         }),
     );
     out.action_foreground = Some(OutputId("out-a".to_owned()));
@@ -300,7 +300,7 @@ fn direct_linked_focus_records_before_native_writes() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-b".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -366,7 +366,7 @@ fn view_return_select_records_linked_target_before_native_writes() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-b".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -581,7 +581,7 @@ fn rejected_unknown_focus_records_nothing() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-gone".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
         &[],
@@ -669,7 +669,7 @@ fn exception_focus_effect_leaves_memory_unchanged() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-f".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -940,7 +940,7 @@ fn local_move_preserves_mover_memory() {
             Some(11),
             Some(WorldCommand::MoveDirectional {
                 window: WindowId("win-b".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
             }),
         ),
@@ -985,7 +985,7 @@ fn ordinary_directional_focus_records_effect_target() {
             Some(12),
             Some(WorldCommand::FocusDirectional {
                 window: WindowId("win-c".to_owned()),
-                direction: "down".to_owned(),
+                direction: crate::directional::Direction::Down,
             }),
         ),
     );
@@ -1029,7 +1029,7 @@ fn cross_output_move_records_mover_in_target() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-c".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -1051,7 +1051,7 @@ fn cross_output_move_records_mover_in_target() {
             Some(12),
             Some(WorldCommand::MoveDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
             }),
         ),
@@ -1096,7 +1096,7 @@ fn swap_neighbor_move_preserves_mover_memory() {
             Some(12),
             Some(WorldCommand::MoveDirectional {
                 window: WindowId("win-b".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::SwapWithNeighbor,
             }),
         ),
@@ -1153,7 +1153,7 @@ fn float_lane_focus_leaves_memory_unchanged() {
             Some(11),
             Some(WorldCommand::FocusDirectional {
                 window: WindowId("win-f1".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
             }),
         ),
     );
@@ -1209,7 +1209,7 @@ fn send_follow_records_mover_in_target_before_native_writes() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-b".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -1264,7 +1264,7 @@ fn close_focused_falls_back_to_mru_survivor_without_command_effect() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-b".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -1331,7 +1331,7 @@ fn local_move_direct_records_mover_without_sweep() {
     ];
     let command = WorldCommand::MoveDirectional {
         window: WindowId("win-b".to_owned()),
-        direction: "right".to_owned(),
+        direction: crate::directional::Direction::Right,
         same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
     };
     let probe = report(
@@ -1402,7 +1402,7 @@ fn swap_neighbor_move_direct_records_mover_without_sweep() {
     ];
     let command = WorldCommand::MoveDirectional {
         window: WindowId("win-b".to_owned()),
-        direction: "right".to_owned(),
+        direction: crate::directional::Direction::Right,
         same_axis: crate::directional::SameAxisMove::SwapWithNeighbor,
     };
     let probe = report(
@@ -1477,7 +1477,7 @@ fn send_directional_follow_records_mover_in_target() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-d".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -1498,7 +1498,7 @@ fn send_directional_follow_records_mover_in_target() {
             Some(12),
             Some(WorldCommand::SendDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 follow: true,
             }),
         ),
@@ -1554,7 +1554,7 @@ fn send_directional_stay_records_survivor_in_source() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -1575,7 +1575,7 @@ fn send_directional_stay_records_survivor_in_source() {
             Some(12),
             Some(WorldCommand::SendDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 follow: false,
             }),
         ),
@@ -1704,7 +1704,7 @@ fn keyboard_float_lane_leave_before_observe_returns_float() {
             Some(11),
             Some(WorldCommand::FocusDirectional {
                 window: WindowId("win-f1".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
             }),
         ),
     );
@@ -1883,7 +1883,7 @@ fn sticky_shown_away_from_home_returns_sticky() {
             Some(12),
             Some(WorldCommand::Focus {
                 window: WindowId("win-s".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -1996,7 +1996,7 @@ fn later_tile_outranks_stale_home_sticky_on_return() {
             Some(12),
             Some(WorldCommand::Focus {
                 window: WindowId("win-s".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -2071,7 +2071,7 @@ fn later_tile_outranks_stale_home_sticky_on_return() {
             Some(15),
             Some(WorldCommand::Focus {
                 window: WindowId("win-t".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -2166,7 +2166,7 @@ fn last_active_sticky_after_tile_same_home_returns_sticky() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-b".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -2181,7 +2181,7 @@ fn last_active_sticky_after_tile_same_home_returns_sticky() {
             Some(12),
             Some(WorldCommand::Focus {
                 window: WindowId("win-s".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -2291,7 +2291,7 @@ fn last_active_sticky_after_tile_on_spare_returns_sticky() {
             Some(12),
             Some(WorldCommand::Focus {
                 window: WindowId("win-t".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -2310,7 +2310,7 @@ fn last_active_sticky_after_tile_on_spare_returns_sticky() {
             Some(13),
             Some(WorldCommand::Focus {
                 window: WindowId("win-s".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -2394,7 +2394,7 @@ fn last_active_later_tile_after_float_returns_tile() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-f".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -2409,7 +2409,7 @@ fn last_active_later_tile_after_float_returns_tile() {
             Some(12),
             Some(WorldCommand::Focus {
                 window: WindowId("win-b".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -2485,7 +2485,7 @@ fn last_active_unchanged_tile_observation_preserves_float_command() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-f".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -2569,7 +2569,7 @@ fn last_active_closed_float_prunes_memory_no_ghost() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-f".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -2659,7 +2659,7 @@ fn last_active_no_focus_report_preserves_float_memory() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-f".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -2744,7 +2744,7 @@ fn last_active_no_focus_empty_target_with_visible_sticky_stays_quiet() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-s".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -2844,7 +2844,7 @@ fn last_active_tiled_operation_focus_supersedes_stale_sticky() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-s".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -2960,7 +2960,7 @@ fn last_active_send_stay_survivor_supersedes_stale_sticky() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-f".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -3069,7 +3069,7 @@ fn last_active_admission_newcomer_supersedes_stale_sticky() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-s".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );
@@ -3171,7 +3171,7 @@ fn last_active_close_after_tile_supersession_falls_back_to_tiled() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-s".to_owned()),
-                direction: "right".to_owned(),
+                direction: Some(crate::directional::Direction::Right),
             }),
         ),
     );

@@ -368,7 +368,7 @@ fn transfer_seq_survives_commandless_and_unrelated() {
     // An unrelated command alongside never rewrites the retained sequence.
     let unrelated = WorldCommand::Focus {
         window: WindowId("win-a".to_owned()),
-        direction: "left".to_owned(),
+        direction: Some(crate::directional::Direction::Left),
     };
     let second =
         engine.tx(|tx| tx.publish_v4(envelope(8), Some(&unrelated), Vec::new(), &BTreeSet::new()));
@@ -2857,7 +2857,7 @@ fn published_settlement_trace_operation_q1_q2_duplicate_late_toggle_and_reset() 
     r_move.command_seq = Some(2);
     r_move.command = Some(WorldCommand::MoveDirectional {
         window: WindowId("win-max".to_owned()),
-        direction: "right".to_owned(),
+        direction: crate::directional::Direction::Right,
         same_axis: crate::directional::SameAxisMove::default(),
     });
     let _ = accepted_v4(&mut clear_engine, &r_move);

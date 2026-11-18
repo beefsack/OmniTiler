@@ -204,7 +204,7 @@ pub fn produce_order_failure() -> Vec<(String, String)> {
         1,
         Some(WorldCommand::Focus {
             window: WindowId("win-a".to_owned()),
-            direction: String::new(),
+            direction: None,
         }),
         "win-old",
         true,
@@ -379,7 +379,7 @@ pub fn produce_cross_output() -> Vec<(String, String)> {
         1,
         Some(WorldCommand::Focus {
             window: WindowId("win-b".to_owned()),
-            direction: String::new(),
+            direction: None,
         }),
         "win-old",
         true,

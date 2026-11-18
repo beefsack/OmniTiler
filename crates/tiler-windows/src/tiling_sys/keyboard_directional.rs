@@ -287,15 +287,14 @@ pub(super) fn dispatch_directional_intent(
     // the core owns topology and the full refusal/float/maximize
     // lattice, so the adapter never branches on float state here. The
     // applied reply IS the outcome.
-    let direction = direction_name(intent.direction).to_owned();
     let command = match intent.op {
         SnapOp::Focus => tiler_core::world_report::WorldCommand::FocusDirectional {
             window: tiler_core::directional::WindowId(from.clone()),
-            direction: direction.clone(),
+            direction: intent.direction,
         },
         SnapOp::Move => tiler_core::world_report::WorldCommand::MoveDirectional {
             window: tiler_core::directional::WindowId(from.clone()),
-            direction: direction.clone(),
+            direction: intent.direction,
             same_axis: same_axis_move_for(state.settings_live.as_ref()),
         },
     };
@@ -840,10 +839,9 @@ fn dispatch_directional_no_focus(
     // Direction-only world dispatch with no subject: the core owns
     // topology and the refusal/selection lattice, so the adapter never
     // branches here. The applied reply IS the outcome.
-    let direction = direction_name(intent.direction).to_owned();
     let command = tiler_core::world_report::WorldCommand::FocusDirectional {
         window: tiler_core::directional::WindowId(String::new()),
-        direction: direction.clone(),
+        direction: intent.direction,
     };
     let foreground = crate::ffi::foreground_window();
     let reply = super::world_tick::run_world_command(

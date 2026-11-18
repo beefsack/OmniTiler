@@ -707,7 +707,7 @@ pub(crate) mod tests {
             2,
             WorldCommand::FocusDirectional {
                 window: WindowId("win-subject".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
             },
         );
         assert_eq!(outcome_str(&result), Some("focus-float-applied"));
@@ -746,7 +746,7 @@ pub(crate) mod tests {
             2,
             WorldCommand::FocusDirectional {
                 window: WindowId("win-subject".to_owned()),
-                direction: "left".to_owned(),
+                direction: crate::directional::Direction::Left,
             },
         );
         assert_eq!(outcome_str(&result), Some("focus-float-retained"));
@@ -762,7 +762,7 @@ pub(crate) mod tests {
             3,
             WorldCommand::MoveDirectional {
                 window: WindowId("win-subject".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             },
         );
@@ -837,7 +837,7 @@ pub(crate) mod tests {
             2,
             WorldCommand::FocusDirectional {
                 window: WindowId("win-auto".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
             },
         );
         assert_eq!(outcome_str(&result), Some("focus-refused-floating"));
@@ -845,7 +845,7 @@ pub(crate) mod tests {
             3,
             WorldCommand::MoveDirectional {
                 window: WindowId("win-auto".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             },
         );
@@ -857,7 +857,7 @@ pub(crate) mod tests {
             4,
             WorldCommand::MoveDirectional {
                 window: WindowId("win-full".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             },
         );
@@ -866,7 +866,7 @@ pub(crate) mod tests {
             5,
             WorldCommand::FocusDirectional {
                 window: WindowId("win-full".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
             },
         );
         assert_eq!(outcome_str(&result), Some("focus-float-retained"));
@@ -966,7 +966,7 @@ pub(crate) mod tests {
                 Some(11),
                 Some(WorldCommand::MoveDirectional {
                     window: WindowId("win-sticky".to_owned()),
-                    direction: "right".to_owned(),
+                    direction: crate::directional::Direction::Right,
                     same_axis: crate::directional::SameAxisMove::default(),
                 }),
             ),
@@ -1076,7 +1076,7 @@ pub(crate) mod tests {
                 Some(12),
                 Some(WorldCommand::FocusDirectional {
                     window: WindowId("win-s".to_owned()),
-                    direction: "right".to_owned(),
+                    direction: crate::directional::Direction::Right,
                 }),
             ),
         );
@@ -1137,7 +1137,7 @@ pub(crate) mod tests {
                 Some(11),
                 Some(WorldCommand::MoveDirectional {
                     window: WindowId("win-a".to_owned()),
-                    direction: "right".to_owned(),
+                    direction: crate::directional::Direction::Right,
                     same_axis: crate::directional::SameAxisMove::default(),
                 }),
             ),
@@ -1216,7 +1216,7 @@ pub(crate) mod tests {
                 Some(11),
                 Some(WorldCommand::FocusDirectional {
                     window: WindowId("win-sticky".to_owned()),
-                    direction: "right".to_owned(),
+                    direction: crate::directional::Direction::Right,
                 }),
             ),
         );
@@ -1241,7 +1241,7 @@ pub(crate) mod tests {
                 Some(12),
                 Some(WorldCommand::FocusDirectional {
                     window: WindowId("win-gone".to_owned()),
-                    direction: "right".to_owned(),
+                    direction: crate::directional::Direction::Right,
                 }),
             ),
         );

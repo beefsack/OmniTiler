@@ -1968,7 +1968,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
 
     fn dir_cmd() -> WorldCommand {
         WorldCommand::MigrateDirectional {
-            direction: "right".to_owned(),
+            direction: crate::directional::Direction::Right,
         }
     }
 
@@ -2013,7 +2013,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         request_id: "req-2".to_owned(),
         command_seq: Some(11),
         command: Some(WorldCommand::MigrateDirectional {
-            direction: "right".to_owned(),
+            direction: crate::directional::Direction::Right,
         }),
         inventory_complete: true,
         ..report(2, 2, vec![], "", None, None, vec![], vec![])
@@ -2354,7 +2354,7 @@ fn offset_two_output_migration_applies() {
             request_id: "req-2".to_owned(),
             command_seq: Some(11),
             command: Some(WorldCommand::MigrateDirectional {
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
             }),
             ..report(2, 2, vec![], "", None, None, vec![], vec![])
         },
@@ -2891,7 +2891,7 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
             request_id: format!("req-{seq}"),
             command_seq: Some(10 + seq),
             command: Some(WorldCommand::MigrateDirectional {
-                direction: direction.to_owned(),
+                direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
             }),
             ..report(
                 seq,
@@ -3016,7 +3016,7 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
         request_id: "req-2".to_owned(),
         command_seq: Some(12),
         command: Some(WorldCommand::MigrateDirectional {
-            direction: "right".to_owned(),
+            direction: crate::directional::Direction::Right,
         }),
         ..report(2, 2, vec![], "", None, None, vec![], vec![])
     };
@@ -3051,7 +3051,7 @@ fn migrate_directional_freezes_source_view_pre_observation() {
         request_id: "req-1".to_owned(),
         command_seq: Some(11),
         command: Some(WorldCommand::MigrateDirectional {
-            direction: "right".to_owned(),
+            direction: crate::directional::Direction::Right,
         }),
         ..report(1, 1, vec![], "", None, None, vec![], vec![])
     };
@@ -3092,7 +3092,7 @@ fn migrate_directional_freezes_source_view_pre_observation() {
             request_id: "req-2".to_owned(),
             command_seq: Some(12),
             command: Some(WorldCommand::MigrateDirectional {
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
             }),
             ..report(
                 2,
@@ -3151,7 +3151,7 @@ fn migrate_directional_ignores_same_report_view_creation() {
         request_id: "req-2".to_owned(),
         command_seq: Some(12),
         command: Some(WorldCommand::MigrateDirectional {
-            direction: "left".to_owned(),
+            direction: crate::directional::Direction::Left,
         }),
         ..report(
             2,
@@ -3211,7 +3211,7 @@ fn migrate_directional_ignores_same_report_view_creation() {
             request_id: "req-4".to_owned(),
             command_seq: Some(14),
             command: Some(WorldCommand::MigrateDirectional {
-                direction: "left".to_owned(),
+                direction: crate::directional::Direction::Left,
             }),
             ..report(
                 4,

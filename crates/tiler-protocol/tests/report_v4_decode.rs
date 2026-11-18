@@ -298,7 +298,7 @@ fn v4_valid_command_and_renderer_shapes() {
     match decoded.report.command {
         Some(tiler_core::world_report::WorldCommand::Focus { window, direction }) => {
             assert_eq!(window.0, "win-a");
-            assert_eq!(direction, "");
+            assert_eq!(direction, None);
         }
         other => panic!("focus decodes by id, got {other:?}"),
     }
@@ -2058,7 +2058,7 @@ fn v4_writer_refuses_inconsistent_metadata() {
     let mut decoded = decode_ok("messages/report-command-focus.json");
     decoded.report.command = Some(tiler_core::world_report::WorldCommand::Focus {
         window: tiler_core::directional::WindowId("win-a".to_owned()),
-        direction: "left".to_owned(),
+        direction: Some(tiler_core::directional::Direction::Left),
     });
     let error = encode_report_v4(&decoded).expect_err("focus direction refuses");
     assert_eq!(error.kind, "snapshot-invalid");
@@ -2110,7 +2110,7 @@ fn v4_writer_refuses_inconsistent_metadata() {
     let mut decoded = decode_ok("messages/report-command-focus.json");
     decoded.report.command = Some(tiler_core::world_report::WorldCommand::Focus {
         window: tiler_core::directional::WindowId("!!!".to_owned()),
-        direction: String::new(),
+        direction: None,
     });
     let error = encode_report_v4(&decoded).expect_err("bad id refuses");
     assert_eq!(error.kind, "snapshot-invalid");

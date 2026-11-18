@@ -278,7 +278,7 @@ fn freeze_stale_action_pins_without_fallback() {
     assert_eq!(frozen.0, expected_send, "stale choice pins");
     assert_eq!(frozen.1, None, "send-only command freezes no migration");
     let migrate = WorldCommand::MigrateDirectional {
-        direction: "left".to_owned(),
+        direction: crate::directional::Direction::Left,
     };
     let migrated = frozen_v4(&engine, Some(&migrate), &report);
     assert_eq!(migrated, (None, None), "stale output owns no retained view");
@@ -294,7 +294,7 @@ fn freeze_migration_binds_action_output_not_home() {
         .logical_view("out-b")
         .expect("retained view for out-b");
     let command = WorldCommand::MigrateDirectional {
-        direction: "left".to_owned(),
+        direction: crate::directional::Direction::Left,
     };
     // win-a is homed on out-a, but the action context points at out-b.
     let report = v4_full(
@@ -317,7 +317,7 @@ fn freeze_migration_unbootstrapped_and_new_view_refuse() {
     // even though the routing names live screens.
     let fresh = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let command = WorldCommand::MigrateDirectional {
-        direction: "left".to_owned(),
+        direction: crate::directional::Direction::Left,
     };
     let report = v4_full(
         1,
@@ -347,7 +347,7 @@ fn frozen_migration_new_view_cannot_authorize_after_v4_converge() {
         "precondition: no retained view for the new screen"
     );
     let command = WorldCommand::MigrateDirectional {
-        direction: "left".to_owned(),
+        direction: crate::directional::Direction::Left,
     };
     let hotplug_screens = vec![
         screen("out-a", 0),
@@ -407,7 +407,7 @@ fn frozen_migration_unplugged_source_refuses_at_staged_topology_gate() {
         .logical_view("out-b")
         .expect("retained view for out-b");
     let command = WorldCommand::MigrateDirectional {
-        direction: "left".to_owned(),
+        direction: crate::directional::Direction::Left,
     };
     let report = v4_full(
         2,
@@ -473,7 +473,7 @@ fn freeze_neither_ingests_nor_stages() {
     );
     let _ = frozen_v4(&engine, Some(&command), &report);
     let migrate = WorldCommand::MigrateDirectional {
-        direction: "left".to_owned(),
+        direction: crate::directional::Direction::Left,
     };
     let _ = frozen_v4(&engine, Some(&migrate), &report);
     assert_eq!(

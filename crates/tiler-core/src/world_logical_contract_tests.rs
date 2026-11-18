@@ -553,7 +553,7 @@ fn send_follow_and_stay_commit_window_transfers() {
         Some(11),
         Some(WorldCommand::SendDirectional {
             window: WindowId("win-a".to_owned()),
-            direction: "right".to_owned(),
+            direction: crate::directional::Direction::Right,
             follow: true,
         }),
         true,
@@ -621,7 +621,7 @@ fn send_follow_and_stay_commit_window_transfers() {
         Some(12),
         Some(WorldCommand::SendDirectional {
             window: WindowId("win-b".to_owned()),
-            direction: "right".to_owned(),
+            direction: crate::directional::Direction::Right,
             follow: false,
         }),
         true,
@@ -699,7 +699,7 @@ fn stay_send_with_survivor_names_exact_source_focus() {
             Some(11),
             Some(WorldCommand::SendDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 follow: false,
             }),
             true,
@@ -863,7 +863,7 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
             Some(13),
             Some(WorldCommand::MoveDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
             }),
             true,
@@ -881,7 +881,7 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
 fn queued_cross_output_move_dir(window: &str, direction: &str) -> WorldCommand {
     WorldCommand::MoveDirectional {
         window: WindowId(window.to_owned()),
-        direction: direction.to_owned(),
+        direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
         same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
     }
 }
@@ -1777,7 +1777,7 @@ fn directional_focus_crosses_outputs_with_explicit_effect() {
             Some(11),
             Some(WorldCommand::FocusDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
             }),
             true,
             false,
@@ -1844,7 +1844,7 @@ fn directional_focus_up_never_crosses_outputs() {
                 Some(11),
                 Some(WorldCommand::FocusDirectional {
                     window: WindowId("win-a".to_owned()),
-                    direction: "up".to_owned(),
+                    direction: crate::directional::Direction::Up,
                 }),
                 true,
                 false,
@@ -4160,7 +4160,7 @@ fn tiled_to_float_output_crossing_leaves_source_state_unchanged() {
             Some(12),
             Some(WorldCommand::SendDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 follow: true,
             }),
             true,
@@ -4830,7 +4830,7 @@ fn cross_output_follow_ineligible_moves_view_without_binding() {
             Some(11),
             Some(WorldCommand::SendDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 follow: true,
             }),
             true,
@@ -5018,7 +5018,7 @@ fn window_refusal_needs_readable_source_proof_and_holds_across_gap() {
             Some(11),
             Some(WorldCommand::SendDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 follow: false,
             }),
             true,

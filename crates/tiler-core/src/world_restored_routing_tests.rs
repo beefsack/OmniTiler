@@ -270,7 +270,7 @@ fn stacked_screens() -> Vec<ScreenReport> {
 fn move_up(window: &str) -> WorldCommand {
     WorldCommand::MoveDirectional {
         window: WindowId(window.to_owned()),
-        direction: "up".to_owned(),
+        direction: crate::directional::Direction::Up,
         same_axis: SameAxisMove::GroupWithNeighbor,
     }
 }
@@ -278,7 +278,7 @@ fn move_up(window: &str) -> WorldCommand {
 fn send_up(window: &str, follow: bool) -> WorldCommand {
     WorldCommand::SendDirectional {
         window: WindowId(window.to_owned()),
-        direction: "up".to_owned(),
+        direction: crate::directional::Direction::Up,
         follow,
     }
 }
@@ -514,7 +514,7 @@ fn world_migration_selects_largest_edge_despite_window_centre() {
         "win-b",
         Some(21),
         Some(WorldCommand::MigrateDirectional {
-            direction: "up".to_owned(),
+            direction: crate::directional::Direction::Up,
         }),
     );
     cmd_report.action_foreground = Some(OutputId("out-l".to_owned()));
@@ -793,7 +793,7 @@ fn exhausted_move_retains_identity_pinned_transfer_and_settles_on_arrival() {
             Some(115),
             Some(WorldCommand::MoveDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "down".to_owned(),
+                direction: crate::directional::Direction::Down,
                 same_axis: SameAxisMove::GroupWithNeighbor,
             }),
         ),
@@ -863,7 +863,7 @@ fn capacity_float_fallback_retains_identity_pinned_window_transfer() {
             Some(171),
             Some(WorldCommand::MoveDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 same_axis: SameAxisMove::GroupWithNeighbor,
             }),
         ),
@@ -1616,7 +1616,7 @@ fn deterministic_sequence_replay_matches_exactly() {
             Some(7),
             Some(WorldCommand::Focus {
                 window: WindowId("win-b".to_owned()),
-                direction: "left".to_owned(),
+                direction: Some(crate::directional::Direction::Left),
             }),
         ));
         reports
@@ -2021,7 +2021,7 @@ fn unknown_outputs_and_views_hold_fail_closed() {
         Some(91),
         Some(WorldCommand::Focus {
             window: WindowId("win-ghost".to_owned()),
-            direction: "left".to_owned(),
+            direction: Some(crate::directional::Direction::Left),
         }),
     );
     match engine.handle_report(&focus_ghost, &[]) {
@@ -2336,7 +2336,7 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
         let command = match case {
             0 => WorldCommand::MoveDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 same_axis: SameAxisMove::GroupWithNeighbor,
             },
             1 => WorldCommand::Operation(CoreCommand::Move {
@@ -2347,7 +2347,7 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
             }),
             2 => WorldCommand::FocusDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
             },
             3 => WorldCommand::Operation(CoreCommand::Focus {
                 window: "win-a".to_owned(),
@@ -2369,12 +2369,12 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
             }),
             6 => WorldCommand::SendDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 follow: true,
             },
             _ => WorldCommand::SendDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 follow: false,
             },
         };
@@ -2627,7 +2627,7 @@ fn explicit_output_send_uses_output_route() {
                 Some(11),
                 Some(WorldCommand::SendDirectional {
                     window: WindowId("win-a".to_owned()),
-                    direction: "right".to_owned(),
+                    direction: crate::directional::Direction::Right,
                     follow,
                 }),
             ),

@@ -192,7 +192,7 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
         Some(2),
         Some(WorldCommand::Focus {
             window: WindowId("w-unknown".to_owned()),
-            direction: "left".to_owned(),
+            direction: Some(crate::directional::Direction::Left),
         }),
     );
     rejected.monotonic_ms = 1000;
@@ -344,7 +344,7 @@ fn rejected_seq_consumed_then_duplicate_replays() {
         Some(5),
         Some(WorldCommand::Focus {
             window: WindowId("w-ghost".to_owned()),
-            direction: "left".to_owned(),
+            direction: Some(crate::directional::Direction::Left),
         }),
     );
     let (rejected_reply, rejected_settlements) = match engine.handle_report(&rejected_report, &[]) {
@@ -403,7 +403,7 @@ fn rejected_seq_consumed_then_duplicate_replays() {
             Some(5),
             Some(WorldCommand::Focus {
                 window: WindowId("w-ghost".to_owned()),
-                direction: "left".to_owned(),
+                direction: Some(crate::directional::Direction::Left),
             }),
         ),
         &[],
@@ -597,7 +597,7 @@ fn creation_exhaustion_stays_envelope_without_adoption() {
         Some(12),
         Some(WorldCommand::Focus {
             window: WindowId("w-ghost".to_owned()),
-            direction: "left".to_owned(),
+            direction: Some(crate::directional::Direction::Left),
         }),
     );
     match engine.handle_report(&fresh, &[]) {
@@ -671,7 +671,7 @@ fn precommand_view_transfer_survives_rejection() {
             Some(3),
             Some(WorldCommand::Focus {
                 window: WindowId("w-ghost".to_owned()),
-                direction: "left".to_owned(),
+                direction: Some(crate::directional::Direction::Left),
             }),
         ),
         &[],
@@ -957,7 +957,7 @@ fn resize_refusal_diagnostic_none_for_non_resize() {
         Some(9),
         Some(WorldCommand::Focus {
             window: WindowId("w0".to_owned()),
-            direction: "left".to_owned(),
+            direction: Some(crate::directional::Direction::Left),
         }),
     );
     assert_eq!(resize_diag(&engine, &focus, "focus-unknown"), None);
@@ -1455,7 +1455,7 @@ fn v4_command_refusal_diagnostic_covers_focus_and_move_with_actual_kind() {
     }
     let focus = WorldCommand::Focus {
         window: WindowId("w-ghost".to_owned()),
-        direction: String::new(),
+        direction: None,
     };
     // A ghost-window local move stays production-reachable (the subject
     // closes between park and drain) and refuses through the operation
@@ -1548,7 +1548,7 @@ fn v4_command_refusal_diagnostic_is_safe_bounded_and_pure() {
     probe.request_id = "evil\nid".to_owned();
     let hostile = WorldCommand::Focus {
         window: WindowId("w\n0".to_owned()),
-        direction: "LEFT".to_owned(),
+        direction: None,
     };
     let line =
         engine.tx(|tx| tx.command_refusal_diagnostic_v4(&probe, &hostile, 11, "weird kind!"));

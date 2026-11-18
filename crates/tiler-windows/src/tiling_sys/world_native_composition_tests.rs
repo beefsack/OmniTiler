@@ -2201,7 +2201,7 @@ fn tiled_cross_output_send_writes_target_frame_both_ways() {
         key.hwnd,
         Some(WorldCommand::SendDirectional {
             window: WindowId("w1".to_owned()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
             follow: true,
         }),
     );
@@ -2267,7 +2267,7 @@ fn tiled_cross_output_send_writes_target_frame_both_ways() {
         key.hwnd,
         Some(WorldCommand::SendDirectional {
             window: WindowId("w1".to_owned()),
-            direction: "left".to_owned(),
+            direction: tiler_core::directional::Direction::Left,
             follow: true,
         }),
     );
@@ -2347,7 +2347,7 @@ fn lying_setter_keeps_no_receipt_and_flight_pending() {
         key.hwnd,
         Some(WorldCommand::SendDirectional {
             window: WindowId("w1".to_owned()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
             follow: true,
         }),
     );
@@ -2445,7 +2445,7 @@ fn floating_cross_output_send_preserves_rectangle_and_settles() {
         key.hwnd,
         Some(WorldCommand::SendDirectional {
             window: WindowId("w1".to_owned()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
             follow: true,
         }),
     );

@@ -380,7 +380,7 @@ fn t2_staged_decline_leaves_committed_world_unchanged() {
     // refuses without touching the committed world.
     let mover = WorldCommand::MoveDirectional {
         window: WindowId("win-a".to_owned()),
-        direction: "right".to_owned(),
+        direction: tiler_core::directional::Direction::Right,
         same_axis: SameAxisMove::GroupWithNeighbor,
     };
     let refused = report_with(windows.clone(), Some(171), Some(mover));
@@ -526,13 +526,13 @@ fn t2_supported_and_floating_movers_adopt_once() {
         let mover = if floating_source {
             WorldCommand::SendDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "up".to_owned(),
+                direction: tiler_core::directional::Direction::Up,
                 follow: true,
             }
         } else {
             WorldCommand::MoveDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "up".to_owned(),
+                direction: tiler_core::directional::Direction::Up,
                 same_axis: SameAxisMove::GroupWithNeighbor,
             }
         };

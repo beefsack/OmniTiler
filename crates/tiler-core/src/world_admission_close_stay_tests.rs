@@ -1459,7 +1459,7 @@ fn stay_send_pins_exact_source_focus_or_empty_or_unknown() {
             Some(11),
             Some(WorldCommand::SendDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 follow: false,
             }),
         ),
@@ -1518,7 +1518,7 @@ fn stay_send_pins_exact_source_focus_or_empty_or_unknown() {
             Some(11),
             Some(WorldCommand::SendDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 follow: false,
             }),
         ),
@@ -1560,7 +1560,7 @@ fn stay_send_pins_exact_source_focus_or_empty_or_unknown() {
             Some(11),
             Some(WorldCommand::SendDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 follow: true,
             }),
         ),
@@ -2818,7 +2818,7 @@ fn explicit_focus_stays_exempt_from_automatic_guards() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-b".to_owned()),
-                direction: "left".to_owned(),
+                direction: Some(crate::directional::Direction::Left),
             }),
         ),
     );
@@ -2867,7 +2867,7 @@ fn explicit_focus_stays_exempt_for_maximized_float_target() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: WindowId("win-b".to_owned()),
-                direction: "left".to_owned(),
+                direction: Some(crate::directional::Direction::Left),
             }),
         ),
     );

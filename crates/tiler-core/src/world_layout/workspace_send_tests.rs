@@ -900,7 +900,7 @@ fn output_send_scope_refusals_keep_ops_distinct() {
             2,
             WorldCommand::SendDirectional {
                 window: win("win-1"),
-                direction: "right".to_owned(),
+                direction: crate::directional::Direction::Right,
                 follow: true,
             },
         )],

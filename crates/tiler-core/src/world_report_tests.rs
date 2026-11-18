@@ -671,11 +671,11 @@ fn command_validation_keeps_closed_vocabularies() {
     let win = WindowId("win-a".to_owned());
     assert!(valid_command(&C::Focus {
         window: win.clone(),
-        direction: "left".to_owned(),
+        direction: Some(crate::directional::Direction::Left),
     }));
     assert!(!valid_command(&C::Focus {
         window: win.clone(),
-        direction: "sideways".to_owned(),
+        direction: None,
     }));
     assert!(valid_command(&C::MigrateWorkspace {
         source_output: out.clone(),
@@ -736,10 +736,7 @@ fn command_validation_keeps_closed_vocabularies() {
     // A direction-only migration carries no source: the core resolves the
     // action source and its current view from the neutral report facts.
     assert!(valid_command(&C::MigrateDirectional {
-        direction: "right".to_owned(),
-    }));
-    assert!(!valid_command(&C::MigrateDirectional {
-        direction: "sideways".to_owned(),
+        direction: crate::directional::Direction::Right,
     }));
 }
 

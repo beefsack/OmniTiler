@@ -349,7 +349,7 @@ fn fresh_consumed_command_reconciles_without_reexecution() {
     accepted_reply(1, admit(&mut engine, &observe(1, facts_pair(), "win-a")));
     let command = WorldCommand::Focus {
         window: WindowId("win-b".to_owned()),
-        direction: String::new(),
+        direction: None,
     };
     let executed = accepted_reply(
         2,
@@ -412,7 +412,7 @@ fn commandless_reports_leave_highwater_alone() {
     accepted_reply(1, admit(&mut engine, &observe(1, facts_pair(), "win-a")));
     let command = WorldCommand::Focus {
         window: WindowId("win-b".to_owned()),
-        direction: String::new(),
+        direction: None,
     };
     accepted_reply(
         2,
@@ -442,7 +442,7 @@ fn pre_ready_bootstrap_emits_no_authority() {
     let mut engine = engine();
     let command = WorldCommand::Focus {
         window: WindowId("win-b".to_owned()),
-        direction: String::new(),
+        direction: None,
     };
     let incomplete = report_full(
         1,
@@ -1103,7 +1103,7 @@ fn handshake_resets_typed_admission_state() {
     accepted_reply(1, admit(&mut engine, &observe(1, facts_pair(), "win-a")));
     let command = WorldCommand::Focus {
         window: WindowId("win-b".to_owned()),
-        direction: String::new(),
+        direction: None,
     };
     accepted_reply(
         2,
@@ -1816,7 +1816,7 @@ fn ingest_sensor_counts_adopted_and_discarded_trials() {
                 Some(1),
                 Some(WorldCommand::Focus {
                     window: WindowId("win-b".to_owned()),
-                    direction: String::new(),
+                    direction: None,
                 }),
                 Vec::new(),
             ),

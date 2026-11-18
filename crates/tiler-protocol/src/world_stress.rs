@@ -737,11 +737,21 @@ pub(crate) fn build_command(
         "select-previous" => Ok(Some(WorldCommand::SelectPrevious {
             output: action.output.clone().map(OutputId),
         })),
-        "focus-directional" => Ok(Some(WorldCommand::FocusDirectional {
-            window: WindowId(action.window.clone().expect("validated")),
-            direction: action.direction.clone().expect("validated"),
-        })),
+        "focus-directional" => {
+            let direction = tiler_core::directional::Direction::parse_wire(
+                action.direction.as_deref().expect("validated"),
+            )
+            .ok_or_else(|| "direction is not covered".to_owned())?;
+            Ok(Some(WorldCommand::FocusDirectional {
+                window: WindowId(action.window.clone().expect("validated")),
+                direction,
+            }))
+        }
         "move-directional" => {
+            let direction = tiler_core::directional::Direction::parse_wire(
+                action.direction.as_deref().expect("validated"),
+            )
+            .ok_or_else(|| "direction is not covered".to_owned())?;
             let same_axis = match action.same_axis.as_deref().expect("validated") {
                 "swap-with-neighbor" => tiler_core::directional::SameAxisMove::SwapWithNeighbor,
                 "group-with-neighbor" => tiler_core::directional::SameAxisMove::GroupWithNeighbor,
@@ -749,7 +759,7 @@ pub(crate) fn build_command(
             };
             Ok(Some(WorldCommand::MoveDirectional {
                 window: WindowId(action.window.clone().expect("validated")),
-                direction: action.direction.clone().expect("validated"),
+                direction,
                 same_axis,
             }))
         }

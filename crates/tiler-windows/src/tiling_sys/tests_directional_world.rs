@@ -218,7 +218,7 @@ fn float_origins_dispatch_world_commands_with_core_owned_decisions() {
         &observed,
         WorldCommand::FocusDirectional {
             window: WindowId("w1".to_owned()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
         },
     );
     match &reply.command_result {
@@ -267,7 +267,7 @@ fn float_origins_dispatch_world_commands_with_core_owned_decisions() {
         &observed,
         WorldCommand::MoveDirectional {
             window: WindowId("w1".to_owned()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
             same_axis: tiler_core::directional::SameAxisMove::default(),
         },
     );
@@ -316,7 +316,7 @@ fn automatic_floats_refuse_from_core_without_adapter_branches() {
         &observed,
         WorldCommand::MoveDirectional {
             window: WindowId("w1".to_owned()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
             same_axis: tiler_core::directional::SameAxisMove::default(),
         },
     );
@@ -446,7 +446,7 @@ fn maximized_move_publishes_one_shot_clear_desire() {
         &observed,
         WorldCommand::MoveDirectional {
             window: WindowId("w1".to_owned()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
             same_axis: tiler_core::directional::SameAxisMove::default(),
         },
     );
@@ -549,14 +549,14 @@ fn unknown_windows_refuse_stale_with_preserved_cause() {
         (
             WorldCommand::FocusDirectional {
                 window: WindowId("w9".to_owned()),
-                direction: "right".to_owned(),
+                direction: tiler_core::directional::Direction::Right,
             },
             "focus-float-refused-stale",
         ),
         (
             WorldCommand::MoveDirectional {
                 window: WindowId("w9".to_owned()),
-                direction: "right".to_owned(),
+                direction: tiler_core::directional::Direction::Right,
                 same_axis: tiler_core::directional::SameAxisMove::default(),
             },
             "move-float-refused-stale",
@@ -601,7 +601,7 @@ fn sticky_moves_authorize_through_the_retained_lane_at_the_seam() {
         &observed,
         WorldCommand::MoveDirectional {
             window: WindowId("w1".to_owned()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
             same_axis: tiler_core::directional::SameAxisMove::default(),
         },
     );
@@ -641,7 +641,7 @@ fn float_placement_receipt_settles_the_retained_target() {
         &floats,
         WorldCommand::MoveDirectional {
             window: WindowId("w1".to_owned()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
             same_axis: tiler_core::directional::SameAxisMove::default(),
         },
     );
@@ -744,7 +744,7 @@ fn maximized_clear_runs_core_desire_through_diff_to_continuation() {
         &maximized,
         WorldCommand::MoveDirectional {
             window: WindowId("w1".to_owned()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
             same_axis: tiler_core::directional::SameAxisMove::default(),
         },
     );
@@ -846,7 +846,7 @@ fn maximized_sticky_clear_runs_core_desire_through_diff_to_continuation() {
         &maximized,
         WorldCommand::MoveDirectional {
             window: WindowId("w1".to_owned()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
             same_axis: tiler_core::directional::SameAxisMove::default(),
         },
     );
@@ -988,7 +988,7 @@ fn maximized_tiled_clear_runs_core_desire_through_diff_to_continuation() {
         101,
         WorldCommand::MoveDirectional {
             window: WindowId("w1".to_owned()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
             same_axis: tiler_core::directional::SameAxisMove::default(),
         },
     );
@@ -1128,7 +1128,7 @@ fn maximized_tiled_clear_with_unknown_focus_still_dispatches() {
         0,
         WorldCommand::MoveDirectional {
             window: WindowId("w1".to_owned()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
             same_axis: tiler_core::directional::SameAxisMove::default(),
         },
     );
@@ -1226,7 +1226,7 @@ fn maximized_tiled_clear_hold_names_its_gate_with_no_attempt() {
         0,
         WorldCommand::MoveDirectional {
             window: WindowId("w1".to_owned()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
             same_axis: tiler_core::directional::SameAxisMove::default(),
         },
     );
@@ -1306,7 +1306,7 @@ fn maximized_tiled_clear_stale_stop_attributes_before_dispatch() {
         0,
         WorldCommand::MoveDirectional {
             window: WindowId("w1".to_owned()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
             same_axis: tiler_core::directional::SameAxisMove::default(),
         },
     );
@@ -1412,7 +1412,7 @@ fn mint_retained_overlay_clear(
             0,
             Some(WorldCommand::MoveDirectional {
                 window: WindowId("w1".to_owned()),
-                direction: "right".to_owned(),
+                direction: tiler_core::directional::Direction::Right,
                 same_axis: tiler_core::directional::SameAxisMove::default(),
             }),
         )
@@ -1516,7 +1516,7 @@ fn maximized_tiled_clear_retained_overlay_dispatches_from_live_frame() {
             0,
             Some(WorldCommand::MoveDirectional {
                 window: WindowId("w1".to_owned()),
-                direction: "right".to_owned(),
+                direction: tiler_core::directional::Direction::Right,
                 same_axis: tiler_core::directional::SameAxisMove::default(),
             }),
         )
@@ -1972,7 +1972,7 @@ fn nofocus_seeded(name: &str, source_windows: usize, with_target: bool) -> NoFoc
 fn nofocus_command(direction: &str) -> WorldCommand {
     WorldCommand::FocusDirectional {
         window: WindowId(String::new()),
-        direction: direction.to_owned(),
+        direction: tiler_core::directional::Direction::parse_wire(direction).expect("direction"),
     }
 }
 

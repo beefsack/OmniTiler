@@ -465,7 +465,7 @@ fn host_owned_unknown_holds_exact_settles() {
             Some(11),
             Some(WorldCommand::SendDirectional {
                 window: WindowId("win-a".to_owned()),
-                direction: "right".to_owned(),
+                direction: tiler_core::directional::Direction::Right,
                 follow: true,
             }),
             vec![],

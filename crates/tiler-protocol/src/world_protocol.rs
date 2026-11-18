@@ -389,13 +389,6 @@ fn parse_frame_setter(text: &str) -> Result<tiler_core::world_report::FrameSette
     }
 }
 
-fn parse_direction_token(text: &str) -> Result<String> {
-    match text {
-        "left" | "right" | "up" | "down" => Ok(text.to_owned()),
-        _ => Err(unknown_value()),
-    }
-}
-
 fn parse_direction(text: &str) -> Result<Direction> {
     Direction::parse_wire(text).ok_or_else(unknown_value)
 }
@@ -2407,7 +2400,7 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             check_keys(map, &["op", "win", "direction"])?;
             Ok(WorldCommand::Focus {
                 window: WindowId(req_id(map, "win")?),
-                direction: parse_direction_token(req_str(map, "direction")?)?,
+                direction: Some(parse_direction(req_str(map, "direction")?)?),
             })
         }
         "send" => {
@@ -2543,7 +2536,7 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             }
             Ok(WorldCommand::FocusDirectional {
                 window: WindowId(win.to_owned()),
-                direction: parse_direction_token(req_str(map, "direction")?)?,
+                direction: parse_direction(req_str(map, "direction")?)?,
             })
         }
         "move-directional" => {
@@ -2553,7 +2546,7 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
                     .ok_or_else(unknown_value)?;
             Ok(WorldCommand::MoveDirectional {
                 window: WindowId(req_id(map, "win")?),
-                direction: parse_direction_token(req_str(map, "direction")?)?,
+                direction: parse_direction(req_str(map, "direction")?)?,
                 same_axis,
             })
         }
@@ -2561,7 +2554,7 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             check_keys(map, &["op", "win", "direction", "follow"])?;
             Ok(WorldCommand::SendDirectional {
                 window: WindowId(req_id(map, "win")?),
-                direction: parse_direction_token(req_str(map, "direction")?)?,
+                direction: parse_direction(req_str(map, "direction")?)?,
                 follow: req_bool(map, "follow")?,
             })
         }
@@ -2571,7 +2564,7 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             // keys are deleted and refuse as unknown fields.
             check_keys(map, &["op", "direction"])?;
             Ok(WorldCommand::MigrateDirectional {
-                direction: parse_direction_token(req_str(map, "direction")?)?,
+                direction: parse_direction(req_str(map, "direction")?)?,
             })
         }
         "toggle-workspace-tiling" => {
@@ -4146,7 +4139,7 @@ fn decode_implicit_command_v4(
             check_keys(map, &["op", "win"])?;
             C::Focus {
                 window: empty,
-                direction: String::new(),
+                direction: None,
             }
         }
         "send" => {
@@ -4198,7 +4191,7 @@ fn decode_implicit_command_v4(
             check_keys(map, &["op", "win", "direction"])?;
             C::FocusDirectional {
                 window: empty,
-                direction: parse_direction_token(req_str(map, "direction")?)?,
+                direction: parse_direction(req_str(map, "direction")?)?,
             }
         }
         "move-directional" => {
@@ -4208,7 +4201,7 @@ fn decode_implicit_command_v4(
                     .ok_or_else(unknown_value)?;
             C::MoveDirectional {
                 window: empty,
-                direction: parse_direction_token(req_str(map, "direction")?)?,
+                direction: parse_direction(req_str(map, "direction")?)?,
                 same_axis,
             }
         }
@@ -4216,7 +4209,7 @@ fn decode_implicit_command_v4(
             check_keys(map, &["op", "win", "direction", "follow"])?;
             C::SendDirectional {
                 window: empty,
-                direction: parse_direction_token(req_str(map, "direction")?)?,
+                direction: parse_direction(req_str(map, "direction")?)?,
                 follow: req_bool(map, "follow")?,
             }
         }
@@ -4318,7 +4311,7 @@ fn decode_command_v4(value: &serde_json::Value) -> Result<WorldCommand> {
             check_keys(map, &["op", "win"])?;
             Ok(WorldCommand::Focus {
                 window: WindowId(req_id(map, "win")?),
-                direction: String::new(),
+                direction: None,
             })
         }
         "toggle-float" => {
@@ -6825,7 +6818,7 @@ fn encode_command_v4(command: &WorldCommand) -> Result<String> {
     }
     match command {
         WorldCommand::Focus { window, direction } => {
-            if !direction.is_empty() {
+            if direction.is_some() {
                 return Err(snapshot_invalid("command-invalid"));
             }
             out.push_str("{\"op\":\"focus\",\"win\":");
@@ -6949,7 +6942,7 @@ fn encode_command_v4(command: &WorldCommand) -> Result<String> {
             out.push_str("{\"op\":\"focus-directional\",\"win\":");
             push_json_string(&mut out, &window.0);
             out.push_str(",\"direction\":");
-            push_json_string(&mut out, direction);
+            push_json_string(&mut out, direction.as_wire_str());
             out.push('}');
         }
         WorldCommand::MoveDirectional {
@@ -6960,7 +6953,7 @@ fn encode_command_v4(command: &WorldCommand) -> Result<String> {
             out.push_str("{\"op\":\"move-directional\",\"win\":");
             push_json_string(&mut out, &window.0);
             out.push_str(",\"direction\":");
-            push_json_string(&mut out, direction);
+            push_json_string(&mut out, direction.as_wire_str());
             out.push_str(",\"sameAxis\":");
             push_json_string(&mut out, same_axis.as_wire_str());
             out.push('}');
@@ -6973,14 +6966,14 @@ fn encode_command_v4(command: &WorldCommand) -> Result<String> {
             out.push_str("{\"op\":\"send-directional\",\"win\":");
             push_json_string(&mut out, &window.0);
             out.push_str(",\"direction\":");
-            push_json_string(&mut out, direction);
+            push_json_string(&mut out, direction.as_wire_str());
             out.push_str(",\"follow\":");
             out.push_str(if *follow { "true" } else { "false" });
             out.push('}');
         }
         WorldCommand::MigrateDirectional { direction } => {
             out.push_str("{\"op\":\"migrate-directional\",\"direction\":");
-            push_json_string(&mut out, direction);
+            push_json_string(&mut out, direction.as_wire_str());
             out.push('}');
         }
         WorldCommand::ToggleMaximize { window } => {
@@ -7058,7 +7051,7 @@ fn encode_implicit_command_v4(command: &WorldCommand) -> Result<String> {
     let mut out = String::new();
     match command {
         WorldCommand::Focus { direction, .. } => {
-            if !direction.is_empty() {
+            if direction.is_some() {
                 return Err(snapshot_invalid("command-invalid"));
             }
             out.push_str("{\"op\":\"focus\",\"win\":{\"currentFocus\":true}}");
@@ -7111,7 +7104,7 @@ fn encode_implicit_command_v4(command: &WorldCommand) -> Result<String> {
         WorldCommand::FocusDirectional { direction, .. } => {
             out.push_str("{\"op\":\"focus-directional\",\"win\":{\"currentFocus\":true}");
             out.push_str(",\"direction\":");
-            push_json_string(&mut out, direction);
+            push_json_string(&mut out, direction.as_wire_str());
             out.push('}');
         }
         WorldCommand::MoveDirectional {
@@ -7121,7 +7114,7 @@ fn encode_implicit_command_v4(command: &WorldCommand) -> Result<String> {
         } => {
             out.push_str("{\"op\":\"move-directional\",\"win\":{\"currentFocus\":true}");
             out.push_str(",\"direction\":");
-            push_json_string(&mut out, direction);
+            push_json_string(&mut out, direction.as_wire_str());
             out.push_str(",\"sameAxis\":");
             push_json_string(&mut out, same_axis.as_wire_str());
             out.push('}');
@@ -7131,7 +7124,7 @@ fn encode_implicit_command_v4(command: &WorldCommand) -> Result<String> {
         } => {
             out.push_str("{\"op\":\"send-directional\",\"win\":{\"currentFocus\":true}");
             out.push_str(",\"direction\":");
-            push_json_string(&mut out, direction);
+            push_json_string(&mut out, direction.as_wire_str());
             out.push_str(",\"follow\":");
             out.push_str(if *follow { "true" } else { "false" });
             out.push('}');

@@ -2682,7 +2682,7 @@ mod tests {
         input.command_seq = Some(3);
         input.command = Some(WorldCommand::Focus {
             window: WindowId("1001_7".to_owned()),
-            direction: "left".to_owned(),
+            direction: Some(tiler_core::directional::Direction::Left),
         });
         let report = build_report(&mut input);
         assert!(validate_report_v4_reason(&report).is_none());
@@ -2824,7 +2824,7 @@ mod tests {
         input.command_seq = Some(3);
         input.command = Some(WorldCommand::FocusDirectional {
             window: WindowId("1001_7".to_owned()),
-            direction: "right".to_owned(),
+            direction: tiler_core::directional::Direction::Right,
         });
         let report = build_report(&mut input);
         assert!(validate_report_v4_reason(&report).is_none());
@@ -2944,7 +2944,7 @@ mod tests {
             input.command_seq = Some(2);
             input.command = Some(WorldCommand::Focus {
                 window: WindowId("1001_7".to_owned()),
-                direction: "left".to_owned(),
+                direction: Some(tiler_core::directional::Direction::Left),
             });
             let raw = realistic_raw_for(&hidden_members);
             input.raw = &raw;

@@ -993,7 +993,7 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
     report.action_outputs = vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
     report.command_seq = Some(11);
     report.command = Some(WorldCommand::MigrateDirectional {
-        direction: "right".to_owned(),
+        direction: crate::directional::Direction::Right,
     });
     match eng.handle_report(&report, &[]) {
         (WorldOutcome::Accepted(_), settlements) => assert_eq!(
@@ -1036,7 +1036,7 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
     report.action_outputs = vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
     report.command_seq = Some(11);
     report.command = Some(WorldCommand::MigrateDirectional {
-        direction: "right".to_owned(),
+        direction: crate::directional::Direction::Right,
     });
     match sticky_engine.handle_report(&report, &[]) {
         (WorldOutcome::Accepted(_), settlements) => {
@@ -1061,7 +1061,7 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
     report.action_outputs = vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
     report.command_seq = Some(11);
     report.command = Some(WorldCommand::MigrateDirectional {
-        direction: "right".to_owned(),
+        direction: crate::directional::Direction::Right,
     });
     match proven_engine.handle_report(&report, &[]).0 {
         WorldOutcome::Accepted(reply) => {

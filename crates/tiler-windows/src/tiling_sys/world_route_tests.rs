@@ -1314,7 +1314,7 @@ fn rejected_command_catchup_never_strands_the_next_command() {
     .expect("seed converges");
     let focus = |window: &str, direction: &str| WorldCommand::FocusDirectional {
         window: WindowId(window.to_owned()),
-        direction: direction.to_owned(),
+        direction: tiler_core::directional::Direction::parse_wire(direction).expect("direction"),
     };
     let command = |state: &mut super::TileLoop, window: &str, direction: &str| {
         // One owner-loop turn per command, like `dispatch_directional_intent`.

@@ -318,7 +318,10 @@ pub(crate) fn command_estimate_owned(command: &WorldCommand) -> usize {
     }
     match command {
         WorldCommand::Focus { window, direction } => {
-            34 + json_string_len(&window.0) + json_string_len(direction)
+            34 + json_string_len(&window.0)
+                + json_string_len(
+                    direction.map_or("", tiler_core::directional::Direction::as_wire_str),
+                )
         }
         WorldCommand::Send {
             window,
@@ -387,7 +390,7 @@ pub(crate) fn command_estimate_owned(command: &WorldCommand) -> usize {
                 + json_string_len(workspace)
         }
         WorldCommand::FocusDirectional { window, direction } => {
-            44 + json_string_len(&window.0) + json_string_len(direction)
+            44 + json_string_len(&window.0) + json_string_len(direction.as_wire_str())
         }
         WorldCommand::MoveDirectional {
             window,
@@ -395,15 +398,21 @@ pub(crate) fn command_estimate_owned(command: &WorldCommand) -> usize {
             same_axis,
         } => {
             57 + json_string_len(&window.0)
-                + json_string_len(direction)
+                + json_string_len(direction.as_wire_str())
                 + json_string_len(same_axis.as_wire_str())
         }
         WorldCommand::SendDirectional {
             window,
             direction,
             follow,
-        } => 55 + json_string_len(&window.0) + json_string_len(direction) + bool_len(*follow),
-        WorldCommand::MigrateDirectional { direction } => 41 + json_string_len(direction),
+        } => {
+            55 + json_string_len(&window.0)
+                + json_string_len(direction.as_wire_str())
+                + bool_len(*follow)
+        }
+        WorldCommand::MigrateDirectional { direction } => {
+            41 + json_string_len(direction.as_wire_str())
+        }
         WorldCommand::ToggleMaximize { window } => 31 + json_string_len(&window.0),
         WorldCommand::SetSticky { window, value } => {
             35 + json_string_len(&window.0) + bool_len(*value)

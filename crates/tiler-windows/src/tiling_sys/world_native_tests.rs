@@ -5349,11 +5349,11 @@ fn selection_grant_binds_exact_accepted_select_focus_effects() {
     let non_selects = [
         WorldCommand::Focus {
             window: CoreWindowId("w6".to_owned()),
-            direction: "left".to_owned(),
+            direction: Some(tiler_core::directional::Direction::Left),
         },
         WorldCommand::FocusDirectional {
             window: CoreWindowId("w6".to_owned()),
-            direction: "left".to_owned(),
+            direction: tiler_core::directional::Direction::Left,
         },
         WorldCommand::Send {
             window: CoreWindowId("w6".to_owned()),
