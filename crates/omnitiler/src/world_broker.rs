@@ -201,9 +201,11 @@ use std::time::Instant;
 
 use serde_json::Map;
 
+#[cfg(test)]
+use tiler_protocol::world_protocol::decode_request;
 use tiler_protocol::world_protocol::{
     ReplyWireOptionals, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldEngine, WorldOutcome,
-    decode_command_value_v4, decode_request, encode_error, is_valid_adapter_id,
+    decode_command_value_v4, decode_request_with_wire, encode_error, is_valid_adapter_id,
     is_valid_request_id,
 };
 use tiler_protocol::world_reply_write::{
@@ -872,8 +874,8 @@ impl WorldBroker {
         if plain_stamped.len() > WORLD_MAX_REQUEST_BYTES {
             return Err(BrokerError::Oversized);
         }
-        let plain_report = match decode_request(&plain_stamped) {
-            Ok(report) => report,
+        let plain_decoded = match decode_request_with_wire(&plain_stamped) {
+            Ok(decoded) => decoded,
             Err(error) => {
                 return self.remember_rejection(
                     &parsed,
@@ -909,9 +911,11 @@ impl WorldBroker {
         let wake_epoch = self.wake_epoch;
         let max_reply_bytes = self.final_reply_max_bytes();
         let mut prepared: Option<PreparedCapture> = None;
-        let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::new();
+        let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::with_residual(
+            plain_decoded.residual.as_ref(),
+        );
         let (outcome, settlements) = match self.engine.handle_report_with_gate_and_prepare(
-            &plain_report,
+            &plain_decoded.report,
             &batch,
             &gate,
             |candidate| {

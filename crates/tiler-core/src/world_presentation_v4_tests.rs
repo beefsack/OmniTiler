@@ -1225,7 +1225,6 @@ fn held_presentation_publishes_neutral_shapes() {
     );
     let held = WorldReportV4 {
         presentation: PresentationRowV4::Held(crate::world_report::HeldPresentationRow {
-            fields: Vec::new(),
             kind: crate::world_report::RowDiagnosticKind::InvalidFact,
             diagnostic: None,
         }),
@@ -1557,7 +1556,6 @@ fn held_presentation_still_prunes_closed_lifetimes() {
         ingress_v4("win-a"),
     );
     held.presentation = PresentationRowV4::Held(crate::world_report::HeldPresentationRow {
-        fields: Vec::new(),
         kind: crate::world_report::RowDiagnosticKind::InvalidFact,
         diagnostic: None,
     });

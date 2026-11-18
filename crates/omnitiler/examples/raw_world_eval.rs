@@ -28,8 +28,8 @@ use tiler_protocol::connection_protocol::route_connection_request;
 use tiler_protocol::world_admission::ProtocolAdmissionGate;
 use tiler_protocol::world_command_result::encode_command_result;
 use tiler_protocol::world_protocol::{
-    DecodedReplyV4, ReplyWireOptionals, WorldEngine, WorldOutcome, decode_request, encode_error,
-    encode_reply,
+    DecodedReplyV4, ReplyWireOptionals, WorldEngine, WorldOutcome, decode_request_with_wire,
+    encode_error, encode_reply,
 };
 
 fn generation_seed() -> String {
@@ -54,8 +54,8 @@ fn submit_report_with_settlements(
     body: &str,
     generation: &str,
 ) -> (String, Vec<BatchSettlement>) {
-    let report = match decode_request(body) {
-        Ok(report) => report,
+    let decoded = match decode_request_with_wire(body) {
+        Ok(decoded) => decoded,
         Err(error) => {
             return (
                 encode_error(error.kind, error.message, generation),
@@ -63,9 +63,9 @@ fn submit_report_with_settlements(
             );
         }
     };
-    let gate = ProtocolAdmissionGate::new();
+    let gate = ProtocolAdmissionGate::with_residual(decoded.residual.as_ref());
     let (outcome, settlements) = engine
-        .handle_report_with_gate_and_prepare(&report, &[], &gate, |_| {
+        .handle_report_with_gate_and_prepare(&decoded.report, &[], &gate, |_| {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {});

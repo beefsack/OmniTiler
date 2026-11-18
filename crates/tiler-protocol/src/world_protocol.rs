@@ -2735,10 +2735,10 @@ pub struct ReportWireOptionals {
 }
 
 /// Decode one JSON world request into the typed core v4 report. This is
-/// the sole public report ingress: the genuine v4 codec
-/// ([`decode_report_v4`]), which enforces the v4 envelope keys
-/// (`rendererInput` required, `views` refused as `unknown-field`) and the
-/// v4 contract version. No legacy dual decode and no report conversion.
+/// a typed-only projection of [`decode_report_v4`]: it discards wire metadata
+/// (`ReportWireOptionals`, `creation_receipts`) and protocol-owned residual
+/// evidence (`WorldReportResidual`). Checked wire routes must use
+/// [`decode_request_with_wire`] / [`decode_report_v4`] instead.
 pub fn decode_request(json: &str) -> std::result::Result<WorldReportV4, WorldProtocolError> {
     decode_report_v4(json).map(|decoded| decoded.report)
 }
@@ -2790,6 +2790,10 @@ pub struct DecodedReportV4 {
     /// Creation-receipt spellings aligned to [`WorldReportV4::creation_attempts`]
     /// in order (one entry per valid row).
     pub creation_receipts: Vec<CreationReceiptWire>,
+    /// Protocol-owned residual evidence (currently retained raw fields for a
+    /// held `presentation` singleton) for lossless re-encoding, sizing, and
+    /// exact replay discrimination. `None` when no held-row residual is carried.
+    pub residual: Option<std::sync::Arc<crate::world_report_residual::WorldReportResidual>>,
 }
 
 /// Staged v4 attempt-row outcome: either a usable row or an identifiable
@@ -2960,7 +2964,9 @@ fn held_native_row(
 /// carried row.
 /// The diagnostic is `Some` only when the carried `foregroundOut` names a
 /// truthful output scope, otherwise `None` (no scope is fabricated).
-fn held_presentation_row(map: &serde_json::Map<String, serde_json::Value>) -> HeldPresentationRow {
+fn held_presentation_row(
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> (HeldPresentationRow, Vec<(String, RawSettingValue)>) {
     const SCHEMA_ORDER: &[&str] = &[
         "foreground",
         "minimized",
@@ -3009,11 +3015,13 @@ fn held_presentation_row(map: &serde_json::Map<String, serde_json::Value>) -> He
         }),
         _ => None,
     };
-    HeldPresentationRow {
+    (
+        HeldPresentationRow {
+            kind: RowDiagnosticKind::InvalidFact,
+            diagnostic,
+        },
         fields,
-        kind: RowDiagnosticKind::InvalidFact,
-        diagnostic,
-    }
+    )
 }
 
 /// Staged v4 window-row decode: same carried keys as v3, but identifiable
@@ -4064,7 +4072,12 @@ fn decode_creation_attempt_v4(
 /// witness-object internals), then the narrow hold for a removed key, a
 /// pager frame echo (`float`/`tile`), or a non-object `witness`. Only those
 /// three hold causes still hold; every other value failure stays strict.
-fn decode_presentation_v4(value: &serde_json::Value) -> Result<PresentationRowV4> {
+fn decode_presentation_v4(
+    value: &serde_json::Value,
+) -> Result<(
+    PresentationRowV4,
+    Option<crate::world_report_residual::HeldFields>,
+)> {
     use tiler_core::world_report::MAX_PRESENTATION_ORDER;
     let map = as_object(value)?;
     const SCHEMA: &[&str] = &[
@@ -4116,9 +4129,10 @@ fn decode_presentation_v4(value: &serde_json::Value) -> Result<PresentationRowV4
         Some(_) => true,
     };
     if extra_key || pager_extra || witness_held {
-        return Ok(PresentationRowV4::Held(held_presentation_row(map)));
+        let (held, fields) = held_presentation_row(map);
+        return Ok((PresentationRowV4::Held(held), Some(fields)));
     }
-    decode_presentation_ingress_v4(value).map(PresentationRowV4::Valid)
+    decode_presentation_ingress_v4(value).map(|ingress| (PresentationRowV4::Valid(ingress), None))
 }
 
 /// Structural preflight for one staged v4 presentation-ingress object:
@@ -4869,7 +4883,8 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
         }
         intent_records.push(IntentRecord { win, data });
     }
-    let presentation = decode_presentation_v4(map.get("presentation").ok_or_else(malformed)?)?;
+    let (presentation, held_presentation_fields) =
+        decode_presentation_v4(map.get("presentation").ok_or_else(malformed)?)?;
     let renderer_input = match map.get("rendererInput") {
         None => return Err(malformed()),
         Some(serde_json::Value::Null) => None,
@@ -5040,10 +5055,16 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
             Some(_) => GestureIngressWire::Present,
         },
     };
+    let residual = held_presentation_fields.map(|fields| {
+        std::sync::Arc::new(crate::world_report_residual::WorldReportResidual {
+            held_presentation_fields: Some(fields),
+        })
+    });
     Ok(DecodedReportV4 {
         report,
         wire,
         creation_receipts,
+        residual,
     })
 }
 
@@ -7483,7 +7504,14 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
         PresentationRowV4::Valid(ingress) => {
             out.push_str(&encode_presentation_ingress_v4(ingress)?);
         }
-        PresentationRowV4::Held(held) => out.push_str(&encode_held_fields(&held.fields)?),
+        PresentationRowV4::Held(_) => {
+            let fields = decoded
+                .residual
+                .as_deref()
+                .and_then(|r| r.held_presentation_fields.as_deref())
+                .ok_or_else(|| snapshot_invalid("held-presentation-residual-missing"))?;
+            out.push_str(&encode_held_fields(fields)?);
+        }
     }
     match (&report.cursor_hit, wire.cursor_hit) {
         (None, CursorHitWire::Absent) => {}

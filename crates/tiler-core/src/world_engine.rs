@@ -187,7 +187,7 @@ pub type WorldOutcome = V4RunOutcome;
 
 pub use crate::world_admit_v4::{
     AdmissionGateDecision, CoreAdmissionGate, ExactInnerCheck, ExactInnerDecision,
-    FutureReserveGateFacts, PreflightGateFacts,
+    FutureReserveGateFacts, PreflightGateFacts, ReplayResidualToken, RetainedResidual,
 };
 
 /// Borrowed format-neutral candidate view passed to the caller's final
@@ -262,6 +262,7 @@ pub(crate) struct AdmittedReplayV4 {
     pub(crate) digest: u64,
     pub(crate) observation_seq: u64,
     pub(crate) report: WorldReportV4,
+    pub(crate) residual: Option<RetainedResidual>,
     pub(crate) reply: WorldReplyV4,
 }
 

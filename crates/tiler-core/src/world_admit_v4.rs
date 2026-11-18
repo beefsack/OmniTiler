@@ -121,6 +121,26 @@ pub struct FutureReserveGateFacts {
     pub switch_failed_count: usize,
 }
 
+/// Opaque host/protocol replay-residual token retained alongside
+/// [`AdmittedReplayV4`] only when a checked gate carries non-empty residual
+/// evidence. Core never inspects its contents; equality and cloning are
+/// delegated to the trait object.
+pub trait ReplayResidualToken: std::fmt::Debug + Send + Sync + std::any::Any {
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn residual_eq(&self, other: &dyn ReplayResidualToken) -> bool;
+}
+
+/// Shared opaque replay-residual handle stored on [`AdmittedReplayV4`] only
+/// when a gate returns `Some(...)`. Default-empty callers pay zero allocation.
+#[derive(Debug, Clone)]
+pub struct RetainedResidual(pub std::sync::Arc<dyn ReplayResidualToken>);
+
+impl PartialEq for RetainedResidual {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0) || self.0.residual_eq(other.0.as_ref())
+    }
+}
+
 /// Scoped synchronous format-neutral admission gate over borrowed reports,
 /// replies, and typed count/fact bundles. Core maps `Refuse` to the static
 /// fixed refusal at each checkpoint.
@@ -138,6 +158,19 @@ pub trait CoreAdmissionGate {
         facts: &FutureReserveGateFacts,
         exact: ExactInnerCheck,
     ) -> AdmissionGateDecision;
+    /// Whether the incoming report's residual evidence matches the retained
+    /// residual from the prior admitted reply (`None` when the prior report
+    /// had no residual). Default-empty gates match only when `retained` is
+    /// `None`.
+    fn residual_matches(&self, retained: Option<&RetainedResidual>) -> bool {
+        retained.is_none()
+    }
+    /// Capture an opaque residual token for [`AdmittedReplayV4`] after the
+    /// candidate passes all outbound gates and `prepare` succeeds. Default-empty
+    /// gates return `None` with zero allocation.
+    fn capture_residual(&self) -> Option<RetainedResidual> {
+        None
+    }
 }
 
 /// Structural no-op admission gate used by direct typed core entries
@@ -454,8 +487,8 @@ impl WorldEngine {
         let digest = report_digest_v4(report);
         if let Some(replay) = &self.replay {
             // Fast digest pre-check first; full typed input equality
-            // decides, never the digest alone.
-            let reports_equal = replay.report == *report;
+            let reports_equal =
+                replay.report == *report && gate.residual_matches(replay.residual.as_ref());
             match classify_replay_v4(
                 report.request_seq,
                 digest,
@@ -887,6 +920,7 @@ impl WorldEngine {
             digest,
             observation_seq,
             report: report.clone(),
+            residual: gate.capture_residual(),
             reply: reply.clone(),
         });
         if consumed_reply {

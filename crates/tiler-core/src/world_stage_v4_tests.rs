@@ -312,7 +312,6 @@ fn v4_lane_order_with_held_presentation_last() {
         kind: RowDiagnosticKind::InvalidFact,
     }];
     let held_presentation = HeldPresentationRow {
-        fields: Vec::new(),
         kind: RowDiagnosticKind::InvalidFact,
         diagnostic: Some(diagnostic("out-a", RowDiagnosticLane::Presentation, None)),
     };
@@ -1158,7 +1157,6 @@ fn v4_offroute_orders_before_presentation_last() {
     }];
     report.state_attempts = vec![state_attempt("win-a", StateProperty::Above, true, 1)];
     let held_presentation = HeldPresentationRow {
-        fields: Vec::new(),
         kind: RowDiagnosticKind::InvalidFact,
         diagnostic: Some(diagnostic("out-a", RowDiagnosticLane::Presentation, None)),
     };

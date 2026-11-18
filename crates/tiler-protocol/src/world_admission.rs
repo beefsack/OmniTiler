@@ -10,43 +10,65 @@
 #[cfg(test)]
 use std::cell::Cell;
 
+use std::sync::Arc;
+
 use crate::world_admission_sizing::{
     MAX_OPERATION_EVENT_BYTES, max_intent_desired_bound, max_intent_save_batch_bound_v4,
     max_operation_settle_reserve, max_switch_settle_reserve, reply_upper_bound_v4,
-    report_estimate_v4,
+    report_estimate_v4_with_residual,
 };
-use crate::world_protocol::{ReplyWireOptionals, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES};
+use crate::world_protocol::{
+    DecodedReportV4, ReplyWireOptionals, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES,
+};
 use crate::world_reply_write::{
     count_operation_settled_rows_bytes, count_reply_v4_bytes, count_switch_settled_section_bytes,
 };
+use crate::world_report_residual::WorldReportResidual;
 use tiler_core::world_engine::{
     AdmissionGateDecision, CoreAdmissionGate, ExactInnerCheck, ExactInnerDecision,
-    FutureReserveGateFacts, PreflightGateFacts, WorldEngine, WorldOutcome,
+    FutureReserveGateFacts, PreflightGateFacts, ReplayResidualToken, RetainedResidual, WorldEngine,
+    WorldOutcome,
 };
 use tiler_core::world_report::{BatchSettlement, WorldCommand, WorldReplyV4, WorldReportV4};
 
 /// Scoped checked protocol admission gate over borrowed typed reports and
 /// replies.
 #[derive(Debug)]
-pub struct ProtocolAdmissionGate {
+pub struct ProtocolAdmissionGate<'a> {
     max_request_bytes: usize,
     max_reply_bytes: usize,
+    residual: Option<&'a Arc<WorldReportResidual>>,
     #[cfg(test)]
     count_calls: Cell<usize>,
 }
 
-impl Default for ProtocolAdmissionGate {
+impl Default for ProtocolAdmissionGate<'_> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ProtocolAdmissionGate {
+impl<'a> ProtocolAdmissionGate<'a> {
     #[must_use]
     pub fn new() -> Self {
         Self {
             max_request_bytes: WORLD_MAX_REQUEST_BYTES,
             max_reply_bytes: WORLD_MAX_REPLY_BYTES,
+            residual: None,
+            #[cfg(test)]
+            count_calls: Cell::new(0),
+        }
+    }
+
+    /// Construct a checked gate bound to the decoded report's protocol-owned
+    /// residual evidence for exact request estimation and exact replay
+    /// discrimination/retention.
+    #[must_use]
+    pub fn with_residual(residual: Option<&'a Arc<WorldReportResidual>>) -> Self {
+        Self {
+            max_request_bytes: WORLD_MAX_REQUEST_BYTES,
+            max_reply_bytes: WORLD_MAX_REPLY_BYTES,
+            residual: residual.filter(|r| !r.is_empty()),
             #[cfg(test)]
             count_calls: Cell::new(0),
         }
@@ -84,13 +106,48 @@ pub fn handle_report_checked(
         .unwrap_or_else(|e| match e {})
 }
 
-impl CoreAdmissionGate for ProtocolAdmissionGate {
+/// Evaluate one decoded v4 report (carrying protocol-owned residual evidence)
+/// through [`WorldEngine::handle_report_with_gate_and_prepare`] under
+/// [`ProtocolAdmissionGate::with_residual`].
+pub fn handle_report_decoded_checked(
+    engine: &mut WorldEngine,
+    decoded: &DecodedReportV4,
+    queued: &[(u64, WorldCommand)],
+) -> (WorldOutcome, Vec<BatchSettlement>) {
+    let gate = ProtocolAdmissionGate::with_residual(decoded.residual.as_ref());
+    engine
+        .handle_report_with_gate_and_prepare(&decoded.report, queued, &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+}
+
+impl CoreAdmissionGate for ProtocolAdmissionGate<'_> {
     fn check_request_size(&self, report: &WorldReportV4) -> AdmissionGateDecision {
-        if report_estimate_v4(report) > self.max_request_bytes {
+        if report_estimate_v4_with_residual(report, self.residual.map(Arc::as_ref))
+            > self.max_request_bytes
+        {
             AdmissionGateDecision::Refuse
         } else {
             AdmissionGateDecision::Allow
         }
+    }
+
+    fn residual_matches(&self, retained: Option<&RetainedResidual>) -> bool {
+        match (self.residual, retained) {
+            (None, None) => true,
+            (Some(incoming), Some(prev)) => prev
+                .0
+                .as_any()
+                .downcast_ref::<WorldReportResidual>()
+                .is_some_and(|rhs| incoming.as_ref() == rhs),
+            _ => false,
+        }
+    }
+
+    fn capture_residual(&self) -> Option<RetainedResidual> {
+        self.residual
+            .map(|arc| RetainedResidual(Arc::clone(arc) as Arc<dyn ReplayResidualToken>))
     }
 
     fn check_preflight(
@@ -1111,5 +1168,95 @@ mod tests {
             gate.check_future_reserve(&reply, &over_facts, exact_check),
             AdmissionGateDecision::Refuse
         );
+    }
+
+    #[test]
+    fn held_presentation_residual_discriminates_replay_whitespace_vs_changed_and_prepare_refusal() {
+        use crate::world_protocol::decode_report_v4;
+        use tiler_core::connection::{
+            ApplicationIdentity, HandshakeRequest, HostCapabilities, SettingsRequest,
+        };
+        use tiler_core::world_report::PresentationRowV4;
+
+        let mut engine = WorldEngine::new("gen-seed").expect("engine");
+        let hs_reply = engine.handshake(&HandshakeRequest {
+            adapter: "adapter-a".to_owned(),
+            request: "hs-1".to_owned(),
+            application_identity: ApplicationIdentity {
+                app_id: None,
+                executable: Some("test-own-executable".to_owned()),
+                process_id: Some("test-own-pid".to_owned()),
+            },
+            capabilities: HostCapabilities::default(),
+        });
+        let gen_id = hs_reply.generation.expect("generation");
+        engine
+            .handle_settings(&SettingsRequest {
+                adapter: "adapter-a".to_owned(),
+                generation: gen_id.clone(),
+                request: "set-1".to_owned(),
+                revision: 0,
+                values: Vec::new(),
+            })
+            .expect("settings");
+
+        let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../test-fixtures/world-wire/v4/messages/invalid-witness-constant-string.json",
+        );
+        let base_text = std::fs::read_to_string(fixture_path).expect("held presentation fixture");
+        let mut doc: serde_json::Value = serde_json::from_str(&base_text).expect("json");
+        doc["adapter"] = serde_json::json!("adapter-a");
+        doc["gen"] = serde_json::json!(gen_id);
+        doc["reqSeq"] = serde_json::json!("1");
+        doc["obs"] = serde_json::json!("1");
+        doc["req"] = serde_json::json!("req-1");
+
+        let decoded_a = decode_report_v4(&doc.to_string()).expect("held presentation decodes");
+        assert!(matches!(
+            decoded_a.report.presentation,
+            PresentationRowV4::Held(_)
+        ));
+        assert!(decoded_a.residual.is_some());
+
+        // Late prepare refusal must not install or retain replay residual.
+        let gate_refuse = ProtocolAdmissionGate::with_residual(decoded_a.residual.as_ref());
+        let err = engine
+            .handle_report_with_gate_and_prepare(&decoded_a.report, &[], &gate_refuse, |_| {
+                Err::<(), &'static str>("prepare-refused")
+            })
+            .expect_err("prepare error propagates");
+        assert_eq!(err, "prepare-refused");
+        assert_eq!(engine.state_revision(), 0);
+
+        // Successful install retains residual.
+        let (outcome, _) = handle_report_decoded_checked(&mut engine, &decoded_a, &[]);
+        assert!(matches!(outcome, WorldOutcome::Accepted(_)));
+        let rev_after_accept = engine.state_revision();
+        assert_eq!(rev_after_accept, 1);
+
+        // Whitespace-only difference in raw JSON decodes to equal residual -> Duplicate.
+        let spaced_json = serde_json::to_string_pretty(&doc).expect("pretty json");
+        let decoded_a_ws = decode_report_v4(&spaced_json).expect("spaced decodes");
+        assert_eq!(decoded_a.residual, decoded_a_ws.residual);
+        let (ws_outcome, _) = handle_report_decoded_checked(&mut engine, &decoded_a_ws, &[]);
+        assert!(matches!(ws_outcome, WorldOutcome::Duplicate(_)));
+        assert_eq!(engine.state_revision(), rev_after_accept);
+
+        // Changed held presentation residual with identical typed HeldPresentationRow -> request-reused.
+        let mut changed_doc = doc.clone();
+        changed_doc["presentation"]["witness"] = serde_json::json!("other-constant");
+        let decoded_b =
+            decode_report_v4(&changed_doc.to_string()).expect("changed residual decodes");
+        assert_eq!(decoded_a.report, decoded_b.report);
+        assert_ne!(decoded_a.residual, decoded_b.residual);
+        let (reused_outcome, _) = handle_report_decoded_checked(&mut engine, &decoded_b, &[]);
+        assert_eq!(
+            reused_outcome,
+            WorldOutcome::Rejected {
+                kind: "request-reused",
+                message: "request sequence reused with different input",
+            }
+        );
+        assert_eq!(engine.state_revision(), rev_after_accept);
     }
 }

@@ -994,7 +994,6 @@ fn v4_restage_conserves_rich_lanes_without_accumulating_scale_hold() {
     assert_eq!(engine.world.staged, before);
     // A held singleton retains its row and appends its diagnostic last.
     report.presentation = PresentationRowV4::Held(crate::world_report::HeldPresentationRow {
-        fields: Vec::new(),
         kind: RowDiagnosticKind::InvalidFact,
         diagnostic: Some(crate::world_report::RowDiagnostic {
             scope: crate::world_report::AuthorityScope::Output(OutputId("out-a".to_owned())),

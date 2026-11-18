@@ -248,7 +248,6 @@ fn accepted_frame(window: &str, attempt_ms: u64) -> FrameAttempt {
 
 fn held_presentation() -> PresentationRowV4 {
     PresentationRowV4::Held(HeldPresentationRow {
-        fields: Vec::new(),
         kind: RowDiagnosticKind::InvalidFact,
         diagnostic: None,
     })

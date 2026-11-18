@@ -1113,7 +1113,6 @@ fn held_presentation_publishes_without_style_hold() {
     );
     engine.world.staged.presentation_v4 = Some(PresentationRowV4::Held(
         crate::world_report::HeldPresentationRow {
-            fields: Vec::new(),
             kind: RowDiagnosticKind::InvalidFact,
             diagnostic: None,
         },

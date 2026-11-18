@@ -1408,20 +1408,14 @@ pub struct HeldAttemptRow {
 
 /// One v4 presentation ingress that failed shape checks, held narrowly
 /// instead of refusing the whole report. The presentation ingress is a
-/// singleton object (no array ordinal, no lifetime identity): `fields`
-/// retains every carried presentation key in canonical contract table order
-/// (`foreground`, `minimized`, `maximized`, `fullscreen`, `hostHidden`,
-/// `hiddenWorkspace`, `frame`, `chordHeld`, `moveWindow`, `pagerOrder`,
-/// `pagerFrames`, `witness`, `foregroundOut`, then any other carried keys
-/// in lexicographic order) as JSON-agnostic
-/// [`RawSettingValue`](crate::connection::RawSettingValue) facts so the
-/// canonical writer round-trips the object losslessly; `kind` is the
+/// singleton object (no array ordinal, no lifetime identity): `kind` is the
 /// mandatory narrow-hold reason (`InvalidFact`); `diagnostic` is `Some`
 /// typed diagnostic only when the carried `foregroundOut` names a truthful
 /// output scope, and `None` otherwise (no scope is ever fabricated).
+/// Any raw carried fields for lossless wire round-tripping and exact replay
+/// reside in protocol-owned residual evidence (`WorldReportResidual`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HeldPresentationRow {
-    pub fields: Vec<(String, crate::connection::RawSettingValue)>,
     pub kind: RowDiagnosticKind,
     pub diagnostic: Option<RowDiagnostic>,
 }

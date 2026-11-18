@@ -1683,11 +1683,6 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         PresentationRowV4::Held(held) => {
             feed(&mut hash, "presentation-held");
             sep(&mut hash);
-            for (key, value) in &held.fields {
-                feed(&mut hash, key);
-                sep(&mut hash);
-                feed_raw(&mut hash, value);
-            }
             feed(&mut hash, held.kind.as_str());
             sep(&mut hash);
             flag(&mut hash, held.diagnostic.is_some());

@@ -50,6 +50,14 @@ pub fn max_intent_desired_bound(count: usize) -> usize {
 
 #[must_use]
 pub fn report_estimate_v4(report: &WorldReportV4) -> usize {
+    report_estimate_v4_with_residual(report, None)
+}
+
+#[must_use]
+pub fn report_estimate_v4_with_residual(
+    report: &WorldReportV4,
+    residual: Option<&crate::world_report_residual::WorldReportResidual>,
+) -> usize {
     let mut bytes = 311
         + usize_len(report.contract_version as usize)
         + json_string_len(&report.adapter_incarnation)
@@ -85,7 +93,7 @@ pub fn report_estimate_v4(report: &WorldReportV4) -> usize {
         + bool_len(report.foreground_known)
         + bool_len(report.inventory_complete)
         + bool_len(report.gesture_barrier)
-        + presentation_row_v4_estimate(&report.presentation);
+        + presentation_row_v4_estimate(&report.presentation, residual);
     for screen in &report.screens {
         bytes += 106
             + rect_len(screen.full_rect)

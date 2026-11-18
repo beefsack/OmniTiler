@@ -14,7 +14,7 @@ use crate::world_admit_v4::{V4Replay, classify_replay_v4};
 use crate::world_engine::{
     EventIssue, KIND_CORRELATION, KIND_GENERATION, KIND_OBS_STALE, KIND_OWNER, KIND_REPLY_SIZE,
     KIND_REUSED, KIND_REVISION_EXHAUSTED, KIND_SNAPSHOT, KIND_SUPERSEDED, MSG_REPLY_SIZE,
-    RawRouting, WorldEngine,
+    MSG_REUSED, RawRouting, WorldEngine,
 };
 use crate::world_report::{
     AfterShown, AfterShownMember, AfterShownScope, AttemptLaneV4, AuthorityScope, BatchSettlement,
@@ -2982,4 +2982,101 @@ fn slice_7_1_held_window_typed_native_workspace_refuses_without_capability() {
     }
     assert_eq!(engine.state_revision(), revision_before);
     assert!(!engine.has_last_v4());
+}
+
+#[test]
+fn residual_gate_discriminates_duplicate_reused_and_prepare_refusal() {
+    use crate::world_admit_v4::{
+        AdmissionGateDecision, CoreAdmissionGate, ExactInnerCheck, ExactInnerDecision,
+        FutureReserveGateFacts, PreflightGateFacts, ReplayResidualToken, RetainedResidual,
+    };
+    use std::sync::Arc;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct TagResidual(&'static str);
+
+    impl ReplayResidualToken for TagResidual {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn residual_eq(&self, other: &dyn ReplayResidualToken) -> bool {
+            other
+                .as_any()
+                .downcast_ref::<TagResidual>()
+                .is_some_and(|rhs| self == rhs)
+        }
+    }
+
+    struct TagGate(&'static str);
+
+    impl CoreAdmissionGate for TagGate {
+        fn check_request_size(&self, _report: &WorldReportV4) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+        fn check_preflight(
+            &self,
+            _report: &WorldReportV4,
+            _facts: &PreflightGateFacts<'_>,
+        ) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+        fn check_exact_inner(
+            &self,
+            _reply: &crate::world_report::WorldReplyV4,
+        ) -> ExactInnerDecision {
+            ExactInnerDecision::Allow(ExactInnerCheck::new(0))
+        }
+        fn check_future_reserve(
+            &self,
+            _reply: &crate::world_report::WorldReplyV4,
+            _facts: &FutureReserveGateFacts,
+            _exact: ExactInnerCheck,
+        ) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+        fn residual_matches(&self, retained: Option<&RetainedResidual>) -> bool {
+            retained.is_some_and(|r| {
+                r.0.as_any()
+                    .downcast_ref::<TagResidual>()
+                    .is_some_and(|tag| tag.0 == self.0)
+            })
+        }
+        fn capture_residual(&self) -> Option<RetainedResidual> {
+            Some(RetainedResidual(Arc::new(TagResidual(self.0))))
+        }
+    }
+
+    let mut engine = engine();
+    let r1 = observe(1, facts_pair(), "win-a");
+
+    // Prepare refusal must not retain residual or populate replay.
+    let err = engine
+        .handle_report_with_gate_and_prepare(&r1, &[], &TagGate("alpha"), |_| Err("prepare-fail"))
+        .expect_err("prepare refusal propagates");
+    assert_eq!(err, "prepare-fail");
+    assert!(!engine.has_last_v4());
+
+    // Successful install retains residual "alpha".
+    let (accepted, _) = engine
+        .handle_report_with_gate_and_prepare(&r1, &[], &TagGate("alpha"), |_| Ok::<(), ()>(()))
+        .expect("ok");
+    assert!(matches!(accepted, V4RunOutcome::Accepted(_)));
+
+    // Matching residual -> Duplicate.
+    let (dup, _) = engine
+        .handle_report_with_gate_and_prepare(&r1, &[], &TagGate("alpha"), |_| Ok::<(), ()>(()))
+        .expect("ok");
+    assert!(matches!(dup, V4RunOutcome::Duplicate(_)));
+
+    // Changed residual with identical typed report -> RequestReused.
+    let (reused, _) = engine
+        .handle_report_with_gate_and_prepare(&r1, &[], &TagGate("beta"), |_| Ok::<(), ()>(()))
+        .expect("ok");
+    assert_eq!(
+        reused,
+        V4RunOutcome::Rejected {
+            kind: KIND_REUSED,
+            message: MSG_REUSED,
+        }
+    );
 }

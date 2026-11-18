@@ -783,6 +783,20 @@ fn request_estimate_bounds_actual_wire_bytes() {
 #[test]
 fn presentation_ingress_decodes_strictly() {
     use tiler_core::world_report::PresentationRowV4;
+    use tiler_protocol::world_protocol::decode_request_with_wire;
+
+    fn retains_true(decoded: &tiler_protocol::world_protocol::DecodedReportV4, key: &str) -> bool {
+        decoded
+            .residual
+            .as_deref()
+            .and_then(|residual| residual.held_presentation_fields.as_deref())
+            .is_some_and(|fields| {
+                fields.iter().any(|(name, field)| {
+                    name == key && *field == tiler_core::connection::RawSettingValue::Bool(true)
+                })
+            })
+    }
+
     fn ingress_of(report: &WorldReportV4) -> &tiler_core::world_report::PresentationIngressV4 {
         match &report.presentation {
             PresentationRowV4::Valid(ingress) => ingress,
@@ -807,18 +821,15 @@ fn presentation_ingress_decodes_strictly() {
     // tokens and zero-rect frames still refuse the whole report (below).
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["presentation"]["extra"] = serde_json::Value::Bool(true);
-    let report = decode_request(&value.to_string()).expect("unknown presentation field holds");
-    match &report.presentation {
+    let decoded =
+        decode_request_with_wire(&value.to_string()).expect("unknown presentation field holds");
+    match &decoded.report.presentation {
         PresentationRowV4::Held(held) => {
             assert_eq!(
                 held.kind,
                 tiler_core::world_report::RowDiagnosticKind::InvalidFact
             );
-            assert!(
-                held.fields.iter().any(|(name, field)| name == "extra"
-                    && *field == tiler_core::connection::RawSettingValue::Bool(true)),
-                "extra key retained"
-            );
+            assert!(retains_true(&decoded, "extra"), "extra key retained");
         }
         PresentationRowV4::Valid(_) => panic!("extra key must hold, not validate"),
     }
@@ -838,18 +849,15 @@ fn presentation_ingress_decodes_strictly() {
     // row carries the retired key instead of refusing the envelope.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["presentation"]["borderEnabled"] = serde_json::json!(true);
-    let report = decode_request(&value.to_string()).expect("removed style holds");
-    match &report.presentation {
+    let decoded = decode_request_with_wire(&value.to_string()).expect("removed style holds");
+    match &decoded.report.presentation {
         PresentationRowV4::Held(held) => {
             assert_eq!(
                 held.kind,
                 tiler_core::world_report::RowDiagnosticKind::InvalidFact
             );
             assert!(
-                held.fields
-                    .iter()
-                    .any(|(name, field)| name == "borderEnabled"
-                        && *field == tiler_core::connection::RawSettingValue::Bool(true)),
+                retains_true(&decoded, "borderEnabled"),
                 "retired key retained"
             );
         }

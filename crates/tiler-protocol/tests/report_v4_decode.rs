@@ -391,7 +391,7 @@ fn v4_structural_held_rows_accept_with_exact_retention() {
             "screens" => assert_screen_hold(report, &doc, &invalid, fixture),
             "windows" => assert_window_hold(report, &doc, &invalid, fixture),
             "native" => assert_native_hold(report, &doc, &invalid, fixture),
-            "presentation" => assert_presentation_hold(report, &doc, &invalid, fixture),
+            "presentation" => assert_presentation_hold(&decoded, &doc, &invalid, fixture),
             "frameAttempts" | "memberAttempts" | "viewAttempts" | "clearAttempts"
             | "creationAttempts" => assert_attempt_hold(report, &doc, &invalid, fixture),
             other => panic!("{} unexpected held lane {other}", fixture.id),
@@ -738,12 +738,12 @@ fn assert_attempt_hold(
 }
 
 fn assert_presentation_hold(
-    report: &tiler_core::world_report::WorldReportV4,
+    decoded: &DecodedReportV4,
     doc: &serde_json::Value,
     invalid: &InvalidRef,
     fixture: &ManifestFixture,
 ) {
-    let PresentationRowV4::Held(held) = &report.presentation else {
+    let PresentationRowV4::Held(held) = &decoded.report.presentation else {
         panic!("{} presentation holds", fixture.id);
     };
     assert_eq!(held.kind, RowDiagnosticKind::InvalidFact, "{}", fixture.id);
@@ -768,14 +768,19 @@ fn assert_presentation_hold(
             "foregroundOut",
         ],
     );
+    let fields = decoded
+        .residual
+        .as_deref()
+        .and_then(|r| r.held_presentation_fields.as_deref())
+        .expect("held presentation retains residual fields");
     assert_eq!(
-        held.fields.iter().map(|(key, _)| key).collect::<Vec<_>>(),
+        fields.iter().map(|(key, _)| key).collect::<Vec<_>>(),
         expected.iter().map(|(key, _)| key).collect::<Vec<_>>(),
         "{} field order",
         fixture.id
     );
     assert_eq!(
-        normalize_fields(&held.fields),
+        normalize_fields(fields),
         normalize_fields(&expected),
         "{} field values",
         fixture.id
